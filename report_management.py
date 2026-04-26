@@ -31,15 +31,15 @@ def load_wb_daily(days_back=14):
 
 
 def load_ozon_realization():
+    date_from = (date.today() - timedelta(days=14)).isoformat()
+
     result = (
         supabase
         .table("daily_marketplace_kpi")
         .select("*")
         .eq("marketplace_code", "ozon")
-        .gt("buyouts_qty", 0)
-        .gt("buyouts_amount_seller", 0)
-        .order("kpi_date", desc=True)
-        .limit(3)
+        .gte("kpi_date", date_from)
+        .order("kpi_date")
         .execute()
     )
 
@@ -133,7 +133,7 @@ def print_wb_daily(rows):
     print("Это не когортный выкуп, но он лучше дневного %, потому что у выкупов есть лаг.")
 
 def print_ozon_realization(rows):
-    print("\n=== Ozon: месячная реализация ===\n")
+    print("\n=== Ozon: дневная реализация за последние 14 дней ===\n")
 
     if not rows:
         print("Нет данных Ozon realization")

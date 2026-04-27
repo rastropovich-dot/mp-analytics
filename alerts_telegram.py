@@ -278,6 +278,111 @@ def build_intraday_alerts(current_snapshots):
     return alerts
 
 
+
+
+def build_executive_summary(kpi_rows):
+    """
+    Короткая управленческая сводка по вчерашнему полному дню.
+    """
+    target_date = (today_local() - timedelta(days=1)).isoformat()
+    previous_from = (today_local() - timedelta(days=8)).isoformat()
+
+    lines = [
+        "<b>0. Короткая управленческая сводка</b>"
+    ]
+
+    risks = []
+    actions = []
+
+    for mp in ["wb", "ozon"]:
+        mp_name = "WB" if mp == "wb" else "Ozon"
+
+        mp_rows = [
+            r for r in kpi_rows
+            if r.get("marketplace_code") == mp
+            and previous_from <= r.get("kpi_date") <= target_date
+        ]
+
+        mp_rows = sorted(mp_rows, key=lambda x: x.get("kpi_date"))
+
+        target_rows = [r for r in mp_rows if r.get("kpi_date") == target_date]
+        prev_rows = [r for r in mp_rows if r.get("kpi_date") < target_date]
+
+        if not target_rows:
+            lines.append(f"ℹ️ <b>{mp_name}</b>: нет данных за {target_date}.")
+            continue
+
+        row = target_rows[0]
+
+        orders = num(row.get("orders_qty"))
+        orders_amount = num(row.get("orders_amount_seller"))
+        buyouts = num(row.get("buyouts_qty"))
+        buyouts_amount = num(row.get("buyouts_amount_seller"))
+        commission = num(row.get("commission_amount"))
+        logistics = num(row.get("logistics_amount"))
+        other = num(row.get("other_expenses_amount"))
+
+        total_expenses = commission + logistics + other
+        net_after_expenses = buyouts_amount - total_expenses
+
+        avg_orders_7d = avg([r.get("orders_qty") for r in prev_rows]) if prev_rows else 0
+        avg_buyouts_7d = avg([r.get("buyouts_qty") for r in prev_rows]) if prev_rows else 0
+
+        orders_delta = pct_change(orders, avg_orders_7d)
+        buyouts_delta = pct_change(buyouts, avg_buyouts_7d)
+
+        if mp == "wb":
+            lines.append(
+                f"🟣 <b>WB вчера</b>\n"
+                f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
+                f"Выкупы: {buyouts:.0f} / {fmt_money(buyouts_amount)} руб.\n"
+                f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."
+            )
+        else:
+            lines.append(
+                f"🔵 <b>Ozon вчера</b>\n"
+                f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
+                f"Реализация: {buyouts:.0f} шт / {fmt_money(buyouts_amount)} руб.\n"
+                f"Комиссии: {fmt_money(commission)}, логистика: {fmt_money(logistics)}, прочие: {fmt_money(other)}.\n"
+                f"После расходов Ozon: {fmt_money(net_after_expenses)} руб.\n"
+                f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."
+            )
+
+        if orders_delta is not None and orders_delta <= -0.25:
+            risks.append(f"{mp_name}: заказы вчера ниже среднего 7 дней на {fmt_pct(orders_delta)}")
+            actions.append(f"Проверить {mp_name}: остатки, рекламу, акции, цены и видимость топ-SKU.")
+
+        if buyouts_delta is not None and buyouts_delta <= -0.25:
+            risks.append(f"{mp_name}: выкупы вчера ниже среднего 7 дней на {fmt_pct(buyouts_delta)}")
+            actions.append(f"Проверить {mp_name}: причины снижения выкупов, отмены, возвраты и проблемные SKU.")
+
+        if mp == "ozon" and buyouts_amount > 0:
+            expense_share = total_expenses / buyouts_amount
+            if expense_share >= 0.45:
+                risks.append(f"Ozon: расходы составили {fmt_pct(expense_share)} от реализации")
+                actions.append("Проверить Ozon: комиссии, эквайринг, логистику и рекламные списания.")
+
+    lines.append("")
+    if risks:
+        lines.append("⚠️ <b>Главный риск</b>\n" + risks[0])
+    else:
+        lines.append("✅ <b>Главный риск</b>\nКритичного риска по вчерашнему дню не выявлено.")
+
+    if actions:
+        unique_actions = []
+        for action in actions:
+            if action not in unique_actions:
+                unique_actions.append(action)
+
+        lines.append("")
+        lines.append("🎯 <b>Что проверить сегодня</b>\n" + "\n".join([f"— {a}" for a in unique_actions[:3]]))
+    else:
+        lines.append("")
+        lines.append("🎯 <b>Что проверить сегодня</b>\n— Контроль топ-SKU по остаткам, рекламе и просадкам заказов.")
+
+    return lines
+
+
 def build_message():
     kpi_rows = get_kpi_rows(days_back=30)
     current_snapshots = save_today_snapshot(kpi_rows)
@@ -289,8 +394,14 @@ def build_message():
         "📊 <b>MP Analytics Alerts</b>",
         f"Дата: {today_local().isoformat()}",
         "",
-        "<b>1. Полный вчерашний день</b>",
     ]
+
+    lines.extend(build_executive_summary(kpi_rows))
+
+    lines.extend([
+        "",
+        "<b>1. Полный вчерашний день</b>",
+    ])
 
     if completed_day_alerts:
         lines.extend(completed_day_alerts)

@@ -194,10 +194,296 @@ def print_ozon_orders_by_schema(rows):
         )
 
 
+def safe_num(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def pct_change(current, base):
+    current = safe_num(current)
+    base = safe_num(base)
+    if base == 0:
+        return None
+    return current / base - 1
+
+
+def avg_safe(values):
+    nums = [safe_num(v) for v in values if v is not None]
+    return sum(nums) / len(nums) if nums else 0
+
+
+def detect_anomalies(wb_rows, ozon_realization_rows, ozon_orders_rows):
+    """
+    Жесткие правила: код решает, когда нужен drill-down.
+    AI потом только объясняет.
+
+    Важно: дневной AI-анализ не должен использовать текущий неполный день.
+    Сегодня анализируется отдельно в intraday Telegram-блоке.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    current_date = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+
+    wb_rows = [
+        r for r in (wb_rows or [])
+        if str(r.get("kpi_date") or "") < current_date
+    ]
+    ozon_realization_rows = [
+        r for r in (ozon_realization_rows or [])
+        if str(r.get("kpi_date") or "") < current_date
+    ]
+    ozon_orders_rows = [
+        r for r in (ozon_orders_rows or [])
+        if str(r.get("order_date") or "") < current_date
+    ]
+
+    anomalies = []
+
+    def sorted_by_date(rows, date_key):
+        return sorted(rows or [], key=lambda r: str(r.get(date_key) or ""))
+
+    # WB: вчера против среднего предыдущих 7 дней
+    wb = sorted_by_date(wb_rows, "kpi_date")
+    if len(wb) >= 3:
+        last = wb[-1]
+        prev = wb[-8:-1] if len(wb) >= 8 else wb[:-1]
+
+        orders_delta = pct_change(last.get("orders_qty"), avg_safe([r.get("orders_qty") for r in prev]))
+        buyouts_delta = pct_change(last.get("buyouts_qty"), avg_safe([r.get("buyouts_qty") for r in prev]))
+
+        if orders_delta is not None and orders_delta <= -0.25:
+            anomalies.append({
+                "level": "CRITICAL",
+                "code": "WB_ORDERS_DROP",
+                "marketplace": "wb",
+                "message": f"WB: заказы ниже среднего на {orders_delta:.0%}",
+            })
+        elif orders_delta is not None and orders_delta <= -0.15:
+            anomalies.append({
+                "level": "WARNING",
+                "code": "WB_ORDERS_DROP",
+                "marketplace": "wb",
+                "message": f"WB: заказы ниже среднего на {orders_delta:.0%}",
+            })
+
+        if buyouts_delta is not None and buyouts_delta <= -0.25:
+            anomalies.append({
+                "level": "CRITICAL",
+                "code": "WB_BUYOUTS_DROP",
+                "marketplace": "wb",
+                "message": f"WB: выкупы ниже среднего на {buyouts_delta:.0%}",
+            })
+        elif buyouts_delta is not None and buyouts_delta <= -0.15:
+            anomalies.append({
+                "level": "WARNING",
+                "code": "WB_BUYOUTS_DROP",
+                "marketplace": "wb",
+                "message": f"WB: выкупы ниже среднего на {buyouts_delta:.0%}",
+            })
+
+    # Ozon экономика: расходы как % реализации
+    ozon = sorted_by_date(ozon_realization_rows, "kpi_date")
+    if ozon:
+        last = ozon[-1]
+        buyouts_amount = safe_num(last.get("buyouts_amount_seller"))
+        expenses = (
+            safe_num(last.get("commission_amount"))
+            + safe_num(last.get("logistics_amount"))
+            + safe_num(last.get("other_expenses_amount"))
+        )
+
+        if buyouts_amount > 0:
+            expense_share = expenses / buyouts_amount
+
+            if expense_share >= 0.50:
+                anomalies.append({
+                    "level": "CRITICAL",
+                    "code": "OZON_EXPENSE_SHARE_HIGH",
+                    "marketplace": "ozon",
+                    "message": f"Ozon: расходы {expense_share:.0%} от реализации",
+                })
+            elif expense_share >= 0.45:
+                anomalies.append({
+                    "level": "WARNING",
+                    "code": "OZON_EXPENSE_SHARE_HIGH",
+                    "marketplace": "ozon",
+                    "message": f"Ozon: расходы {expense_share:.0%} от реализации",
+                })
+
+    # Ozon FBO/FBS: отдельная просадка схемы
+    orders = sorted_by_date(ozon_orders_rows, "order_date")
+    if orders:
+        by_schema = {}
+        for row in orders:
+            schema = row.get("order_schema") or "unknown"
+            by_schema.setdefault(schema, []).append(row)
+
+        for schema, rows in by_schema.items():
+            rows = sorted_by_date(rows, "order_date")
+            if len(rows) >= 3:
+                last = rows[-1]
+                prev = rows[-8:-1] if len(rows) >= 8 else rows[:-1]
+                delta = pct_change(last.get("orders_qty"), avg_safe([r.get("orders_qty") for r in prev]))
+
+                if delta is not None and delta <= -0.35:
+                    anomalies.append({
+                        "level": "CRITICAL",
+                        "code": "OZON_SCHEMA_DROP",
+                        "marketplace": "ozon",
+                        "schema": schema,
+                        "message": f"Ozon {schema}: заказы ниже среднего на {delta:.0%}",
+                    })
+                elif delta is not None and delta <= -0.20:
+                    anomalies.append({
+                        "level": "WARNING",
+                        "code": "OZON_SCHEMA_DROP",
+                        "marketplace": "ozon",
+                        "schema": schema,
+                        "message": f"Ozon {schema}: заказы ниже среднего на {delta:.0%}",
+                    })
+
+    return anomalies
+
+
+def ai_mode_from_anomalies(anomalies):
+    if any(a.get("level") == "CRITICAL" for a in anomalies):
+        return "CRITICAL"
+    if any(a.get("level") == "WARNING" for a in anomalies):
+        return "WARNING"
+    return "NORMAL"
+
+
+def compact_rows(rows, date_key, fields, limit=14):
+    if not rows:
+        return "нет данных"
+
+    clean = []
+    for row in rows:
+        item = {date_key: row.get(date_key)}
+        for field in fields:
+            item[field] = row.get(field)
+        clean.append(item)
+
+    clean = sorted(clean, key=lambda x: str(x.get(date_key) or ""))[-limit:]
+    return "\n".join(str(x) for x in clean)
+
+
+def build_ai_context(wb_rows, ozon_realization_rows, ozon_orders_rows):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    current_date = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+
+    # Для дневного AI-вывода убираем текущий неполный день.
+    wb_rows = [
+        r for r in (wb_rows or [])
+        if str(r.get("kpi_date") or "") < current_date
+    ]
+    ozon_realization_rows = [
+        r for r in (ozon_realization_rows or [])
+        if str(r.get("kpi_date") or "") < current_date
+    ]
+    ozon_orders_rows = [
+        r for r in (ozon_orders_rows or [])
+        if str(r.get("order_date") or "") < current_date
+    ]
+
+    anomalies = detect_anomalies(wb_rows, ozon_realization_rows, ozon_orders_rows)
+    mode = ai_mode_from_anomalies(anomalies)
+
+    context = []
+    context.append(f"AI_MODE: {mode}")
+
+    if anomalies:
+        context.append("Сработавшие правила:")
+        for item in anomalies[:10]:
+            context.append(f"- {item.get('level')}: {item.get('message')} [{item.get('code')}]")
+    else:
+        context.append("Сработавшие правила: нет сильных отклонений.")
+
+    context.append("\nWB последние дни:")
+    context.append(compact_rows(
+        wb_rows,
+        "kpi_date",
+        ["orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "buyout_rate"],
+        limit=14,
+    ))
+
+    context.append("\nOzon экономика последние дни:")
+    context.append(compact_rows(
+        ozon_realization_rows,
+        "kpi_date",
+        ["buyouts_qty", "buyouts_amount_seller", "commission_amount", "logistics_amount", "other_expenses_amount"],
+        limit=14,
+    ))
+
+    context.append("\nOzon orders FBO/FBS последние дни:")
+    context.append(compact_rows(
+        ozon_orders_rows,
+        "order_date",
+        ["order_schema", "orders_qty", "orders_amount_seller"],
+        limit=28,
+    ))
+
+    # Drill-down добавляем только при WARNING/CRITICAL.
+    # Пока без SKU-сырья: сначала включим устойчивую версию на агрегатах.
+    if mode in ("WARNING", "CRITICAL"):
+        context.append("\nDRILL_DOWN:")
+        context.append("Добавлены подробности по проблемным блокам на уровне дней и схем FBO/FBS.")
+        context.append("Следующий этап: добавить топ-SKU только для сработавшего marketplace/метрики.")
+
+    return mode, anomalies, "\n".join(context)
+
+
 def ai_summary(wb_rows, ozon_realization_rows, ozon_orders_rows):
     print("\n=== AI-вывод для руководителя ===\n")
-    print("AI summary временно отключен: нужно сократить объем данных для промта.")
-    return
+
+    mode, anomalies, ai_context = build_ai_context(
+        wb_rows,
+        ozon_realization_rows,
+        ozon_orders_rows,
+    )
+
+    prompt = f"""
+Ты финансовый аналитик маркетплейсов.
+
+Твоя задача — дать короткий управленческий вывод для руководителя.
+Не пересчитывай цифры самостоятельно, используй только переданные метрики.
+Не выдумывай причин, если их нет в данных.
+Пиши по-русски, кратко и конкретно.
+
+Режим анализа: {mode}
+
+Данные:
+{ai_context}
+
+Сформируй:
+1. Общая оценка дня.
+2. Главные отклонения, если есть.
+3. Что проверить руководителю сегодня.
+4. Объясни режим:
+- NORMAL: критичных отклонений нет, указать 1–2 зоны контроля.
+- WARNING: есть отклонения, нужна проверка, но не писать "критический сбой".
+- CRITICAL: есть критичное отклонение, нужна срочная проверка.
+"""
+
+    try:
+        response = client.responses.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            input=prompt,
+        )
+        print(response.output_text)
+    except Exception as e:
+        print(f"AI summary не удалось сформировать: {e}")
+        print("Fallback-вывод:")
+        print(f"Режим: {mode}")
+
+        if anomalies:
+            for item in anomalies[:5]:
+                print(f"- {item.get('level')}: {item.get('message')}")
+        else:
+            print("- Критичных отклонений по правилам нет.")
 
 
 if __name__ == "__main__":
@@ -212,8 +498,7 @@ if __name__ == "__main__":
     print_wb_daily(wb_rows)
     print_ozon_realization(ozon_realization_rows)
     print_ozon_orders_by_schema(ozon_orders_rows)
-    print("\n=== AI-вывод для руководителя ===\n")
-    print("AI summary временно отключен: нужно сократить объем данных для промта.")
+    ai_summary(wb_rows, ozon_realization_rows, ozon_orders_rows)
 
 
 def print_ozon_economics_table(rows):

@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from supabase import create_client
@@ -10,6 +11,17 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
+
+
+def now_local():
+    return datetime.now(ZoneInfo(APP_TIMEZONE))
+
+
+def today_local():
+    return now_local().date()
+
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -59,7 +71,7 @@ def avg(values):
 
 
 def get_kpi_rows(days_back=30):
-    date_from = (date.today() - timedelta(days=days_back)).isoformat()
+    date_from = (today_local() - timedelta(days=days_back)).isoformat()
 
     result = (
         supabase
@@ -78,8 +90,8 @@ def save_today_snapshot(kpi_rows):
     Сохраняем утренний срез текущих доступных данных.
     Берем по каждому маркетплейсу самую свежую дату из daily_marketplace_kpi.
     """
-    now = datetime.now()
-    snapshot_date = date.today().isoformat()
+    now = now_local()
+    snapshot_date = today_local().isoformat()
     snapshot_hour = now.hour
 
     latest_by_mp = {}
@@ -128,7 +140,7 @@ def get_yesterday_same_hour_snapshots(current_snapshots):
     if not current_snapshots:
         return {}
 
-    snapshot_date_yesterday = (date.today() - timedelta(days=1)).isoformat()
+    snapshot_date_yesterday = (today_local() - timedelta(days=1)).isoformat()
     snapshot_hour = current_snapshots[0]["snapshot_hour"]
 
     result = (
@@ -159,8 +171,8 @@ def build_completed_day_alerts(kpi_rows):
     """
     alerts = []
 
-    target_date = (date.today() - timedelta(days=1)).isoformat()
-    previous_from = (date.today() - timedelta(days=8)).isoformat()
+    target_date = (today_local() - timedelta(days=1)).isoformat()
+    previous_from = (today_local() - timedelta(days=8)).isoformat()
 
     for mp in ["wb", "ozon"]:
         mp_rows = [
@@ -275,7 +287,7 @@ def build_message():
 
     lines = [
         "📊 <b>MP Analytics Alerts</b>",
-        f"Дата: {date.today().isoformat()}",
+        f"Дата: {today_local().isoformat()}",
         "",
         "<b>1. Полный вчерашний день</b>",
     ]

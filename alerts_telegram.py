@@ -1,5 +1,5 @@
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import requests
 from dotenv import load_dotenv
 from supabase import create_client
@@ -29,14 +29,42 @@ def send_telegram(message):
     print(response.text)
 
 
-def get_wb_rows(days_back=14):
+def num(value):
+    return float(value or 0)
+
+
+def fmt_money(value):
+    return f"{num(value):,.0f}".replace(",", " ")
+
+
+def fmt_pct(value):
+    if value is None:
+        return "н/д"
+    return f"{value:.0%}"
+
+
+def pct_change(current, base):
+    current = num(current)
+    base = num(base)
+    if base == 0:
+        return None
+    return (current - base) / base
+
+
+def avg(values):
+    values = [num(v) for v in values]
+    if not values:
+        return 0
+    return sum(values) / len(values)
+
+
+def get_kpi_rows(days_back=30):
     date_from = (date.today() - timedelta(days=days_back)).isoformat()
 
     result = (
         supabase
         .table("daily_marketplace_kpi")
         .select("*")
-        .eq("marketplace_code", "wb")
         .gte("kpi_date", date_from)
         .order("kpi_date")
         .execute()
@@ -45,103 +73,235 @@ def get_wb_rows(days_back=14):
     return result.data or []
 
 
-def get_ozon_fbs_rows(days_back=14):
-    date_from = (date.today() - timedelta(days=days_back)).isoformat()
+def save_today_snapshot(kpi_rows):
+    """
+    Сохраняем утренний срез текущих доступных данных.
+    Берем по каждому маркетплейсу самую свежую дату из daily_marketplace_kpi.
+    """
+    now = datetime.now()
+    snapshot_date = date.today().isoformat()
+    snapshot_hour = now.hour
+
+    latest_by_mp = {}
+
+    for row in kpi_rows:
+        mp = row.get("marketplace_code")
+        kpi_date = row.get("kpi_date")
+
+        if not mp or not kpi_date:
+            continue
+
+        if mp not in latest_by_mp or kpi_date > latest_by_mp[mp].get("kpi_date"):
+            latest_by_mp[mp] = row
+
+    rows = []
+
+    for mp, row in latest_by_mp.items():
+        rows.append({
+            "snapshot_date": snapshot_date,
+            "snapshot_hour": snapshot_hour,
+            "marketplace_code": mp,
+            "data_date": row.get("kpi_date"),
+            "orders_qty": num(row.get("orders_qty")),
+            "orders_amount_seller": num(row.get("orders_amount_seller")),
+            "buyouts_qty": num(row.get("buyouts_qty")),
+            "buyouts_amount_seller": num(row.get("buyouts_amount_seller")),
+        })
+
+    if not rows:
+        print("Нет данных для intraday snapshot")
+        return []
+
+    supabase.table("intraday_snapshots").upsert(
+        rows,
+        on_conflict="snapshot_date,snapshot_hour,marketplace_code,data_date"
+    ).execute()
+
+    print(f"✅ intraday snapshot записан: {len(rows)} строк")
+    return rows
+
+
+def get_yesterday_same_hour_snapshots(current_snapshots):
+    """
+    Ищем вчерашний срез за тот же час и ту же дату данных - 1 день.
+    """
+    if not current_snapshots:
+        return {}
+
+    snapshot_date_yesterday = (date.today() - timedelta(days=1)).isoformat()
+    snapshot_hour = current_snapshots[0]["snapshot_hour"]
 
     result = (
         supabase
-        .table("marketplace_orders")
+        .table("intraday_snapshots")
         .select("*")
-        .eq("marketplace_code", "ozon")
-        .gte("order_date", date_from)
-        .order("order_date")
+        .eq("snapshot_date", snapshot_date_yesterday)
+        .eq("snapshot_hour", snapshot_hour)
         .execute()
     )
 
     rows = result.data or []
-    grouped = {}
+    indexed = {}
 
     for row in rows:
-        d = row.get("order_date")
-        if not d:
-            continue
+        key = (
+            row.get("marketplace_code"),
+            row.get("data_date"),
+        )
+        indexed[key] = row
 
-        if d not in grouped:
-            grouped[d] = {"date": d, "orders_qty": 0, "orders_amount": 0}
-
-        grouped[d]["orders_qty"] += float(row.get("orders_qty") or 0)
-        grouped[d]["orders_amount"] += float(row.get("orders_amount_seller") or 0)
-
-    return [grouped[k] for k in sorted(grouped.keys())]
+    return indexed
 
 
-def avg(values):
-    values = [v for v in values if v is not None]
-    return sum(values) / len(values) if values else 0
-
-
-def build_alerts():
+def build_completed_day_alerts(kpi_rows):
+    """
+    Анализируем вчерашний полный день против предыдущих 7 полных дней.
+    """
     alerts = []
 
-    wb = get_wb_rows(14)
-    if wb:
-        last = wb[-1]
-        prev = wb[-8:-1] if len(wb) >= 8 else wb[:-1]
+    target_date = (date.today() - timedelta(days=1)).isoformat()
+    previous_from = (date.today() - timedelta(days=8)).isoformat()
 
-        last_orders = float(last.get("orders_qty") or 0)
-        last_buyouts = float(last.get("buyouts_qty") or 0)
+    for mp in ["wb", "ozon"]:
+        mp_rows = [
+            r for r in kpi_rows
+            if r.get("marketplace_code") == mp
+            and previous_from <= r.get("kpi_date") <= target_date
+        ]
 
-        avg_orders = avg([float(r.get("orders_qty") or 0) for r in prev])
-        avg_buyouts = avg([float(r.get("buyouts_qty") or 0) for r in prev])
+        mp_rows = sorted(mp_rows, key=lambda x: x.get("kpi_date"))
 
-        if avg_orders > 0 and last_orders < avg_orders * 0.75:
+        target_rows = [r for r in mp_rows if r.get("kpi_date") == target_date]
+        prev_rows = [r for r in mp_rows if r.get("kpi_date") < target_date]
+
+        if not target_rows or not prev_rows:
+            continue
+
+        today = target_rows[0]
+
+        orders = num(today.get("orders_qty"))
+        buyouts = num(today.get("buyouts_qty"))
+
+        avg_orders_7d = avg([r.get("orders_qty") for r in prev_rows])
+        avg_buyouts_7d = avg([r.get("buyouts_qty") for r in prev_rows])
+
+        orders_delta = pct_change(orders, avg_orders_7d)
+        buyouts_delta = pct_change(buyouts, avg_buyouts_7d)
+
+        mp_name = "WB" if mp == "wb" else "Ozon"
+
+        if orders_delta is not None and orders_delta <= -0.25:
             alerts.append(
-                f"🟠 <b>WB: падение заказов</b>\n"
-                f"{last.get('kpi_date')}: заказов {last_orders:.0f}, среднее 7 дней {avg_orders:.0f}."
+                f"🟠 <b>{mp_name}: вчера падение заказов</b>\n"
+                f"{target_date}: заказов {orders:.0f}, среднее 7 дней {avg_orders_7d:.0f}, отклонение {fmt_pct(orders_delta)}."
             )
 
-        if avg_buyouts > 0 and last_buyouts < avg_buyouts * 0.75:
+        if buyouts_delta is not None and buyouts_delta <= -0.25:
             alerts.append(
-                f"🟠 <b>WB: падение выкупов</b>\n"
-                f"{last.get('kpi_date')}: выкупов {last_buyouts:.0f}, среднее 7 дней {avg_buyouts:.0f}."
+                f"🟠 <b>{mp_name}: вчера падение выкупов</b>\n"
+                f"{target_date}: выкупов {buyouts:.0f}, среднее 7 дней {avg_buyouts_7d:.0f}, отклонение {fmt_pct(buyouts_delta)}."
             )
 
-        if last_orders <= 5 and last_buyouts >= 50:
+    return alerts
+
+
+def build_intraday_alerts(current_snapshots):
+    """
+    Сегодня на текущий час против вчера на этот же час.
+    Первый день после внедрения сравнения может не быть.
+    """
+    alerts = []
+
+    yesterday_index = get_yesterday_same_hour_snapshots(current_snapshots)
+
+    for row in current_snapshots:
+        mp = row.get("marketplace_code")
+        data_date = row.get("data_date")
+        snapshot_hour = row.get("snapshot_hour")
+
+        try:
+            prev_data_date = (datetime.fromisoformat(data_date).date() - timedelta(days=1)).isoformat()
+        except Exception:
+            continue
+
+        prev = yesterday_index.get((mp, prev_data_date))
+
+        mp_name = "WB" if mp == "wb" else "Ozon"
+
+        if not prev:
             alerts.append(
-                f"🟡 <b>WB: выкупы без заказов</b>\n"
-                f"{last.get('kpi_date')}: заказов {last_orders:.0f}, выкупов {last_buyouts:.0f}. Вероятен лаг WB sales."
+                f"ℹ️ <b>{mp_name}: срез на {snapshot_hour}:00 сохранен</b>\n"
+                f"{data_date}: заказов {num(row.get('orders_qty')):.0f}, сумма {fmt_money(row.get('orders_amount_seller'))}.\n"
+                f"Сравнение с вчера на {snapshot_hour}:00 появится после накопления вчерашнего среза."
+            )
+            continue
+
+        orders_now = num(row.get("orders_qty"))
+        orders_prev = num(prev.get("orders_qty"))
+
+        amount_now = num(row.get("orders_amount_seller"))
+        amount_prev = num(prev.get("orders_amount_seller"))
+
+        buyouts_now = num(row.get("buyouts_qty"))
+        buyouts_prev = num(prev.get("buyouts_qty"))
+
+        orders_delta = pct_change(orders_now, orders_prev)
+        amount_delta = pct_change(amount_now, amount_prev)
+        buyouts_delta = pct_change(buyouts_now, buyouts_prev)
+
+        if orders_delta is not None and orders_delta <= -0.25:
+            alerts.append(
+                f"🟡 <b>{mp_name}: сегодня на {snapshot_hour}:00 заказы ниже вчера</b>\n"
+                f"{data_date}: {orders_now:.0f} заказов против {orders_prev:.0f} вчера на это же время, отклонение {fmt_pct(orders_delta)}.\n"
+                f"Сумма заказов: {fmt_money(amount_now)} против {fmt_money(amount_prev)}, отклонение {fmt_pct(amount_delta)}."
+            )
+        else:
+            alerts.append(
+                f"✅ <b>{mp_name}: сегодня на {snapshot_hour}:00 без критичного падения</b>\n"
+                f"{data_date}: {orders_now:.0f} заказов против {orders_prev:.0f} вчера на это же время, отклонение {fmt_pct(orders_delta)}.\n"
+                f"Сумма заказов: {fmt_money(amount_now)} против {fmt_money(amount_prev)}, отклонение {fmt_pct(amount_delta)}.\n"
+                f"Выкупы: {buyouts_now:.0f} против {buyouts_prev:.0f}, отклонение {fmt_pct(buyouts_delta)}."
             )
 
-    ozon = get_ozon_fbs_rows(14)
-    if ozon:
-        last = ozon[-1]
-        prev = ozon[-8:-1] if len(ozon) >= 8 else ozon[:-1]
+    return alerts
 
-        last_orders = float(last.get("orders_qty") or 0)
-        avg_orders = avg([float(r.get("orders_qty") or 0) for r in prev])
 
-        if avg_orders > 0 and last_orders < avg_orders * 0.75:
-            alerts.append(
-                f"🟠 <b>Ozon FBS: падение заказов</b>\n"
-                f"{last.get('date')}: заказов {last_orders:.0f}, среднее 7 дней {avg_orders:.0f}."
-            )
+def build_message():
+    kpi_rows = get_kpi_rows(days_back=30)
+    current_snapshots = save_today_snapshot(kpi_rows)
 
-    if not alerts:
-        alerts.append("✅ Критичных сигналов нет.")
+    completed_day_alerts = build_completed_day_alerts(kpi_rows)
+    intraday_alerts = build_intraday_alerts(current_snapshots)
 
-    message = "📊 <b>MP Analytics Alerts</b>\n"
-    message += f"Дата: {date.today().isoformat()}\n\n"
-    message += "\n\n".join(alerts)
+    lines = [
+        "📊 <b>MP Analytics Alerts</b>",
+        f"Дата: {date.today().isoformat()}",
+        "",
+        "<b>1. Полный вчерашний день</b>",
+    ]
 
-    return message
+    if completed_day_alerts:
+        lines.extend(completed_day_alerts)
+    else:
+        lines.append("✅ Критичных отклонений по полному вчерашнему дню нет.")
+
+    lines.append("")
+    lines.append("<b>2. Сегодня на текущий час против вчера на этот же час</b>")
+
+    if intraday_alerts:
+        lines.extend(intraday_alerts)
+    else:
+        lines.append("ℹ️ Срез сохранен, данных для сравнения пока нет.")
+
+    return "\n\n".join(lines)
 
 
 if __name__ == "__main__":
     if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("Не заполнен TELEGRAM_BOT_TOKEN в .env")
+        raise ValueError("Не заполнен TELEGRAM_BOT_TOKEN")
 
     if not TELEGRAM_CHAT_ID:
-        raise ValueError("Не заполнен TELEGRAM_CHAT_ID в .env")
+        raise ValueError("Не заполнен TELEGRAM_CHAT_ID")
 
-    msg = build_alerts()
-    send_telegram(msg)
+    message = build_message()
+    send_telegram(message)

@@ -45,52 +45,19 @@ def load_ozon_realization():
 
     return result.data or []
 
-def load_ozon_fbs_orders(days_back=14):
-    date_from = date.today() - timedelta(days=days_back - 1)
-    date_to = date.today()
 
+def load_ozon_orders_by_schema(days_back=14):
     result = (
         supabase
-        .table("marketplace_orders")
+        .table("v_ozon_orders_daily_by_schema")
         .select("*")
-        .eq("marketplace_code", "ozon")
-        .gte("order_date", date_from.isoformat())
-        .lte("order_date", date_to.isoformat())
-        .order("order_date")
+        .order("order_date", desc=True)
+        .limit(60)
         .execute()
     )
 
-    rows = result.data or []
+    return result.data or []
 
-    grouped = {}
-
-    current = date_from
-    while current <= date_to:
-        d = current.isoformat()
-        grouped[d] = {
-            "order_date": d,
-            "orders_qty": 0,
-            "orders_amount_seller": 0,
-        }
-        current += timedelta(days=1)
-
-    for row in rows:
-        d = row.get("order_date")
-
-        if not d:
-            continue
-
-        if d not in grouped:
-            grouped[d] = {
-                "order_date": d,
-                "orders_qty": 0,
-                "orders_amount_seller": 0,
-            }
-
-        grouped[d]["orders_qty"] += float(row.get("orders_qty") or 0)
-        grouped[d]["orders_amount_seller"] += float(row.get("orders_amount_seller") or 0)
-
-    return list(grouped.values())
 
 def print_wb_daily(rows):
     print("\n=== WB: дневная динамика за последние 14 дней ===\n")
@@ -156,69 +123,87 @@ def print_ozon_realization(rows):
         )
 
 
-def print_ozon_fbs(rows):
-    print("\n=== Ozon FBS: дневные заказы, календарь последних 14 дней ===\n")
+
+def print_ozon_orders_by_schema(rows):
+    print("\n=== Ozon: дневные заказы FBO + FBS за последние 14 дней ===\n")
 
     if not rows:
-        print("Нет данных Ozon FBS orders")
+        print("Нет данных Ozon orders")
         return
 
-    print(
-        f"{'Дата':<12} "
-        f"{'Заказы FBS':>12} "
-        f"{'Сумма заказов FBS':>20}"
-    )
-    print("-" * 50)
+    from datetime import date, timedelta
+
+    grouped = {}
 
     for row in rows:
+        day = row.get("order_date")
+        schema = row.get("order_schema") or "unknown"
+
+        if day not in grouped:
+            grouped[day] = {
+                "fbo_qty": 0,
+                "fbo_amount": 0,
+                "fbs_qty": 0,
+                "fbs_amount": 0,
+            }
+
+        qty = float(row.get("orders_qty") or 0)
+        amount = float(row.get("orders_amount_seller") or 0)
+
+        if schema == "fbo":
+            grouped[day]["fbo_qty"] += qty
+            grouped[day]["fbo_amount"] += amount
+        elif schema == "fbs":
+            grouped[day]["fbs_qty"] += qty
+            grouped[day]["fbs_amount"] += amount
+
+    # Берем последние 14 дат, по которым реально есть данные.
+    # Так не печатаем искусственные нули за дни до начала загрузки.
+    calendar_days = sorted(grouped.keys())[-14:]
+
+    print(
+        f"{'Дата':<12}"
+        f"{'FBO шт':>9} "
+        f"{'FBO сумма':>14} "
+        f"{'FBS шт':>9} "
+        f"{'FBS сумма':>14} "
+        f"{'Всего шт':>10} "
+        f"{'Всего сумма':>15}"
+    )
+    print("-" * 90)
+
+    for day in calendar_days:
+        item = grouped.get(day, {
+            "fbo_qty": 0,
+            "fbo_amount": 0,
+            "fbs_qty": 0,
+            "fbs_amount": 0,
+        })
+
+        total_qty = item["fbo_qty"] + item["fbs_qty"]
+        total_amount = item["fbo_amount"] + item["fbs_amount"]
+
         print(
-            f"{row.get('order_date'):<12} "
-            f"{float(row.get('orders_qty') or 0):>12.0f} "
-            f"{float(row.get('orders_amount_seller') or 0):>20,.0f}"
+            f"{day:<12}"
+            f"{item['fbo_qty']:>9.0f} "
+            f"{item['fbo_amount']:>14,.0f} "
+            f"{item['fbs_qty']:>9.0f} "
+            f"{item['fbs_amount']:>14,.0f} "
+            f"{total_qty:>10.0f} "
+            f"{total_amount:>15,.0f}"
         )
 
 
-def ai_summary(wb_rows, ozon_realization_rows, ozon_fbs_rows):
-    prompt = f"""
-Ты финансовый аналитик маркетплейсов.
-
-У нас есть разные типы данных:
-1. WB — дневные данные: заказы, выкупы, процент выкупа.
-2. Ozon realization — месячная реализация, НЕ дневной отчет.
-3. Ozon FBS orders — дневные FBS-заказы, но это не весь Ozon.
-
-WB daily:
-{wb_rows}
-
-Ozon monthly realization:
-{ozon_realization_rows}
-
-Ozon FBS daily orders:
-{ozon_fbs_rows}
-
-Сделай короткую управленческую выжимку на русском:
-1. Что видно по WB.
-2. Что видно по Ozon realization.
-3. Что видно по Ozon FBS.
-4. Какие ограничения данных важно помнить.
-5. Какие 3 действия руководителю проверить завтра.
-
-Пиши коротко, без воды. Не делай вывод, что Ozon упал или вырос по дням на основе месячной realization.
-"""
-
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=prompt
-    )
-
+def ai_summary(wb_rows, ozon_realization_rows, ozon_orders_rows):
     print("\n=== AI-вывод для руководителя ===\n")
-    print(response.output_text)
+    print("AI summary временно отключен: нужно сократить объем данных для промта.")
+    return
 
 
 if __name__ == "__main__":
     wb_rows = load_wb_daily(days_back=14)
     ozon_realization_rows = load_ozon_realization()
-    ozon_fbs_rows = load_ozon_fbs_orders(days_back=14)
+    ozon_orders_rows = load_ozon_orders_by_schema(days_back=14)
 
     print("\n======================================")
     print(" УПРАВЛЕНЧЕСКИЙ ОТЧЕТ MARKETPLACES")
@@ -226,8 +211,9 @@ if __name__ == "__main__":
 
     print_wb_daily(wb_rows)
     print_ozon_realization(ozon_realization_rows)
-    print_ozon_fbs(ozon_fbs_rows)
-    ai_summary(wb_rows, ozon_realization_rows, ozon_fbs_rows)
+    print_ozon_orders_by_schema(ozon_orders_rows)
+    print("\n=== AI-вывод для руководителя ===\n")
+    print("AI summary временно отключен: нужно сократить объем данных для промта.")
 
 
 def print_ozon_economics_table(rows):

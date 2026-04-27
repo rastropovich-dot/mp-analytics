@@ -10,6 +10,7 @@ STEPS = [
 
     ("Ozon: загрузка FBS заказов", "python3 loaders/ozon_fbs_orders_loader.py"),
     ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
+    ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
     ("Ozon: загрузка остатков", "python3 loaders/ozon_stocks_loader.py"),
 
     ("KPI: расчет SKU", "python3 reports_daily_sku_kpi.py"),

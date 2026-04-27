@@ -62,9 +62,37 @@ def load_buyouts():
     return all_rows
 
 
+
+def load_expenses():
+    all_rows = []
+    start = 0
+    page_size = 1000
+
+    while True:
+        result = (
+            supabase
+            .table("marketplace_expenses")
+            .select("*")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+
+        rows = result.data or []
+        all_rows.extend(rows)
+
+        if len(rows) < page_size:
+            break
+
+        start += page_size
+
+    print(f"Загружено расходов: {len(all_rows)}")
+    return all_rows
+
+
 def build_kpi():
     orders = load_orders()
     buyouts = load_buyouts()
+    expenses = load_expenses()
 
     grouped = {}
 
@@ -115,6 +143,44 @@ def build_kpi():
 
         grouped[key]["buyouts_qty"] += float(row.get("buyouts_qty") or 0)
         grouped[key]["buyouts_amount_seller"] += float(row.get("buyouts_amount_seller") or 0)
+
+    for row in expenses:
+        key = (
+            row["expense_date"],
+            row["marketplace_code"],
+            row["marketplace_sku"],
+        )
+
+        if key not in grouped:
+            grouped[key] = {
+                "kpi_date": row["expense_date"],
+                "marketplace_code": row["marketplace_code"],
+                "marketplace_sku": row["marketplace_sku"],
+                "article": row.get("article"),
+                "product_name": None,
+                "orders_qty": 0,
+                "orders_amount_seller": 0,
+                "buyouts_qty": 0,
+                "buyouts_amount_seller": 0,
+                "buyout_rate": 0,
+                "commission_amount": 0,
+                "logistics_amount": 0,
+                "other_expenses_amount": 0,
+            }
+
+        grouped[key].setdefault("commission_amount", 0)
+        grouped[key].setdefault("logistics_amount", 0)
+        grouped[key].setdefault("other_expenses_amount", 0)
+
+        expense_type = row.get("expense_type")
+        amount = float(row.get("expense_amount") or 0)
+
+        if expense_type == "commission":
+            grouped[key]["commission_amount"] += amount
+        elif expense_type == "logistics":
+            grouped[key]["logistics_amount"] += amount
+        else:
+            grouped[key]["other_expenses_amount"] += amount
 
     rows = []
 

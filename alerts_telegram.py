@@ -383,6 +383,110 @@ def build_executive_summary(kpi_rows):
     return lines
 
 
+def build_short_snapshot(intraday_rows):
+    """
+    Короткий executive snapshot:
+    сегодня на текущий час vs вчера на тот же час.
+    Если вчерашнего среза на тот же час нет — берем последний доступный вчерашний срез.
+    """
+    if not intraday_rows:
+        return ["ℹ️ Короткий срез: данных пока нет."]
+
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    moscow_now = datetime.now(ZoneInfo("Europe/Moscow"))
+    today = moscow_now.date().isoformat()
+    yesterday = (moscow_now.date() - timedelta(days=1)).isoformat()
+
+    today_rows = [r for r in intraday_rows if str(r.get("snapshot_date")) == today]
+
+    if not today_rows:
+        return ["ℹ️ Короткий срез: сегодняшнего среза пока нет."]
+
+    latest_hour = max(int(r.get("snapshot_hour") or 0) for r in today_rows)
+
+    def rows_for(marketplace, day):
+        return [
+            r for r in intraday_rows
+            if r.get("marketplace_code") == marketplace
+            and str(r.get("snapshot_date")) == day
+        ]
+
+    def find_row(marketplace, day, hour):
+        candidates = [
+            r for r in rows_for(marketplace, day)
+            if int(r.get("snapshot_hour") or 0) == hour
+        ]
+        return candidates[0] if candidates else None
+
+    def find_latest_row(marketplace, day):
+        candidates = rows_for(marketplace, day)
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda r: int(r.get("snapshot_hour") or 0))[-1]
+
+    def fmt_money(value):
+        return f"{float(value or 0):,.0f}".replace(",", " ")
+
+    def marketplace_lines(title, marketplace):
+        today_row = find_row(marketplace, today, latest_hour)
+        yesterday_row = find_row(marketplace, yesterday, latest_hour)
+        same_hour = True
+
+        if not yesterday_row:
+            yesterday_row = find_latest_row(marketplace, yesterday)
+            same_hour = False
+
+        if not today_row:
+            return [f"ℹ️ {title}: данных за сегодня на {latest_hour}:00 нет."]
+
+        today_qty = float(today_row.get("orders_qty") or 0)
+        today_amount = float(today_row.get("orders_amount") or today_row.get("orders_amount_seller") or 0)
+
+        if yesterday_row:
+            y_hour = int(yesterday_row.get("snapshot_hour") or 0)
+            y_qty = float(yesterday_row.get("orders_qty") or 0)
+            y_amount = float(yesterday_row.get("orders_amount") or yesterday_row.get("orders_amount_seller") or 0)
+
+            qty_delta = ((today_qty / y_qty - 1) * 100) if y_qty else 0
+            amount_delta = ((today_amount / y_amount - 1) * 100) if y_amount else 0
+
+            sign_qty = "+" if qty_delta > 0 else ""
+            sign_amount = "+" if amount_delta > 0 else ""
+
+            compare_note = (
+                f"Вчера на {latest_hour}:00"
+                if same_hour
+                else f"Вчера ближайший доступный срез {y_hour}:00"
+            )
+
+            return [
+                f"<b>{title}</b>",
+                f"Сегодня на {latest_hour}:00: {today_qty:.0f} заказов / {fmt_money(today_amount)} ₽",
+                f"{compare_note}: {y_qty:.0f} заказов / {fmt_money(y_amount)} ₽",
+                f"Отклонение: {sign_qty}{qty_delta:.0f}% по заказам / {sign_amount}{amount_delta:.0f}% по сумме",
+            ]
+
+        return [
+            f"<b>{title}</b>",
+            f"Сегодня на {latest_hour}:00: {today_qty:.0f} заказов / {fmt_money(today_amount)} ₽",
+            "Вчерашнего среза пока нет для сравнения.",
+        ]
+
+    lines = [
+        "<b>2. Сегодня на текущий час против вчера на этот же час</b>",
+        "",
+    ]
+
+    lines.extend(marketplace_lines("WB", "wb"))
+    lines.append("")
+    lines.extend(marketplace_lines("Ozon", "ozon"))
+
+    return lines
+
+
+
 def build_message():
     kpi_rows = get_kpi_rows(days_back=30)
     current_snapshots = save_today_snapshot(kpi_rows)
@@ -408,13 +512,18 @@ def build_message():
     else:
         lines.append("✅ Критичных отклонений по полному вчерашнему дню нет.")
 
-    lines.append("")
-    lines.append("<b>2. Сегодня на текущий час против вчера на этот же час</b>")
-
-    if intraday_alerts:
-        lines.extend(intraday_alerts)
+    yesterday_result = get_yesterday_same_hour_snapshots(current_snapshots)
+    if hasattr(yesterday_result, "data"):
+        yesterday_snapshots = yesterday_result.data or []
+    elif isinstance(yesterday_result, list):
+        yesterday_snapshots = yesterday_result
     else:
-        lines.append("ℹ️ Срез сохранен, данных для сравнения пока нет.")
+        yesterday_snapshots = []
+
+    intraday_rows = current_snapshots + yesterday_snapshots
+
+    lines.append("")
+    lines.extend(build_short_snapshot(intraday_rows))
 
     return "\n\n".join(lines)
 

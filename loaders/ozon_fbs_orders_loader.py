@@ -103,6 +103,7 @@ def save_ozon_orders(postings):
                 grouped[key] = {
                     "order_date": order_date,
                     "marketplace_code": "ozon",
+                "order_schema": "fbs",
                     "marketplace_sku": str(product_id),
                     "article": str(offer_id or ""),
                     "product_name": name,
@@ -125,7 +126,7 @@ def save_ozon_orders(postings):
         batch = rows[i:i + 500]
         supabase.table("marketplace_orders").upsert(
             batch,
-            on_conflict="order_date,marketplace_code,marketplace_sku"
+            on_conflict="order_date,marketplace_code,marketplace_sku,order_schema"
         ).execute()
 
     print(f"✅ Ozon FBS заказы записаны в marketplace_orders: {len(rows)} строк")

@@ -72,6 +72,7 @@ def save_wb_orders(items):
             grouped[key] = {
                 "order_date": order_date,
                 "marketplace_code": "wb",
+                "order_schema": "marketplace",
                 "marketplace_sku": str(nm_id),
                 "article": str(item.get("supplierArticle") or ""),
                 "product_name": item.get("subject"),
@@ -94,7 +95,7 @@ def save_wb_orders(items):
         batch = rows[i:i + 500]
         supabase.table("marketplace_orders").upsert(
             batch,
-            on_conflict="order_date,marketplace_code,marketplace_sku"
+            on_conflict="order_date,marketplace_code,marketplace_sku,order_schema"
         ).execute()
 
     print(f"✅ WB заказы записаны в marketplace_orders: {len(rows)} строк")

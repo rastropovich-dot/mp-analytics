@@ -133,7 +133,7 @@ def print_wb_daily(rows):
     print("Это не когортный выкуп, но он лучше дневного %, потому что у выкупов есть лаг.")
 
 def print_ozon_realization(rows):
-    print("\n=== Ozon: дневная реализация за последние 14 дней ===\n")
+    print("\n=== Ozon: дневная экономика за последние 14 дней ===\n")
 
     if not rows:
         print("Нет данных Ozon realization")
@@ -228,3 +228,29 @@ if __name__ == "__main__":
     print_ozon_realization(ozon_realization_rows)
     print_ozon_fbs(ozon_fbs_rows)
     ai_summary(wb_rows, ozon_realization_rows, ozon_fbs_rows)
+
+
+def print_ozon_economics_table(rows):
+    print()
+    print("Дата        Выкупы   Реализация    Комиссии    Логистика    Прочие     Расходы итого   После расходов")
+    print("------------------------------------------------------------------------------------------------------")
+
+    for row in rows:
+        buyouts = float(row.get("buyouts_qty") or 0)
+        revenue = float(row.get("buyouts_amount_seller") or 0)
+        commission = float(row.get("commission_amount") or 0)
+        logistics = float(row.get("logistics_amount") or 0)
+        other = float(row.get("other_expenses_amount") or 0)
+        total_expenses = commission + logistics + other
+        net_after_expenses = revenue - total_expenses
+
+        print(
+            f"{row.get('kpi_date')}  "
+            f"{buyouts:>6.0f}  "
+            f"{revenue:>11,.0f}  "
+            f"{commission:>10,.0f}  "
+            f"{logistics:>10,.0f}  "
+            f"{other:>8,.0f}  "
+            f"{total_expenses:>13,.0f}  "
+            f"{net_after_expenses:>14,.0f}"
+        )

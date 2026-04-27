@@ -512,15 +512,17 @@ def build_message():
     else:
         lines.append("✅ Критичных отклонений по полному вчерашнему дню нет.")
 
-    yesterday_result = get_yesterday_same_hour_snapshots(current_snapshots)
-    if hasattr(yesterday_result, "data"):
-        yesterday_snapshots = yesterday_result.data or []
-    elif isinstance(yesterday_result, list):
-        yesterday_snapshots = yesterday_result
-    else:
-        yesterday_snapshots = []
-
-    intraday_rows = current_snapshots + yesterday_snapshots
+    intraday_rows = (
+        supabase
+        .table("intraday_snapshots")
+        .select("*")
+        .order("snapshot_date", desc=True)
+        .order("snapshot_hour", desc=True)
+        .limit(100)
+        .execute()
+        .data
+        or []
+    )
 
     lines.append("")
     lines.extend(build_short_snapshot(intraday_rows))

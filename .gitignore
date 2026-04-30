@@ -5,3 +5,7 @@ __pycache__/
 .DS_Store
 pipeline.log
 management_report.xlsx
+logs/
+*.log
+wb_sales_funnel_*.json
+test_wb_sales_funnel*.py

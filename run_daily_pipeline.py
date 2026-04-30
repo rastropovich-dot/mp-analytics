@@ -5,6 +5,7 @@ from datetime import datetime
 
 STEPS = [
     ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
+    ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
     ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
     ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
 

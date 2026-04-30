@@ -280,6 +280,50 @@ def build_intraday_alerts(current_snapshots):
 
 
 
+def overlay_wb_orders_from_sales_funnel(kpi_rows):
+    """
+    Подменяет WB-заказы в KPI на данные WB Sales Funnel.
+    Выкупы не трогаем: они уже совпадают с ЛК.
+    """
+    try:
+        result = (
+            supabase
+            .table("marketplace_orders_analytics")
+            .select("order_date,orders_qty,orders_amount,source")
+            .eq("marketplace_code", "wb")
+            .eq("source", "wb_sales_funnel")
+            .order("order_date", desc=True)
+            .limit(60)
+            .execute()
+        )
+
+        analytics_rows = result.data or []
+    except Exception as e:
+        print(f"Не удалось загрузить WB Sales Funnel orders для overlay: {e}")
+        return kpi_rows
+
+    analytics_by_date = {
+        str(r.get("order_date")): r
+        for r in analytics_rows
+    }
+
+    for row in kpi_rows or []:
+        if row.get("marketplace_code") != "wb":
+            continue
+
+        kpi_date = str(row.get("kpi_date"))
+
+        if kpi_date in analytics_by_date:
+            analytics = analytics_by_date[kpi_date]
+
+            row["orders_qty"] = float(analytics.get("orders_qty") or 0)
+            row["orders_amount_seller"] = float(analytics.get("orders_amount") or 0)
+            row["orders_amount_buyer"] = float(analytics.get("orders_amount") or 0)
+            row["orders_source"] = "wb_sales_funnel"
+
+    return kpi_rows
+
+
 def build_executive_summary(kpi_rows):
     """
     Короткая управленческая сводка по вчерашнему полному дню.
@@ -473,6 +517,7 @@ def build_short_snapshot(intraday_rows):
 
 def build_message():
     kpi_rows = get_kpi_rows(days_back=30)
+    kpi_rows = overlay_wb_orders_from_sales_funnel(kpi_rows)
     current_snapshots = save_today_snapshot(kpi_rows)
 
     completed_day_alerts = build_completed_day_alerts(kpi_rows)

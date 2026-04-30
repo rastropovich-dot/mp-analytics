@@ -15,19 +15,55 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def load_wb_daily(days_back=14):
-    date_from = (date.today() - timedelta(days=days_back)).isoformat()
-
-    result = (
+    """
+    WB daily:
+    - заказы берем из marketplace_orders_analytics / wb_sales_funnel,
+      потому что это ближе к ЛК WB.
+    - выкупы/продажи оставляем из daily_marketplace_kpi.
+    """
+    kpi_result = (
         supabase
         .table("daily_marketplace_kpi")
         .select("*")
         .eq("marketplace_code", "wb")
-        .gte("kpi_date", date_from)
-        .order("kpi_date")
+        .order("kpi_date", desc=True)
+        .limit(days_back + 5)
         .execute()
     )
 
-    return result.data or []
+    rows = kpi_result.data or []
+
+    analytics_result = (
+        supabase
+        .table("marketplace_orders_analytics")
+        .select("order_date,orders_qty,orders_amount,source")
+        .eq("marketplace_code", "wb")
+        .eq("source", "wb_sales_funnel")
+        .order("order_date", desc=True)
+        .limit(days_back + 5)
+        .execute()
+    )
+
+    analytics_rows = analytics_result.data or []
+    analytics_by_date = {
+        str(r.get("order_date")): r
+        for r in analytics_rows
+    }
+
+    for row in rows:
+        kpi_date = str(row.get("kpi_date"))
+
+        if kpi_date in analytics_by_date:
+            analytics = analytics_by_date[kpi_date]
+
+            row["orders_qty"] = float(analytics.get("orders_qty") or 0)
+            row["orders_amount_seller"] = float(analytics.get("orders_amount") or 0)
+            row["orders_amount_buyer"] = float(analytics.get("orders_amount") or 0)
+            row["orders_source"] = "wb_sales_funnel"
+
+    rows = sorted(rows, key=lambda r: str(r.get("kpi_date") or ""))
+    return rows[-days_back:]
+
 
 
 def load_ozon_realization():

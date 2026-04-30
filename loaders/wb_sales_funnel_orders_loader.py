@@ -26,6 +26,25 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+DEFAULT_DAYS_BACK = 4
+
+
+def get_days_back():
+    raw_days_back = os.getenv("WB_SALES_FUNNEL_DAYS_BACK")
+
+    if not raw_days_back:
+        return DEFAULT_DAYS_BACK
+
+    try:
+        days_back = int(raw_days_back)
+    except ValueError:
+        raise RuntimeError("WB_SALES_FUNNEL_DAYS_BACK должен быть целым числом")
+
+    if days_back < 1:
+        raise RuntimeError("WB_SALES_FUNNEL_DAYS_BACK должен быть больше 0")
+
+    return days_back
+
 
 def fetch_wb_sales_funnel_day(day: str):
     """
@@ -118,10 +137,12 @@ def save_day(row):
     )
 
 
-def main(days_back=14):
+def main(days_back=DEFAULT_DAYS_BACK):
     today = date.today()
 
     # Берем вчера и предыдущие дни. Сегодня не берем как полный день.
+    print(f"WB Sales Funnel: обновляю последние {days_back} полных дней")
+
     for i in range(days_back, 0, -1):
         day = (today - timedelta(days=i)).isoformat()
         row = fetch_wb_sales_funnel_day(day)
@@ -130,4 +151,4 @@ def main(days_back=14):
 
 
 if __name__ == "__main__":
-    main(days_back=14)
+    main(days_back=get_days_back())

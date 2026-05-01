@@ -23,30 +23,44 @@ STEPS = [
 ]
 
 
+def prepare_command(command):
+    stripped = command.lstrip()
+
+    if stripped.startswith("python3 "):
+        return command.replace("python3 ", "python3 -u ", 1)
+
+    return command
+
+
 def run_step(title, command):
+    prepared_command = prepare_command(command)
+
     print("\n" + "=" * 80)
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {title}")
     print("=" * 80)
-    print(f"Команда: {command}\n")
+    print(f"Команда: {prepared_command}\n")
 
-    result = subprocess.run(
-        command,
+    process = subprocess.Popen(
+        prepared_command,
         shell=True,
         text=True,
-        capture_output=True
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
     )
 
-    if result.stdout:
-        print(result.stdout)
+    assert process.stdout is not None
 
-    if result.stderr:
-        print("STDERR:")
-        print(result.stderr)
+    for line in process.stdout:
+        print(line, end="", flush=True)
 
-    if result.returncode != 0:
+    process.stdout.close()
+    returncode = process.wait()
+
+    if returncode != 0:
         print(f"❌ Ошибка на шаге: {title}")
-        print(f"Код ошибки: {result.returncode}")
-        sys.exit(result.returncode)
+        print(f"Код ошибки: {returncode}")
+        sys.exit(returncode)
 
     print(f"✅ Готово: {title}")
 

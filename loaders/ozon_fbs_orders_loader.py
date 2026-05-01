@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -12,6 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 
 
 def ozon_headers():
@@ -20,6 +22,19 @@ def ozon_headers():
         "Api-Key": OZON_API_KEY,
         "Content-Type": "application/json",
     }
+
+
+def to_local_order_date(value):
+    if not value:
+        return None
+
+    normalized = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(normalized)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
 
 
 def get_ozon_fbs_postings(days_back=14):
@@ -74,11 +89,14 @@ def save_ozon_orders(postings):
     grouped = {}
 
     for posting in postings:
-        shipment_date = posting.get("shipment_date") or posting.get("in_process_at")
-        if not shipment_date:
-            continue
+        # Для intraday и дневных заказов нужна дата появления заказа,
+        # а не будущая плановая дата отгрузки shipment_date.
+        order_date = to_local_order_date(
+            posting.get("in_process_at") or posting.get("shipment_date")
+        )
 
-        order_date = shipment_date[:10]
+        if not order_date:
+            continue
 
         products = posting.get("products", [])
 

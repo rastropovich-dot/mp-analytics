@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -12,6 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 
 
 def ozon_headers():
@@ -25,6 +27,19 @@ def ozon_headers():
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def to_local_order_date(value):
+    if not value:
+        return None
+
+    normalized = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(normalized)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
 
 
 def get_fbo_postings(days_back=30):
@@ -78,7 +93,7 @@ def get_fbo_postings(days_back=30):
 def parse_date(value):
     if not value:
         return None
-    return value[:10]
+    return to_local_order_date(value)
 
 
 def build_order_rows(postings):

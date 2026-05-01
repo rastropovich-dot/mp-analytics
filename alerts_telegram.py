@@ -103,6 +103,10 @@ def save_today_snapshot(kpi_rows):
         if not mp or not kpi_date:
             continue
 
+        # Для intraday не берем будущие даты данных.
+        if kpi_date > snapshot_date:
+            continue
+
         if mp not in latest_by_mp or kpi_date > latest_by_mp[mp].get("kpi_date"):
             latest_by_mp[mp] = row
 
@@ -462,6 +466,7 @@ def build_short_snapshot(intraday_rows):
             if r.get("marketplace_code") == marketplace
             and str(r.get("snapshot_date")) == day
             and int(r.get("snapshot_hour") or 0) == hour
+            and str(r.get("data_date")) == day
         ]
         return candidates[0] if candidates else None
 

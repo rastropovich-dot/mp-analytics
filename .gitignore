@@ -6,6 +6,7 @@ __pycache__/
 pipeline.log
 management_report.xlsx
 logs/
+.cache/
 *.log
 wb_sales_funnel_*.json
 test_wb_sales_funnel*.py

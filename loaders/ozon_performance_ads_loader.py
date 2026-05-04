@@ -1,12 +1,17 @@
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
+import random
 import re
+import tempfile
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
@@ -14,11 +19,18 @@ import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 OZON_PERFORMANCE_CLIENT_ID = os.getenv("OZON_PERFORMANCE_CLIENT_ID")
 OZON_PERFORMANCE_CLIENT_SECRET = os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
@@ -33,6 +45,11 @@ DEFAULT_CAMPAIGN_SCOPE = os.getenv("OZON_PERFORMANCE_CAMPAIGN_SCOPE", "recent")
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 RECON_WARNING_THRESHOLD = float(os.getenv("OZON_CPO_RECON_WARNING_THRESHOLD", "0.01"))
 RECON_ERROR_THRESHOLD = float(os.getenv("OZON_CPO_RECON_ERROR_THRESHOLD", "1.0"))
+CPC_BASE_SLEEP_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_BASE_SLEEP_SECONDS", "300"))
+CPC_MAX_SLEEP_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_MAX_SLEEP_SECONDS", "3600"))
+CPC_MAX_ATTEMPTS = int(os.getenv("OZON_PERFORMANCE_CPC_MAX_ATTEMPTS", "6"))
+CPC_COOLDOWN_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_COOLDOWN_SECONDS", "1800"))
+BATCH_SIZE_RECOVERY_TTL_SECONDS = int(os.getenv("OZON_PERFORMANCE_BATCH_SIZE_RECOVERY_TTL_SECONDS", "21600"))
 ADV_OBJECT_TYPES = [
     value.strip()
     for value in os.getenv("OZON_PERFORMANCE_ADV_OBJECT_TYPES", "SKU").split(",")
@@ -74,6 +91,39 @@ UPSERT_KEY_FIELDS = (
     "marketplace_sku",
     "expense_type",
 )
+
+PERFORMANCE_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "ozon_performance"
+PERFORMANCE_STATE_PATH = PERFORMANCE_CACHE_DIR / "state.json"
+PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
+
+SENSITIVE_KEY_MARKERS = (
+    "authorization",
+    "api-key",
+    "apikey",
+    "client-id",
+    "client_id",
+    "cookie",
+    "set-cookie",
+    "token",
+    "secret",
+)
+
+REQUEST_PROFILES = {
+    "default": {
+        "max_attempts": 5,
+        "base_sleep_seconds": 5,
+        "cap_sleep_seconds": 300,
+        "cooldown_seconds": 0,
+        "fail_fast_on_429": False,
+    },
+    "statistics_json": {
+        "max_attempts": CPC_MAX_ATTEMPTS,
+        "base_sleep_seconds": CPC_BASE_SLEEP_SECONDS,
+        "cap_sleep_seconds": CPC_MAX_SLEEP_SECONDS,
+        "cooldown_seconds": CPC_COOLDOWN_SECONDS,
+        "fail_fast_on_429": True,
+    },
+}
 
 METRIC_KEYS = {
     "views",
@@ -164,9 +214,238 @@ CPO_RATE_KEYS = (
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
+class RateLimitPending(RuntimeError):
+    def __init__(self, endpoint, retry_after_seconds, cooldown_until, attempt, message=None):
+        self.endpoint = endpoint
+        self.retry_after_seconds = retry_after_seconds
+        self.cooldown_until = cooldown_until
+        self.attempt = attempt
+        super().__init__(
+            message
+            or (
+                f"429 pending for {endpoint}: retry_after={retry_after_seconds}, "
+                f"cooldown_until={cooldown_until}, attempt={attempt}"
+            )
+        )
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def ensure_cache_dir():
+    PERFORMANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def is_sensitive_key(key):
+    lowered = str(key or "").lower()
+    return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
+
+
+def sanitize_text(value):
+    text = str(value or "")
+    patterns = [
+        r'(?i)("?(authorization|api[-_]?key|client[-_]?id|cookie|set-cookie|access_token|refresh_token|token|client_secret)"?\s*[:=]\s*"?)([^",\s}]+)',
+        r'(?i)(bearer\s+)([A-Za-z0-9._\-]+)',
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, r"\1[REDACTED]", text)
+
+    return text
+
+
+def sanitize_value(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if is_sensitive_key(key):
+                result[key] = "[REDACTED]"
+            else:
+                result[key] = sanitize_value(item)
+        return result
+
+    if isinstance(value, list):
+        return [sanitize_value(item) for item in value]
+
+    if isinstance(value, str):
+        return sanitize_text(value)
+
+    return value
+
+
+def utcnow():
+    return datetime.now(ZoneInfo("UTC"))
+
+
+def to_iso(dt):
+    return dt.astimezone(ZoneInfo("UTC")).isoformat()
+
+
+def from_iso(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def with_state_lock(exclusive=True):
+    ensure_cache_dir()
+    mode = "a+"
+    lock_file = open(PERFORMANCE_STATE_LOCK_PATH, mode, encoding="utf-8")
+
+    if fcntl is not None:
+        lock_mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(lock_file.fileno(), lock_mode)
+
+    return lock_file
+
+
+def load_state():
+    default_state = {
+        "jobs": {},
+        "cooldowns": {},
+        "batch_recommendations": {},
+        "runs": {},
+    }
+
+    lock_file = with_state_lock(exclusive=False)
+    try:
+        if not PERFORMANCE_STATE_PATH.exists():
+            return default_state
+
+        try:
+            return json.loads(PERFORMANCE_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return default_state
+    finally:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def save_state(state):
+    ensure_cache_dir()
+    sanitized_state = sanitize_value(state)
+    lock_file = with_state_lock(exclusive=True)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(PERFORMANCE_CACHE_DIR),
+            prefix="state.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            json.dump(sanitized_state, tmp_file, ensure_ascii=False, indent=2, sort_keys=True)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+            tmp_path = Path(tmp_file.name)
+
+        os.replace(tmp_path, PERFORMANCE_STATE_PATH)
+    finally:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def payload_hash(payload):
+    normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def canonicalize_payload(value, key_name=None):
+    if isinstance(value, dict):
+        return {
+            key: canonicalize_payload(value[key], key)
+            for key in sorted(value.keys())
+        }
+
+    if isinstance(value, list):
+        items = [canonicalize_payload(item, key_name) for item in value]
+        if key_name == "campaigns":
+            return sorted(str(item) for item in items)
+        return items
+
+    return value
+
+
+def parse_retry_after_seconds(value):
+    if value in (None, ""):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.isdigit():
+        return int(text)
+
+    try:
+        retry_time = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+
+    seconds = (retry_time - utcnow()).total_seconds()
+    return max(0, int(seconds))
+
+
+def compute_backoff_seconds(base_sleep_seconds, cap_sleep_seconds, attempt):
+    base = base_sleep_seconds * (2 ** max(attempt - 1, 0))
+    jitter = random.uniform(0, max(1, base_sleep_seconds * 0.2))
+    return min(cap_sleep_seconds, int(base + jitter))
+
+
+def response_body_preview(response, limit=1000):
+    try:
+        text = response.text or ""
+    except Exception:
+        return ""
+    return sanitize_text(text[:limit])
+
+
+def log_http_response(endpoint, attempt, response, extra=None):
+    payload = {
+        "endpoint": endpoint,
+        "attempt": attempt,
+        "status": response.status_code,
+        "headers": sanitize_value(dict(response.headers)),
+        "body_preview": response_body_preview(response),
+    }
+    if extra:
+        payload.update(sanitize_value(extra))
+    print("Ozon Performance HTTP:")
+    print(json.dumps(sanitize_value(payload), ensure_ascii=False))
+
+
+def send_telegram_partial_ads_alert(summary):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    cpc = summary.get("cpc") or {}
+    message = (
+        "⚠️ Ozon Performance partial_ads\n"
+        f"Период: {summary.get('date_from')}..{summary.get('date_to')}\n"
+        f"campaign_count: {summary.get('campaign_count')}\n"
+        f"batch_size: {summary.get('batch_size')}\n"
+        f"CPC status: {cpc.get('status')}\n"
+        f"Retry-After: {cpc.get('retry_after_seconds')}\n"
+        f"cooldown_until: {cpc.get('cooldown_until')}\n"
+        f"CPO status: {(summary.get('cpo') or {}).get('status')}"
+    )
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+    except Exception as exc:
+        print(f"Не удалось отправить partial_ads alert в Telegram: {sanitize_text(exc)}")
 
 
 def parse_args():
@@ -178,7 +457,7 @@ def parse_args():
     parser.add_argument("--date-to")
     parser.add_argument("--group-by", default=DEFAULT_GROUP_BY)
     parser.add_argument("--campaign-limit", type=int)
-    parser.add_argument("--campaign-batch-size", type=int, default=1)
+    parser.add_argument("--campaign-batch-size", type=int, default=5)
     parser.add_argument(
         "--campaign-scope",
         choices=("recent", "all"),
@@ -356,9 +635,8 @@ def mask_client_id(value):
     text = str(value or "").strip()
     if not text:
         return "unknown"
-    if len(text) <= 4:
-        return text
-    return f"{text[:2]}***{text[-2:]}"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return f"acct_{digest}"
 
 
 def split_config_values(value):
@@ -382,7 +660,7 @@ def ensure_single_account_config():
 
     if offenders:
         details = ", ".join(
-            f"{name}={values}"
+            f"{name}={[mask_client_id(item) for item in values]}"
             for name, values in offenders.items()
         )
         raise RuntimeError(
@@ -401,6 +679,12 @@ def build_cpo_reconciliation_context(date_from, date_to, uuid, summary):
         "distributed_cpo_expense": round(float(summary.get("distributed_cpo_expense") or 0), 2),
         "difference": round(float(summary.get("difference") or 0), 2),
     }
+
+
+def empty_stage_status(status="not_started", **extra):
+    payload = {"status": status}
+    payload.update(extra)
+    return payload
 
 
 def is_metric_key(key):
@@ -560,6 +844,123 @@ class OzonPerformanceClient:
     def __init__(self):
         self.token = None
         self.token_expires_at = 0
+        self.state = load_state()
+        self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
+
+    def save_state(self):
+        save_state(self.state)
+
+    def get_job_cache_key(self, endpoint, payload):
+        cache_identity = {
+            "endpoint": endpoint,
+            "account_signature": self.account_signature,
+            "payload": canonicalize_payload(payload),
+        }
+        return f"{endpoint}:{payload_hash(cache_identity)}"
+
+    def get_cached_job(self, endpoint, payload):
+        key = self.get_job_cache_key(endpoint, payload)
+        return key, self.state.get("jobs", {}).get(key)
+
+    def remember_job(self, endpoint, payload, uuid):
+        key = self.get_job_cache_key(endpoint, payload)
+        self.state.setdefault("jobs", {})[key] = {
+            "endpoint": endpoint,
+            "account_signature": self.account_signature,
+            "payload": canonicalize_payload(payload),
+            "payload_hash": key.split(":", 1)[1],
+            "uuid": uuid,
+            "updated_at": to_iso(utcnow()),
+        }
+        self.save_state()
+
+    def forget_jobs_by_uuid(self, uuid):
+        jobs = self.state.get("jobs", {})
+        keys_to_delete = [
+            key
+            for key, value in jobs.items()
+            if str(value.get("uuid") or "") == str(uuid or "")
+        ]
+        for key in keys_to_delete:
+            jobs.pop(key, None)
+        if keys_to_delete:
+            self.save_state()
+
+    def invalidate_job(self, endpoint, payload=None, uuid=None):
+        jobs = self.state.get("jobs", {})
+        keys_to_delete = set()
+
+        if payload is not None:
+            keys_to_delete.add(self.get_job_cache_key(endpoint, payload))
+
+        if uuid is not None:
+            for key, value in jobs.items():
+                if str(value.get("uuid") or "") == str(uuid or ""):
+                    keys_to_delete.add(key)
+
+        for key in keys_to_delete:
+            jobs.pop(key, None)
+
+        if keys_to_delete:
+            self.save_state()
+
+    def write_run_status(self, summary):
+        run_key = f"{summary.get('date_from')}:{summary.get('date_to')}"
+        self.state.setdefault("runs", {})[run_key] = summary
+        self.save_state()
+
+    def set_cooldown(self, key, cooldown_until):
+        self.state.setdefault("cooldowns", {})[key] = cooldown_until
+        self.save_state()
+
+    def get_cooldown(self, key):
+        value = self.state.get("cooldowns", {}).get(key)
+        if not value:
+            return None
+
+        cooldown_until = from_iso(value)
+        if not cooldown_until:
+            return None
+
+        if cooldown_until <= utcnow():
+            self.state.get("cooldowns", {}).pop(key, None)
+            self.save_state()
+            return None
+
+        return cooldown_until
+
+    def set_batch_recommendation(self, key, value, ttl_seconds=None):
+        expires_at = None
+        if ttl_seconds:
+            expires_at = to_iso(utcnow() + timedelta(seconds=ttl_seconds))
+        self.state.setdefault("batch_recommendations", {})[key] = {
+            "value": value,
+            "expires_at": expires_at,
+        }
+        self.save_state()
+
+    def get_batch_recommendation(self, key, default_value):
+        item = self.state.get("batch_recommendations", {}).get(key)
+        if item in (None, ""):
+            return default_value
+        if isinstance(item, dict):
+            expires_at = from_iso(item.get("expires_at"))
+            if expires_at and expires_at <= utcnow():
+                self.state.get("batch_recommendations", {}).pop(key, None)
+                self.save_state()
+                return default_value
+            value = item.get("value")
+        else:
+            value = item
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return default_value
+
+    def clear_batch_recommendation(self, key):
+        if key in self.state.get("batch_recommendations", {}):
+            self.state["batch_recommendations"].pop(key, None)
+            self.save_state()
 
     def ensure_token(self):
         if self.token and time.time() < self.token_expires_at - 60:
@@ -590,15 +991,35 @@ class OzonPerformanceClient:
         self.token_expires_at = time.time() + int(data.get("expires_in") or 1800)
         return self.token
 
-    def request(self, method, path, **kwargs):
-        url = f"{OZON_PERFORMANCE_BASE_URL}{path}"
+    def request(self, method, path, retry_profile="default", cooldown_key=None, **kwargs):
+        endpoint = path
+        if str(path).startswith("http://") or str(path).startswith("https://"):
+            url = str(path)
+        else:
+            url = f"{OZON_PERFORMANCE_BASE_URL}{path}"
         headers = kwargs.pop("headers", {})
         headers.update({
             "Authorization": f"Bearer {self.ensure_token()}",
             "Accept": "application/json",
         })
+        profile = REQUEST_PROFILES[retry_profile]
 
-        for attempt in range(1, 6):
+        if cooldown_key:
+            cooldown_until = self.get_cooldown(cooldown_key)
+            if cooldown_until:
+                retry_after_seconds = max(0, int((cooldown_until - utcnow()).total_seconds()))
+                raise RateLimitPending(
+                    endpoint=endpoint,
+                    retry_after_seconds=retry_after_seconds,
+                    cooldown_until=to_iso(cooldown_until),
+                    attempt=0,
+                    message=(
+                        f"Circuit breaker active for {endpoint}: "
+                        f"retry_after={retry_after_seconds}, cooldown_until={to_iso(cooldown_until)}"
+                    ),
+                )
+
+        for attempt in range(1, int(profile["max_attempts"]) + 1):
             response = requests.request(
                 method,
                 url,
@@ -608,19 +1029,69 @@ class OzonPerformanceClient:
             )
 
             if response.status_code == 401 and attempt == 1:
+                log_http_response(endpoint, attempt, response, extra={"reason": "refresh_token"})
                 self.token = None
                 headers["Authorization"] = f"Bearer {self.ensure_token()}"
                 continue
 
             if response.status_code == 429:
-                sleep_for = min(60, 2 ** attempt)
-                print(f"Ozon Performance 429, ждем {sleep_for} сек.")
-                time.sleep(sleep_for)
+                retry_after_header = response.headers.get("Retry-After")
+                retry_after_seconds = parse_retry_after_seconds(retry_after_header)
+                if retry_after_seconds is None:
+                    retry_after_seconds = compute_backoff_seconds(
+                        int(profile["base_sleep_seconds"]),
+                        int(profile["cap_sleep_seconds"]),
+                        attempt,
+                    )
+
+                cooldown_until = utcnow() + timedelta(
+                    seconds=max(retry_after_seconds, int(profile.get("cooldown_seconds") or 0))
+                )
+                cooldown_until_iso = to_iso(cooldown_until)
+                log_http_response(
+                    endpoint,
+                    attempt,
+                    response,
+                    extra={
+                        "retry_after": retry_after_header,
+                        "retry_after_seconds": retry_after_seconds,
+                        "cooldown_until": cooldown_until_iso,
+                        "retry_profile": retry_profile,
+                    },
+                )
+
+                if cooldown_key:
+                    self.set_cooldown(cooldown_key, cooldown_until_iso)
+
+                if profile.get("fail_fast_on_429"):
+                    raise RateLimitPending(
+                        endpoint=endpoint,
+                        retry_after_seconds=retry_after_seconds,
+                        cooldown_until=cooldown_until_iso,
+                        attempt=attempt,
+                    )
+
+                if attempt >= int(profile["max_attempts"]):
+                    raise RateLimitPending(
+                        endpoint=endpoint,
+                        retry_after_seconds=retry_after_seconds,
+                        cooldown_until=cooldown_until_iso,
+                        attempt=attempt,
+                    )
+
+                print(
+                    f"Ozon Performance 429 for {endpoint}, attempt {attempt}, "
+                    f"Retry-After={retry_after_header}, cooldown_until={cooldown_until_iso}, "
+                    f"sleep={retry_after_seconds}"
+                )
+                time.sleep(retry_after_seconds)
                 continue
 
+            log_http_response(endpoint, attempt, response, extra={"retry_profile": retry_profile})
             response.raise_for_status()
             return response
 
+        print(f"Ozon Performance exhausted attempts for {endpoint}")
         response.raise_for_status()
         return response
 
@@ -646,7 +1117,7 @@ class OzonPerformanceClient:
 
         return campaigns
 
-    def request_statistics(self, campaign_ids, date_from, date_to, group_by):
+    def request_statistics(self, campaign_ids, date_from, date_to, group_by, force_new=False):
         payload = {
             "campaigns": [str(campaign_id) for campaign_id in campaign_ids],
             "dateFrom": date_from,
@@ -654,9 +1125,19 @@ class OzonPerformanceClient:
             "groupBy": group_by,
         }
 
+        _, cached_job = self.get_cached_job("/api/client/statistics/json", payload)
+        if not force_new and cached_job and cached_job.get("uuid"):
+            print(
+                "Используем кэшированный statistics/json job: "
+                f"UUID={cached_job['uuid']} payload_hash={cached_job.get('payload_hash')}"
+            )
+            return cached_job["uuid"], True, payload
+
         response = self.request(
             "POST",
             "/api/client/statistics/json",
+            retry_profile="statistics_json",
+            cooldown_key="statistics_json",
             json=payload,
             headers={"Content-Type": "application/json"},
         )
@@ -666,9 +1147,11 @@ class OzonPerformanceClient:
         if not uuid:
             raise RuntimeError(f"Ozon Performance не вернул UUID: {data}")
 
-        return uuid
+        self.remember_job("/api/client/statistics/json", payload, uuid)
 
-    def request_all_sku_promo_report(self, report_type, date_from, date_to):
+        return uuid, False, payload
+
+    def request_all_sku_promo_report(self, report_type, date_from, date_to, force_new=False):
         if report_type not in ALLOWED_CPO_REPORT_TYPES:
             raise ValueError(
                 f"Недопустимый CPO report_type: {report_type}. "
@@ -680,14 +1163,24 @@ class OzonPerformanceClient:
             f"CPO {report_type} timeBounds ({APP_TIMEZONE}, inclusive): "
             f"{date_from}..{date_to} -> {utc_from}..{utc_to}"
         )
+        payload = {
+            "timeBounds.from": utc_from,
+            "timeBounds.to": utc_to,
+        }
+
+        endpoint = f"/api/client/statistics/all_sku_promo/{report_type}/generate"
+        _, cached_job = self.get_cached_job(endpoint, payload)
+        if not force_new and cached_job and cached_job.get("uuid"):
+            print(
+                "Используем кэшированный all_sku_promo job: "
+                f"UUID={cached_job['uuid']} payload_hash={cached_job.get('payload_hash')}"
+            )
+            return cached_job["uuid"], True, payload, endpoint
 
         response = self.request(
             "GET",
-            f"/api/client/statistics/all_sku_promo/{report_type}/generate",
-            params={
-                "timeBounds.from": utc_from,
-                "timeBounds.to": utc_to,
-            },
+            endpoint,
+            params=payload,
         )
         data = response.json()
         uuid = data.get("UUID") or data.get("uuid")
@@ -695,7 +1188,9 @@ class OzonPerformanceClient:
         if not uuid:
             raise RuntimeError(f"Ozon all_sku_promo не вернул UUID: {data}")
 
-        return uuid
+        self.remember_job(endpoint, payload, uuid)
+
+        return uuid, False, payload, endpoint
 
     def wait_statistics(self, uuid):
         for attempt in range(1, 31):
@@ -707,10 +1202,12 @@ class OzonPerformanceClient:
                 return data
 
             if state in {"ERROR", "FAILED", "FAIL"}:
+                self.forget_jobs_by_uuid(uuid)
                 raise RuntimeError(f"Ozon Performance report failed: {data}")
 
             time.sleep(min(30, attempt * 2))
 
+        self.forget_jobs_by_uuid(uuid)
         raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
 
     def download_report(self, uuid):
@@ -731,7 +1228,7 @@ class OzonPerformanceClient:
 
     def download_report_by_link(self, link, uuid=None):
         if link:
-            response = self.request("GET", urljoin("/", link))
+            response = self.request("GET", urljoin(OZON_PERFORMANCE_BASE_URL + "/", link))
             text = response.text.lstrip("\ufeff")
             if text:
                 return text
@@ -742,6 +1239,72 @@ class OzonPerformanceClient:
             params={"UUID": uuid},
         )
         return response.text.lstrip("\ufeff")
+
+    def fetch_statistics_json_report(self, campaign_ids, date_from, date_to, group_by):
+        endpoint = "/api/client/statistics/json"
+        last_exc = None
+
+        for attempt in range(1, 3):
+            uuid, cache_hit, payload = self.request_statistics(
+                campaign_ids,
+                date_from,
+                date_to,
+                group_by,
+                force_new=(attempt == 2),
+            )
+            status = self.wait_statistics(uuid)
+
+            try:
+                report_data = self.download_report(uuid)
+                return uuid, status, report_data
+            except requests.HTTPError as exc:
+                status_code = getattr(exc.response, "status_code", None)
+                if cache_hit and status_code in {403, 404}:
+                    print(
+                        f"Cached statistics/json UUID invalidated: uuid={uuid}, "
+                        f"status={status_code}, recreating report"
+                    )
+                    self.invalidate_job(endpoint, payload=payload, uuid=uuid)
+                    last_exc = exc
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+
+        raise RuntimeError("Не удалось получить statistics/json report")
+
+    def fetch_all_sku_promo_csv(self, report_type, date_from, date_to):
+        last_exc = None
+
+        for attempt in range(1, 3):
+            uuid, cache_hit, payload, endpoint = self.request_all_sku_promo_report(
+                report_type,
+                date_from,
+                date_to,
+                force_new=(attempt == 2),
+            )
+            status = self.wait_statistics(uuid)
+
+            try:
+                csv_text = self.download_report_by_link(status.get("link"), uuid=uuid)
+                return uuid, status, csv_text
+            except requests.HTTPError as exc:
+                status_code = getattr(exc.response, "status_code", None)
+                if cache_hit and status_code in {403, 404}:
+                    print(
+                        f"Cached all_sku_promo UUID invalidated: uuid={uuid}, "
+                        f"status={status_code}, recreating report"
+                    )
+                    self.invalidate_job(endpoint, payload=payload, uuid=uuid)
+                    last_exc = exc
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+
+        raise RuntimeError("Не удалось получить all_sku_promo report")
 
 
 def load_catalog():
@@ -965,6 +1528,7 @@ def run():
         date_from = (datetime.fromisoformat(date_to).date() - timedelta(days=args.days_back)).isoformat()
 
     client = OzonPerformanceClient()
+    requested_batch_size = max(1, int(args.campaign_batch_size or 5))
     campaigns = client.list_campaigns()
     print(f"Ozon Performance campaigns total: {len(campaigns)}")
 
@@ -987,22 +1551,75 @@ def run():
         print("Нет рекламных кампаний Ozon Performance")
         return
 
+    batch_size = min(
+        requested_batch_size,
+        client.get_batch_recommendation("statistics_json", requested_batch_size),
+    )
+
+    run_summary = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "campaign_count": len(campaign_ids),
+        "requested_batch_size": requested_batch_size,
+        "batch_size": batch_size,
+        "cpc": empty_stage_status("not_started"),
+        "cpo": empty_stage_status("not_started"),
+        "overall_status": "running",
+        "updated_at": to_iso(utcnow()),
+    }
+    print("Ozon Performance run context:")
+    print(json.dumps(sanitize_value(run_summary), ensure_ascii=False))
+    client.write_run_status(run_summary)
+
     catalog = load_catalog()
     rows_by_key = {}
     total_counters = defaultdict(int)
 
-    batch_size = max(1, int(args.campaign_batch_size or 1))
+    cpc_batches_total = 0
+    cpc_batches_completed = 0
 
     for campaign_batch in chunks(campaign_ids, batch_size):
+        cpc_batches_total += 1
         print(f"Запрашиваем Ozon Performance report: {campaign_batch}")
         try:
-            uuid = client.request_statistics(campaign_batch, date_from, date_to, args.group_by)
+            uuid, _, report_data = client.fetch_statistics_json_report(
+                campaign_batch,
+                date_from,
+                date_to,
+                args.group_by,
+            )
+        except RateLimitPending as exc:
+            client.set_batch_recommendation(
+                "statistics_json",
+                1,
+                ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
+            )
+            run_summary["cpc"] = empty_stage_status(
+                "pending_429",
+                endpoint=exc.endpoint,
+                batch_size=batch_size,
+                retry_after_seconds=exc.retry_after_seconds,
+                cooldown_until=exc.cooldown_until,
+                attempt=exc.attempt,
+                failed_batch=campaign_batch,
+                campaign_count=len(campaign_ids),
+            )
+            print("CPC statistics/json pending_429:")
+            print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
+            break
         except Exception as exc:
-            print(f"Пропускаем CPC batch {campaign_batch}: {exc}")
-            continue
+            run_summary["cpc"] = empty_stage_status(
+                "failed",
+                batch_size=batch_size,
+                failed_batch=campaign_batch,
+                error=str(exc),
+            )
+            run_summary["overall_status"] = "failed"
+            run_summary["updated_at"] = to_iso(utcnow())
+            client.write_run_status(run_summary)
+            raise
         print(f"UUID: {uuid}")
-        client.wait_statistics(uuid)
-        report_data = client.download_report(uuid)
+        cpc_batches_completed += 1
 
         if args.debug_sample:
             print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
@@ -1025,12 +1642,27 @@ def run():
 
         time.sleep(2)
 
+    if run_summary["cpc"]["status"] == "not_started":
+        run_summary["cpc"] = empty_stage_status(
+            "success",
+            batch_size=batch_size,
+            campaign_count=len(campaign_ids),
+            batches_total=cpc_batches_total,
+            batches_completed=cpc_batches_completed,
+        )
+        client.clear_batch_recommendation("statistics_json")
+
     print("Запрашиваем Ozon all_sku_promo orders report")
-    cpo_uuid = client.request_all_sku_promo_report("orders", date_from, date_to)
-    print(f"CPO UUID: {cpo_uuid}")
-    cpo_status = client.wait_statistics(cpo_uuid)
-    cpo_csv = client.download_report_by_link(cpo_status.get("link"), uuid=cpo_uuid)
-    cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
+    try:
+        cpo_uuid, cpo_status, cpo_csv = client.fetch_all_sku_promo_csv("orders", date_from, date_to)
+        print(f"CPO UUID: {cpo_uuid}")
+        cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
+    except Exception as exc:
+        run_summary["cpo"] = empty_stage_status("failed", error=str(exc))
+        run_summary["overall_status"] = "failed"
+        run_summary["updated_at"] = to_iso(utcnow())
+        client.write_run_status(run_summary)
+        raise
 
     for row in cpo_rows:
         key = (
@@ -1058,6 +1690,15 @@ def run():
             f"{json.dumps(cpo_context, ensure_ascii=False)}"
         )
         print(f"ERROR: {message}")
+        run_summary["cpo"] = empty_stage_status(
+            "failed",
+            uuid=cpo_uuid,
+            reconciliation=cpo_summary,
+            error=message,
+        )
+        run_summary["overall_status"] = "failed"
+        run_summary["updated_at"] = to_iso(utcnow())
+        client.write_run_status(run_summary)
         raise RuntimeError(message)
     elif difference_abs > RECON_WARNING_THRESHOLD:
         print(
@@ -1071,6 +1712,14 @@ def run():
             f"строк: {cpo_counters['advertising_order_other']}"
         )
 
+    run_summary["cpo"] = empty_stage_status(
+        "success",
+        uuid=cpo_uuid,
+        rows=len(cpo_rows),
+        counters=dict(cpo_counters),
+        reconciliation=cpo_summary,
+    )
+
     rows = enrich_rows(list(rows_by_key.values()), catalog)
 
     print("Ozon Performance counters:")
@@ -1081,11 +1730,32 @@ def run():
         by_type[row["expense_type"]] += float(row.get("expense_amount") or 0)
     print({key: round(value, 2) for key, value in sorted(by_type.items())})
 
+    if run_summary["cpc"]["status"] == "pending_429" and run_summary["cpo"]["status"] == "success":
+        run_summary["overall_status"] = "partial_ads"
+    elif run_summary["cpc"]["status"] == "success" and run_summary["cpo"]["status"] == "success":
+        run_summary["overall_status"] = "success"
+    else:
+        run_summary["overall_status"] = "failed"
+
+    run_summary["rows_by_type"] = {
+        key: round(value, 2)
+        for key, value in sorted(by_type.items())
+    }
+    run_summary["updated_at"] = to_iso(utcnow())
+    print("Ozon Performance run summary:")
+    print(json.dumps(sanitize_value(run_summary), ensure_ascii=False))
+
     if args.dry_run:
+        client.write_run_status(run_summary)
         print("Dry run: данные не записывались")
         return
 
     save_rows(rows)
+    client.write_run_status(run_summary)
+
+    if run_summary["overall_status"] == "partial_ads":
+        print("WARNING: Ozon Performance completed with partial_ads status")
+        send_telegram_partial_ads_alert(run_summary)
 
 
 if __name__ == "__main__":

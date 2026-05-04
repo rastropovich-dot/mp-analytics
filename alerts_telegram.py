@@ -85,6 +85,34 @@ def get_kpi_rows(days_back=30):
     return result.data or []
 
 
+def get_ozon_ads_breakdown(expense_date):
+    result = (
+        supabase
+        .table("marketplace_expenses")
+        .select("expense_type,expense_amount")
+        .eq("marketplace_code", "ozon")
+        .eq("expense_date", expense_date)
+        .execute()
+    )
+
+    grouped = {
+        "advertising_clicks": 0,
+        "advertising_order_10": 0,
+        "advertising_order_5": 0,
+        "advertising_order_other": 0,
+        "advertising_order_unknown": 0,
+        "advertising_other": 0,
+    }
+
+    for row in result.data or []:
+        expense_type = str(row.get("expense_type") or "")
+        if not expense_type.startswith("advertising"):
+            continue
+        grouped[expense_type] = grouped.get(expense_type, 0) + num(row.get("expense_amount"))
+
+    return grouped
+
+
 def save_today_snapshot(kpi_rows):
     """
     Сохраняем утренний срез текущих доступных данных.
@@ -369,8 +397,9 @@ def build_executive_summary(kpi_rows):
         commission = num(row.get("commission_amount"))
         logistics = num(row.get("logistics_amount"))
         other = num(row.get("other_expenses_amount"))
+        ad_spend = num(row.get("ad_spend"))
 
-        total_expenses = commission + logistics + other
+        total_expenses = commission + logistics + other + ad_spend
         net_after_expenses = buyouts_amount - total_expenses
 
         avg_orders_7d = avg([r.get("orders_qty") for r in prev_rows]) if prev_rows else 0
@@ -387,10 +416,26 @@ def build_executive_summary(kpi_rows):
                 f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."
             )
         else:
+            ads = get_ozon_ads_breakdown(target_date)
+            ads_unknown = (
+                ads["advertising_order_other"]
+                + ads["advertising_order_unknown"]
+                + ads["advertising_other"]
+            )
+            ads_line = (
+                f"Реклама: клики {fmt_money(ads['advertising_clicks'])}, "
+                f"заказ 10% {fmt_money(ads['advertising_order_10'])}, "
+                f"заказ 5% {fmt_money(ads['advertising_order_5'])}"
+            )
+            if ads_unknown > 0:
+                ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
+            ads_line += "."
+
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"
                 f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
                 f"Реализация: {buyouts:.0f} шт / {fmt_money(buyouts_amount)} руб.\n"
+                f"{ads_line}\n"
                 f"Комиссии: {fmt_money(commission)}, логистика: {fmt_money(logistics)}, прочие: {fmt_money(other)}.\n"
                 f"После расходов Ozon: {fmt_money(net_after_expenses)} руб.\n"
                 f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."

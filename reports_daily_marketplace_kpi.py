@@ -108,6 +108,12 @@ def build_marketplace_kpi():
             row["gross_margin_percent"] = round(row["gross_margin_amount"] / row["buyouts_amount_seller"], 4)
             row["ebitda_percent"] = round(row["ebitda_amount"] / row["buyouts_amount_seller"], 4)
 
+        if row["orders_amount_seller"] > 0:
+            row["ad_share_of_orders"] = round(row["ad_spend"] / row["orders_amount_seller"], 4)
+
+        if row["ad_spend"] > 0:
+            row["roas"] = round(row["orders_amount_seller"] / row["ad_spend"], 4)
+
         rows.append(row)
 
     print(f"Строк daily_marketplace_kpi к записи: {len(rows)}")

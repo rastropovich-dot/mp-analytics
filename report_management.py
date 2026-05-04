@@ -146,16 +146,18 @@ def print_ozon_realization(rows):
         f"{'Дата отчета':<12} "
         f"{'Выкупы/шт':>12} "
         f"{'Сумма реализации':>20} "
-        f"{'Комиссии':>15}"
+        f"{'Комиссии':>15} "
+        f"{'Реклама':>15}"
     )
-    print("-" * 68)
+    print("-" * 84)
 
     for row in rows:
         print(
             f"{row.get('kpi_date'):<12} "
             f"{float(row.get('buyouts_qty') or 0):>12.0f} "
             f"{float(row.get('buyouts_amount_seller') or 0):>20,.0f} "
-            f"{float(row.get('commission_amount') or 0):>15,.0f}"
+            f"{float(row.get('commission_amount') or 0):>15,.0f} "
+            f"{float(row.get('ad_spend') or 0):>15,.0f}"
         )
 
 
@@ -328,6 +330,7 @@ def detect_anomalies(wb_rows, ozon_realization_rows, ozon_orders_rows):
             safe_num(last.get("commission_amount"))
             + safe_num(last.get("logistics_amount"))
             + safe_num(last.get("other_expenses_amount"))
+            + safe_num(last.get("ad_spend"))
         )
 
         if buyouts_amount > 0:
@@ -450,7 +453,7 @@ def build_ai_context(wb_rows, ozon_realization_rows, ozon_orders_rows):
     context.append(compact_rows(
         ozon_realization_rows,
         "kpi_date",
-        ["buyouts_qty", "buyouts_amount_seller", "commission_amount", "logistics_amount", "other_expenses_amount"],
+        ["buyouts_qty", "buyouts_amount_seller", "ad_spend", "commission_amount", "logistics_amount", "other_expenses_amount"],
         limit=14,
     ))
 
@@ -539,8 +542,8 @@ if __name__ == "__main__":
 
 def print_ozon_economics_table(rows):
     print()
-    print("Дата        Выкупы   Реализация    Комиссии    Логистика    Прочие     Расходы итого   После расходов")
-    print("------------------------------------------------------------------------------------------------------")
+    print("Дата        Выкупы   Реализация    Реклама    Комиссии    Логистика    Прочие     Расходы итого   После расходов")
+    print("-----------------------------------------------------------------------------------------------------------------")
 
     for row in rows:
         buyouts = float(row.get("buyouts_qty") or 0)
@@ -548,13 +551,15 @@ def print_ozon_economics_table(rows):
         commission = float(row.get("commission_amount") or 0)
         logistics = float(row.get("logistics_amount") or 0)
         other = float(row.get("other_expenses_amount") or 0)
-        total_expenses = commission + logistics + other
+        ad_spend = float(row.get("ad_spend") or 0)
+        total_expenses = ad_spend + commission + logistics + other
         net_after_expenses = revenue - total_expenses
 
         print(
             f"{row.get('kpi_date')}  "
             f"{buyouts:>6.0f}  "
             f"{revenue:>11,.0f}  "
+            f"{ad_spend:>9,.0f}  "
             f"{commission:>10,.0f}  "
             f"{logistics:>10,.0f}  "
             f"{other:>8,.0f}  "

@@ -10,6 +10,27 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
+def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", product_name=None):
+    return {
+        "kpi_date": kpi_date,
+        "marketplace_code": marketplace_code,
+        "marketplace_sku": marketplace_sku,
+        "article": article,
+        "product_name": product_name,
+        "orders_qty": 0,
+        "orders_amount_seller": 0,
+        "buyouts_qty": 0,
+        "buyouts_amount_seller": 0,
+        "buyout_rate": 0,
+        "ad_spend": 0,
+        "ad_share_of_orders": 0,
+        "roas": 0,
+        "commission_amount": 0,
+        "logistics_amount": 0,
+        "other_expenses_amount": 0,
+    }
+
+
 def load_orders():
     all_rows = []
     start = 0
@@ -104,18 +125,13 @@ def build_kpi():
         )
 
         if key not in grouped:
-            grouped[key] = {
-                "kpi_date": row["order_date"],
-                "marketplace_code": row["marketplace_code"],
-                "marketplace_sku": row["marketplace_sku"],
-                "article": row.get("article"),
-                "product_name": row.get("product_name"),
-                "orders_qty": 0,
-                "orders_amount_seller": 0,
-                "buyouts_qty": 0,
-                "buyouts_amount_seller": 0,
-                "buyout_rate": 0,
-            }
+            grouped[key] = empty_kpi_row(
+                row["order_date"],
+                row["marketplace_code"],
+                row["marketplace_sku"],
+                row.get("article"),
+                row.get("product_name"),
+            )
 
         grouped[key]["orders_qty"] += float(row.get("orders_qty") or 0)
         grouped[key]["orders_amount_seller"] += float(row.get("orders_amount_seller") or 0)
@@ -128,18 +144,13 @@ def build_kpi():
         )
 
         if key not in grouped:
-            grouped[key] = {
-                "kpi_date": row["buyout_date"],
-                "marketplace_code": row["marketplace_code"],
-                "marketplace_sku": row["marketplace_sku"],
-                "article": row.get("article"),
-                "product_name": row.get("product_name"),
-                "orders_qty": 0,
-                "orders_amount_seller": 0,
-                "buyouts_qty": 0,
-                "buyouts_amount_seller": 0,
-                "buyout_rate": 0,
-            }
+            grouped[key] = empty_kpi_row(
+                row["buyout_date"],
+                row["marketplace_code"],
+                row["marketplace_sku"],
+                row.get("article"),
+                row.get("product_name"),
+            )
 
         grouped[key]["buyouts_qty"] += float(row.get("buyouts_qty") or 0)
         grouped[key]["buyouts_amount_seller"] += float(row.get("buyouts_amount_seller") or 0)
@@ -152,25 +163,13 @@ def build_kpi():
         )
 
         if key not in grouped:
-            grouped[key] = {
-                "kpi_date": row["expense_date"],
-                "marketplace_code": row["marketplace_code"],
-                "marketplace_sku": row["marketplace_sku"],
-                "article": row.get("article"),
-                "product_name": None,
-                "orders_qty": 0,
-                "orders_amount_seller": 0,
-                "buyouts_qty": 0,
-                "buyouts_amount_seller": 0,
-                "buyout_rate": 0,
-                "commission_amount": 0,
-                "logistics_amount": 0,
-                "other_expenses_amount": 0,
-            }
-
-        grouped[key].setdefault("commission_amount", 0)
-        grouped[key].setdefault("logistics_amount", 0)
-        grouped[key].setdefault("other_expenses_amount", 0)
+            grouped[key] = empty_kpi_row(
+                row["expense_date"],
+                row["marketplace_code"],
+                row["marketplace_sku"],
+                row.get("article"),
+                None,
+            )
 
         expense_type = row.get("expense_type")
         amount = float(row.get("expense_amount") or 0)
@@ -179,6 +178,8 @@ def build_kpi():
             grouped[key]["commission_amount"] += amount
         elif expense_type == "logistics":
             grouped[key]["logistics_amount"] += amount
+        elif str(expense_type or "").startswith("advertising"):
+            grouped[key]["ad_spend"] += amount
         else:
             grouped[key]["other_expenses_amount"] += amount
 
@@ -192,6 +193,19 @@ def build_kpi():
             row["buyout_rate"] = round(buyouts_qty / orders_qty, 4)
         else:
             row["buyout_rate"] = 0
+
+        orders_amount = row["orders_amount_seller"]
+        ad_spend = row.get("ad_spend") or 0
+
+        if orders_amount > 0:
+            row["ad_share_of_orders"] = round(ad_spend / orders_amount, 4)
+        else:
+            row["ad_share_of_orders"] = 0
+
+        if ad_spend > 0:
+            row["roas"] = round(orders_amount / ad_spend, 4)
+        else:
+            row["roas"] = 0
 
         rows.append(row)
 

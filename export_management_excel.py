@@ -119,6 +119,11 @@ def build_excel():
     )
 
     daily_sku_kpi = fetch_all("daily_sku_kpi", order="kpi_date")
+    ozon_expenses = fetch_all(
+        "marketplace_expenses",
+        filters=[("marketplace_code", "eq", "ozon")],
+        order="expense_date"
+    )
 
     ws = wb.create_sheet("Summary")
     ws["A1"] = "Управленческий отчет Marketplaces"
@@ -223,6 +228,89 @@ def build_excel():
     )
     style_sheet(ws_fbs)
 
+    ws_ads = wb.create_sheet("Ozon Ads SKU")
+    ads_grouped = {}
+    sku_names = {}
+    for r in daily_sku_kpi:
+        if r.get("marketplace_code") != "ozon":
+            continue
+        sku = str(r.get("marketplace_sku") or "")
+        if not sku:
+            continue
+        if sku not in sku_names:
+            sku_names[sku] = r.get("product_name")
+
+    for r in ozon_expenses:
+        expense_type = str(r.get("expense_type") or "")
+        if not expense_type.startswith("advertising"):
+            continue
+
+        sku = str(r.get("marketplace_sku") or "")
+        key = (r.get("expense_date"), sku, r.get("article") or "")
+
+        if key not in ads_grouped:
+            ads_grouped[key] = {
+                "date": r.get("expense_date"),
+                "sku": sku,
+                "article": r.get("article") or "",
+                "product_name": sku_names.get(sku),
+                "advertising_clicks": 0,
+                "advertising_order_10": 0,
+                "advertising_order_5": 0,
+                "advertising_order_other": 0,
+                "advertising_order_unknown": 0,
+                "advertising_other": 0,
+            }
+
+        ads_grouped[key][expense_type] = ads_grouped[key].get(expense_type, 0) + float(r.get("expense_amount") or 0)
+
+    ads_rows = []
+    for row in ads_grouped.values():
+        total = (
+            row["advertising_clicks"]
+            + row["advertising_order_10"]
+            + row["advertising_order_5"]
+            + row["advertising_order_other"]
+            + row["advertising_order_unknown"]
+            + row["advertising_other"]
+        )
+        ads_rows.append([
+            row["date"],
+            row["sku"],
+            row["article"],
+            row["product_name"],
+            row["advertising_clicks"],
+            row["advertising_order_10"],
+            row["advertising_order_5"],
+            row["advertising_order_other"],
+            row["advertising_order_unknown"],
+            row["advertising_other"],
+            total,
+        ])
+
+    ads_rows.sort(key=lambda row: (row[0] or "", row[2] or "", row[1] or ""))
+
+    add_table(
+        ws_ads,
+        "Ozon: рекламные расходы по SKU",
+        [
+            "Дата",
+            "SKU",
+            "Артикул",
+            "Название",
+            "Реклама клики",
+            "Оплата за заказ 10%",
+            "Оплата за заказ 5%",
+            "Оплата за заказ прочие ставки",
+            "Оплата за заказ не распознано",
+            "Прочая реклама",
+            "Всего реклама",
+        ],
+        ads_rows,
+        1
+    )
+    style_sheet(ws_ads)
+
     ws_raw = wb.create_sheet("Raw KPI")
     raw_rows = []
     for r in daily_sku_kpi:
@@ -237,12 +325,29 @@ def build_excel():
             float(r.get("buyouts_qty") or 0),
             float(r.get("buyouts_amount_seller") or 0),
             float(r.get("buyout_rate") or 0),
+            float(r.get("ad_spend") or 0),
+            float(r.get("ad_share_of_orders") or 0),
+            float(r.get("roas") or 0),
         ])
 
     add_table(
         ws_raw,
         "Raw SKU KPI",
-        ["Дата", "MP", "SKU", "Артикул", "Название", "Заказы", "Сумма заказов", "Выкупы", "Сумма выкупов", "% выкупа"],
+        [
+            "Дата",
+            "MP",
+            "SKU",
+            "Артикул",
+            "Название",
+            "Заказы",
+            "Сумма заказов",
+            "Выкупы",
+            "Сумма выкупов",
+            "% выкупа",
+            "Реклама всего",
+            "ДРР",
+            "ROAS",
+        ],
         raw_rows,
         1
     )

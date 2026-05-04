@@ -50,6 +50,10 @@ CPC_MAX_SLEEP_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_MAX_SLEEP_SECONDS", 
 CPC_MAX_ATTEMPTS = int(os.getenv("OZON_PERFORMANCE_CPC_MAX_ATTEMPTS", "6"))
 CPC_COOLDOWN_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_COOLDOWN_SECONDS", "1800"))
 BATCH_SIZE_RECOVERY_TTL_SECONDS = int(os.getenv("OZON_PERFORMANCE_BATCH_SIZE_RECOVERY_TTL_SECONDS", "21600"))
+DEFAULT_CAMPAIGN_BATCH_SIZE = int(os.getenv("OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE", "10"))
+REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
+REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
+CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
 ADV_OBJECT_TYPES = [
     value.strip()
     for value in os.getenv("OZON_PERFORMANCE_ADV_OBJECT_TYPES", "SKU").split(",")
@@ -122,6 +126,24 @@ REQUEST_PROFILES = {
         "cap_sleep_seconds": CPC_MAX_SLEEP_SECONDS,
         "cooldown_seconds": CPC_COOLDOWN_SECONDS,
         "fail_fast_on_429": True,
+    },
+}
+
+POLL_PROFILES = {
+    "default": {
+        "max_attempts": 30,
+        "base_sleep_seconds": 2,
+        "cap_sleep_seconds": 30,
+    },
+    "statistics_json": {
+        "max_attempts": 20,
+        "base_sleep_seconds": 15,
+        "cap_sleep_seconds": 60,
+    },
+    "all_sku_promo": {
+        "max_attempts": 30,
+        "base_sleep_seconds": 3,
+        "cap_sleep_seconds": 30,
     },
 }
 
@@ -289,6 +311,31 @@ def from_iso(value):
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
+def local_now():
+    return datetime.now(ZoneInfo(APP_TIMEZONE))
+
+
+def prune_request_history(history):
+    if not isinstance(history, list):
+        return []
+
+    cutoff = utcnow() - timedelta(days=REQUEST_AUDIT_TTL_DAYS)
+    pruned = []
+
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        timestamp = from_iso(item.get("timestamp"))
+        if timestamp and timestamp < cutoff:
+            continue
+        pruned.append(item)
+
+    if len(pruned) > REQUEST_AUDIT_LIMIT:
+        pruned = pruned[-REQUEST_AUDIT_LIMIT:]
+
+    return pruned
+
+
 def with_state_lock(exclusive=True):
     ensure_cache_dir()
     mode = "a+"
@@ -307,6 +354,7 @@ def load_state():
         "cooldowns": {},
         "batch_recommendations": {},
         "runs": {},
+        "request_history": [],
     }
 
     lock_file = with_state_lock(exclusive=False)
@@ -315,7 +363,9 @@ def load_state():
             return default_state
 
         try:
-            return json.loads(PERFORMANCE_STATE_PATH.read_text(encoding="utf-8"))
+            state = json.loads(PERFORMANCE_STATE_PATH.read_text(encoding="utf-8"))
+            state["request_history"] = prune_request_history(state.get("request_history", []))
+            return state
         except Exception:
             return default_state
     finally:
@@ -326,6 +376,7 @@ def load_state():
 
 def save_state(state):
     ensure_cache_dir()
+    state["request_history"] = prune_request_history(state.get("request_history", []))
     sanitized_state = sanitize_value(state)
     lock_file = with_state_lock(exclusive=True)
     try:
@@ -396,6 +447,26 @@ def compute_backoff_seconds(base_sleep_seconds, cap_sleep_seconds, attempt):
     return min(cap_sleep_seconds, int(base + jitter))
 
 
+def infer_request_kind(method, endpoint):
+    endpoint_text = str(endpoint or "")
+    method_text = str(method or "").upper()
+
+    if endpoint_text == "/api/client/statistics/json" and method_text == "POST":
+        return "statistics_job_create"
+    if endpoint_text.startswith("/api/client/statistics/") and endpoint_text != "/api/client/statistics/report":
+        return "statistics_job_status"
+    if endpoint_text == "/api/client/statistics/report":
+        return "statistics_report_download"
+    if endpoint_text.startswith("/api/client/statistics/all_sku_promo/"):
+        return "all_sku_promo_job_create"
+    if endpoint_text == "/api/client/campaign":
+        return "campaign_list"
+    if endpoint_text == "/api/client/token":
+        return "token"
+
+    return "other"
+
+
 def response_body_preview(response, limit=1000):
     try:
         text = response.text or ""
@@ -452,12 +523,19 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Load Ozon Performance advertising expenses by SKU.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("full", "cpc-backfill"),
+        default="full",
+        help="full = CPC + CPO flow; cpc-backfill = retry only pending CPC for one day and one batch",
+    )
     parser.add_argument("--days-back", type=int, default=30)
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--group-by", default=DEFAULT_GROUP_BY)
     parser.add_argument("--campaign-limit", type=int)
-    parser.add_argument("--campaign-batch-size", type=int, default=5)
+    parser.add_argument("--campaign-batch-size", type=int, default=DEFAULT_CAMPAIGN_BATCH_SIZE)
+    parser.add_argument("--max-cpc-batches", type=int)
     parser.add_argument(
         "--campaign-scope",
         choices=("recent", "all"),
@@ -522,6 +600,23 @@ def campaign_updated_in_period(campaign, date_from, date_to):
     return True
 
 
+def campaign_created_in_period(campaign, date_from, date_to):
+    created_at = parse_iso_date(campaign.get("createdAt") or campaign.get("created_at"))
+    period_from = parse_iso_date(date_from)
+    period_to = parse_iso_date(date_to)
+
+    if not created_at:
+        return False
+
+    if period_from and created_at < period_from:
+        return False
+
+    if period_to and created_at > period_to:
+        return False
+
+    return True
+
+
 def filter_campaigns(campaigns, date_from, date_to, scope):
     intersecting = [
         campaign
@@ -547,6 +642,53 @@ def filter_campaigns(campaigns, date_from, date_to, scope):
         reverse=False,
     )
     return filtered
+
+
+def is_cpc_campaign(campaign):
+    payment_type = str(campaign.get("PaymentType") or campaign.get("paymentType") or "").upper()
+    if payment_type:
+        return payment_type == "CPC"
+
+    campaign_text_value = " ".join(
+        str(value)
+        for key, value in campaign.items()
+        if not isinstance(value, (dict, list)) and key not in {"id", "campaignId"}
+    ).lower()
+    return "cpc" in campaign_text_value or "оплата за клик" in campaign_text_value
+
+
+def cpc_activity_markers(campaign, date_from, date_to):
+    markers = []
+
+    if is_running_campaign(campaign):
+        markers.append("running")
+
+    if campaign_updated_in_period(campaign, date_from, date_to):
+        markers.append("updated_in_period")
+
+    if campaign_created_in_period(campaign, date_from, date_to):
+        markers.append("created_in_period")
+
+    return markers
+
+
+def filter_cpc_campaigns(campaigns, date_from, date_to, scope):
+    filtered = filter_campaigns(campaigns, date_from, date_to, scope)
+    cpc_campaigns = []
+
+    for campaign in filtered:
+        if not is_cpc_campaign(campaign):
+            continue
+
+        markers = cpc_activity_markers(campaign, date_from, date_to)
+        if scope != "all" and not markers:
+            continue
+
+        prepared = dict(campaign)
+        prepared["_cpc_activity_markers"] = markers
+        cpc_campaigns.append(prepared)
+
+    return cpc_campaigns
 
 
 def parse_number(value):
@@ -629,6 +771,33 @@ def build_utc_time_bounds(date_from, date_to):
     utc_from = local_from.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
     utc_to = local_to.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
     return utc_from, utc_to
+
+
+def parse_hhmm(value):
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if not match:
+        raise ValueError(f"Invalid HH:MM value: {value}")
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"Invalid HH:MM value: {value}")
+
+    return hour, minute
+
+
+def ensure_cpc_backfill_window_open():
+    # This is an assumed safe reset window for Ozon statistics jobs, pending Ozon confirmation.
+    hour, minute = parse_hhmm(CPC_BACKFILL_START_HHMM)
+    now_local = local_now()
+    window_open = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now_local < window_open:
+        raise RuntimeError(
+            "cpc-backfill mode is allowed only after "
+            f"{CPC_BACKFILL_START_HHMM} {APP_TIMEZONE}. "
+            f"Current local time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        )
 
 
 def mask_client_id(value):
@@ -925,6 +1094,10 @@ class OzonPerformanceClient:
         self.state.setdefault("runs", {})[run_key] = summary
         self.save_state()
 
+    def get_run_status(self, date_from, date_to):
+        run_key = f"{date_from}:{date_to}"
+        return self.state.get("runs", {}).get(run_key) or {}
+
     def set_cooldown(self, key, cooldown_until):
         self.state.setdefault("cooldowns", {})[key] = cooldown_until
         self.save_state()
@@ -977,6 +1150,29 @@ class OzonPerformanceClient:
         if key in self.state.get("batch_recommendations", {}):
             self.state["batch_recommendations"].pop(key, None)
             self.save_state()
+
+    def record_request_event(self, method, endpoint, response=None, extra=None):
+        history = self.state.setdefault("request_history", [])
+        event = {
+            "timestamp": to_iso(utcnow()),
+            "account_signature": self.account_signature,
+            "method": str(method or "").upper(),
+            "endpoint": endpoint,
+            "request_kind": infer_request_kind(method, endpoint),
+        }
+
+        if response is not None:
+            event["status"] = int(response.status_code)
+
+        extra = extra or {}
+        if "retry_after_seconds" in extra:
+            event["retry_after_seconds"] = extra.get("retry_after_seconds")
+        if "cooldown_until" in extra:
+            event["cooldown_until"] = extra.get("cooldown_until")
+
+        history.append(event)
+        self.state["request_history"] = prune_request_history(history)
+        self.save_state()
 
     def ensure_token(self):
         if self.token and time.time() < self.token_expires_at - 60:
@@ -1075,6 +1271,17 @@ class OzonPerformanceClient:
                         "retry_profile": retry_profile,
                     },
                 )
+                self.record_request_event(
+                    method,
+                    endpoint,
+                    response=response,
+                    extra={
+                        "attempt": attempt,
+                        "retry_profile": retry_profile,
+                        "retry_after_seconds": retry_after_seconds,
+                        "cooldown_until": cooldown_until_iso,
+                    },
+                )
 
                 if cooldown_key:
                     self.set_cooldown(cooldown_key, cooldown_until_iso)
@@ -1104,6 +1311,15 @@ class OzonPerformanceClient:
                 continue
 
             log_http_response(endpoint, attempt, response, extra={"retry_profile": retry_profile})
+            self.record_request_event(
+                method,
+                endpoint,
+                response=response,
+                extra={
+                    "attempt": attempt,
+                    "retry_profile": retry_profile,
+                },
+            )
             response.raise_for_status()
             return response
 
@@ -1208,8 +1424,10 @@ class OzonPerformanceClient:
 
         return uuid, False, payload, endpoint
 
-    def wait_statistics(self, uuid):
-        for attempt in range(1, 31):
+    def wait_statistics(self, uuid, poll_profile="default"):
+        profile = POLL_PROFILES[poll_profile]
+
+        for attempt in range(1, int(profile["max_attempts"]) + 1):
             response = self.request("GET", f"/api/client/statistics/{uuid}")
             data = response.json()
             state = str(data.get("state") or data.get("status") or "").upper()
@@ -1221,7 +1439,15 @@ class OzonPerformanceClient:
                 self.forget_jobs_by_uuid(uuid)
                 raise RuntimeError(f"Ozon Performance report failed: {data}")
 
-            time.sleep(min(30, attempt * 2))
+            sleep_seconds = min(
+                int(profile["cap_sleep_seconds"]),
+                int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
+            )
+            print(
+                f"Ozon Performance polling UUID={uuid} state={state or 'PENDING'} "
+                f"attempt={attempt} sleep={sleep_seconds} profile={poll_profile}"
+            )
+            time.sleep(sleep_seconds)
 
         self.forget_jobs_by_uuid(uuid)
         raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
@@ -1256,7 +1482,7 @@ class OzonPerformanceClient:
         )
         return response.text.lstrip("\ufeff")
 
-    def fetch_statistics_json_report(self, campaign_ids, date_from, date_to, group_by):
+    def fetch_statistics_json_report(self, campaign_ids, date_from, date_to, group_by, allow_recreate=True):
         endpoint = "/api/client/statistics/json"
         last_exc = None
 
@@ -1268,14 +1494,14 @@ class OzonPerformanceClient:
                 group_by,
                 force_new=(attempt == 2),
             )
-            status = self.wait_statistics(uuid)
+            status = self.wait_statistics(uuid, poll_profile="statistics_json")
 
             try:
                 report_data = self.download_report(uuid)
                 return uuid, status, report_data
             except requests.HTTPError as exc:
                 status_code = getattr(exc.response, "status_code", None)
-                if cache_hit and status_code in {403, 404}:
+                if cache_hit and status_code in {403, 404} and allow_recreate:
                     print(
                         f"Cached statistics/json UUID invalidated: uuid={uuid}, "
                         f"status={status_code}, recreating report"
@@ -1300,7 +1526,7 @@ class OzonPerformanceClient:
                 date_to,
                 force_new=(attempt == 2),
             )
-            status = self.wait_statistics(uuid)
+            status = self.wait_statistics(uuid, poll_profile="all_sku_promo")
 
             try:
                 csv_text = self.download_report_by_link(status.get("link"), uuid=uuid)
@@ -1498,6 +1724,12 @@ def aggregate_rows(rows):
     return list(grouped.values())
 
 
+def extract_pending_cpc_batch(run_status):
+    cpc_status = (run_status or {}).get("cpc") or {}
+    failed_batch = cpc_status.get("failed_batch") or []
+    return [str(campaign_id) for campaign_id in failed_batch if str(campaign_id).strip()]
+
+
 def save_rows(rows):
     if not rows:
         print("Нет рекламных расходов Ozon Performance для записи")
@@ -1548,24 +1780,68 @@ def run():
     campaigns = client.list_campaigns()
     print(f"Ozon Performance campaigns total: {len(campaigns)}")
 
-    campaigns = filter_campaigns(campaigns, date_from, date_to, args.campaign_scope)
-    print(f"Ozon Performance campaigns after {args.campaign_scope} filter: {len(campaigns)}")
+    period_campaigns = filter_campaigns(campaigns, date_from, date_to, args.campaign_scope)
+    print(
+        f"Ozon Performance campaigns after {args.campaign_scope} period filter: "
+        f"{len(period_campaigns)}"
+    )
+
+    cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
+    print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")
 
     if args.campaign_limit:
-        campaigns = campaigns[:args.campaign_limit]
+        cpc_campaigns = cpc_campaigns[:args.campaign_limit]
+
+    cpc_campaigns_by_id = {
+        str(campaign.get("id") or campaign.get("campaignId")): campaign
+        for campaign in cpc_campaigns
+        if campaign.get("id") or campaign.get("campaignId")
+    }
+    cpc_campaign_ids = list(cpc_campaigns_by_id.keys())
+    cpc_activity_sample = {
+        campaign_id: cpc_campaigns_by_id[campaign_id].get("_cpc_activity_markers", [])
+        for campaign_id in cpc_campaign_ids[:10]
+    }
 
     campaigns_by_id = {
         str(campaign.get("id") or campaign.get("campaignId")): campaign
-        for campaign in campaigns
+        for campaign in period_campaigns
         if campaign.get("id") or campaign.get("campaignId")
     }
-    campaign_ids = list(campaigns_by_id.keys())
+    print(f"Ozon Performance period campaigns for CPO/context: {len(campaigns_by_id)}")
+    print(f"Ozon Performance CPC campaigns for statistics/json: {len(cpc_campaign_ids)}")
+    if cpc_activity_sample:
+        print("Ozon Performance CPC activity markers sample:")
+        print(json.dumps(cpc_activity_sample, ensure_ascii=False))
 
-    print(f"Ozon Performance campaigns: {len(campaign_ids)}")
-
-    if not campaign_ids:
-        print("Нет рекламных кампаний Ozon Performance")
-        return
+    if args.mode == "cpc-backfill":
+        ensure_cpc_backfill_window_open()
+        if date_from != date_to:
+            raise RuntimeError(
+                "cpc-backfill mode supports exactly one calendar day. "
+                f"Got {date_from}..{date_to}"
+            )
+        previous_run = client.get_run_status(date_from, date_to)
+        pending_batch = extract_pending_cpc_batch(previous_run)
+        if not pending_batch:
+            raise RuntimeError(
+                "Нет pending CPC batch для backfill. Сначала нужен partial_ads run "
+                "с cpc.status=pending_429 за этот день."
+            )
+        cpc_campaign_ids = [
+            campaign_id
+            for campaign_id in pending_batch
+            if campaign_id in cpc_campaigns_by_id
+        ]
+        if not cpc_campaign_ids:
+            raise RuntimeError(
+                "Pending CPC batch не пересёкся с текущим списком CPC кампаний. "
+                "Проверь campaign filters или список кампаний в Ozon."
+            )
+        print(
+            "Ozon Performance CPC backfill pending batch: "
+            f"{cpc_campaign_ids}"
+        )
 
     batch_size = min(
         requested_batch_size,
@@ -1574,11 +1850,17 @@ def run():
             requested_batch_size,
         ),
     )
+    max_cpc_batches = args.max_cpc_batches
+    if args.mode == "cpc-backfill":
+        batch_size = min(batch_size, len(cpc_campaign_ids)) if cpc_campaign_ids else batch_size
+        max_cpc_batches = 1
 
     run_summary = {
+        "mode": args.mode,
         "date_from": date_from,
         "date_to": date_to,
-        "campaign_count": len(campaign_ids),
+        "period_campaign_count": len(campaigns_by_id),
+        "campaign_count": len(cpc_campaign_ids),
         "requested_batch_size": requested_batch_size,
         "batch_size": batch_size,
         "cpc": empty_stage_status("not_started"),
@@ -1597,55 +1879,119 @@ def run():
     cpc_batches_total = 0
     cpc_batches_completed = 0
 
-    for campaign_batch in chunks(campaign_ids, batch_size):
-        cpc_batches_total += 1
-        print(f"Запрашиваем Ozon Performance report: {campaign_batch}")
+    if not cpc_campaign_ids:
+        run_summary["cpc"] = empty_stage_status(
+            "skipped",
+            reason="no_cpc_campaigns_for_period",
+            batch_size=batch_size,
+            campaign_count=0,
+            batches_total=0,
+            batches_completed=0,
+        )
+    else:
+        for campaign_batch in chunks(cpc_campaign_ids, batch_size):
+            if max_cpc_batches and cpc_batches_total >= max_cpc_batches:
+                print(
+                    "Ozon Performance CPC batch limit reached: "
+                    f"{max_cpc_batches}"
+                )
+                break
+
+            cpc_batches_total += 1
+            print(f"Запрашиваем Ozon Performance CPC statistics/json batch: {campaign_batch}")
+            try:
+                uuid, _, report_data = client.fetch_statistics_json_report(
+                    campaign_batch,
+                    date_from,
+                    date_to,
+                    args.group_by,
+                    allow_recreate=(args.mode != "cpc-backfill"),
+                )
+            except RateLimitPending as exc:
+                client.set_batch_recommendation(
+                    client.scoped_state_key("statistics_json"),
+                    1,
+                    ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
+                )
+                run_summary["cpc"] = empty_stage_status(
+                    "pending_429",
+                    endpoint=exc.endpoint,
+                    batch_size=batch_size,
+                    retry_after_seconds=exc.retry_after_seconds,
+                    cooldown_until=exc.cooldown_until,
+                    attempt=exc.attempt,
+                    failed_batch=campaign_batch,
+                    campaign_count=len(cpc_campaign_ids),
+                    batches_total=max(cpc_batches_total, 1),
+                    batches_completed=cpc_batches_completed,
+                )
+                print("CPC statistics/json pending_429:")
+                print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
+                break
+            except Exception as exc:
+                run_summary["cpc"] = empty_stage_status(
+                    "failed",
+                    batch_size=batch_size,
+                    failed_batch=campaign_batch,
+                    error=str(exc),
+                )
+                run_summary["overall_status"] = "failed"
+                run_summary["updated_at"] = to_iso(utcnow())
+                client.write_run_status(run_summary)
+                raise
+            print(f"CPC UUID: {uuid}")
+            cpc_batches_completed += 1
+
+            if args.debug_sample:
+                print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
+
+            rows, counters = build_rows(report_data, campaigns_by_id, date_from)
+
+            for row in rows:
+                key = (
+                    row["expense_date"],
+                    row["marketplace_sku"],
+                    row["expense_type"],
+                )
+                if key not in rows_by_key:
+                    rows_by_key[key] = row
+                else:
+                    rows_by_key[key]["expense_amount"] += row["expense_amount"]
+
+            for key, value in counters.items():
+                total_counters[key] += value
+
+            time.sleep(2)
+
+        if run_summary["cpc"]["status"] == "not_started":
+            run_summary["cpc"] = empty_stage_status(
+                "success",
+                batch_size=batch_size,
+                campaign_count=len(cpc_campaign_ids),
+                batches_total=cpc_batches_total,
+                batches_completed=cpc_batches_completed,
+            )
+            client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
+
+    if args.mode == "cpc-backfill":
+        run_summary["cpo"] = empty_stage_status(
+            "skipped",
+            reason="cpc_backfill_mode",
+        )
+    else:
+        print("Запрашиваем Ozon all_sku_promo orders report")
         try:
-            uuid, _, report_data = client.fetch_statistics_json_report(
-                campaign_batch,
-                date_from,
-                date_to,
-                args.group_by,
-            )
-        except RateLimitPending as exc:
-            client.set_batch_recommendation(
-                client.scoped_state_key("statistics_json"),
-                1,
-                ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
-            )
-            run_summary["cpc"] = empty_stage_status(
-                "pending_429",
-                endpoint=exc.endpoint,
-                batch_size=batch_size,
-                retry_after_seconds=exc.retry_after_seconds,
-                cooldown_until=exc.cooldown_until,
-                attempt=exc.attempt,
-                failed_batch=campaign_batch,
-                campaign_count=len(campaign_ids),
-            )
-            print("CPC statistics/json pending_429:")
-            print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
-            break
+            cpo_uuid, cpo_status, cpo_csv = client.fetch_all_sku_promo_csv("orders", date_from, date_to)
+            print(f"CPO UUID: {cpo_uuid}")
+            cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
         except Exception as exc:
-            run_summary["cpc"] = empty_stage_status(
-                "failed",
-                batch_size=batch_size,
-                failed_batch=campaign_batch,
-                error=str(exc),
-            )
+            run_summary["cpo"] = empty_stage_status("failed", error=str(exc))
             run_summary["overall_status"] = "failed"
             run_summary["updated_at"] = to_iso(utcnow())
             client.write_run_status(run_summary)
             raise
-        print(f"UUID: {uuid}")
-        cpc_batches_completed += 1
 
-        if args.debug_sample:
-            print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
-
-        rows, counters = build_rows(report_data, campaigns_by_id, date_from)
-
-        for row in rows:
+        for row in cpo_rows:
             key = (
                 row["expense_date"],
                 row["marketplace_sku"],
@@ -1656,88 +2002,50 @@ def run():
             else:
                 rows_by_key[key]["expense_amount"] += row["expense_amount"]
 
-        for key, value in counters.items():
+        for key, value in cpo_counters.items():
             total_counters[key] += value
 
-        time.sleep(2)
+        print("CPO reconciliation:")
+        print(cpo_summary)
+        cpo_context = build_cpo_reconciliation_context(date_from, date_to, cpo_uuid, cpo_summary)
+        print("CPO reconciliation context:")
+        print(json.dumps(cpo_context, ensure_ascii=False))
+        difference_abs = abs(float(cpo_summary["difference"]))
+        if difference_abs > RECON_ERROR_THRESHOLD:
+            message = (
+                "CPO expense reconciliation difference is above error threshold: "
+                f"{json.dumps(cpo_context, ensure_ascii=False)}"
+            )
+            print(f"ERROR: {message}")
+            run_summary["cpo"] = empty_stage_status(
+                "failed",
+                uuid=cpo_uuid,
+                reconciliation=cpo_summary,
+                error=message,
+            )
+            run_summary["overall_status"] = "failed"
+            run_summary["updated_at"] = to_iso(utcnow())
+            client.write_run_status(run_summary)
+            raise RuntimeError(message)
+        elif difference_abs > RECON_WARNING_THRESHOLD:
+            print(
+                "WARNING: CPO expense reconciliation difference is above rounding tolerance: "
+                f"{json.dumps(cpo_context, ensure_ascii=False)}"
+            )
 
-    if run_summary["cpc"]["status"] == "not_started":
-        run_summary["cpc"] = empty_stage_status(
-            "success",
-            batch_size=batch_size,
-            campaign_count=len(campaign_ids),
-            batches_total=cpc_batches_total,
-            batches_completed=cpc_batches_completed,
-        )
-        client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
+        if cpo_counters.get("advertising_order_other"):
+            print(
+                "WARNING: Найдены CPO-ставки вне 5% и 10%, "
+                f"строк: {cpo_counters['advertising_order_other']}"
+            )
 
-    print("Запрашиваем Ozon all_sku_promo orders report")
-    try:
-        cpo_uuid, cpo_status, cpo_csv = client.fetch_all_sku_promo_csv("orders", date_from, date_to)
-        print(f"CPO UUID: {cpo_uuid}")
-        cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
-    except Exception as exc:
-        run_summary["cpo"] = empty_stage_status("failed", error=str(exc))
-        run_summary["overall_status"] = "failed"
-        run_summary["updated_at"] = to_iso(utcnow())
-        client.write_run_status(run_summary)
-        raise
-
-    for row in cpo_rows:
-        key = (
-            row["expense_date"],
-            row["marketplace_sku"],
-            row["expense_type"],
-        )
-        if key not in rows_by_key:
-            rows_by_key[key] = row
-        else:
-            rows_by_key[key]["expense_amount"] += row["expense_amount"]
-
-    for key, value in cpo_counters.items():
-        total_counters[key] += value
-
-    print("CPO reconciliation:")
-    print(cpo_summary)
-    cpo_context = build_cpo_reconciliation_context(date_from, date_to, cpo_uuid, cpo_summary)
-    print("CPO reconciliation context:")
-    print(json.dumps(cpo_context, ensure_ascii=False))
-    difference_abs = abs(float(cpo_summary["difference"]))
-    if difference_abs > RECON_ERROR_THRESHOLD:
-        message = (
-            "CPO expense reconciliation difference is above error threshold: "
-            f"{json.dumps(cpo_context, ensure_ascii=False)}"
-        )
-        print(f"ERROR: {message}")
         run_summary["cpo"] = empty_stage_status(
-            "failed",
+            "success",
             uuid=cpo_uuid,
+            rows=len(cpo_rows),
+            counters=dict(cpo_counters),
             reconciliation=cpo_summary,
-            error=message,
         )
-        run_summary["overall_status"] = "failed"
-        run_summary["updated_at"] = to_iso(utcnow())
-        client.write_run_status(run_summary)
-        raise RuntimeError(message)
-    elif difference_abs > RECON_WARNING_THRESHOLD:
-        print(
-            "WARNING: CPO expense reconciliation difference is above rounding tolerance: "
-            f"{json.dumps(cpo_context, ensure_ascii=False)}"
-        )
-
-    if cpo_counters.get("advertising_order_other"):
-        print(
-            "WARNING: Найдены CPO-ставки вне 5% и 10%, "
-            f"строк: {cpo_counters['advertising_order_other']}"
-        )
-
-    run_summary["cpo"] = empty_stage_status(
-        "success",
-        uuid=cpo_uuid,
-        rows=len(cpo_rows),
-        counters=dict(cpo_counters),
-        reconciliation=cpo_summary,
-    )
 
     rows = enrich_rows(list(rows_by_key.values()), catalog)
 
@@ -1749,9 +2057,20 @@ def run():
         by_type[row["expense_type"]] += float(row.get("expense_amount") or 0)
     print({key: round(value, 2) for key, value in sorted(by_type.items())})
 
-    if run_summary["cpc"]["status"] == "pending_429" and run_summary["cpo"]["status"] == "success":
+    if args.mode == "cpc-backfill":
+        if run_summary["cpc"]["status"] == "success":
+            run_summary["overall_status"] = "success"
+        elif run_summary["cpc"]["status"] == "pending_429":
+            run_summary["overall_status"] = "partial_ads"
+        elif run_summary["cpc"]["status"] == "skipped":
+            run_summary["overall_status"] = "skipped"
+        else:
+            run_summary["overall_status"] = "failed"
+    elif run_summary["cpc"]["status"] == "pending_429" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "partial_ads"
     elif run_summary["cpc"]["status"] == "success" and run_summary["cpo"]["status"] == "success":
+        run_summary["overall_status"] = "success"
+    elif run_summary["cpc"]["status"] == "skipped" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"
     else:
         run_summary["overall_status"] = "failed"

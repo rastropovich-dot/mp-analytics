@@ -846,9 +846,25 @@ class OzonPerformanceClient:
         self.token_expires_at = 0
         self.state = load_state()
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
+        self.migrate_legacy_rate_limit_state()
 
     def save_state(self):
         save_state(self.state)
+
+    def scoped_state_key(self, key):
+        return f"{key}:{self.account_signature}"
+
+    def migrate_legacy_rate_limit_state(self):
+        changed = False
+
+        for section_name in ("cooldowns", "batch_recommendations"):
+            section = self.state.get(section_name, {})
+            if "statistics_json" in section:
+                section.pop("statistics_json", None)
+                changed = True
+
+        if changed:
+            self.save_state()
 
     def get_job_cache_key(self, endpoint, payload):
         cache_identity = {
@@ -1137,7 +1153,7 @@ class OzonPerformanceClient:
             "POST",
             "/api/client/statistics/json",
             retry_profile="statistics_json",
-            cooldown_key="statistics_json",
+            cooldown_key=self.scoped_state_key("statistics_json"),
             json=payload,
             headers={"Content-Type": "application/json"},
         )
@@ -1553,7 +1569,10 @@ def run():
 
     batch_size = min(
         requested_batch_size,
-        client.get_batch_recommendation("statistics_json", requested_batch_size),
+        client.get_batch_recommendation(
+            client.scoped_state_key("statistics_json"),
+            requested_batch_size,
+        ),
     )
 
     run_summary = {
@@ -1590,7 +1609,7 @@ def run():
             )
         except RateLimitPending as exc:
             client.set_batch_recommendation(
-                "statistics_json",
+                client.scoped_state_key("statistics_json"),
                 1,
                 ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
             )
@@ -1650,7 +1669,7 @@ def run():
             batches_total=cpc_batches_total,
             batches_completed=cpc_batches_completed,
         )
-        client.clear_batch_recommendation("statistics_json")
+        client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
 
     print("Запрашиваем Ozon all_sku_promo orders report")
     try:

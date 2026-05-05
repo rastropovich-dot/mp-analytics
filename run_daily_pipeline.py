@@ -1,3 +1,4 @@
+import argparse
 import html
 import os
 import subprocess
@@ -33,6 +34,16 @@ STEPS = [
     ("Excel: выгрузка управленческого отчета", "python3 export_management_excel.py"),
     ("Telegram: отправка сигналов", "python3 alerts_telegram.py"),
 ]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run MP Analytics daily pipeline.")
+    parser.add_argument(
+        "--skip-telegram",
+        action="store_true",
+        help="Skip Telegram executive report step. Useful when report is scheduled by a separate cron job.",
+    )
+    return parser.parse_args()
 
 
 def send_failure_alert(title, returncode, tail_lines):
@@ -113,10 +124,14 @@ def run_step(title, command):
 
 
 def main():
+    args = parse_args()
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     for title, command in STEPS:
+        if args.skip_telegram and title.startswith("Telegram:"):
+            print(f"⏭️ Пропускаем шаг: {title}")
+            continue
         run_step(title, command)
 
     print("\n✅ Весь пайплайн успешно завершен")

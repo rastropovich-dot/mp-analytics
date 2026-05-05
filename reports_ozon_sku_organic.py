@@ -86,7 +86,7 @@ def fetch_all(table, filters=None, order=None):
     return all_rows
 
 
-def load_total_orders(date_from, date_to):
+def load_total_orders_from_marketplace_orders(date_from, date_to):
     rows = fetch_all(
         "marketplace_orders",
         filters=[
@@ -123,6 +123,72 @@ def load_total_orders(date_from, date_to):
             grouped[key]["article"] = row.get("article")
         if not grouped[key].get("product_name") and row.get("product_name"):
             grouped[key]["product_name"] = row.get("product_name")
+
+    return grouped
+
+
+def load_total_orders_from_seller_analytics(date_from, date_to):
+    try:
+        rows = fetch_all(
+            "ozon_daily_sku_total_orders",
+            filters=[
+                ("marketplace_code", "eq", "ozon"),
+                ("total_revenue_source", "eq", "seller_analytics"),
+                ("sale_date", "gte", date_from),
+                ("sale_date", "lte", date_to),
+            ],
+            order="sale_date",
+        )
+    except Exception as e:
+        print(
+            "Не удалось загрузить ozon_daily_sku_total_orders. "
+            "Проверьте миграцию sql/20260506_create_ozon_daily_sku_total_orders.sql. "
+            f"Ошибка: {e}"
+        )
+        return {}
+
+    grouped = {}
+
+    for row in rows:
+        sale_date = row.get("sale_date")
+        sku = str(row.get("marketplace_sku") or "")
+        if not sale_date or not sku:
+            continue
+
+        key = (sale_date, sku)
+        if key not in grouped:
+            grouped[key] = {
+                "sale_date": sale_date,
+                "marketplace_code": "ozon",
+                "marketplace_sku": sku,
+                "article": row.get("article") or "",
+                "product_name": row.get("product_name") or "",
+                "total_orders_qty": 0.0,
+                "total_orders_revenue": 0.0,
+                "total_revenue_source": row.get("total_revenue_source") or "seller_analytics",
+            }
+
+        grouped[key]["total_orders_qty"] += float(row.get("total_orders_qty") or 0)
+        grouped[key]["total_orders_revenue"] += float(row.get("total_orders_revenue") or 0)
+        if not grouped[key].get("article") and row.get("article"):
+            grouped[key]["article"] = row.get("article")
+        if not grouped[key].get("product_name") and row.get("product_name"):
+            grouped[key]["product_name"] = row.get("product_name")
+
+    return grouped
+
+
+def load_total_orders(date_from, date_to):
+    analytics_by_key = load_total_orders_from_seller_analytics(date_from, date_to)
+    marketplace_by_key = load_total_orders_from_marketplace_orders(date_from, date_to)
+
+    grouped = dict(analytics_by_key)
+    for key, row in marketplace_by_key.items():
+        if key in grouped:
+            continue
+        row_copy = dict(row)
+        row_copy["total_revenue_source"] = "marketplace_orders"
+        grouped[key] = row_copy
 
     return grouped
 
@@ -217,6 +283,8 @@ def calculate_row(total_row, ad_row, ad_coverage_exists):
 
     if total_row is None:
         calculation_status = "missing_total"
+        if ad_row is not None and (ad_qty > 0 or ad_revenue > 0):
+            warnings.append("ad_attribution_without_total")
     elif ad_row is None and ad_coverage_exists:
         ad_qty = 0.0
         ad_revenue = 0.0
@@ -269,6 +337,7 @@ def build_organic_rows(date_from, date_to):
             "marketplace_sku": sku,
             "article": sample.get("article") or "",
             "product_name": sample.get("product_name") or "",
+            "total_revenue_source": (total_row or {}).get("total_revenue_source"),
             **calculated,
         }
 
@@ -291,6 +360,11 @@ def build_organic_rows(date_from, date_to):
             "organic_orders_qty": round(sum(float(row.get("organic_orders_qty") or 0) for row in rows), 2),
             "organic_orders_revenue": round(sum(float(row.get("organic_orders_revenue") or 0) for row in rows), 2),
         },
+        "total_source_counts": {
+            "seller_analytics": sum(1 for row in rows if row.get("total_revenue_source") == "seller_analytics"),
+            "marketplace_orders": sum(1 for row in rows if row.get("total_revenue_source") == "marketplace_orders"),
+            "missing_total": sum(1 for row in rows if row.get("calculation_status") == "missing_total"),
+        },
     }
 
     return rows, summary
@@ -301,7 +375,13 @@ def save_rows(rows):
         print("Нет Ozon organic rows для записи")
         return
 
-    for batch in chunks(rows, 500):
+    prepared_rows = []
+    for row in rows:
+        prepared = dict(row)
+        prepared.pop("total_revenue_source", None)
+        prepared_rows.append(prepared)
+
+    for batch in chunks(prepared_rows, 500):
         try:
             supabase.table("ozon_daily_sku_organic").upsert(
                 batch,
@@ -315,7 +395,7 @@ def save_rows(rows):
             )
             return
 
-    print(f"✅ ozon_daily_sku_organic обновлена: {len(rows)} строк")
+    print(f"✅ ozon_daily_sku_organic обновлена: {len(prepared_rows)} строк")
 
 
 def print_sample(rows, limit=10):
@@ -329,7 +409,10 @@ def main():
     date_from, date_to = resolve_date_range(args)
 
     if not (args.from_db_only or args.no_api):
-        print("Текущая версия использует только DB source. Seller API fallback не требуется, потому что total orders уже есть в marketplace_orders.")
+        print(
+            "reports_ozon_sku_organic.py использует только DB sources. "
+            "Приоритет total source: ozon_daily_sku_total_orders(seller_analytics) -> marketplace_orders."
+        )
 
     rows, summary = build_organic_rows(date_from, date_to)
 

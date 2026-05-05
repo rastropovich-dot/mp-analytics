@@ -17,19 +17,28 @@
 
 ### Total orders / revenue
 
-Первая версия не делает отдельный Seller API backfill, потому что total already exists in project DB:
+Приоритет total source теперь такой:
+
+1. `ozon_daily_sku_total_orders` c `total_revenue_source = seller_analytics`
+2. fallback на `marketplace_orders`
+
+`ozon_daily_sku_total_orders` наполняется отдельным loader:
+
+- `loaders/ozon_sku_total_analytics_loader.py`
+
+Fallback `marketplace_orders` остается на случай, если seller analytics за дату еще не загружен:
 
 - таблица `marketplace_orders`
 - загрузчики:
   - `loaders/ozon_fbs_orders_loader.py`
   - `loaders/ozon_fbo_orders_loader.py`
 
-Для расчета используется:
+Для fallback используются:
 
 - `orders_qty`
 - `orders_amount_seller`
 
-`orders_amount_seller` в этом расчете считается `total_orders_revenue`, потому что именно эта метрика уже используется в проектных KPI и ROAS.
+Это проектная метрика, но для точной reconciliation organic рекомендуемый source — именно `seller_analytics`.
 
 ### Ad-attributed orders / revenue
 
@@ -99,6 +108,16 @@
 - `calculation_status`
 - `warning`
 
+### `ozon_daily_sku_total_orders`
+
+Хранит daily total source по SKU:
+
+- `sale_date`
+- `marketplace_sku`
+- `total_orders_qty`
+- `total_orders_revenue`
+- `total_revenue_source`
+
 ## Как запускать
 
 Обычный расчет из БД:
@@ -113,6 +132,12 @@ python3 reports_ozon_sku_organic.py --date 2026-04-02 --from-db-only
 python3 reports_ozon_sku_organic.py --date-from 2026-04-01 --date-to 2026-04-07 --from-db-only
 ```
 
+Загрузка total source из Seller Analytics:
+
+```bash
+python3 loaders/ozon_sku_total_analytics_loader.py --date 2026-04-02 --dry-run --debug-sample
+```
+
 Тестовый прогон без записи:
 
 ```bash
@@ -122,6 +147,9 @@ python3 reports_ozon_sku_organic.py --date 2026-04-02 --from-db-only --dry-run -
 ## Интерпретация полей
 
 - `total_orders_qty` / `total_orders_revenue` — вся дневная база заказов по SKU;
+- `total_revenue_source` в organic-расчете не хранится, но внутри расчета используется приоритет:
+  - `seller_analytics`
+  - `marketplace_orders`
 - `ad_orders_qty` / `ad_orders_revenue` — attributed-to-ads часть;
 - `organic_orders_qty` / `organic_orders_revenue` — расчетная органика;
 - `ad_share_orders` / `ad_share_revenue` — доля ads в total;

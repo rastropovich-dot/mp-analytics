@@ -113,6 +113,27 @@ def get_ozon_ads_breakdown(expense_date):
     return grouped
 
 
+def get_ozon_organic_warning_count(sale_date):
+    try:
+        result = (
+            supabase
+            .table("ozon_daily_sku_organic")
+            .select("warning")
+            .eq("marketplace_code", "ozon")
+            .eq("sale_date", sale_date)
+            .execute()
+        )
+    except Exception as e:
+        print(f"Не удалось загрузить Ozon organic warnings: {e}")
+        return 0
+
+    count = 0
+    for row in result.data or []:
+        if row.get("warning"):
+            count += 1
+    return count
+
+
 def save_today_snapshot(kpi_rows):
     """
     Сохраняем утренний срез текущих доступных данных.
@@ -398,6 +419,9 @@ def build_executive_summary(kpi_rows):
         logistics = num(row.get("logistics_amount"))
         other = num(row.get("other_expenses_amount"))
         ad_spend = num(row.get("ad_spend"))
+        ad_orders_revenue = num(row.get("ad_orders_revenue"))
+        organic_orders_revenue = num(row.get("organic_orders_revenue"))
+        ad_share_revenue = row.get("ad_share_revenue")
 
         total_expenses = commission + logistics + other + ad_spend
         net_after_expenses = buyouts_amount - total_expenses
@@ -417,6 +441,7 @@ def build_executive_summary(kpi_rows):
             )
         else:
             ads = get_ozon_ads_breakdown(target_date)
+            organic_warning_count = get_ozon_organic_warning_count(target_date)
             ads_unknown = (
                 ads["advertising_order_other"]
                 + ads["advertising_order_unknown"]
@@ -430,11 +455,19 @@ def build_executive_summary(kpi_rows):
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
             ads_line += "."
+            attribution_line = (
+                f"Атрибуция: реклама {fmt_money(ad_orders_revenue)} руб., "
+                f"органика {fmt_money(organic_orders_revenue)} руб., "
+                f"ad share {fmt_pct(ad_share_revenue)}."
+            )
+            if organic_warning_count > 0:
+                attribution_line += f" Warnings: {organic_warning_count}."
 
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"
                 f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
                 f"Реализация: {buyouts:.0f} шт / {fmt_money(buyouts_amount)} руб.\n"
+                f"{attribution_line}\n"
                 f"{ads_line}\n"
                 f"Комиссии: {fmt_money(commission)}, логистика: {fmt_money(logistics)}, прочие: {fmt_money(other)}.\n"
                 f"После расходов Ozon: {fmt_money(net_after_expenses)} руб.\n"

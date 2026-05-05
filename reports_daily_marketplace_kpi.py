@@ -69,7 +69,13 @@ def build_marketplace_kpi():
                 "buyout_rate": 0,
 
                 "ad_spend": 0,
+                "ad_orders_qty": 0,
+                "ad_orders_revenue": 0,
+                "organic_orders_qty": 0,
+                "organic_orders_revenue": 0,
                 "ad_share_of_orders": 0,
+                "ad_share_orders": 0,
+                "ad_share_revenue": 0,
                 "roas": 0,
 
                 "commission_amount": 0,
@@ -90,6 +96,10 @@ def build_marketplace_kpi():
         grouped[key]["buyouts_amount_seller"] += float(row.get("buyouts_amount_seller") or 0)
 
         grouped[key]["ad_spend"] += float(row.get("ad_spend") or 0)
+        grouped[key]["ad_orders_qty"] += float(row.get("ad_orders_qty") or 0)
+        grouped[key]["ad_orders_revenue"] += float(row.get("ad_orders_revenue") or 0)
+        grouped[key]["organic_orders_qty"] += float(row.get("organic_orders_qty") or 0)
+        grouped[key]["organic_orders_revenue"] += float(row.get("organic_orders_revenue") or 0)
         grouped[key]["commission_amount"] += float(row.get("commission_amount") or 0)
         grouped[key]["logistics_amount"] += float(row.get("logistics_amount") or 0)
         grouped[key]["other_expenses_amount"] += float(row.get("other_expenses_amount") or 0)
@@ -110,6 +120,14 @@ def build_marketplace_kpi():
 
         if row["orders_amount_seller"] > 0:
             row["ad_share_of_orders"] = round(row["ad_spend"] / row["orders_amount_seller"], 4)
+            row["ad_share_revenue"] = round(row["ad_orders_revenue"] / row["orders_amount_seller"], 4)
+        else:
+            row["ad_share_revenue"] = 0
+
+        if row["orders_qty"] > 0:
+            row["ad_share_orders"] = round(row["ad_orders_qty"] / row["orders_qty"], 4)
+        else:
+            row["ad_share_orders"] = 0
 
         if row["ad_spend"] > 0:
             row["roas"] = round(row["orders_amount_seller"] / row["ad_spend"], 4)

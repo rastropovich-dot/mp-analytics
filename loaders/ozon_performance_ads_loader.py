@@ -99,6 +99,15 @@ UPSERT_KEY_FIELDS = (
     "expense_type",
 )
 
+AD_ATTRIBUTION_UPSERT_KEY_FIELDS = (
+    "sale_date",
+    "marketplace_code",
+    "marketplace_sku",
+    "ad_source",
+    "attribution_type",
+    "campaign_id",
+)
+
 PERFORMANCE_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "ozon_performance"
 PERFORMANCE_STATE_PATH = PERFORMANCE_CACHE_DIR / "state.json"
 PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
@@ -2024,6 +2033,62 @@ def build_rows(report_data, campaigns_by_id, date_from):
     return list(grouped.values()), counters
 
 
+def build_cpc_attribution_rows(report_data, date_from):
+    grouped = {}
+    counters = defaultdict(int)
+
+    for raw_row in flatten_report_rows(report_data):
+        sale_date = normalize_date(value_by_keys(raw_row, DATE_KEYS), fallback=date_from)
+        sku = extract_sku(raw_row)
+
+        if not sale_date:
+            counters["without_date"] += 1
+            continue
+
+        if not sku:
+            counters["without_sku"] += 1
+            continue
+
+        ad_orders_qty = extract_orders(raw_row)
+        ad_orders_revenue = extract_revenue(raw_row)
+        ad_clicks = extract_clicks(raw_row)
+        ad_views = extract_views(raw_row)
+        ad_spend = extract_spend(raw_row)
+
+        if all(value == 0 for value in (ad_orders_qty, ad_orders_revenue, ad_clicks, ad_views, ad_spend)):
+            counters["zero_metrics"] += 1
+            continue
+
+        campaign_id = extract_campaign_id(raw_row)
+        key = (sale_date, sku, "cpc", campaign_id)
+        if key not in grouped:
+            grouped[key] = {
+                "sale_date": sale_date,
+                "marketplace_code": "ozon",
+                "marketplace_sku": sku,
+                "ad_source": "cpc",
+                "attribution_type": "direct",
+                "campaign_id": campaign_id,
+                "article": extract_article(raw_row),
+                "product_name": extract_product_name(raw_row),
+                "ad_orders_qty": 0.0,
+                "ad_orders_revenue": 0.0,
+                "ad_clicks": 0.0,
+                "ad_views": 0.0,
+                "ad_spend": 0.0,
+                "warning": None,
+            }
+
+        grouped[key]["ad_orders_qty"] += ad_orders_qty
+        grouped[key]["ad_orders_revenue"] += ad_orders_revenue
+        grouped[key]["ad_clicks"] += ad_clicks
+        grouped[key]["ad_views"] += ad_views
+        grouped[key]["ad_spend"] += ad_spend
+        counters["rows"] += 1
+
+    return list(grouped.values()), counters
+
+
 def classify_cpo_rate(rate_value):
     rate = parse_percent(rate_value)
 
@@ -2092,6 +2157,63 @@ def build_cpo_rows(csv_text):
     return rows, counters, summary
 
 
+def build_cpo_attribution_rows(csv_text):
+    grouped = {}
+    counters = defaultdict(int)
+    lines = csv_text.splitlines()
+    if lines and lines[0].startswith(";"):
+        lines = lines[1:]
+
+    reader = csv.DictReader(io.StringIO("\n".join(lines)), delimiter=";")
+
+    for raw_row in reader:
+        sale_date = normalize_date(value_by_keys(raw_row, DATE_KEYS))
+        sku = extract_sku(raw_row)
+
+        if not sale_date:
+            counters["without_date"] += 1
+            continue
+
+        if not sku:
+            counters["without_sku"] += 1
+            continue
+
+        ad_orders_qty = extract_orders(raw_row)
+        ad_orders_revenue = extract_revenue(raw_row)
+        ad_spend = abs(parse_number(value_by_keys(raw_row, SPEND_KEYS)))
+
+        if all(value == 0 for value in (ad_orders_qty, ad_orders_revenue, ad_spend)):
+            counters["zero_metrics"] += 1
+            continue
+
+        campaign_id = extract_campaign_id(raw_row)
+        key = (sale_date, sku, "cpo", campaign_id)
+        if key not in grouped:
+            grouped[key] = {
+                "sale_date": sale_date,
+                "marketplace_code": "ozon",
+                "marketplace_sku": sku,
+                "ad_source": "cpo",
+                "attribution_type": "direct",
+                "campaign_id": campaign_id,
+                "article": extract_article(raw_row),
+                "product_name": extract_product_name(raw_row),
+                "ad_orders_qty": 0.0,
+                "ad_orders_revenue": 0.0,
+                "ad_clicks": 0.0,
+                "ad_views": 0.0,
+                "ad_spend": 0.0,
+                "warning": None,
+            }
+
+        grouped[key]["ad_orders_qty"] += ad_orders_qty
+        grouped[key]["ad_orders_revenue"] += ad_orders_revenue
+        grouped[key]["ad_spend"] += ad_spend
+        counters["rows"] += 1
+
+    return list(grouped.values()), counters
+
+
 def enrich_rows(rows, catalog):
     for row in rows:
         catalog_row = catalog.get(row["marketplace_sku"])
@@ -2127,6 +2249,46 @@ def aggregate_rows(rows):
     return list(grouped.values())
 
 
+def aggregate_ad_attribution_rows(rows):
+    grouped = {}
+
+    for row in rows:
+        key = tuple(row.get(field) or "" for field in AD_ATTRIBUTION_UPSERT_KEY_FIELDS)
+
+        if key not in grouped:
+            grouped[key] = {
+                "sale_date": row.get("sale_date"),
+                "marketplace_code": row.get("marketplace_code"),
+                "marketplace_sku": row.get("marketplace_sku"),
+                "ad_source": row.get("ad_source"),
+                "attribution_type": row.get("attribution_type") or "direct",
+                "campaign_id": row.get("campaign_id") or "",
+                "article": row.get("article") or "",
+                "product_name": row.get("product_name") or "",
+                "ad_orders_qty": 0.0,
+                "ad_orders_revenue": 0.0,
+                "ad_clicks": 0.0,
+                "ad_views": 0.0,
+                "ad_spend": 0.0,
+                "warning": row.get("warning"),
+            }
+
+        grouped[key]["ad_orders_qty"] += float(row.get("ad_orders_qty") or 0)
+        grouped[key]["ad_orders_revenue"] += float(row.get("ad_orders_revenue") or 0)
+        grouped[key]["ad_clicks"] += float(row.get("ad_clicks") or 0)
+        grouped[key]["ad_views"] += float(row.get("ad_views") or 0)
+        grouped[key]["ad_spend"] += float(row.get("ad_spend") or 0)
+
+        if not grouped[key].get("article") and row.get("article"):
+            grouped[key]["article"] = row.get("article")
+        if not grouped[key].get("product_name") and row.get("product_name"):
+            grouped[key]["product_name"] = row.get("product_name")
+        if not grouped[key].get("warning") and row.get("warning"):
+            grouped[key]["warning"] = row.get("warning")
+
+    return list(grouped.values())
+
+
 def save_rows(rows):
     if not rows:
         print("Нет рекламных расходов Ozon Performance для записи")
@@ -2145,6 +2307,37 @@ def save_rows(rows):
         ).execute()
 
     print(f"✅ Ozon Performance ads записаны в marketplace_expenses: {len(aggregated_rows)} строк")
+
+
+def save_ad_attribution_rows(rows):
+    if not rows:
+        print("Нет Ozon Performance ad-attribution строк для записи")
+        return
+
+    aggregated_rows = aggregate_ad_attribution_rows(rows)
+    print(
+        "Ozon Performance ad-attribution rows before/after aggregation: "
+        f"{len(rows)} -> {len(aggregated_rows)}"
+    )
+
+    for batch in chunks(aggregated_rows, 500):
+        try:
+            supabase.table("ozon_daily_sku_ad_attribution").upsert(
+                batch,
+                on_conflict="sale_date,marketplace_code,marketplace_sku,ad_source,attribution_type,campaign_id",
+            ).execute()
+        except Exception as exc:
+            print(
+                "WARNING: Не удалось записать ad-attribution в ozon_daily_sku_ad_attribution. "
+                "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
+                f"Ошибка: {sanitize_text(exc)}"
+            )
+            return
+
+    print(
+        "✅ Ozon Performance ad-attribution записан в ozon_daily_sku_ad_attribution: "
+        f"{len(aggregated_rows)} строк"
+    )
 
 
 def run():
@@ -2270,6 +2463,7 @@ def run():
 
     catalog = load_catalog()
     rows_by_key = {}
+    ad_attribution_rows = []
     total_counters = defaultdict(int)
 
     cpc_batches_total = len(cpc_batches)
@@ -2364,6 +2558,7 @@ def run():
                 print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
 
             rows, counters = build_rows(report_data, campaigns_by_id, date_from)
+            attribution_rows, attribution_counters = build_cpc_attribution_rows(report_data, date_from)
 
             for row in rows:
                 key = (
@@ -2378,6 +2573,9 @@ def run():
 
             for key, value in counters.items():
                 total_counters[key] += value
+            ad_attribution_rows.extend(attribution_rows)
+            for key, value in attribution_counters.items():
+                total_counters[f"cpc_attribution_{key}"] += value
 
             time.sleep(2)
 
@@ -2412,6 +2610,7 @@ def run():
             cpo_uuid, cpo_status, cpo_csv = client.fetch_all_sku_promo_csv("orders", date_from, date_to)
             print(f"CPO UUID: {cpo_uuid}")
             cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
+            cpo_attribution_rows, cpo_attribution_counters = build_cpo_attribution_rows(cpo_csv)
         except Exception as exc:
             run_summary["cpo"] = empty_stage_status("failed", error=str(exc))
             run_summary["overall_status"] = "failed"
@@ -2432,6 +2631,9 @@ def run():
 
         for key, value in cpo_counters.items():
             total_counters[key] += value
+        ad_attribution_rows.extend(cpo_attribution_rows)
+        for key, value in cpo_attribution_counters.items():
+            total_counters[f"cpo_attribution_{key}"] += value
 
         print("CPO reconciliation:")
         print(cpo_summary)
@@ -2476,6 +2678,14 @@ def run():
         )
 
     rows = enrich_rows(list(rows_by_key.values()), catalog)
+    for row in ad_attribution_rows:
+        catalog_row = catalog.get(row["marketplace_sku"])
+        if not catalog_row:
+            continue
+        if not row.get("article"):
+            row["article"] = catalog_row.get("article") or ""
+        if not row.get("product_name"):
+            row["product_name"] = catalog_row.get("product_name") or ""
 
     print("Ozon Performance counters:")
     print(dict(total_counters))
@@ -2524,6 +2734,7 @@ def run():
         return
 
     save_rows(rows)
+    save_ad_attribution_rows(ad_attribution_rows)
     client.write_run_status(run_summary)
 
     if run_summary["overall_status"] == "partial_ads":

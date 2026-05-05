@@ -119,6 +119,19 @@ def build_excel():
     )
 
     daily_sku_kpi = fetch_all("daily_sku_kpi", order="kpi_date")
+    try:
+        ozon_organic = fetch_all(
+            "ozon_daily_sku_organic",
+            filters=[("marketplace_code", "eq", "ozon")],
+            order="sale_date",
+        )
+    except Exception as e:
+        print(
+            "Не удалось загрузить ozon_daily_sku_organic для Excel. "
+            "Продолжаем без листа Ozon Organic SKU. "
+            f"Ошибка: {e}"
+        )
+        ozon_organic = []
     ozon_expenses = fetch_all(
         "marketplace_expenses",
         filters=[("marketplace_code", "eq", "ozon")],
@@ -311,6 +324,50 @@ def build_excel():
     )
     style_sheet(ws_ads)
 
+    ws_organic = wb.create_sheet("Ozon Organic SKU")
+    organic_rows = []
+    for row in ozon_organic:
+        organic_rows.append([
+            row.get("sale_date"),
+            row.get("marketplace_sku"),
+            row.get("article"),
+            row.get("product_name"),
+            float(row.get("total_orders_qty") or 0),
+            float(row.get("total_orders_revenue") or 0),
+            float(row.get("ad_orders_qty") or 0),
+            float(row.get("ad_orders_revenue") or 0),
+            float(row.get("organic_orders_qty") or 0),
+            float(row.get("organic_orders_revenue") or 0),
+            float(row.get("ad_share_orders") or 0),
+            float(row.get("ad_share_revenue") or 0),
+            row.get("calculation_status"),
+            row.get("warning"),
+        ])
+
+    add_table(
+        ws_organic,
+        "Ozon: organic vs ad-attributed sales by SKU",
+        [
+            "Дата",
+            "SKU",
+            "Артикул",
+            "Название",
+            "Total orders qty",
+            "Total orders revenue",
+            "Ad orders qty",
+            "Ad orders revenue",
+            "Organic orders qty",
+            "Organic orders revenue",
+            "Ad share orders",
+            "Ad share revenue",
+            "Status",
+            "Warning",
+        ],
+        organic_rows,
+        1,
+    )
+    style_sheet(ws_organic)
+
     ws_raw = wb.create_sheet("Raw KPI")
     raw_rows = []
     for r in daily_sku_kpi:
@@ -326,6 +383,12 @@ def build_excel():
             float(r.get("buyouts_amount_seller") or 0),
             float(r.get("buyout_rate") or 0),
             float(r.get("ad_spend") or 0),
+            float(r.get("ad_orders_qty") or 0),
+            float(r.get("ad_orders_revenue") or 0),
+            float(r.get("organic_orders_qty") or 0),
+            float(r.get("organic_orders_revenue") or 0),
+            float(r.get("ad_share_orders") or 0),
+            float(r.get("ad_share_revenue") or 0),
             float(r.get("ad_share_of_orders") or 0),
             float(r.get("roas") or 0),
         ])
@@ -345,6 +408,12 @@ def build_excel():
             "Сумма выкупов",
             "% выкупа",
             "Реклама всего",
+            "Ad orders qty",
+            "Ad orders revenue",
+            "Organic orders qty",
+            "Organic orders revenue",
+            "Ad share orders",
+            "Ad share revenue",
             "ДРР",
             "ROAS",
         ],

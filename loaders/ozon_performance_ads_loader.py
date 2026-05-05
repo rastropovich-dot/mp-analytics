@@ -204,6 +204,14 @@ SKU_KEYS = (
     "ID товара",
 )
 
+PROMOTED_SKU_KEYS = (
+    "SKU продвигаемого товара",
+    "promotedSku",
+    "promoted_sku",
+    "promotedProductSku",
+    "promoted_product_sku",
+)
+
 ARTICLE_KEYS = (
     "offerId",
     "offer_id",
@@ -1029,8 +1037,7 @@ def extract_campaign_id(row):
     return str(value) if value not in (None, "") else ""
 
 
-def extract_sku(row):
-    value = value_by_keys(row, SKU_KEYS)
+def normalize_sku_value(value):
     if value in (None, ""):
         return ""
 
@@ -1039,6 +1046,24 @@ def extract_sku(row):
         text = text[:-2]
 
     return text
+
+
+def extract_sku(row):
+    return normalize_sku_value(value_by_keys(row, SKU_KEYS))
+
+
+def extract_promoted_sku(row):
+    return normalize_sku_value(value_by_keys(row, PROMOTED_SKU_KEYS))
+
+
+def extract_raw_sku(row):
+    value = value_by_keys(row, SKU_KEYS)
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def extract_raw_promoted_sku(row):
+    value = value_by_keys(row, PROMOTED_SKU_KEYS)
+    return str(value).strip() if value not in (None, "") else ""
 
 
 def extract_article(row):
@@ -2097,6 +2122,11 @@ def build_cpc_attribution_rows(report_data, date_from):
                 "sale_date": sale_date,
                 "marketplace_code": "ozon",
                 "marketplace_sku": sku,
+                "order_sku": sku,
+                "promoted_sku": "",
+                "promoted_article": None,
+                "raw_sku": extract_raw_sku(raw_row),
+                "raw_promoted_sku": "",
                 "ad_source": "cpc",
                 "attribution_type": "direct",
                 "campaign_id": campaign_id,
@@ -2199,13 +2229,14 @@ def build_cpo_attribution_rows(csv_text):
 
     for raw_row in reader:
         sale_date = normalize_date(value_by_keys(raw_row, DATE_KEYS))
-        sku = extract_sku(raw_row)
+        order_sku = extract_sku(raw_row)
+        promoted_sku = extract_promoted_sku(raw_row)
 
         if not sale_date:
             counters["without_date"] += 1
             continue
 
-        if not sku:
+        if not order_sku:
             counters["without_sku"] += 1
             continue
 
@@ -2218,12 +2249,17 @@ def build_cpo_attribution_rows(csv_text):
             continue
 
         campaign_id = extract_campaign_id(raw_row)
-        key = (sale_date, sku, "cpo", campaign_id)
+        key = (sale_date, order_sku, "cpo", campaign_id)
         if key not in grouped:
             grouped[key] = {
                 "sale_date": sale_date,
                 "marketplace_code": "ozon",
-                "marketplace_sku": sku,
+                "marketplace_sku": order_sku,
+                "order_sku": order_sku,
+                "promoted_sku": promoted_sku,
+                "promoted_article": None,
+                "raw_sku": extract_raw_sku(raw_row),
+                "raw_promoted_sku": extract_raw_promoted_sku(raw_row),
                 "ad_source": "cpo",
                 "attribution_type": "direct",
                 "campaign_id": campaign_id,
@@ -2252,6 +2288,15 @@ def enrich_rows(rows, catalog):
             continue
         if not row.get("article"):
             row["article"] = catalog_row.get("article") or ""
+        if not row.get("product_name"):
+            row["product_name"] = catalog_row.get("product_name") or ""
+
+        promoted_sku = str(row.get("promoted_sku") or "")
+        if promoted_sku:
+            promoted_catalog_row = catalog.get(promoted_sku)
+            if promoted_catalog_row:
+                if not row.get("promoted_article"):
+                    row["promoted_article"] = promoted_catalog_row.get("article") or None
 
     return rows
 
@@ -2291,6 +2336,11 @@ def aggregate_ad_attribution_rows(rows):
                 "sale_date": row.get("sale_date"),
                 "marketplace_code": row.get("marketplace_code"),
                 "marketplace_sku": row.get("marketplace_sku"),
+                "order_sku": row.get("order_sku") or row.get("marketplace_sku"),
+                "promoted_sku": row.get("promoted_sku") or "",
+                "promoted_article": row.get("promoted_article"),
+                "raw_sku": row.get("raw_sku") or "",
+                "raw_promoted_sku": row.get("raw_promoted_sku") or "",
                 "ad_source": row.get("ad_source"),
                 "attribution_type": row.get("attribution_type") or "direct",
                 "campaign_id": row.get("campaign_id") or "",
@@ -2312,6 +2362,8 @@ def aggregate_ad_attribution_rows(rows):
 
         if not grouped[key].get("article") and row.get("article"):
             grouped[key]["article"] = row.get("article")
+        if not grouped[key].get("promoted_article") and row.get("promoted_article"):
+            grouped[key]["promoted_article"] = row.get("promoted_article")
         if not grouped[key].get("product_name") and row.get("product_name"):
             grouped[key]["product_name"] = row.get("product_name")
         if not grouped[key].get("warning") and row.get("warning"):

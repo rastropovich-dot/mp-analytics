@@ -42,6 +42,11 @@
 
 - `ozon_daily_sku_ad_attribution`
 
+Для CPO project теперь хранит два SKU-измерения:
+
+- `order_sku` — фактически заказанный SKU из колонки `SKU`;
+- `promoted_sku` — продвигаемый SKU из колонки `SKU продвигаемого товара`.
+
 Текущая версия не пишет ad-attributed продажи в `marketplace_expenses`. Там остаются только расходы.
 
 Текущая версия использует те поля заказов/выручки, которые отдает сам Ozon report. Это важно:
@@ -56,6 +61,9 @@
 - таблица attribution поддерживает раздельное хранение:
   - `ad_source`: `cpc` / `cpo`
   - `attribution_type`: `direct` / `associated` / `union` / `unknown`
+- organic по SKU считается по `order_sku`, то есть по фактически заказанному товару;
+- `promoted_sku` используется только для отдельной рекламной аналитики и диагностики;
+- `promoted_sku` и `order_sku` нельзя смешивать в одной organic-формуле без отдельного решения;
 - в первой версии расчет `organic` использует только `attribution_type = direct`;
 - если в Ozon report позже появятся отдельные associated/union поля, их можно сохранять отдельно без изменения формулы MVP;
 - если `ad_orders_* > total_orders_*`, органика режется до `0`, а в `warning` пишется:
@@ -73,6 +81,8 @@
 - `ad_source`: `cpc` / `cpo`
 - `attribution_type`: `direct` / `associated` / `union` / `unknown`
 - `campaign_id` хранится, если Ozon report его отдает
+- `marketplace_sku` и `order_sku` для organic-расчета — это ordered SKU
+- `promoted_sku` хранится отдельно для CPO, чтобы не терять связь с продвигаемым товаром
 
 ### `ozon_daily_sku_organic`
 

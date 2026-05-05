@@ -1,4 +1,5 @@
 import argparse
+import copy
 import csv
 import hashlib
 import io
@@ -51,9 +52,11 @@ CPC_MAX_ATTEMPTS = int(os.getenv("OZON_PERFORMANCE_CPC_MAX_ATTEMPTS", "6"))
 CPC_COOLDOWN_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_COOLDOWN_SECONDS", "1800"))
 BATCH_SIZE_RECOVERY_TTL_SECONDS = int(os.getenv("OZON_PERFORMANCE_BATCH_SIZE_RECOVERY_TTL_SECONDS", "21600"))
 DEFAULT_CAMPAIGN_BATCH_SIZE = int(os.getenv("OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE", "10"))
+DEFAULT_MAX_CPC_BATCHES_PER_RUN = int(os.getenv("OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN", "5"))
 REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
 REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
 CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
+STATE_BACKEND = (os.getenv("OZON_PERFORMANCE_STATE_BACKEND", "db") or "db").strip().lower()
 ADV_OBJECT_TYPES = [
     value.strip()
     for value in os.getenv("OZON_PERFORMANCE_ADV_OBJECT_TYPES", "SKU").split(",")
@@ -99,6 +102,17 @@ UPSERT_KEY_FIELDS = (
 PERFORMANCE_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "ozon_performance"
 PERFORMANCE_STATE_PATH = PERFORMANCE_CACHE_DIR / "state.json"
 PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
+PIPELINE_RUNTIME_STATE_TABLE = "pipeline_runtime_state"
+PERSISTENT_STATE_SECTIONS = (
+    "jobs",
+    "cooldowns",
+    "batch_recommendations",
+    "cpc_progress",
+)
+VOLATILE_STATE_SECTIONS = (
+    "runs",
+    "request_history",
+)
 
 SENSITIVE_KEY_MARKERS = (
     "authorization",
@@ -260,6 +274,24 @@ def ensure_cache_dir():
     PERFORMANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def default_state():
+    return {
+        "jobs": {},
+        "cooldowns": {},
+        "batch_recommendations": {},
+        "cpc_progress": {},
+        "runs": {},
+        "request_history": [],
+    }
+
+
+def normalize_state_backend(value):
+    backend = str(value or "").strip().lower()
+    if backend in {"db", "file"}:
+        return backend
+    return "db"
+
+
 def is_sensitive_key(key):
     lowered = str(key or "").lower()
     return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
@@ -348,33 +380,28 @@ def with_state_lock(exclusive=True):
     return lock_file
 
 
-def load_state():
-    default_state = {
-        "jobs": {},
-        "cooldowns": {},
-        "batch_recommendations": {},
-        "runs": {},
-        "request_history": [],
-    }
-
+def load_file_state():
+    state = default_state()
     lock_file = with_state_lock(exclusive=False)
     try:
         if not PERFORMANCE_STATE_PATH.exists():
-            return default_state
+            return state
 
         try:
-            state = json.loads(PERFORMANCE_STATE_PATH.read_text(encoding="utf-8"))
+            loaded = json.loads(PERFORMANCE_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                state.update(loaded)
             state["request_history"] = prune_request_history(state.get("request_history", []))
             return state
         except Exception:
-            return default_state
+            return state
     finally:
         if fcntl is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
 
 
-def save_state(state):
+def save_file_state(state):
     ensure_cache_dir()
     state["request_history"] = prune_request_history(state.get("request_history", []))
     sanitized_state = sanitize_value(state)
@@ -398,6 +425,31 @@ def save_state(state):
         if fcntl is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+
+
+def build_state_row(state_key, state_type, payload, account_signature=None, expires_at=None):
+    row = {
+        "state_key": state_key,
+        "state_type": state_type,
+        "account_signature": account_signature,
+        "payload": sanitize_value(payload),
+        "updated_at": to_iso(utcnow()),
+    }
+    if expires_at is not None:
+        row["expires_at"] = expires_at
+    return row
+
+
+def build_db_state_key(state_type, logical_key):
+    return f"{state_type}:{logical_key}"
+
+
+def parse_db_state_key(state_type, stored_key):
+    prefix = f"{state_type}:"
+    text = str(stored_key or "")
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    return text
 
 
 def payload_hash(payload):
@@ -529,13 +581,14 @@ def parse_args():
         default="full",
         help="full = CPC + CPO flow; cpc-backfill = retry only pending CPC for one day and one batch",
     )
+    parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
     parser.add_argument("--days-back", type=int, default=30)
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--group-by", default=DEFAULT_GROUP_BY)
     parser.add_argument("--campaign-limit", type=int)
     parser.add_argument("--campaign-batch-size", type=int, default=DEFAULT_CAMPAIGN_BATCH_SIZE)
-    parser.add_argument("--max-cpc-batches", type=int)
+    parser.add_argument("--max-cpc-batches", type=int, default=DEFAULT_MAX_CPC_BATCHES_PER_RUN)
     parser.add_argument(
         "--campaign-scope",
         choices=("recent", "all"),
@@ -856,6 +909,47 @@ def empty_stage_status(status="not_started", **extra):
     return payload
 
 
+def normalize_batch_indexes(values):
+    normalized = []
+    seen = set()
+
+    for value in values or []:
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            continue
+        if index < 0 or index in seen:
+            continue
+        seen.add(index)
+        normalized.append(index)
+
+    normalized.sort()
+    return normalized
+
+
+def build_cpc_batches(campaign_ids, batch_size):
+    if not campaign_ids:
+        return []
+    size = max(1, int(batch_size or 1))
+    return [list(batch) for batch in chunks(list(campaign_ids), size)]
+
+
+def cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by):
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "account_signature": mask_client_id(OZON_PERFORMANCE_CLIENT_ID),
+        "batch_size": int(batch_size or 1),
+        "campaigns": sorted(str(campaign_id) for campaign_id in campaign_ids),
+        "group_by": str(group_by or ""),
+    }
+
+
+def build_cpc_progress_key(date_from, date_to, batch_size, campaign_ids, group_by):
+    identity = cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by)
+    return f"cpc_progress:{payload_hash(identity)}"
+
+
 def is_metric_key(key):
     normalized = str(key).lower().replace(" ", "").replace("_", "")
     return any(metric.lower().replace("_", "") == normalized for metric in METRIC_KEYS)
@@ -1013,12 +1107,167 @@ class OzonPerformanceClient:
     def __init__(self):
         self.token = None
         self.token_expires_at = 0
-        self.state = load_state()
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
+        self.state_backend = self.resolve_state_backend()
+        self.state = self.load_state()
         self.migrate_legacy_rate_limit_state()
 
+    def resolve_state_backend(self):
+        backend = normalize_state_backend(STATE_BACKEND)
+        if backend == "db" and (not SUPABASE_URL or not SUPABASE_SERVICE_KEY):
+            print(
+                "Ozon Performance runtime state backend fallback: SUPABASE credentials missing, "
+                "using file backend."
+            )
+            return "file"
+        return backend
+
+    def load_state(self):
+        state = default_state()
+        file_state = load_file_state()
+
+        for section in VOLATILE_STATE_SECTIONS:
+            state[section] = file_state.get(section, state[section])
+
+        if self.state_backend == "file":
+            for section in PERSISTENT_STATE_SECTIONS:
+                state[section] = file_state.get(section, state[section])
+            return state
+
+        state.update(self.load_persistent_state_from_db())
+        return state
+
     def save_state(self):
-        save_state(self.state)
+        if self.state_backend == "file":
+            save_file_state(self.state)
+            return
+
+        self.save_persistent_state_to_db()
+        file_state = default_state()
+        for section in VOLATILE_STATE_SECTIONS:
+            file_state[section] = self.state.get(section, file_state[section])
+        save_file_state(file_state)
+
+    def load_persistent_state_from_db(self):
+        state = {section: {} for section in PERSISTENT_STATE_SECTIONS}
+
+        try:
+            result = (
+                supabase
+                .table(PIPELINE_RUNTIME_STATE_TABLE)
+                .select("state_key,state_type,payload,expires_at")
+                .eq("account_signature", self.account_signature)
+                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
+                .execute()
+            )
+        except Exception as exc:
+            print(
+                "Не удалось загрузить Ozon Performance runtime state из БД, "
+                f"используем file fallback: {sanitize_text(exc)}"
+            )
+            file_state = load_file_state()
+            for section in PERSISTENT_STATE_SECTIONS:
+                state[section] = file_state.get(section, {})
+            return state
+
+        rows = result.data or []
+        expired_keys = []
+        now = utcnow()
+
+        for row in rows:
+            expires_at = from_iso(row.get("expires_at"))
+            if expires_at and expires_at <= now:
+                expired_keys.append(row.get("state_key"))
+                continue
+
+            state_type = row.get("state_type")
+            state_key = parse_db_state_key(state_type, row.get("state_key"))
+            payload = row.get("payload") or {}
+            if state_type not in state or not state_key:
+                continue
+            state[state_type][state_key] = payload
+
+        if expired_keys:
+            try:
+                supabase.table(PIPELINE_RUNTIME_STATE_TABLE).delete().in_("state_key", expired_keys).execute()
+            except Exception as exc:
+                print(f"Не удалось очистить expired runtime state rows: {sanitize_text(exc)}")
+
+        return state
+
+    def save_persistent_state_to_db(self):
+        rows = []
+        now_iso = to_iso(utcnow())
+
+        for state_type in PERSISTENT_STATE_SECTIONS:
+            section = self.state.get(state_type, {}) or {}
+            for state_key, payload in section.items():
+                expires_at = None
+                if state_type == "cooldowns" and isinstance(payload, str):
+                    expires_at = payload
+                elif state_type == "batch_recommendations" and isinstance(payload, dict):
+                    expires_at = payload.get("expires_at")
+
+                row = build_state_row(
+                    state_key=build_db_state_key(state_type, state_key),
+                    state_type=state_type,
+                    payload=payload,
+                    account_signature=self.account_signature,
+                    expires_at=expires_at,
+                )
+                row["updated_at"] = now_iso
+                rows.append(row)
+
+        try:
+            existing = (
+                supabase
+                .table(PIPELINE_RUNTIME_STATE_TABLE)
+                .select("state_key")
+                .eq("account_signature", self.account_signature)
+                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
+                .execute()
+            )
+            existing_keys = {row.get("state_key") for row in (existing.data or []) if row.get("state_key")}
+        except Exception as exc:
+            raise RuntimeError(
+                "Не удалось прочитать existing runtime state rows из Supabase: "
+                f"{sanitize_text(exc)}"
+            ) from exc
+
+        current_keys = {row["state_key"] for row in rows}
+        keys_to_delete = sorted(existing_keys - current_keys)
+
+        if rows:
+            try:
+                supabase.table(PIPELINE_RUNTIME_STATE_TABLE).upsert(
+                    rows,
+                    on_conflict="state_key",
+                ).execute()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Не удалось записать runtime state в Supabase: "
+                    f"{sanitize_text(exc)}"
+                ) from exc
+
+        if keys_to_delete:
+            try:
+                supabase.table(PIPELINE_RUNTIME_STATE_TABLE).delete().in_("state_key", keys_to_delete).execute()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Не удалось удалить stale runtime state rows из Supabase: "
+                    f"{sanitize_text(exc)}"
+                ) from exc
+
+    def snapshot_runtime_state(self):
+        return {
+            section: copy.deepcopy(self.state.get(section, {}))
+            for section in PERSISTENT_STATE_SECTIONS
+        }
+
+    def restore_runtime_state(self, snapshot):
+        for section in PERSISTENT_STATE_SECTIONS:
+            self.state[section] = copy.deepcopy((snapshot or {}).get(section, {}))
+        self.save_state()
 
     def scoped_state_key(self, key):
         return f"{key}:{self.account_signature}"
@@ -1097,6 +1346,160 @@ class OzonPerformanceClient:
     def get_run_status(self, date_from, date_to):
         run_key = f"{date_from}:{date_to}"
         return self.state.get("runs", {}).get(run_key) or {}
+
+    def get_cpc_progress(self, progress_key):
+        progress = (self.state.get("cpc_progress", {}) or {}).get(progress_key) or {}
+        if not progress:
+            return {}
+        normalized = dict(progress)
+        normalized["completed_batch_indexes"] = normalize_batch_indexes(progress.get("completed_batch_indexes"))
+        normalized["pending_batch_indexes"] = normalize_batch_indexes(progress.get("pending_batch_indexes"))
+        normalized["failed_429_batch_indexes"] = normalize_batch_indexes(progress.get("failed_429_batch_indexes"))
+
+        total_batches = int(progress.get("total_batches") or 0)
+        completed_set = set(normalized["completed_batch_indexes"])
+        pending_set = set(normalized["pending_batch_indexes"])
+        failed_set = set(normalized["failed_429_batch_indexes"])
+
+        max_index = max(total_batches - 1, -1)
+        normalized["completed_batch_indexes"] = [idx for idx in normalized["completed_batch_indexes"] if idx <= max_index]
+        normalized["pending_batch_indexes"] = [
+            idx for idx in normalized["pending_batch_indexes"]
+            if idx <= max_index and idx not in completed_set
+        ]
+        normalized["failed_429_batch_indexes"] = [
+            idx for idx in normalized["failed_429_batch_indexes"]
+            if idx <= max_index and idx not in completed_set
+        ]
+
+        if total_batches > 0:
+            if not normalized["pending_batch_indexes"]:
+                normalized["pending_batch_indexes"] = [
+                    idx
+                    for idx in range(total_batches)
+                    if idx not in set(normalized["completed_batch_indexes"])
+                ]
+            else:
+                pending_union = set(normalized["pending_batch_indexes"]) | set(normalized["failed_429_batch_indexes"])
+                normalized["pending_batch_indexes"] = sorted(
+                    idx for idx in pending_union if idx not in set(normalized["completed_batch_indexes"])
+                )
+
+        normalized["completed_batches"] = len(normalized["completed_batch_indexes"])
+        normalized["pending_batches"] = len(normalized["pending_batch_indexes"])
+        normalized["failed_429_batches"] = len(normalized["failed_429_batch_indexes"])
+        next_batch_index = None
+        if normalized["pending_batch_indexes"]:
+            next_batch_index = normalized["pending_batch_indexes"][0]
+        normalized["next_batch_index"] = next_batch_index
+        return normalized
+
+    def save_cpc_progress(self, progress_key, progress):
+        normalized = self.get_cpc_progress(progress_key) or {}
+        normalized.update(progress or {})
+        normalized["completed_batch_indexes"] = normalize_batch_indexes(
+            normalized.get("completed_batch_indexes")
+        )
+        normalized["pending_batch_indexes"] = normalize_batch_indexes(
+            normalized.get("pending_batch_indexes")
+        )
+        normalized["failed_429_batch_indexes"] = normalize_batch_indexes(
+            normalized.get("failed_429_batch_indexes")
+        )
+
+        completed_set = set(normalized["completed_batch_indexes"])
+        failed_set = set(normalized["failed_429_batch_indexes"]) - completed_set
+        pending_set = (
+            set(normalized["pending_batch_indexes"])
+            | failed_set
+        ) - completed_set
+
+        total_batches = int(normalized.get("total_batches") or 0)
+        valid_indexes = {idx for idx in range(total_batches)}
+        completed_set &= valid_indexes
+        pending_set &= valid_indexes
+        failed_set &= valid_indexes
+
+        normalized["completed_batch_indexes"] = sorted(completed_set)
+        normalized["pending_batch_indexes"] = sorted(pending_set)
+        normalized["failed_429_batch_indexes"] = sorted(failed_set)
+        normalized["completed_batches"] = len(normalized["completed_batch_indexes"])
+        normalized["pending_batches"] = len(normalized["pending_batch_indexes"])
+        normalized["failed_429_batches"] = len(normalized["failed_429_batch_indexes"])
+        normalized["next_batch_index"] = (
+            normalized["pending_batch_indexes"][0]
+            if normalized["pending_batch_indexes"]
+            else None
+        )
+        normalized["updated_at"] = to_iso(utcnow())
+
+        self.state.setdefault("cpc_progress", {})[progress_key] = normalized
+        self.save_state()
+        return normalized
+
+    def init_cpc_progress(self, progress_key, progress_context, batches):
+        existing = (self.state.get("cpc_progress", {}) or {}).get(progress_key)
+        if existing:
+            return self.get_cpc_progress(progress_key)
+
+        total_batches = len(batches)
+        progress = {
+            "date_from": progress_context["date_from"],
+            "date_to": progress_context["date_to"],
+            "account_signature": self.account_signature,
+            "group_by": progress_context["group_by"],
+            "batch_size": progress_context["batch_size"],
+            "campaign_hash": progress_context["campaign_hash"],
+            "total_campaigns": progress_context["total_campaigns"],
+            "total_batches": total_batches,
+            "completed_batch_indexes": [],
+            "pending_batch_indexes": list(range(total_batches)),
+            "failed_429_batch_indexes": [],
+        }
+        return self.save_cpc_progress(progress_key, progress)
+
+    def mark_cpc_batch_completed(self, progress_key, batch_index):
+        progress = self.get_cpc_progress(progress_key)
+        completed = set(progress.get("completed_batch_indexes") or [])
+        pending = set(progress.get("pending_batch_indexes") or [])
+        failed = set(progress.get("failed_429_batch_indexes") or [])
+        completed.add(int(batch_index))
+        pending.discard(int(batch_index))
+        failed.discard(int(batch_index))
+        return self.save_cpc_progress(
+            progress_key,
+            {
+                "completed_batch_indexes": sorted(completed),
+                "pending_batch_indexes": sorted(pending),
+                "failed_429_batch_indexes": sorted(failed),
+            },
+        )
+
+    def mark_cpc_batch_pending_429(self, progress_key, batch_index):
+        progress = self.get_cpc_progress(progress_key)
+        pending = set(progress.get("pending_batch_indexes") or [])
+        failed = set(progress.get("failed_429_batch_indexes") or [])
+        pending.add(int(batch_index))
+        failed.add(int(batch_index))
+        return self.save_cpc_progress(
+            progress_key,
+            {
+                "pending_batch_indexes": sorted(pending),
+                "failed_429_batch_indexes": sorted(failed),
+            },
+        )
+
+    def build_cpc_progress_context(self, date_from, date_to, batch_size, campaign_ids, group_by):
+        identity = cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by)
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "group_by": str(group_by or ""),
+            "batch_size": int(batch_size or 1),
+            "campaign_hash": payload_hash(identity["campaigns"]),
+            "total_campaigns": len(campaign_ids),
+            "account_signature": identity["account_signature"],
+        }
 
     def set_cooldown(self, key, cooldown_until):
         self.state.setdefault("cooldowns", {})[key] = cooldown_until
@@ -1724,12 +2127,6 @@ def aggregate_rows(rows):
     return list(grouped.values())
 
 
-def extract_pending_cpc_batch(run_status):
-    cpc_status = (run_status or {}).get("cpc") or {}
-    failed_batch = cpc_status.get("failed_batch") or []
-    return [str(campaign_id) for campaign_id in failed_batch if str(campaign_id).strip()]
-
-
 def save_rows(rows):
     if not rows:
         print("Нет рекламных расходов Ozon Performance для записи")
@@ -1765,15 +2162,17 @@ def run():
         "so this project must load exactly one Ozon account per environment."
     )
 
-    if args.date_to:
-        date_to = args.date_to
+    if args.date:
+        if args.date_from or args.date_to:
+            raise RuntimeError("--date нельзя комбинировать с --date-from/--date-to")
+        date_from = args.date
+        date_to = args.date
     else:
-        date_to = date.today().isoformat()
-
-    if args.date_from:
-        date_from = args.date_from
-    else:
-        date_from = (datetime.fromisoformat(date_to).date() - timedelta(days=args.days_back)).isoformat()
+        date_to = args.date_to or date.today().isoformat()
+        if args.date_from:
+            date_from = args.date_from
+        else:
+            date_from = (datetime.fromisoformat(date_to).date() - timedelta(days=args.days_back)).isoformat()
 
     client = OzonPerformanceClient()
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
@@ -1821,28 +2220,6 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
-        previous_run = client.get_run_status(date_from, date_to)
-        pending_batch = extract_pending_cpc_batch(previous_run)
-        if not pending_batch:
-            raise RuntimeError(
-                "Нет pending CPC batch для backfill. Сначала нужен partial_ads run "
-                "с cpc.status=pending_429 за этот день."
-            )
-        cpc_campaign_ids = [
-            campaign_id
-            for campaign_id in pending_batch
-            if campaign_id in cpc_campaigns_by_id
-        ]
-        if not cpc_campaign_ids:
-            raise RuntimeError(
-                "Pending CPC batch не пересёкся с текущим списком CPC кампаний. "
-                "Проверь campaign filters или список кампаний в Ozon."
-            )
-        print(
-            "Ozon Performance CPC backfill pending batch: "
-            f"{cpc_campaign_ids}"
-        )
-
     batch_size = min(
         requested_batch_size,
         client.get_batch_recommendation(
@@ -1851,9 +2228,25 @@ def run():
         ),
     )
     max_cpc_batches = args.max_cpc_batches
+    cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
+    progress_key = build_cpc_progress_key(date_from, date_to, batch_size, cpc_campaign_ids, args.group_by)
+    original_runtime_state = client.snapshot_runtime_state()
+    progress_context = client.build_cpc_progress_context(
+        date_from,
+        date_to,
+        batch_size,
+        cpc_campaign_ids,
+        args.group_by,
+    )
+    cpc_progress = client.init_cpc_progress(progress_key, progress_context, cpc_batches)
+
     if args.mode == "cpc-backfill":
-        batch_size = min(batch_size, len(cpc_campaign_ids)) if cpc_campaign_ids else batch_size
-        max_cpc_batches = 1
+        if not cpc_progress.get("pending_batch_indexes"):
+            raise RuntimeError(
+                "Нет pending CPC batches для backfill. Сначала нужен bounded/partial run "
+                "с незавершённым CPC-хвостом за этот день."
+            )
+        max_cpc_batches = max(1, int(args.max_cpc_batches or 1))
 
     run_summary = {
         "mode": args.mode,
@@ -1863,6 +2256,9 @@ def run():
         "campaign_count": len(cpc_campaign_ids),
         "requested_batch_size": requested_batch_size,
         "batch_size": batch_size,
+        "max_batches_per_run": max_cpc_batches,
+        "state_backend": client.state_backend,
+        "cpc_progress_key": progress_key,
         "cpc": empty_stage_status("not_started"),
         "cpo": empty_stage_status("not_started"),
         "overall_status": "running",
@@ -1876,8 +2272,9 @@ def run():
     rows_by_key = {}
     total_counters = defaultdict(int)
 
-    cpc_batches_total = 0
-    cpc_batches_completed = 0
+    cpc_batches_total = len(cpc_batches)
+    processed_batch_indexes = []
+    cpc_progress_snapshot = client.get_cpc_progress(progress_key)
 
     if not cpc_campaign_ids:
         run_summary["cpc"] = empty_stage_status(
@@ -1885,19 +2282,33 @@ def run():
             reason="no_cpc_campaigns_for_period",
             batch_size=batch_size,
             campaign_count=0,
-            batches_total=0,
-            batches_completed=0,
+            total_batches=0,
+            processed_batches=0,
+            completed_batches=0,
+            pending_batches=0,
         )
     else:
-        for campaign_batch in chunks(cpc_campaign_ids, batch_size):
-            if max_cpc_batches and cpc_batches_total >= max_cpc_batches:
-                print(
-                    "Ozon Performance CPC batch limit reached: "
-                    f"{max_cpc_batches}"
-                )
-                break
+        if args.mode == "cpc-backfill":
+            target_batch_indexes = list(cpc_progress_snapshot.get("pending_batch_indexes") or [])
+        else:
+            target_batch_indexes = list(cpc_progress_snapshot.get("pending_batch_indexes") or [])
 
-            cpc_batches_total += 1
+        if max_cpc_batches:
+            target_batch_indexes = target_batch_indexes[:max_cpc_batches]
+
+        print(
+            "Ozon Performance CPC batch plan: "
+            f"campaign_count={len(cpc_campaign_ids)} batch_size={batch_size} "
+            f"max_batches_per_run={max_cpc_batches} total_batches={cpc_batches_total} "
+            f"next_batch_index={cpc_progress_snapshot.get('next_batch_index')} "
+            f"target_batches={target_batch_indexes}"
+        )
+
+        for batch_index in target_batch_indexes:
+            if batch_index >= len(cpc_batches):
+                continue
+            campaign_batch = cpc_batches[batch_index]
+            processed_batch_indexes.append(batch_index)
             print(f"Запрашиваем Ozon Performance CPC statistics/json batch: {campaign_batch}")
             try:
                 uuid, _, report_data = client.fetch_statistics_json_report(
@@ -1913,6 +2324,7 @@ def run():
                     1,
                     ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
                 )
+                cpc_progress_snapshot = client.mark_cpc_batch_pending_429(progress_key, batch_index)
                 run_summary["cpc"] = empty_stage_status(
                     "pending_429",
                     endpoint=exc.endpoint,
@@ -1920,10 +2332,15 @@ def run():
                     retry_after_seconds=exc.retry_after_seconds,
                     cooldown_until=exc.cooldown_until,
                     attempt=exc.attempt,
+                    failed_batch_index=batch_index,
                     failed_batch=campaign_batch,
                     campaign_count=len(cpc_campaign_ids),
-                    batches_total=max(cpc_batches_total, 1),
-                    batches_completed=cpc_batches_completed,
+                    total_batches=cpc_batches_total,
+                    max_batches_per_run=max_cpc_batches,
+                    processed_batches=len(processed_batch_indexes),
+                    completed_batches=cpc_progress_snapshot.get("completed_batches", 0),
+                    pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
+                    failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
                 )
                 print("CPC statistics/json pending_429:")
                 print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
@@ -1932,6 +2349,7 @@ def run():
                 run_summary["cpc"] = empty_stage_status(
                     "failed",
                     batch_size=batch_size,
+                    failed_batch_index=batch_index,
                     failed_batch=campaign_batch,
                     error=str(exc),
                 )
@@ -1940,7 +2358,7 @@ def run():
                 client.write_run_status(run_summary)
                 raise
             print(f"CPC UUID: {uuid}")
-            cpc_batches_completed += 1
+            cpc_progress_snapshot = client.mark_cpc_batch_completed(progress_key, batch_index)
 
             if args.debug_sample:
                 print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
@@ -1964,14 +2382,24 @@ def run():
             time.sleep(2)
 
         if run_summary["cpc"]["status"] == "not_started":
+            cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+            cpc_status = "success"
+            if cpc_progress_snapshot.get("pending_batches"):
+                cpc_status = "pending_backfill"
             run_summary["cpc"] = empty_stage_status(
-                "success",
+                cpc_status,
                 batch_size=batch_size,
                 campaign_count=len(cpc_campaign_ids),
-                batches_total=cpc_batches_total,
-                batches_completed=cpc_batches_completed,
+                total_batches=cpc_batches_total,
+                max_batches_per_run=max_cpc_batches,
+                processed_batches=len(processed_batch_indexes),
+                completed_batches=cpc_progress_snapshot.get("completed_batches", 0),
+                pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
+                failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
+                next_batch_index=cpc_progress_snapshot.get("next_batch_index"),
             )
-            client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
+            if cpc_status == "success":
+                client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
 
     if args.mode == "cpc-backfill":
         run_summary["cpo"] = empty_stage_status(
@@ -2057,16 +2485,22 @@ def run():
         by_type[row["expense_type"]] += float(row.get("expense_amount") or 0)
     print({key: round(value, 2) for key, value in sorted(by_type.items())})
 
+    cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+    run_summary["processed_batches"] = len(processed_batch_indexes)
+    run_summary["completed_batches"] = cpc_progress_snapshot.get("completed_batches", 0)
+    run_summary["pending_batches"] = cpc_progress_snapshot.get("pending_batches", 0)
+    run_summary["failed_429_batches"] = cpc_progress_snapshot.get("failed_429_batches", 0)
+
     if args.mode == "cpc-backfill":
         if run_summary["cpc"]["status"] == "success":
             run_summary["overall_status"] = "success"
-        elif run_summary["cpc"]["status"] == "pending_429":
+        elif run_summary["cpc"]["status"] in {"pending_429", "pending_backfill"}:
             run_summary["overall_status"] = "partial_ads"
         elif run_summary["cpc"]["status"] == "skipped":
             run_summary["overall_status"] = "skipped"
         else:
             run_summary["overall_status"] = "failed"
-    elif run_summary["cpc"]["status"] == "pending_429" and run_summary["cpo"]["status"] == "success":
+    elif run_summary["cpc"]["status"] in {"pending_429", "pending_backfill"} and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "partial_ads"
     elif run_summary["cpc"]["status"] == "success" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"
@@ -2084,6 +2518,7 @@ def run():
     print(json.dumps(sanitize_value(run_summary), ensure_ascii=False))
 
     if args.dry_run:
+        client.restore_runtime_state(original_runtime_state)
         client.write_run_status(run_summary)
         print("Dry run: данные не записывались")
         return

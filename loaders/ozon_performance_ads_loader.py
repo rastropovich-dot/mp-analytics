@@ -248,6 +248,29 @@ REVENUE_KEYS = (
     "Сумма заказов",
 )
 
+CPO_ORDER_QTY_KEYS = (
+    "Количество",
+    "quantity",
+    "qty",
+    "orders",
+    "Заказы",
+)
+
+CPO_REVENUE_KEYS = (
+    "Стоимость продажи, ₽",
+    "Стоимость продажи",
+    "Стоимость, ₽",
+    "Стоимость",
+    "ordersMoney",
+    "orders_money",
+    "revenue",
+    "sales",
+    "salesMoney",
+    "sales_money",
+    "Выручка",
+    "Сумма заказов",
+)
+
 CPO_RATE_KEYS = (
     "Ставка, %",
     "Ставка %",
@@ -1056,6 +1079,14 @@ def extract_orders(row):
 
 def extract_revenue(row):
     return parse_number(value_by_keys(row, REVENUE_KEYS))
+
+
+def extract_cpo_order_qty(row):
+    return parse_number(value_by_keys(row, CPO_ORDER_QTY_KEYS))
+
+
+def extract_cpo_revenue(row):
+    return parse_number(value_by_keys(row, CPO_REVENUE_KEYS))
 
 
 def campaign_text(row, campaign):
@@ -2178,8 +2209,8 @@ def build_cpo_attribution_rows(csv_text):
             counters["without_sku"] += 1
             continue
 
-        ad_orders_qty = extract_orders(raw_row)
-        ad_orders_revenue = extract_revenue(raw_row)
+        ad_orders_qty = extract_cpo_order_qty(raw_row)
+        ad_orders_revenue = extract_cpo_revenue(raw_row)
         ad_spend = abs(parse_number(value_by_keys(raw_row, SPEND_KEYS)))
 
         if all(value == 0 for value in (ad_orders_qty, ad_orders_revenue, ad_spend)):

@@ -1153,6 +1153,39 @@ def normalize_batch_indexes(values):
     return normalized
 
 
+def deterministic_campaign_id_order(campaign_ids):
+    values = []
+    seen = set()
+
+    for campaign_id in campaign_ids or []:
+        text = str(campaign_id or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+
+    values.sort()
+    return values
+
+
+def preserve_campaign_id_order(campaign_ids):
+    values = []
+    seen = set()
+
+    for campaign_id in campaign_ids or []:
+        text = str(campaign_id or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+
+    return values
+
+
+def compute_campaign_list_hash(campaign_ids):
+    return payload_hash(list(campaign_ids or []))
+
+
 def build_cpc_batches(campaign_ids, batch_size):
     if not campaign_ids:
         return []
@@ -1161,12 +1194,13 @@ def build_cpc_batches(campaign_ids, batch_size):
 
 
 def cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by):
+    ordered_campaign_ids = deterministic_campaign_id_order(campaign_ids)
     return {
         "date_from": date_from,
         "date_to": date_to,
         "account_signature": mask_client_id(OZON_PERFORMANCE_CLIENT_ID),
         "batch_size": int(batch_size or 1),
-        "campaigns": sorted(str(campaign_id) for campaign_id in campaign_ids),
+        "campaigns": ordered_campaign_ids,
         "group_by": str(group_by or ""),
     }
 
@@ -1174,6 +1208,34 @@ def cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, gr
 def build_cpc_progress_key(date_from, date_to, batch_size, campaign_ids, group_by):
     identity = cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by)
     return f"cpc_progress:{payload_hash(identity)}"
+
+
+def resolve_existing_cpc_backfill_progress(client, target_date):
+    candidates = []
+    for progress_key in (client.state.get("cpc_progress", {}) or {}).keys():
+        progress = client.get_cpc_progress(progress_key)
+        if not progress:
+            continue
+        if progress.get("date_from") != target_date or progress.get("date_to") != target_date:
+            continue
+        if not progress.get("pending_batches"):
+            continue
+        candidates.append((progress_key, progress))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(
+        key=lambda item: (
+            1 if str(item[1].get("selection_mode") or "") == "complete" else 0,
+            int(item[1].get("total_campaigns") or 0),
+            int(item[1].get("batch_size") or 0),
+            int(item[1].get("pending_batches") or 0),
+            str(item[1].get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    return candidates[0]
 
 
 def is_metric_key(key):
@@ -1701,7 +1763,11 @@ class OzonPerformanceClient:
             "group_by": progress_context["group_by"],
             "batch_size": progress_context["batch_size"],
             "campaign_hash": progress_context["campaign_hash"],
+            "campaign_list_hash": progress_context.get("campaign_list_hash"),
             "total_campaigns": progress_context["total_campaigns"],
+            "ordered_campaign_ids": list(progress_context.get("ordered_campaign_ids") or []),
+            "selection_mode": progress_context.get("selection_mode"),
+            "campaign_scope": progress_context.get("campaign_scope"),
             "total_batches": total_batches,
             "completed_batch_indexes": [],
             "pending_batch_indexes": list(range(total_batches)),
@@ -1740,16 +1806,22 @@ class OzonPerformanceClient:
             },
         )
 
-    def build_cpc_progress_context(self, date_from, date_to, batch_size, campaign_ids, group_by):
+    def build_cpc_progress_context(self, date_from, date_to, batch_size, campaign_ids, group_by, selection_mode=None, campaign_scope=None):
         identity = cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by)
+        ordered_campaign_ids = list(identity["campaigns"])
+        campaign_list_hash = compute_campaign_list_hash(ordered_campaign_ids)
         return {
             "date_from": date_from,
             "date_to": date_to,
             "group_by": str(group_by or ""),
             "batch_size": int(batch_size or 1),
-            "campaign_hash": payload_hash(identity["campaigns"]),
-            "total_campaigns": len(campaign_ids),
+            "campaign_hash": campaign_list_hash,
+            "campaign_list_hash": campaign_list_hash,
+            "ordered_campaign_ids": ordered_campaign_ids,
+            "total_campaigns": len(ordered_campaign_ids),
             "account_signature": identity["account_signature"],
+            "selection_mode": selection_mode,
+            "campaign_scope": campaign_scope,
         }
 
     def set_cooldown(self, key, cooldown_until):
@@ -2723,6 +2795,119 @@ def run():
     target_date = date_to if date_from == date_to else None
     client = OzonPerformanceClient()
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
+
+    if args.mode == "cpc-backfill" and args.plan_only:
+        ensure_cpc_backfill_window_open()
+        if date_from != date_to:
+            raise RuntimeError(
+                "cpc-backfill mode supports exactly one calendar day. "
+                f"Got {date_from}..{date_to}"
+            )
+        daily_target = (today_local() - timedelta(days=1)).isoformat()
+        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
+        if not daily_status:
+            raise RuntimeError(
+                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
+                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
+            )
+        existing_progress_key, existing_progress = resolve_existing_cpc_backfill_progress(
+            client,
+            target_date,
+        )
+        if not existing_progress:
+            raise RuntimeError(
+                f"No existing D-1 complete CPC progress found for target_date={target_date}"
+            )
+
+        saved_ordered_campaign_ids = preserve_campaign_id_order(
+            existing_progress.get("ordered_campaign_ids") or []
+        )
+        ordering_source = (
+            "saved_ordered_campaign_ids"
+            if saved_ordered_campaign_ids
+            else "deterministic_sort_fallback"
+        )
+        ordering_warning = None
+        if not saved_ordered_campaign_ids:
+            ordering_warning = (
+                "existing progress has no ordered_campaign_ids; batch resume ordering cannot be "
+                "strictly confirmed"
+            )
+
+        saved_campaign_list_hash = (
+            existing_progress.get("campaign_list_hash")
+            or existing_progress.get("campaign_hash")
+        )
+        if saved_ordered_campaign_ids and not saved_campaign_list_hash:
+            saved_campaign_list_hash = compute_campaign_list_hash(saved_ordered_campaign_ids)
+
+        batch_size = int(existing_progress.get("batch_size") or requested_batch_size or 1)
+        total_campaigns = int(existing_progress.get("total_campaigns") or len(saved_ordered_campaign_ids))
+        pending_batch_indexes = list(existing_progress.get("pending_batch_indexes") or [])
+        completed_batch_indexes = list(existing_progress.get("completed_batch_indexes") or [])
+        completed_campaign_units = (
+            sum_campaign_units_for_batches(
+                build_cpc_batches(saved_ordered_campaign_ids, batch_size),
+                completed_batch_indexes,
+            )
+            if saved_ordered_campaign_ids
+            else int(existing_progress.get("completed_batches") or 0) * batch_size
+        )
+        pending_campaign_units = max(0, total_campaigns - completed_campaign_units)
+        first_pending_batch_index = pending_batch_indexes[0] if pending_batch_indexes else None
+        first_pending_batch_campaign_ids = []
+        if saved_ordered_campaign_ids:
+            saved_batches = build_cpc_batches(saved_ordered_campaign_ids, batch_size)
+            if first_pending_batch_index is not None and 0 <= int(first_pending_batch_index) < len(saved_batches):
+                first_pending_batch_campaign_ids = saved_batches[int(first_pending_batch_index)]
+
+        planning_summary = {
+            "mode": args.mode,
+            "target_date": target_date,
+            "date_from": date_from,
+            "date_to": date_to,
+            "campaign_scope": "complete_resume",
+            "daily_cpc_selection_mode": "complete",
+            "raw_campaign_count": None,
+            "raw_cpc_count": None,
+            "filtered_recent_count": None,
+            "date_overlap_cpc_count": None,
+            "selected_cpc_count": total_campaigns,
+            "cpc_campaign_count": total_campaigns,
+            "excluded_by_recent_filter_count": None,
+            "excluded_by_quota_count": 0,
+            "batch_size": batch_size,
+            "total_batches": int(existing_progress.get("total_batches") or 0),
+            "campaign_units": total_campaigns,
+            "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+            "reserve": STATS_DAILY_CAMPAIGN_RESERVE,
+            "usable_limit": max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE),
+            "would_fit_daily_limit": total_campaigns <= max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE),
+            "head_campaign_ids": saved_ordered_campaign_ids[:10],
+            "ordering_source": ordering_source,
+            "campaign_list_hash": saved_campaign_list_hash,
+            "saved_campaign_count": len(saved_ordered_campaign_ids) if saved_ordered_campaign_ids else None,
+            "current_campaign_count": None,
+            "saved_campaign_list_hash": saved_campaign_list_hash,
+            "current_campaign_list_hash": None,
+            "existing_progress_selected": True,
+            "existing_progress_key": existing_progress_key,
+            "existing_progress_selection_mode": existing_progress.get("selection_mode"),
+            "existing_progress_campaign_count": existing_progress.get("total_campaigns"),
+            "existing_progress_batch_size": existing_progress.get("batch_size"),
+            "existing_progress_completed_batches": existing_progress.get("completed_batches"),
+            "existing_progress_pending_batches": existing_progress.get("pending_batches"),
+            "existing_progress_next_batch_index": existing_progress.get("next_batch_index"),
+            "first_pending_batch_index": first_pending_batch_index,
+            "first_pending_batch_campaign_ids": first_pending_batch_campaign_ids,
+            "estimated_campaign_units_to_run": pending_campaign_units,
+            "create_new_progress_key": False,
+            "warning": ordering_warning,
+        }
+        print("Ozon Performance planning summary:")
+        print(json.dumps(sanitize_value(planning_summary), ensure_ascii=False, indent=2))
+        return
+
     campaigns = client.list_campaigns()
     print(f"Ozon Performance campaigns total: {len(campaigns)}")
 
@@ -2738,6 +2923,8 @@ def run():
     date_overlap_cpc_count = None
     recent_cpc_count = None
     excluded_by_recent_filter_count = 0
+    existing_backfill_progress_key = None
+    existing_backfill_progress = None
 
     if args.mode == "daily-yesterday":
         daily_selection = build_daily_cpc_selection(
@@ -2761,6 +2948,19 @@ def run():
             print(
                 "WARNING: recent mode may miss D-1 spend; use complete mode for management decisions."
             )
+    elif args.mode == "cpc-backfill":
+        daily_selection_mode = "complete"
+        daily_selection = build_daily_cpc_selection(
+            campaigns,
+            date_from,
+            date_to,
+            daily_selection_mode,
+        )
+        raw_cpc_count = len(daily_selection["raw_cpc_campaigns"])
+        date_overlap_cpc_count = len(daily_selection["date_overlap_cpc_campaigns"])
+        recent_cpc_count = len(daily_selection["recent_cpc_campaigns"])
+        excluded_by_recent_filter_count = int(daily_selection["excluded_by_recent_filter_count"] or 0)
+        cpc_campaigns = list(daily_selection["selected_campaigns"])
     else:
         cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
         print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")
@@ -2773,7 +2973,8 @@ def run():
         for campaign in cpc_campaigns
         if campaign.get("id") or campaign.get("campaignId")
     }
-    cpc_campaign_ids = list(cpc_campaigns_by_id.keys())
+    current_cpc_campaign_ids = deterministic_campaign_id_order(cpc_campaigns_by_id.keys())
+    cpc_campaign_ids = list(current_cpc_campaign_ids)
     cpc_activity_sample = {
         campaign_id: cpc_campaigns_by_id[campaign_id].get("_cpc_activity_markers", [])
         for campaign_id in cpc_campaign_ids[:10]
@@ -2804,17 +3005,72 @@ def run():
                 "cpc-backfill mode requires today's daily-yesterday run to be written first. "
                 f"No daily load status found for load_date={load_date}, target_date={daily_target}."
             )
+        existing_backfill_progress_key, existing_backfill_progress = resolve_existing_cpc_backfill_progress(
+            client,
+            target_date,
+        )
+        if not existing_backfill_progress:
+            raise RuntimeError(
+                f"No existing D-1 complete CPC progress found for target_date={target_date}"
+            )
 
-    batch_size = min(
-        requested_batch_size,
-        client.get_batch_recommendation(
-            client.scoped_state_key("statistics_json"),
+    ordering_source = "deterministic_sort"
+    ordering_warning = None
+    saved_campaign_count = None
+    saved_campaign_list_hash = None
+    current_campaign_list_hash = compute_campaign_list_hash(current_cpc_campaign_ids)
+    ordered_campaign_ids = list(current_cpc_campaign_ids)
+
+    if args.mode == "cpc-backfill" and existing_backfill_progress:
+        saved_ordered_campaign_ids = preserve_campaign_id_order(
+            existing_backfill_progress.get("ordered_campaign_ids") or []
+        )
+        saved_campaign_count = len(saved_ordered_campaign_ids) if saved_ordered_campaign_ids else None
+        saved_campaign_list_hash = (
+            existing_backfill_progress.get("campaign_list_hash")
+            or existing_backfill_progress.get("campaign_hash")
+        )
+
+        if saved_ordered_campaign_ids:
+            ordered_campaign_ids = list(saved_ordered_campaign_ids)
+            ordering_source = "saved_ordered_campaign_ids"
+            if not saved_campaign_list_hash:
+                saved_campaign_list_hash = compute_campaign_list_hash(saved_ordered_campaign_ids)
+            if current_campaign_list_hash != saved_campaign_list_hash:
+                ordering_warning = (
+                    "current campaign list differs from saved ordered progress; "
+                    "resume will use saved_ordered_campaign_ids"
+                )
+        else:
+            ordering_source = "deterministic_sort_fallback"
+            ordering_warning = (
+                "existing progress has no ordered_campaign_ids; batch resume ordering cannot be "
+                "strictly confirmed"
+            )
+
+    if args.mode == "cpc-backfill" and existing_backfill_progress:
+        batch_size = int(existing_backfill_progress.get("batch_size") or requested_batch_size or 1)
+    else:
+        batch_size = min(
             requested_batch_size,
-        ),
-    )
-    cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
+            client.get_batch_recommendation(
+                client.scoped_state_key("statistics_json"),
+                requested_batch_size,
+            ),
+        )
+    cpc_batches = build_cpc_batches(ordered_campaign_ids, batch_size)
     usable_daily_limit = max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE)
-    excluded_by_quota_count = max(0, len(cpc_campaign_ids) - usable_daily_limit)
+    excluded_by_quota_count = max(0, len(ordered_campaign_ids) - usable_daily_limit)
+    first_pending_batch_index = (
+        ((existing_backfill_progress or {}).get("pending_batch_indexes") or [None])[0]
+        if existing_backfill_progress
+        else None
+    )
+    first_pending_batch_campaign_ids = (
+        cpc_batches[first_pending_batch_index]
+        if first_pending_batch_index is not None and 0 <= int(first_pending_batch_index) < len(cpc_batches)
+        else []
+    )
     planning_summary = {
         "mode": args.mode,
         "target_date": target_date,
@@ -2826,20 +3082,66 @@ def run():
         "raw_cpc_count": raw_cpc_count if raw_cpc_count is not None else len(
             [campaign for campaign in campaigns if is_cpc_campaign(campaign)]
         ),
-        "filtered_recent_count": recent_cpc_count if recent_cpc_count is not None else len(cpc_campaign_ids),
-        "date_overlap_cpc_count": date_overlap_cpc_count if date_overlap_cpc_count is not None else len(cpc_campaign_ids),
-        "selected_cpc_count": len(cpc_campaign_ids),
-        "cpc_campaign_count": len(cpc_campaign_ids),
+        "filtered_recent_count": recent_cpc_count if recent_cpc_count is not None else len(current_cpc_campaign_ids),
+        "date_overlap_cpc_count": date_overlap_cpc_count if date_overlap_cpc_count is not None else len(current_cpc_campaign_ids),
+        "selected_cpc_count": len(ordered_campaign_ids),
+        "cpc_campaign_count": len(ordered_campaign_ids),
         "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
         "excluded_by_quota_count": excluded_by_quota_count,
         "batch_size": batch_size,
         "total_batches": len(cpc_batches),
-        "campaign_units": len(cpc_campaign_ids),
+        "campaign_units": len(ordered_campaign_ids),
         "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
         "reserve": STATS_DAILY_CAMPAIGN_RESERVE,
         "usable_limit": usable_daily_limit,
-        "would_fit_daily_limit": len(cpc_campaign_ids) <= usable_daily_limit,
-        "head_campaign_ids": cpc_campaign_ids[:10],
+        "would_fit_daily_limit": len(ordered_campaign_ids) <= usable_daily_limit,
+        "head_campaign_ids": ordered_campaign_ids[:10],
+        "ordering_source": ordering_source,
+        "campaign_list_hash": compute_campaign_list_hash(ordered_campaign_ids),
+        "saved_campaign_count": saved_campaign_count,
+        "current_campaign_count": len(current_cpc_campaign_ids),
+        "saved_campaign_list_hash": saved_campaign_list_hash,
+        "current_campaign_list_hash": current_campaign_list_hash,
+        "existing_progress_selected": bool(existing_backfill_progress),
+        "existing_progress_key": existing_backfill_progress_key,
+        "existing_progress_selection_mode": (
+            (existing_backfill_progress or {}).get("selection_mode")
+            if existing_backfill_progress
+            else None
+        ),
+        "existing_progress_campaign_count": (
+            (existing_backfill_progress or {}).get("total_campaigns")
+            if existing_backfill_progress
+            else None
+        ),
+        "existing_progress_batch_size": (
+            (existing_backfill_progress or {}).get("batch_size")
+            if existing_backfill_progress
+            else None
+        ),
+        "existing_progress_completed_batches": (
+            (existing_backfill_progress or {}).get("completed_batches")
+            if existing_backfill_progress
+            else None
+        ),
+        "existing_progress_pending_batches": (
+            (existing_backfill_progress or {}).get("pending_batches")
+            if existing_backfill_progress
+            else None
+        ),
+        "existing_progress_next_batch_index": (
+            (existing_backfill_progress or {}).get("next_batch_index")
+            if existing_backfill_progress
+            else None
+        ),
+        "first_pending_batch_index": first_pending_batch_index,
+        "first_pending_batch_campaign_ids": first_pending_batch_campaign_ids,
+        "estimated_campaign_units_to_run": sum_campaign_units_for_batches(
+            cpc_batches,
+            (existing_backfill_progress or {}).get("pending_batch_indexes") or [],
+        ) if existing_backfill_progress else len(ordered_campaign_ids),
+        "create_new_progress_key": not bool(existing_backfill_progress),
+        "warning": ordering_warning,
     }
     print("Ozon Performance planning summary:")
     print(json.dumps(sanitize_value(planning_summary), ensure_ascii=False, indent=2))
@@ -2862,14 +3164,19 @@ def run():
             max_cpc_batches = DEFAULT_MAX_CPC_BATCHES_PER_RUN
         else:
             max_cpc_batches = None
-    progress_key = build_cpc_progress_key(date_from, date_to, batch_size, cpc_campaign_ids, args.group_by)
+    if args.mode == "cpc-backfill" and existing_backfill_progress_key:
+        progress_key = existing_backfill_progress_key
+    else:
+        progress_key = build_cpc_progress_key(date_from, date_to, batch_size, ordered_campaign_ids, args.group_by)
     original_runtime_state = client.snapshot_runtime_state()
     progress_context = client.build_cpc_progress_context(
         date_from,
         date_to,
         batch_size,
-        cpc_campaign_ids,
+        ordered_campaign_ids,
         args.group_by,
+        selection_mode=daily_selection_mode if args.mode in {"daily-yesterday", "cpc-backfill"} else None,
+        campaign_scope=args.campaign_scope,
     )
     cpc_progress = client.init_cpc_progress(progress_key, progress_context, cpc_batches)
 
@@ -2889,8 +3196,8 @@ def run():
         "date_to": date_to,
         "account_signature": client.account_signature,
         "period_campaign_count": len(campaigns_by_id),
-        "campaign_count": len(cpc_campaign_ids),
-        "cpc_campaign_units_total": len(cpc_campaign_ids),
+        "campaign_count": len(ordered_campaign_ids),
+        "cpc_campaign_units_total": len(ordered_campaign_ids),
         "requested_batch_size": requested_batch_size,
         "batch_size": batch_size,
         "daily_cpc_selection_mode": daily_selection_mode if args.mode == "daily-yesterday" else None,
@@ -2898,6 +3205,8 @@ def run():
         "date_overlap_cpc_count": planning_summary.get("date_overlap_cpc_count"),
         "excluded_by_recent_filter_count": planning_summary.get("excluded_by_recent_filter_count"),
         "excluded_by_quota_count": planning_summary.get("excluded_by_quota_count"),
+        "ordering_source": ordering_source,
+        "campaign_list_hash": planning_summary.get("campaign_list_hash"),
         "max_batches_per_run": max_cpc_batches,
         "daily_stats_campaign_limit": STATS_DAILY_CAMPAIGN_LIMIT,
         "daily_stats_campaign_reserve": STATS_DAILY_CAMPAIGN_RESERVE,
@@ -2928,7 +3237,7 @@ def run():
     completed_batch_indexes_before_run = list(cpc_progress_snapshot.get("completed_batch_indexes") or [])
     failed_429_batch_indexes_before_run = list(cpc_progress_snapshot.get("failed_429_batch_indexes") or [])
 
-    if not cpc_campaign_ids:
+    if not ordered_campaign_ids:
         run_summary["cpc"] = empty_stage_status(
             "skipped",
             reason="no_cpc_campaigns_for_period",
@@ -2962,12 +3271,12 @@ def run():
             planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
 
         run_summary["cpc_campaign_units_planned"] = planned_campaign_units
-        run_summary["cpc_pending_campaigns_before_run"] = max(0, len(cpc_campaign_ids) - planned_campaign_units)
-        run_summary["quota_limited"] = planned_campaign_units < len(cpc_campaign_ids)
+        run_summary["cpc_pending_campaigns_before_run"] = max(0, len(ordered_campaign_ids) - planned_campaign_units)
+        run_summary["quota_limited"] = planned_campaign_units < len(ordered_campaign_ids)
 
         print(
             "Ozon Performance CPC batch plan: "
-            f"campaign_count={len(cpc_campaign_ids)} batch_size={batch_size} "
+            f"campaign_count={len(ordered_campaign_ids)} batch_size={batch_size} "
             f"planned_campaign_units={planned_campaign_units} "
             f"max_batches_per_run={max_cpc_batches} total_batches={cpc_batches_total} "
             f"next_batch_index={cpc_progress_snapshot.get('next_batch_index')} "
@@ -3004,7 +3313,7 @@ def run():
                     attempt=exc.attempt,
                     failed_batch_index=batch_index,
                     failed_batch=campaign_batch,
-                    campaign_count=len(cpc_campaign_ids),
+                    campaign_count=len(ordered_campaign_ids),
                     campaign_units_attempted=sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes),
                     campaign_units_completed=sum_campaign_units_for_batches(
                         cpc_batches,
@@ -3018,7 +3327,7 @@ def run():
                     failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
                     pending_campaigns=max(
                         0,
-                        len(cpc_campaign_ids)
+                        len(ordered_campaign_ids)
                         - sum_campaign_units_for_batches(
                             cpc_batches,
                             cpc_progress_snapshot.get("completed_batch_indexes"),
@@ -3086,7 +3395,7 @@ def run():
             run_summary["cpc"] = empty_stage_status(
                 cpc_status,
                 batch_size=batch_size,
-                campaign_count=len(cpc_campaign_ids),
+                campaign_count=len(ordered_campaign_ids),
                 campaign_units_attempted=sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes),
                 campaign_units_completed=completed_campaign_units,
                 total_batches=cpc_batches_total,
@@ -3096,7 +3405,7 @@ def run():
                 pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
                 failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
                 next_batch_index=cpc_progress_snapshot.get("next_batch_index"),
-                pending_campaigns=max(0, len(cpc_campaign_ids) - completed_campaign_units),
+                pending_campaigns=max(0, len(ordered_campaign_ids) - completed_campaign_units),
             )
             if cpc_status == "success":
                 client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
@@ -3220,7 +3529,7 @@ def run():
         sum_campaign_units_for_batches(cpc_batches, failed_429_batch_indexes_after_run)
         - sum_campaign_units_for_batches(cpc_batches, failed_429_batch_indexes_before_run),
     )
-    pending_campaign_units_total = max(0, len(cpc_campaign_ids) - completed_campaign_units_total)
+    pending_campaign_units_total = max(0, len(ordered_campaign_ids) - completed_campaign_units_total)
     run_summary["processed_batches"] = len(processed_batch_indexes)
     run_summary["completed_batches"] = cpc_progress_snapshot.get("completed_batches", 0)
     run_summary["pending_batches"] = cpc_progress_snapshot.get("pending_batches", 0)
@@ -3228,7 +3537,7 @@ def run():
     run_summary["cpc_campaign_units_attempted"] = attempted_campaign_units_this_run
     run_summary["cpc_campaign_units_completed"] = completed_campaign_units_this_run
     run_summary["cpc_pending_campaigns"] = pending_campaign_units_total
-    run_summary["cpc_campaign_units_planned_total"] = len(cpc_campaign_ids)
+    run_summary["cpc_campaign_units_planned_total"] = len(ordered_campaign_ids)
     run_summary["cpc_campaign_units_completed_total"] = completed_campaign_units_total
     run_summary["cpc_campaign_units_pending_total"] = pending_campaign_units_total
     run_summary["cpc_campaign_units_attempted_this_run"] = attempted_campaign_units_this_run

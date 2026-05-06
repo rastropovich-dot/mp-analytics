@@ -33,6 +33,11 @@ def parse_args():
     parser.add_argument("--plan-only", action="store_true", help="Build read-only identity closure plan.")
     parser.add_argument("--dry-run", action="store_true", help="Reserved for future DB-only preparation without writes.")
     parser.add_argument("--live", action="store_true", help="Reserved future mode for live Ozon Seller API enrichment.")
+    parser.add_argument(
+        "--rerun-stocks-only",
+        action="store_true",
+        help="Only verify and persist stock_api evidence for tail product_ids that still have no stock_api evidence.",
+    )
     parser.add_argument("--marketplace", default=DEFAULT_MARKETPLACE)
     parser.add_argument("--only-tail", action="store_true", help="Focus on current stock tail from stock_data_quality_issues.")
     parser.add_argument(
@@ -233,6 +238,11 @@ def build_stock_api_evidence(stock_item, verified_at):
         "fbo_sku": fbo_sku,
         "fbs_sku": fbs_sku,
     }
+
+
+def has_stock_api_evidence(row):
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    return isinstance(evidence.get("stock_api"), dict)
 
 
 def build_tail_rows(issue_date, marketplace_code, limit_tail=None):
@@ -857,6 +867,67 @@ def build_identity_rows_from_api(plan, product_list_items, info_items, stock_ite
     return list(identity_by_key.values())
 
 
+def build_stock_rerun_candidates(plan):
+    tail_product_ids = set()
+    tail_articles_by_product_id = {}
+    affected_stock_issue_skus = set()
+
+    for row in plan["tail_rows"]:
+        if row.get("required_source") not in {"requires_stock_api_verification", "stock_source_gap"}:
+            continue
+        product_id = str(row.get("sku_catalog_product_id") or "").strip()
+        if not product_id:
+            continue
+        tail_product_ids.add(product_id)
+        if row.get("article"):
+            tail_articles_by_product_id[product_id] = row.get("article")
+        affected_stock_issue_skus.add(str(row.get("marketplace_sku") or "").strip())
+
+    identity_rows = []
+    for batch_ids in chunks(sorted(tail_product_ids), 500):
+        identity_rows.extend(
+            fetch_all(
+                "ozon_product_identity",
+                filters=[
+                    ("marketplace_code", "eq", "ozon"),
+                    ("product_id", "in", batch_ids),
+                ],
+            )
+        )
+
+    identity_by_product_id = rows_by_key(identity_rows, "product_id")
+    rows_already_having_evidence = 0
+    rows_missing_evidence = 0
+    product_ids_to_verify = []
+    offer_ids_to_verify = []
+    rows_to_update = []
+
+    for product_id in sorted(tail_product_ids):
+        matches = identity_by_product_id.get(product_id) or []
+        if not matches:
+            continue
+        row = matches[0]
+        if has_stock_api_evidence(row):
+            rows_already_having_evidence += 1
+            continue
+        rows_missing_evidence += 1
+        product_ids_to_verify.append(product_id)
+        offer_ids_to_verify.append(tail_articles_by_product_id.get(product_id))
+        rows_to_update.append(row)
+
+    return {
+        "product_ids_to_verify": product_ids_to_verify,
+        "offer_ids_to_verify": offer_ids_to_verify,
+        "rows_to_update": rows_to_update,
+        "rows_already_having_evidence_count": rows_already_having_evidence,
+        "rows_missing_evidence_before_count": rows_missing_evidence,
+        "planned_stock_requests": ceil_div(len(product_ids_to_verify), STOCKS_BATCH_LIMIT),
+        "planned_info_requests": 0,
+        "count_rows_in_identity_with_stock_api_before": rows_already_having_evidence,
+        "expected_affected_stock_issue_rows": len(affected_stock_issue_skus),
+    }
+
+
 def run_dry_run(plan, max_requests):
     request_stats = defaultdict(int)
     errors = []
@@ -987,6 +1058,84 @@ def run_dry_run(plan, max_requests):
         },
         "identity_gap_details": identity_gap_details,
         "stock_source_details": stock_source_details,
+    }
+
+
+def run_rerun_stocks_only(plan, max_requests):
+    candidate_plan = build_stock_rerun_candidates(plan)
+    request_stats = defaultdict(int)
+    errors = []
+
+    product_ids = candidate_plan["product_ids_to_verify"]
+    offer_ids = candidate_plan["offer_ids_to_verify"]
+
+    stock_items = []
+    if product_ids:
+        stock_items, stock_errors = fetch_product_stocks_snapshot(product_ids, offer_ids, request_stats, max_requests)
+        errors.extend(stock_errors)
+
+    verified_at = datetime.now(ZoneInfo("UTC")).isoformat()
+    stock_items_by_product_id = rows_by_key(stock_items, "product_id")
+
+    updated_rows = []
+    for row in candidate_plan["rows_to_update"]:
+        product_id = str(row.get("product_id") or "").strip()
+        merged = dict(row)
+        evidence = merged.get("evidence") if isinstance(merged.get("evidence"), dict) else {}
+        if product_id and stock_items_by_product_id.get(product_id):
+            stock_block = build_stock_api_evidence(stock_items_by_product_id[product_id][0], verified_at)
+        else:
+            stock_block = {
+                "verified": True,
+                "source": "/v4/product/info/stocks",
+                "verified_at": verified_at,
+                "returned_stock_rows": False,
+            }
+        merged["evidence"] = merge_json_dict(evidence, {"stock_api": stock_block})
+        updated_rows.append(merged)
+
+    (
+        upserted_rows,
+        stock_api_evidence_merged_count,
+        stock_api_verified_true_count,
+        stock_api_returned_stock_rows_count,
+        stock_api_no_stock_rows_count,
+    ) = upsert_identity_rows(updated_rows)
+
+    rows_missing_after = 0
+    if product_ids:
+        refreshed = []
+        for batch_ids in chunks(sorted(product_ids), 500):
+            refreshed.extend(
+                fetch_all(
+                    "ozon_product_identity",
+                    filters=[
+                        ("marketplace_code", "eq", "ozon"),
+                        ("product_id", "in", batch_ids),
+                    ],
+                )
+            )
+        for row in refreshed:
+            if not has_stock_api_evidence(row):
+                rows_missing_after += 1
+
+    return {
+        "status": "PASSED" if not errors else ("PARTIAL" if upserted_rows else "FAILED"),
+        "requests": {
+            "/v3/product/list": 0,
+            "/v3/product/info/list": 0,
+            "/v4/product/info/stocks": request_stats["/v4/product/info/stocks"],
+            "/v3/products/info/attributes": 0,
+        },
+        "stock_api_evidence_merged_count": stock_api_evidence_merged_count,
+        "stock_api_verified_true_count": stock_api_verified_true_count,
+        "stock_api_returned_stock_rows_count": stock_api_returned_stock_rows_count,
+        "stock_api_no_stock_rows_count": stock_api_no_stock_rows_count,
+        "stock_api_already_had_evidence_count": candidate_plan["rows_already_having_evidence_count"],
+        "stock_api_missing_evidence_before_count": candidate_plan["rows_missing_evidence_before_count"],
+        "stock_api_missing_evidence_after_count": rows_missing_after,
+        "identity_rows_upserted": upserted_rows,
+        "errors": errors,
     }
 
 
@@ -1246,6 +1395,27 @@ def print_plan(plan, max_requests=None):
     print(json.dumps(plan, ensure_ascii=False, indent=2))
 
 
+def print_rerun_stocks_only_plan(plan, candidate_plan):
+    print("=== Ozon Product Identity Loader — Rerun Stocks Only Plan ===")
+    print()
+    print(f"product_ids_to_verify: {len(candidate_plan['product_ids_to_verify'])}")
+    print(f"rows already having evidence.stock_api: {candidate_plan['rows_already_having_evidence_count']}")
+    print(f"rows still missing evidence.stock_api: {candidate_plan['rows_missing_evidence_before_count']}")
+    print(f"planned /v4/product/info/stocks requests: {candidate_plan['planned_stock_requests']}")
+    print(f"planned /v3/product/info/list requests: {candidate_plan['planned_info_requests']}")
+    print(f"count rows in ozon_product_identity with evidence.stock_api before: {candidate_plan['count_rows_in_identity_with_stock_api_before']}")
+    print(f"expected affected stock issue rows: {candidate_plan['expected_affected_stock_issue_rows']}")
+    print()
+    print("Live API:")
+    print("  NOT called (--plan-only)")
+    print()
+    print("Plan JSON:")
+    print(json.dumps({
+        "stock_data_quality_date": plan["stock_data_quality_date"],
+        **candidate_plan,
+    }, ensure_ascii=False, indent=2))
+
+
 def run():
     args = parse_args()
     include_api_sources = parse_include_api_sources(args.include_api_sources)
@@ -1261,6 +1431,20 @@ def run():
         limit_tail=args.limit_tail,
         include_api_sources=include_api_sources,
     )
+
+    if args.rerun_stocks_only:
+        candidate_plan = build_stock_rerun_candidates(plan)
+        if args.plan_only or args.dry_run:
+            print_rerun_stocks_only_plan(plan, candidate_plan)
+            return
+        if candidate_plan["planned_stock_requests"] > 2:
+            raise RuntimeError(
+                f"Refusing rerun-stocks-only because planned /v4/product/info/stocks requests = {candidate_plan['planned_stock_requests']} (> 2)."
+            )
+        summary = run_rerun_stocks_only(plan, max_requests=args.max_requests)
+        print("=== Ozon Product Identity Loader — Rerun Stocks Only Summary ===")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
 
     if args.plan_only or args.dry_run:
         if args.dry_run:

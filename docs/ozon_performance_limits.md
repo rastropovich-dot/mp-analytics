@@ -4,6 +4,7 @@
 
 - Ozon confirmed the `statistics/json` export limit is `2000 campaigns/day`.
 - One campaign consumes one unit of that daily export limit.
+- A batch of `10` campaigns consumes `10 campaign units`.
 - The general API limit `100000` does not apply to `statistics/json` export jobs.
 - The `statistics/json` export limit cannot be increased.
 - There is no alternative endpoint that bypasses this export limit for CPC statistics.
@@ -44,6 +45,19 @@ Moscow is `UTC+3`, without DST.
   - `OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT=2000`
   - `OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE=200`
   - `OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN=1800`
+- Confirmed planning dry-run example for `2026-05-05`:
+  - `raw_campaign_count = 948`
+  - `filtered_recent_count = 185`
+  - `cpc_campaign_count = 185`
+  - `batch_size = 10`
+  - `total_batches = 19`
+  - `campaign_units = 185`
+  - `usable_limit = 1800`
+  - `would_fit_daily_limit = yes`
+- This confirms the production D-1 CPC path is low-risk by quota:
+  - rolling 30-day daily mode is removed;
+  - the morning daily load now works on one day only;
+  - the D-1 CPC run leaves a quota buffer of `1615 campaign units`.
 - If daily CPC cannot fit into the remaining budget:
   - CPC status becomes `pending_quota`
   - overall run status becomes `partial_quota`
@@ -79,6 +93,7 @@ This split is safer than running one combined cron because:
 ## Operational guidance
 
 - Do not run manual full pipeline loads during the day unless necessary.
+- Prefer `--plan-only` when you need to confirm D-1 campaign units without creating any Ozon report jobs.
 - For manual checks, prefer:
   - bounded `cpc-backfill`, or
   - Ozon-only runs with explicit CPC batch limits.

@@ -670,6 +670,14 @@ def parse_args():
         default=DEFAULT_CAMPAIGN_SCOPE,
         help="recent = active or recently updated campaigns in the period; all = all campaigns",
     )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help=(
+            "Planning-only mode: list campaigns, apply local filters, calculate batches/quota, "
+            "then exit before any report jobs, polling, downloads, or DB writes."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
@@ -2681,11 +2689,37 @@ def run():
             requested_batch_size,
         ),
     )
+    cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
+    usable_daily_limit = max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE)
+    planning_summary = {
+        "mode": args.mode,
+        "target_date": target_date,
+        "date_from": date_from,
+        "date_to": date_to,
+        "campaign_scope": args.campaign_scope,
+        "raw_campaign_count": len(campaigns),
+        "filtered_recent_count": len(period_campaigns),
+        "cpc_campaign_count": len(cpc_campaign_ids),
+        "batch_size": batch_size,
+        "total_batches": len(cpc_batches),
+        "campaign_units": len(cpc_campaign_ids),
+        "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+        "reserve": STATS_DAILY_CAMPAIGN_RESERVE,
+        "usable_limit": usable_daily_limit,
+        "would_fit_daily_limit": len(cpc_campaign_ids) <= usable_daily_limit,
+        "head_campaign_ids": cpc_campaign_ids[:10],
+    }
+    print("Ozon Performance planning summary:")
+    print(json.dumps(sanitize_value(planning_summary), ensure_ascii=False, indent=2))
+
+    if args.plan_only:
+        return
+
     daily_campaign_budget = max(
         0,
         min(
             int(args.max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN),
-            max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE),
+            usable_daily_limit,
         ),
     )
     attempted_units_before_run = read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
@@ -2696,7 +2730,6 @@ def run():
             max_cpc_batches = DEFAULT_MAX_CPC_BATCHES_PER_RUN
         else:
             max_cpc_batches = None
-    cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
     progress_key = build_cpc_progress_key(date_from, date_to, batch_size, cpc_campaign_ids, args.group_by)
     original_runtime_state = client.snapshot_runtime_state()
     progress_context = client.build_cpc_progress_context(

@@ -32,6 +32,10 @@ Moscow is `UTC+3`, without DST.
 - `run_daily_pipeline.py --skip-telegram` now calls Ozon Performance in `daily-yesterday` mode.
 - For a morning run on `2026-05-06 MSK`, the target Ozon Performance window is:
   - `2026-05-05..2026-05-05`
+- Daily D-1 CPC selection is now completeness-first by default:
+  - keep all CPC campaigns whose campaign dates overlap the target date;
+  - do not exclude a campaign only because it is currently inactive or not updated in that day;
+  - use `recent` mode only as an explicit fallback, because it may miss D-1 spend needed for management decisions.
 - Historical and recovery runs stay separate:
   - `--mode full` for explicit historical ranges;
   - `--mode cpc-backfill` for pending CPC batches after the main daily run.
@@ -45,23 +49,42 @@ Moscow is `UTC+3`, without DST.
   - `OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT=2000`
   - `OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE=200`
   - `OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN=1800`
+  - `OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE=complete`
 - Confirmed planning dry-run example for `2026-05-05`:
   - `raw_campaign_count = 948`
   - `filtered_recent_count = 185`
-  - `cpc_campaign_count = 185`
+  - `raw_cpc_count = 948`
+  - `date_overlap_cpc_count = 899`
+  - `selected_cpc_count = 899`
+  - `excluded_by_recent_filter_count = 714`
+  - `cpc_campaign_count = 899`
   - `batch_size = 10`
-  - `total_batches = 19`
-  - `campaign_units = 185`
+  - `total_batches = 90`
+  - `campaign_units = 899`
   - `usable_limit = 1800`
   - `would_fit_daily_limit = yes`
 - This confirms the production D-1 CPC path is low-risk by quota:
   - rolling 30-day daily mode is removed;
   - the morning daily load now works on one day only;
-  - the D-1 CPC run leaves a quota buffer of `1615 campaign units`.
+  - the D-1 CPC run leaves a quota buffer of `901 campaign units`.
 - If daily CPC cannot fit into the remaining budget:
   - CPC status becomes `pending_quota`
   - overall run status becomes `partial_quota`
   - remaining campaigns stay in DB-backed progress and can be retried by bounded backfill later
+- `--plan-only` prints a safe planning summary before any report jobs are created:
+  - `target_date`
+  - `raw_campaign_count`
+  - `raw_cpc_count`
+  - `filtered_recent_count`
+  - `date_overlap_cpc_count`
+  - `selected_cpc_count`
+  - `excluded_by_recent_filter_count`
+  - `excluded_by_quota_count`
+  - `campaign_units`
+  - `daily_limit`
+  - `reserve`
+  - `usable_limit`
+  - `would_fit_daily_limit`
 - DB-backed state in `pipeline_runtime_state` remains the source of truth for:
   - `cpc_progress`
   - `statistics/json` job cache
@@ -94,6 +117,9 @@ This split is safer than running one combined cron because:
 
 - Do not run manual full pipeline loads during the day unless necessary.
 - Prefer `--plan-only` when you need to confirm D-1 campaign units without creating any Ozon report jobs.
+- If `daily-yesterday` is forced into `recent` selection mode, treat that as a warning state:
+  - it may miss real D-1 CPC spend;
+  - it is unsuitable for management decisions that need full yesterday attribution.
 - For manual checks, prefer:
   - bounded `cpc-backfill`, or
   - Ozon-only runs with explicit CPC batch limits.

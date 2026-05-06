@@ -61,6 +61,9 @@ STATS_DAILY_CAMPAIGN_RESERVE = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPA
 DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN = int(
     os.getenv("OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN", "1800")
 )
+OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE = (
+    os.getenv("OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE", "complete") or "complete"
+).strip().lower()
 REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
 REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
 CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
@@ -671,6 +674,15 @@ def parse_args():
         help="recent = active or recently updated campaigns in the period; all = all campaigns",
     )
     parser.add_argument(
+        "--daily-cpc-selection-mode",
+        choices=("complete", "recent"),
+        default=OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE,
+        help=(
+            "Daily D-1 CPC selection mode: complete = all CPC campaigns overlapping target_date; "
+            "recent = only running or updated-in-period campaigns."
+        ),
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help=(
@@ -825,6 +837,72 @@ def filter_cpc_campaigns(campaigns, date_from, date_to, scope):
         cpc_campaigns.append(prepared)
 
     return cpc_campaigns
+
+
+def prepare_cpc_campaign(campaign, date_from, date_to):
+    prepared = dict(campaign)
+    prepared["_cpc_activity_markers"] = cpc_activity_markers(campaign, date_from, date_to)
+    prepared["_running"] = is_running_campaign(campaign)
+    prepared["_updated_in_period"] = campaign_updated_in_period(campaign, date_from, date_to)
+    prepared["_created_in_period"] = campaign_created_in_period(campaign, date_from, date_to)
+    prepared["_overlaps_period"] = campaign_intersects_period(campaign, date_from, date_to)
+    return prepared
+
+
+def daily_cpc_priority_key(campaign):
+    running = bool(campaign.get("_running"))
+    updated = bool(campaign.get("_updated_in_period"))
+
+    if running and updated:
+        priority = 0
+    elif running:
+        priority = 1
+    elif updated:
+        priority = 2
+    else:
+        priority = 3
+
+    updated_at = from_iso(campaign.get("updatedAt") or campaign.get("updated_at"))
+    updated_ts = updated_at.timestamp() if updated_at else 0.0
+    campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "")
+    return (priority, -updated_ts, campaign_id)
+
+
+def build_daily_cpc_selection(campaigns, date_from, date_to, selection_mode):
+    raw_cpc_campaigns = [
+        prepare_cpc_campaign(campaign, date_from, date_to)
+        for campaign in campaigns
+        if is_cpc_campaign(campaign)
+    ]
+    date_overlap_cpc_campaigns = [
+        campaign for campaign in raw_cpc_campaigns if campaign.get("_overlaps_period")
+    ]
+    recent_cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, "recent")
+
+    if selection_mode == "recent":
+        selected_campaigns = list(recent_cpc_campaigns)
+    else:
+        selected_campaigns = sorted(date_overlap_cpc_campaigns, key=daily_cpc_priority_key)
+
+    recent_ids = {
+        str(campaign.get("id") or campaign.get("campaignId") or "")
+        for campaign in recent_cpc_campaigns
+        if campaign.get("id") or campaign.get("campaignId")
+    }
+    overlap_ids = {
+        str(campaign.get("id") or campaign.get("campaignId") or "")
+        for campaign in date_overlap_cpc_campaigns
+        if campaign.get("id") or campaign.get("campaignId")
+    }
+    excluded_by_recent_filter_count = len(overlap_ids - recent_ids)
+
+    return {
+        "raw_cpc_campaigns": raw_cpc_campaigns,
+        "date_overlap_cpc_campaigns": date_overlap_cpc_campaigns,
+        "recent_cpc_campaigns": recent_cpc_campaigns,
+        "selected_campaigns": selected_campaigns,
+        "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
+    }
 
 
 def parse_number(value):
@@ -2639,8 +2717,38 @@ def run():
         f"{len(period_campaigns)}"
     )
 
-    cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
-    print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")
+    daily_selection_mode = (args.daily_cpc_selection_mode or "complete").strip().lower()
+    daily_selection = None
+    raw_cpc_count = None
+    date_overlap_cpc_count = None
+    recent_cpc_count = None
+    excluded_by_recent_filter_count = 0
+
+    if args.mode == "daily-yesterday":
+        daily_selection = build_daily_cpc_selection(
+            campaigns,
+            date_from,
+            date_to,
+            daily_selection_mode,
+        )
+        raw_cpc_count = len(daily_selection["raw_cpc_campaigns"])
+        date_overlap_cpc_count = len(daily_selection["date_overlap_cpc_campaigns"])
+        recent_cpc_count = len(daily_selection["recent_cpc_campaigns"])
+        excluded_by_recent_filter_count = int(daily_selection["excluded_by_recent_filter_count"] or 0)
+        cpc_campaigns = list(daily_selection["selected_campaigns"])
+        print(
+            "Ozon Performance daily D-1 CPC selection: "
+            f"mode={daily_selection_mode} raw_cpc={raw_cpc_count} "
+            f"date_overlap_cpc={date_overlap_cpc_count} recent_cpc={recent_cpc_count} "
+            f"selected_cpc={len(cpc_campaigns)}"
+        )
+        if daily_selection_mode == "recent":
+            print(
+                "WARNING: recent mode may miss D-1 spend; use complete mode for management decisions."
+            )
+    else:
+        cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
+        print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")
 
     if args.campaign_limit:
         cpc_campaigns = cpc_campaigns[:args.campaign_limit]
@@ -2691,15 +2799,24 @@ def run():
     )
     cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
     usable_daily_limit = max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE)
+    excluded_by_quota_count = max(0, len(cpc_campaign_ids) - usable_daily_limit)
     planning_summary = {
         "mode": args.mode,
         "target_date": target_date,
         "date_from": date_from,
         "date_to": date_to,
         "campaign_scope": args.campaign_scope,
+        "daily_cpc_selection_mode": daily_selection_mode if args.mode == "daily-yesterday" else None,
         "raw_campaign_count": len(campaigns),
-        "filtered_recent_count": len(period_campaigns),
+        "raw_cpc_count": raw_cpc_count if raw_cpc_count is not None else len(
+            [campaign for campaign in campaigns if is_cpc_campaign(campaign)]
+        ),
+        "filtered_recent_count": recent_cpc_count if recent_cpc_count is not None else len(cpc_campaign_ids),
+        "date_overlap_cpc_count": date_overlap_cpc_count if date_overlap_cpc_count is not None else len(cpc_campaign_ids),
+        "selected_cpc_count": len(cpc_campaign_ids),
         "cpc_campaign_count": len(cpc_campaign_ids),
+        "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
+        "excluded_by_quota_count": excluded_by_quota_count,
         "batch_size": batch_size,
         "total_batches": len(cpc_batches),
         "campaign_units": len(cpc_campaign_ids),
@@ -2761,6 +2878,11 @@ def run():
         "cpc_campaign_units_total": len(cpc_campaign_ids),
         "requested_batch_size": requested_batch_size,
         "batch_size": batch_size,
+        "daily_cpc_selection_mode": daily_selection_mode if args.mode == "daily-yesterday" else None,
+        "raw_cpc_count": planning_summary.get("raw_cpc_count"),
+        "date_overlap_cpc_count": planning_summary.get("date_overlap_cpc_count"),
+        "excluded_by_recent_filter_count": planning_summary.get("excluded_by_recent_filter_count"),
+        "excluded_by_quota_count": planning_summary.get("excluded_by_quota_count"),
         "max_batches_per_run": max_cpc_batches,
         "daily_stats_campaign_limit": STATS_DAILY_CAMPAIGN_LIMIT,
         "daily_stats_campaign_reserve": STATS_DAILY_CAMPAIGN_RESERVE,

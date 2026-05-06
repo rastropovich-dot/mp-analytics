@@ -271,6 +271,53 @@ def load_recent_stock(history_from, date_to):
     }
 
 
+def load_identity_stock_evidence():
+    rows = fetch_all(
+        "ozon_product_identity",
+        filters=[("marketplace_code", "eq", "ozon")],
+        order="identity_key",
+    )
+
+    by_decision_sku = {}
+    by_article = {}
+
+    for row in rows:
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        stock_api = evidence.get("stock_api")
+        if not isinstance(stock_api, dict) or stock_api.get("verified") is not True:
+            continue
+
+        total_available = stock_api.get("total_available")
+        total_present = stock_api.get("total_present")
+        total_reserved = stock_api.get("total_reserved")
+        stock_qty = total_available
+        if stock_qty is None and total_present is not None and total_reserved is not None:
+            stock_qty = num(total_present) - num(total_reserved)
+        if stock_qty is None and total_present is not None:
+            stock_qty = num(total_present)
+
+        record = {
+            "stock_qty": None if stock_qty is None else num(stock_qty),
+            "available_qty": None if total_available is None else num(total_available),
+            "stock_as_of_date": str(stock_api.get("verified_at") or "")[:10] or None,
+            "stock_verified_at": stock_api.get("verified_at"),
+            "returned_stock_rows": stock_api.get("returned_stock_rows"),
+            "note": "not sale_date snapshot, identity loader snapshot",
+        }
+
+        decision_sku = str(row.get("decision_marketplace_sku") or "").strip()
+        article = str(row.get("article") or "").strip()
+        if decision_sku and decision_sku not in by_decision_sku:
+            by_decision_sku[decision_sku] = record
+        if article and article not in by_article:
+            by_article[article] = record
+
+    return {
+        "by_decision_sku": by_decision_sku,
+        "by_article": by_article,
+    }
+
+
 def load_recent_price_points(history_from, date_to):
     rows = fetch_all(
         "marketplace_orders",
@@ -374,6 +421,9 @@ def build_rows(date_from, date_to):
     latest_stock_by_stock_sku = latest_stock.get("by_stock_sku", {})
     latest_stock_by_decision_sku = latest_stock.get("by_decision_sku", {})
     latest_stock_by_article = latest_stock.get("by_article", {})
+    identity_stock = load_identity_stock_evidence()
+    identity_stock_by_decision_sku = identity_stock.get("by_decision_sku", {})
+    identity_stock_by_article = identity_stock.get("by_article", {})
     latest_price = load_recent_price_points(history_from, date_to)
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
     stock_quality_rows, _ = build_stock_quality_rows(date_from, date_to)
@@ -450,6 +500,19 @@ def build_rows(date_from, date_to):
                 stock_info = latest_stock_by_article.get(article, {})
         if not stock_info:
             stock_info = latest_stock_by_stock_sku.get(sku, {})
+
+        stock_source_kind = "stock_daily"
+        used_identity_stock_fallback = False
+        if not stock_info:
+            stock_info = identity_stock_by_decision_sku.get(sku, {})
+            if not stock_info:
+                article = str(row.get("article") or organic_row.get("article") or "").strip()
+                if article:
+                    stock_info = identity_stock_by_article.get(article, {})
+            if stock_info:
+                stock_source_kind = "product_identity_stock_api_evidence"
+                used_identity_stock_fallback = True
+
         run_status_row = latest_run_status.get(kpi_date, {})
 
         quality_flags = []
@@ -477,6 +540,9 @@ def build_rows(date_from, date_to):
         if stock_qty_value is None:
             stock_qty_value = stock_info.get("stock_qty")
 
+        if used_identity_stock_fallback:
+            quality_flags.append("stock_from_identity_evidence")
+
         if stock_status == "missing_stock":
             quality_flags.append(stock_issue_type or "missing_stock")
         elif stock_status == "stock_out":
@@ -490,6 +556,24 @@ def build_rows(date_from, date_to):
             quality_flags.append(organic_reconciliation_status)
         if num(row.get("orders_qty")) <= 0:
             quality_flags.append("low_data_volume")
+
+        final_stock_status = stock_status or (
+            "stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "stock_ok" if stock_qty_value is not None else "missing_stock"
+        )
+        final_stock_issue_type = stock_issue_type or (
+            "stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "clean_stock_matched" if stock_qty_value is not None else "missing_stock"
+        )
+
+        if used_identity_stock_fallback:
+            if stock_qty_value is None:
+                final_stock_status = "missing_stock"
+                final_stock_issue_type = "stock_from_identity_evidence"
+            elif num(stock_qty_value) <= 0:
+                final_stock_status = "stock_out"
+                final_stock_issue_type = "stock_from_identity_evidence"
+            else:
+                final_stock_status = "stock_from_identity_evidence"
+                final_stock_issue_type = "stock_from_identity_evidence"
 
         quality_flags = sorted(set(flag for flag in quality_flags if flag))
         data_quality_status = "ok" if not quality_flags else ",".join(quality_flags)
@@ -524,15 +608,26 @@ def build_rows(date_from, date_to):
                 if stock_qty_value is None
                 else num(stock_qty_value)
             ),
-            "stock_status": stock_status or ("stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "stock_ok" if stock_qty_value is not None else "missing_stock"),
-            "stock_issue_type": stock_issue_type or ("stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "clean_stock_matched" if stock_qty_value is not None else "missing_stock"),
-            "stock_as_of_date": stock_info.get("stock_date"),
+            "stock_status": final_stock_status,
+            "stock_issue_type": final_stock_issue_type,
+            "stock_as_of_date": stock_info.get("stock_date") or stock_info.get("stock_as_of_date"),
             "organic_reconciliation_status": organic_reconciliation_status or "clean",
             "unreconciled_revenue": unreconciled_revenue,
             "source_run_status": run_status or None,
             "decision_status": decision_status,
             "data_quality_status": data_quality_status,
-            "warning": organic_warning or None,
+            "warning": (
+                organic_warning
+                if not used_identity_stock_fallback
+                else ", ".join(
+                    [part for part in [
+                        organic_warning or None,
+                        "stock_source:product_identity_stock_api_evidence",
+                        stock_info.get("note"),
+                        f"stock_verified_at:{stock_info.get('stock_verified_at')}" if stock_info.get("stock_verified_at") else None,
+                    ] if part]
+                ) or None
+            ),
             "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
         }
         rows.append(decision_row)

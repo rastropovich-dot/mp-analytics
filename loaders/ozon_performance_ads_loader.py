@@ -612,6 +612,13 @@ def send_telegram_partial_ads_alert(summary):
         f"campaign_count: {summary.get('campaign_count')}\n"
         f"batch_size: {summary.get('batch_size')}\n"
         f"CPC status: {cpc.get('status')}\n"
+        f"progress total: {summary.get('cpc_campaign_units_completed_total')}/{summary.get('cpc_campaign_units_planned_total')}\n"
+        f"pending total: {summary.get('cpc_campaign_units_pending_total')}\n"
+        f"this run attempted: {summary.get('cpc_campaign_units_attempted_this_run')}\n"
+        f"this run completed: {summary.get('cpc_campaign_units_completed_this_run')}\n"
+        f"this run failed_429: {summary.get('cpc_campaign_units_failed_429_this_run')}\n"
+        f"stop batch: {cpc.get('failed_batch_index')}\n"
+        f"reason: 429\n"
         f"Retry-After: {cpc.get('retry_after_seconds')}\n"
         f"cooldown_until: {cpc.get('cooldown_until')}\n"
         f"CPO status: {(summary.get('cpo') or {}).get('status')}"
@@ -2666,6 +2673,14 @@ def save_daily_load_status(summary):
         "cpc_campaign_units_attempted": int(summary.get("cpc_campaign_units_attempted") or 0),
         "cpc_campaign_units_completed": int(summary.get("cpc_campaign_units_completed") or 0),
         "cpc_pending_campaigns": int(summary.get("cpc_pending_campaigns") or 0),
+        "cpc_campaign_units_planned_total": int(summary.get("cpc_campaign_units_planned_total") or 0),
+        "cpc_campaign_units_completed_total": int(summary.get("cpc_campaign_units_completed_total") or 0),
+        "cpc_campaign_units_pending_total": int(summary.get("cpc_campaign_units_pending_total") or 0),
+        "cpc_campaign_units_attempted_this_run": int(summary.get("cpc_campaign_units_attempted_this_run") or 0),
+        "cpc_campaign_units_completed_this_run": int(summary.get("cpc_campaign_units_completed_this_run") or 0),
+        "cpc_campaign_units_failed_429_this_run": int(summary.get("cpc_campaign_units_failed_429_this_run") or 0),
+        "cpc_stop_batch_index": summary.get("cpc_stop_batch_index"),
+        "cpc_stop_reason": summary.get("cpc_stop_reason"),
         "cpc_status": (summary.get("cpc") or {}).get("status"),
         "cpo_status": (summary.get("cpo") or {}).get("status"),
         "run_status": summary.get("overall_status"),
@@ -2910,6 +2925,8 @@ def run():
     cpc_batches_total = len(cpc_batches)
     processed_batch_indexes = []
     cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+    completed_batch_indexes_before_run = list(cpc_progress_snapshot.get("completed_batch_indexes") or [])
+    failed_429_batch_indexes_before_run = list(cpc_progress_snapshot.get("failed_429_batch_indexes") or [])
 
     if not cpc_campaign_ids:
         run_summary["cpc"] = empty_stage_status(
@@ -3183,19 +3200,48 @@ def run():
     print({key: round(value, 2) for key, value in sorted(by_type.items())})
 
     cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+    completed_batch_indexes_after_run = list(cpc_progress_snapshot.get("completed_batch_indexes") or [])
+    failed_429_batch_indexes_after_run = list(cpc_progress_snapshot.get("failed_429_batch_indexes") or [])
+    completed_campaign_units_total = sum_campaign_units_for_batches(
+        cpc_batches,
+        completed_batch_indexes_after_run,
+    )
+    completed_campaign_units_before_run = sum_campaign_units_for_batches(
+        cpc_batches,
+        completed_batch_indexes_before_run,
+    )
+    completed_campaign_units_this_run = max(
+        0,
+        completed_campaign_units_total - completed_campaign_units_before_run,
+    )
+    attempted_campaign_units_this_run = sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes)
+    failed_429_campaign_units_this_run = max(
+        0,
+        sum_campaign_units_for_batches(cpc_batches, failed_429_batch_indexes_after_run)
+        - sum_campaign_units_for_batches(cpc_batches, failed_429_batch_indexes_before_run),
+    )
+    pending_campaign_units_total = max(0, len(cpc_campaign_ids) - completed_campaign_units_total)
     run_summary["processed_batches"] = len(processed_batch_indexes)
     run_summary["completed_batches"] = cpc_progress_snapshot.get("completed_batches", 0)
     run_summary["pending_batches"] = cpc_progress_snapshot.get("pending_batches", 0)
     run_summary["failed_429_batches"] = cpc_progress_snapshot.get("failed_429_batches", 0)
-    run_summary["cpc_campaign_units_attempted"] = sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes)
-    run_summary["cpc_campaign_units_completed"] = sum_campaign_units_for_batches(
-        cpc_batches,
-        cpc_progress_snapshot.get("completed_batch_indexes"),
-    )
-    run_summary["cpc_pending_campaigns"] = max(
-        0,
-        len(cpc_campaign_ids) - run_summary["cpc_campaign_units_completed"],
-    )
+    run_summary["cpc_campaign_units_attempted"] = attempted_campaign_units_this_run
+    run_summary["cpc_campaign_units_completed"] = completed_campaign_units_this_run
+    run_summary["cpc_pending_campaigns"] = pending_campaign_units_total
+    run_summary["cpc_campaign_units_planned_total"] = len(cpc_campaign_ids)
+    run_summary["cpc_campaign_units_completed_total"] = completed_campaign_units_total
+    run_summary["cpc_campaign_units_pending_total"] = pending_campaign_units_total
+    run_summary["cpc_campaign_units_attempted_this_run"] = attempted_campaign_units_this_run
+    run_summary["cpc_campaign_units_completed_this_run"] = completed_campaign_units_this_run
+    run_summary["cpc_campaign_units_failed_429_this_run"] = failed_429_campaign_units_this_run
+    run_summary["cpc_stop_batch_index"] = (run_summary.get("cpc") or {}).get("failed_batch_index")
+    run_summary["cpc_stop_reason"] = "429" if (run_summary.get("cpc") or {}).get("status") == "pending_429" else None
+    if run_summary.get("cpc"):
+        run_summary["cpc"]["campaign_units_attempted"] = attempted_campaign_units_this_run
+        run_summary["cpc"]["campaign_units_completed"] = completed_campaign_units_this_run
+        run_summary["cpc"]["campaign_units_completed_total"] = completed_campaign_units_total
+        run_summary["cpc"]["campaign_units_pending_total"] = pending_campaign_units_total
+        run_summary["cpc"]["campaign_units_failed_429_this_run"] = failed_429_campaign_units_this_run
     run_summary["ad_spend_loaded"] = round(sum(by_type.values()), 2)
     run_summary["ad_attribution_loaded"] = round(
         sum(float(row.get("ad_orders_revenue") or 0) for row in ad_attribution_rows),

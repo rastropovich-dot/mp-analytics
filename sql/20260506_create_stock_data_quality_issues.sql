@@ -1,0 +1,21 @@
+create table if not exists stock_data_quality_issues (
+    issue_date date not null,
+    marketplace_code text not null,
+    marketplace_sku text not null,
+    article text,
+    product_name text,
+    stock_status text not null default 'missing_stock',
+    issue_type text not null,
+    issue_reason text,
+    orders_revenue numeric default 0,
+    ad_spend numeric default 0,
+    ad_orders_revenue numeric default 0,
+    organic_revenue numeric default 0,
+    stock_qty numeric,
+    available_qty numeric,
+    evidence jsonb,
+    suggested_fix text,
+    severity text,
+    updated_at timestamptz not null default now(),
+    primary key (issue_date, marketplace_code, marketplace_sku)
+);

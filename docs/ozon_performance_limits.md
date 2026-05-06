@@ -39,6 +39,14 @@ Moscow is `UTC+3`, without DST.
 - Historical and recovery runs stay separate:
   - `--mode full` for explicit historical ranges;
   - `--mode cpc-backfill` for pending CPC batches after the main daily run.
+- `cpc-backfill` should resume only canonical D-1 progress created with:
+  - `selection_mode = complete`
+  - saved `ordered_campaign_ids`
+  - saved `campaign_list_hash`
+- Legacy CPC progress created before ordered batch persistence should be treated as `legacy partial`:
+  - do not resume it automatically;
+  - do not assume batch indexes still point to the same campaign set;
+  - wait for the next scheduled D-1 run to create a canonical resumable progress key.
 
 ## Quota model
 
@@ -90,6 +98,10 @@ Moscow is `UTC+3`, without DST.
   - `statistics/json` job cache
   - `cooldowns`
   - `batch_recommendations`
+- For CPC resume safety, `cpc_progress` should contain:
+  - `ordered_campaign_ids`
+  - `campaign_list_hash`
+  - `selection_mode = complete`
 
 ## Safe cron split
 
@@ -123,4 +135,11 @@ This split is safer than running one combined cron because:
 - For manual checks, prefer:
   - bounded `cpc-backfill`, or
   - Ozon-only runs with explicit CPC batch limits.
+- Before any live `cpc-backfill`, confirm in read-only mode:
+  - `ordered_campaign_ids present = yes`
+  - `campaign_list_hash present = yes`
+  - `selection_mode = complete`
+  - `completed_batches / pending_batches`
+  - `cpc_status / run_status`
+- If resume falls back to `deterministic_sort_fallback`, do not auto-resume that progress.
 - Treat `statistics/json` campaign units as the scarce resource.

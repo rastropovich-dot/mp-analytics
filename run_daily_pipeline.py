@@ -25,12 +25,14 @@ STEPS = [
     ("Ozon: загрузка FBO заказов", "python3 loaders/ozon_fbo_orders_loader.py"),
     ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
     ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
-    ("Ozon: реклама Performance API", "python3 loaders/ozon_performance_ads_loader.py"),
-    ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --from-db-only"),
+    ("Ozon: реклама Performance API", "python3 loaders/ozon_performance_ads_loader.py --mode daily-yesterday"),
+    ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
+    ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),
     ("Ozon: загрузка остатков", "python3 loaders/ozon_stocks_loader.py"),
 
     ("KPI: расчет SKU", "python3 reports_daily_sku_kpi.py"),
     ("KPI: расчет маркетплейсов", "python3 reports_daily_marketplace_kpi.py"),
+    ("Decision: SKU daily input", "python3 reports_sku_decision_daily_input.py --mode daily-yesterday"),
 
     ("Excel: выгрузка управленческого отчета", "python3 export_management_excel.py"),
     ("Telegram: отправка сигналов", "python3 alerts_telegram.py"),

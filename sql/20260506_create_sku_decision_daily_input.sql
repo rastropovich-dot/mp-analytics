@@ -1,0 +1,36 @@
+create table if not exists public.sku_decision_daily_input (
+    kpi_date date not null,
+    marketplace_code text not null,
+    marketplace_sku text not null,
+    article text,
+    product_name text,
+    current_price numeric,
+    current_price_source text,
+    orders_qty numeric not null default 0,
+    orders_revenue numeric not null default 0,
+    buyouts_qty numeric not null default 0,
+    buyouts_revenue numeric not null default 0,
+    buyout_rate_rolling_14d numeric,
+    buyout_rate_rolling_30d numeric,
+    ad_spend numeric not null default 0,
+    ad_attributed_revenue numeric not null default 0,
+    organic_revenue numeric not null default 0,
+    ad_share_revenue numeric,
+    organic_share_revenue numeric,
+    commission numeric not null default 0,
+    logistics numeric not null default 0,
+    other_expenses numeric not null default 0,
+    expected_revenue_after_buyout numeric,
+    expected_margin_after_ads numeric,
+    stock_qty numeric,
+    stock_as_of_date date,
+    source_run_status text,
+    decision_status text,
+    data_quality_status text,
+    warning text,
+    updated_at timestamptz not null default now(),
+    primary key (kpi_date, marketplace_code, marketplace_sku)
+);
+
+create index if not exists idx_sku_decision_daily_input_marketplace_date
+    on public.sku_decision_daily_input (marketplace_code, kpi_date desc);

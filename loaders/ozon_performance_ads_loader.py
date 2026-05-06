@@ -44,6 +44,9 @@ OZON_PERFORMANCE_BASE_URL = os.getenv(
 DEFAULT_GROUP_BY = os.getenv("OZON_PERFORMANCE_GROUP_BY", "DATE")
 DEFAULT_CAMPAIGN_SCOPE = os.getenv("OZON_PERFORMANCE_CAMPAIGN_SCOPE", "recent")
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
+OZON_PERFORMANCE_DAILY_TARGET_MODE = (
+    os.getenv("OZON_PERFORMANCE_DAILY_TARGET_MODE", "yesterday") or "yesterday"
+).strip().lower()
 RECON_WARNING_THRESHOLD = float(os.getenv("OZON_CPO_RECON_WARNING_THRESHOLD", "0.01"))
 RECON_ERROR_THRESHOLD = float(os.getenv("OZON_CPO_RECON_ERROR_THRESHOLD", "1.0"))
 CPC_BASE_SLEEP_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_BASE_SLEEP_SECONDS", "300"))
@@ -53,6 +56,11 @@ CPC_COOLDOWN_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_COOLDOWN_SECONDS", "1
 BATCH_SIZE_RECOVERY_TTL_SECONDS = int(os.getenv("OZON_PERFORMANCE_BATCH_SIZE_RECOVERY_TTL_SECONDS", "21600"))
 DEFAULT_CAMPAIGN_BATCH_SIZE = int(os.getenv("OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE", "10"))
 DEFAULT_MAX_CPC_BATCHES_PER_RUN = int(os.getenv("OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN", "5"))
+STATS_DAILY_CAMPAIGN_LIMIT = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT", "2000"))
+STATS_DAILY_CAMPAIGN_RESERVE = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE", "200"))
+DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN = int(
+    os.getenv("OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN", "1800")
+)
 REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
 REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
 CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
@@ -112,6 +120,7 @@ PERFORMANCE_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "ozo
 PERFORMANCE_STATE_PATH = PERFORMANCE_CACHE_DIR / "state.json"
 PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
 PIPELINE_RUNTIME_STATE_TABLE = "pipeline_runtime_state"
+DAILY_LOAD_STATUS_TABLE = "ozon_performance_daily_load_status"
 PERSISTENT_STATE_SECTIONS = (
     "jobs",
     "cooldowns",
@@ -373,6 +382,14 @@ def utcnow():
     return datetime.now(ZoneInfo("UTC"))
 
 
+def now_local():
+    return datetime.now(ZoneInfo(APP_TIMEZONE))
+
+
+def today_local():
+    return now_local().date()
+
+
 def to_iso(dt):
     return dt.astimezone(ZoneInfo("UTC")).isoformat()
 
@@ -612,14 +629,19 @@ def send_telegram_partial_ads_alert(summary):
 
 
 def parse_args():
+    default_mode = "daily-yesterday" if OZON_PERFORMANCE_DAILY_TARGET_MODE == "yesterday" else "full"
     parser = argparse.ArgumentParser(
         description="Load Ozon Performance advertising expenses by SKU.",
     )
     parser.add_argument(
         "--mode",
-        choices=("full", "cpc-backfill"),
-        default="full",
-        help="full = CPC + CPO flow; cpc-backfill = retry only pending CPC for one day and one batch",
+        choices=("daily-yesterday", "full", "cpc-backfill"),
+        default=default_mode,
+        help=(
+            "daily-yesterday = production D-1 load in Europe/Moscow; "
+            "full = explicit date/date-range historical run; "
+            "cpc-backfill = retry only pending CPC for one day"
+        ),
     )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
     parser.add_argument("--days-back", type=int, default=30)
@@ -628,7 +650,20 @@ def parse_args():
     parser.add_argument("--group-by", default=DEFAULT_GROUP_BY)
     parser.add_argument("--campaign-limit", type=int)
     parser.add_argument("--campaign-batch-size", type=int, default=DEFAULT_CAMPAIGN_BATCH_SIZE)
-    parser.add_argument("--max-cpc-batches", type=int, default=DEFAULT_MAX_CPC_BATCHES_PER_RUN)
+    parser.add_argument(
+        "--max-cpc-batches",
+        type=int,
+        help="Optional hard cap on CPC batches for one run. Mainly useful for cpc-backfill/manual probes.",
+    )
+    parser.add_argument(
+        "--max-stats-campaigns",
+        type=int,
+        default=DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN,
+        help=(
+            "Max CPC campaign units allowed for one run. "
+            "1 campaign = 1 statistics/json daily quota unit."
+        ),
+    )
     parser.add_argument(
         "--campaign-scope",
         choices=("recent", "all"),
@@ -891,6 +926,64 @@ def ensure_cpc_backfill_window_open():
             f"{CPC_BACKFILL_START_HHMM} {APP_TIMEZONE}. "
             f"Current local time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')}"
         )
+
+
+def resolve_date_range(args):
+    if args.date:
+        if args.date_from or args.date_to:
+            raise RuntimeError("--date нельзя комбинировать с --date-from/--date-to")
+        return args.date, args.date
+
+    if args.mode == "daily-yesterday":
+        if args.date_from or args.date_to:
+            raise RuntimeError(
+                "daily-yesterday mode uses target_date = yesterday and should not be combined "
+                "with --date-from/--date-to"
+            )
+        target_date = (today_local() - timedelta(days=1)).isoformat()
+        return target_date, target_date
+
+    date_to = args.date_to or today_local().isoformat()
+    if args.date_from:
+        return args.date_from, date_to
+
+    date_from = (datetime.fromisoformat(date_to).date() - timedelta(days=args.days_back)).isoformat()
+    return date_from, date_to
+
+
+def batch_campaign_units(campaign_batch):
+    return len(campaign_batch or [])
+
+
+def sum_campaign_units_for_batches(cpc_batches, batch_indexes):
+    total = 0
+    for batch_index in batch_indexes or []:
+        if 0 <= int(batch_index) < len(cpc_batches):
+            total += batch_campaign_units(cpc_batches[int(batch_index)])
+    return total
+
+
+def build_limited_batch_indexes(cpc_batches, pending_batch_indexes, max_campaign_units):
+    if max_campaign_units <= 0:
+        return [], 0
+
+    selected = []
+    consumed_units = 0
+
+    for batch_index in pending_batch_indexes or []:
+        if batch_index < 0 or batch_index >= len(cpc_batches):
+            continue
+        batch_units = batch_campaign_units(cpc_batches[batch_index])
+        if batch_units <= 0:
+            continue
+        if selected and consumed_units + batch_units > max_campaign_units:
+            break
+        if not selected and batch_units > max_campaign_units:
+            break
+        selected.append(batch_index)
+        consumed_units += batch_units
+
+    return selected, consumed_units
 
 
 def mask_client_id(value):
@@ -2423,6 +2516,92 @@ def save_ad_attribution_rows(rows):
     )
 
 
+def read_attempted_campaign_units_for_load_date(load_date, account_signature):
+    try:
+        result = (
+            supabase
+            .table(DAILY_LOAD_STATUS_TABLE)
+            .select("cpc_campaign_units_attempted")
+            .eq("load_date", load_date)
+            .eq("marketplace_code", "ozon")
+            .eq("account_signature", account_signature)
+            .execute()
+        )
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось прочитать ozon_performance_daily_load_status для quota budget. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return 0
+
+    total = 0
+    for row in result.data or []:
+        total += int(float(row.get("cpc_campaign_units_attempted") or 0))
+    return total
+
+
+def get_daily_load_status(load_date, target_date, account_signature):
+    try:
+        result = (
+            supabase
+            .table(DAILY_LOAD_STATUS_TABLE)
+            .select("*")
+            .eq("load_date", load_date)
+            .eq("target_date", target_date)
+            .eq("marketplace_code", "ozon")
+            .eq("account_signature", account_signature)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось прочитать daily load status. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return {}
+
+    rows = result.data or []
+    return rows[0] if rows else {}
+
+
+def save_daily_load_status(summary):
+    target_date = summary.get("target_date")
+    if not target_date:
+        return
+
+    payload = {
+        "load_date": summary.get("load_date") or today_local().isoformat(),
+        "target_date": target_date,
+        "marketplace_code": "ozon",
+        "account_signature": summary.get("account_signature"),
+        "mode": summary.get("mode"),
+        "cpc_campaign_count": int(summary.get("campaign_count") or 0),
+        "cpc_campaign_units_attempted": int(summary.get("cpc_campaign_units_attempted") or 0),
+        "cpc_campaign_units_completed": int(summary.get("cpc_campaign_units_completed") or 0),
+        "cpc_pending_campaigns": int(summary.get("cpc_pending_campaigns") or 0),
+        "cpc_status": (summary.get("cpc") or {}).get("status"),
+        "cpo_status": (summary.get("cpo") or {}).get("status"),
+        "run_status": summary.get("overall_status"),
+        "ad_spend_loaded": float(summary.get("ad_spend_loaded") or 0),
+        "ad_attribution_loaded": float(summary.get("ad_attribution_loaded") or 0),
+        "created_at": summary.get("created_at") or to_iso(utcnow()),
+        "updated_at": summary.get("updated_at") or to_iso(utcnow()),
+    }
+
+    try:
+        supabase.table(DAILY_LOAD_STATUS_TABLE).upsert(
+            payload,
+            on_conflict="load_date,target_date,marketplace_code",
+        ).execute()
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось записать ozon_performance_daily_load_status. "
+            "Проверьте миграцию таблицы daily load status. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+
+
 def run():
     args = parse_args()
 
@@ -2438,18 +2617,9 @@ def run():
         "so this project must load exactly one Ozon account per environment."
     )
 
-    if args.date:
-        if args.date_from or args.date_to:
-            raise RuntimeError("--date нельзя комбинировать с --date-from/--date-to")
-        date_from = args.date
-        date_to = args.date
-    else:
-        date_to = args.date_to or date.today().isoformat()
-        if args.date_from:
-            date_from = args.date_from
-        else:
-            date_from = (datetime.fromisoformat(date_to).date() - timedelta(days=args.days_back)).isoformat()
-
+    date_from, date_to = resolve_date_range(args)
+    load_date = today_local().isoformat()
+    target_date = date_to if date_from == date_to else None
     client = OzonPerformanceClient()
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
     campaigns = client.list_campaigns()
@@ -2496,6 +2666,14 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
+        daily_target = (today_local() - timedelta(days=1)).isoformat()
+        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
+        if not daily_status:
+            raise RuntimeError(
+                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
+                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
+            )
+
     batch_size = min(
         requested_batch_size,
         client.get_batch_recommendation(
@@ -2503,7 +2681,21 @@ def run():
             requested_batch_size,
         ),
     )
+    daily_campaign_budget = max(
+        0,
+        min(
+            int(args.max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN),
+            max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE),
+        ),
+    )
+    attempted_units_before_run = read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
+    remaining_campaign_budget = max(0, daily_campaign_budget - attempted_units_before_run)
     max_cpc_batches = args.max_cpc_batches
+    if max_cpc_batches in (None, 0):
+        if args.mode == "cpc-backfill":
+            max_cpc_batches = DEFAULT_MAX_CPC_BATCHES_PER_RUN
+        else:
+            max_cpc_batches = None
     cpc_batches = build_cpc_batches(cpc_campaign_ids, batch_size)
     progress_key = build_cpc_progress_key(date_from, date_to, batch_size, cpc_campaign_ids, args.group_by)
     original_runtime_state = client.snapshot_runtime_state()
@@ -2526,18 +2718,29 @@ def run():
 
     run_summary = {
         "mode": args.mode,
+        "load_date": load_date,
+        "target_date": target_date,
         "date_from": date_from,
         "date_to": date_to,
+        "account_signature": client.account_signature,
         "period_campaign_count": len(campaigns_by_id),
         "campaign_count": len(cpc_campaign_ids),
+        "cpc_campaign_units_total": len(cpc_campaign_ids),
         "requested_batch_size": requested_batch_size,
         "batch_size": batch_size,
         "max_batches_per_run": max_cpc_batches,
+        "daily_stats_campaign_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+        "daily_stats_campaign_reserve": STATS_DAILY_CAMPAIGN_RESERVE,
+        "daily_campaign_budget": daily_campaign_budget,
+        "attempted_campaign_units_before_run": attempted_units_before_run,
+        "remaining_campaign_budget": remaining_campaign_budget,
+        "max_stats_campaigns_per_run": int(args.max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN),
         "state_backend": client.state_backend,
         "cpc_progress_key": progress_key,
         "cpc": empty_stage_status("not_started"),
         "cpo": empty_stage_status("not_started"),
         "overall_status": "running",
+        "created_at": to_iso(utcnow()),
         "updated_at": to_iso(utcnow()),
     }
     print("Ozon Performance run context:")
@@ -2559,6 +2762,8 @@ def run():
             reason="no_cpc_campaigns_for_period",
             batch_size=batch_size,
             campaign_count=0,
+            campaign_units_attempted=0,
+            campaign_units_completed=0,
             total_batches=0,
             processed_batches=0,
             completed_batches=0,
@@ -2570,12 +2775,28 @@ def run():
         else:
             target_batch_indexes = list(cpc_progress_snapshot.get("pending_batch_indexes") or [])
 
-        if max_cpc_batches:
-            target_batch_indexes = target_batch_indexes[:max_cpc_batches]
+        if args.mode in {"daily-yesterday", "cpc-backfill"}:
+            target_batch_indexes, planned_campaign_units = build_limited_batch_indexes(
+                cpc_batches,
+                target_batch_indexes,
+                remaining_campaign_budget,
+            )
+            if max_cpc_batches:
+                target_batch_indexes = target_batch_indexes[:max_cpc_batches]
+                planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
+        else:
+            if max_cpc_batches:
+                target_batch_indexes = target_batch_indexes[:max_cpc_batches]
+            planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
+
+        run_summary["cpc_campaign_units_planned"] = planned_campaign_units
+        run_summary["cpc_pending_campaigns_before_run"] = max(0, len(cpc_campaign_ids) - planned_campaign_units)
+        run_summary["quota_limited"] = planned_campaign_units < len(cpc_campaign_ids)
 
         print(
             "Ozon Performance CPC batch plan: "
             f"campaign_count={len(cpc_campaign_ids)} batch_size={batch_size} "
+            f"planned_campaign_units={planned_campaign_units} "
             f"max_batches_per_run={max_cpc_batches} total_batches={cpc_batches_total} "
             f"next_batch_index={cpc_progress_snapshot.get('next_batch_index')} "
             f"target_batches={target_batch_indexes}"
@@ -2612,12 +2833,25 @@ def run():
                     failed_batch_index=batch_index,
                     failed_batch=campaign_batch,
                     campaign_count=len(cpc_campaign_ids),
+                    campaign_units_attempted=sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes),
+                    campaign_units_completed=sum_campaign_units_for_batches(
+                        cpc_batches,
+                        cpc_progress_snapshot.get("completed_batch_indexes"),
+                    ),
                     total_batches=cpc_batches_total,
                     max_batches_per_run=max_cpc_batches,
                     processed_batches=len(processed_batch_indexes),
                     completed_batches=cpc_progress_snapshot.get("completed_batches", 0),
                     pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
                     failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
+                    pending_campaigns=max(
+                        0,
+                        len(cpc_campaign_ids)
+                        - sum_campaign_units_for_batches(
+                            cpc_batches,
+                            cpc_progress_snapshot.get("completed_batch_indexes"),
+                        ),
+                    ),
                 )
                 print("CPC statistics/json pending_429:")
                 print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
@@ -2633,6 +2867,7 @@ def run():
                 run_summary["overall_status"] = "failed"
                 run_summary["updated_at"] = to_iso(utcnow())
                 client.write_run_status(run_summary)
+                save_daily_load_status(run_summary)
                 raise
             print(f"CPC UUID: {uuid}")
             cpc_progress_snapshot = client.mark_cpc_batch_completed(progress_key, batch_index)
@@ -2665,12 +2900,23 @@ def run():
         if run_summary["cpc"]["status"] == "not_started":
             cpc_progress_snapshot = client.get_cpc_progress(progress_key)
             cpc_status = "success"
-            if cpc_progress_snapshot.get("pending_batches"):
-                cpc_status = "pending_backfill"
+            if target_batch_indexes == [] and cpc_progress_snapshot.get("pending_batches"):
+                cpc_status = "pending_quota" if args.mode in {"daily-yesterday", "cpc-backfill"} else "pending_backfill"
+            elif cpc_progress_snapshot.get("pending_batches"):
+                if args.mode == "daily-yesterday" and run_summary.get("quota_limited"):
+                    cpc_status = "pending_quota"
+                else:
+                    cpc_status = "pending_backfill"
+            completed_campaign_units = sum_campaign_units_for_batches(
+                cpc_batches,
+                cpc_progress_snapshot.get("completed_batch_indexes"),
+            )
             run_summary["cpc"] = empty_stage_status(
                 cpc_status,
                 batch_size=batch_size,
                 campaign_count=len(cpc_campaign_ids),
+                campaign_units_attempted=sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes),
+                campaign_units_completed=completed_campaign_units,
                 total_batches=cpc_batches_total,
                 max_batches_per_run=max_cpc_batches,
                 processed_batches=len(processed_batch_indexes),
@@ -2678,6 +2924,7 @@ def run():
                 pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
                 failed_429_batches=cpc_progress_snapshot.get("failed_429_batches", 0),
                 next_batch_index=cpc_progress_snapshot.get("next_batch_index"),
+                pending_campaigns=max(0, len(cpc_campaign_ids) - completed_campaign_units),
             )
             if cpc_status == "success":
                 client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
@@ -2699,6 +2946,7 @@ def run():
             run_summary["overall_status"] = "failed"
             run_summary["updated_at"] = to_iso(utcnow())
             client.write_run_status(run_summary)
+            save_daily_load_status(run_summary)
             raise
 
         for row in cpo_rows:
@@ -2739,6 +2987,7 @@ def run():
             run_summary["overall_status"] = "failed"
             run_summary["updated_at"] = to_iso(utcnow())
             client.write_run_status(run_summary)
+            save_daily_load_status(run_summary)
             raise RuntimeError(message)
         elif difference_abs > RECON_WARNING_THRESHOLD:
             print(
@@ -2783,16 +3032,34 @@ def run():
     run_summary["completed_batches"] = cpc_progress_snapshot.get("completed_batches", 0)
     run_summary["pending_batches"] = cpc_progress_snapshot.get("pending_batches", 0)
     run_summary["failed_429_batches"] = cpc_progress_snapshot.get("failed_429_batches", 0)
+    run_summary["cpc_campaign_units_attempted"] = sum_campaign_units_for_batches(cpc_batches, processed_batch_indexes)
+    run_summary["cpc_campaign_units_completed"] = sum_campaign_units_for_batches(
+        cpc_batches,
+        cpc_progress_snapshot.get("completed_batch_indexes"),
+    )
+    run_summary["cpc_pending_campaigns"] = max(
+        0,
+        len(cpc_campaign_ids) - run_summary["cpc_campaign_units_completed"],
+    )
+    run_summary["ad_spend_loaded"] = round(sum(by_type.values()), 2)
+    run_summary["ad_attribution_loaded"] = round(
+        sum(float(row.get("ad_orders_revenue") or 0) for row in ad_attribution_rows),
+        2,
+    )
 
     if args.mode == "cpc-backfill":
         if run_summary["cpc"]["status"] == "success":
             run_summary["overall_status"] = "success"
+        elif run_summary["cpc"]["status"] == "pending_quota":
+            run_summary["overall_status"] = "partial_quota"
         elif run_summary["cpc"]["status"] in {"pending_429", "pending_backfill"}:
             run_summary["overall_status"] = "partial_ads"
         elif run_summary["cpc"]["status"] == "skipped":
             run_summary["overall_status"] = "skipped"
         else:
             run_summary["overall_status"] = "failed"
+    elif run_summary["cpc"]["status"] == "pending_quota" and run_summary["cpo"]["status"] == "success":
+        run_summary["overall_status"] = "partial_quota"
     elif run_summary["cpc"]["status"] in {"pending_429", "pending_backfill"} and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "partial_ads"
     elif run_summary["cpc"]["status"] == "success" and run_summary["cpo"]["status"] == "success":
@@ -2819,6 +3086,7 @@ def run():
     save_rows(rows)
     save_ad_attribution_rows(ad_attribution_rows)
     client.write_run_status(run_summary)
+    save_daily_load_status(run_summary)
 
     if run_summary["overall_status"] == "partial_ads":
         print("WARNING: Ozon Performance completed with partial_ads status")

@@ -2,6 +2,7 @@ import argparse
 import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from supabase import create_client
@@ -11,6 +12,7 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -22,6 +24,12 @@ def chunks(items, size):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Calculate Ozon organic sales by SKU/day.")
+    parser.add_argument(
+        "--mode",
+        choices=("daily-yesterday", "full"),
+        default="full",
+        help="daily-yesterday = production D-1 calc; full = explicit date/date-range",
+    )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
@@ -46,6 +54,12 @@ def resolve_date_range(args):
         if args.date_from or args.date_to:
             raise RuntimeError("--date нельзя комбинировать с --date-from/--date-to")
         return args.date, args.date
+
+    if args.mode == "daily-yesterday":
+        if args.date_from or args.date_to:
+            raise RuntimeError("daily-yesterday mode нельзя комбинировать с --date-from/--date-to")
+        target_date = datetime.now(ZoneInfo(APP_TIMEZONE)).date() - timedelta(days=1)
+        return target_date.isoformat(), target_date.isoformat()
 
     date_to = args.date_to or date.today().isoformat()
     if args.date_from:

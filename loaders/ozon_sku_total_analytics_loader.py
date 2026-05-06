@@ -1,6 +1,7 @@
 import argparse
 import os
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ OZON_CLIENT_ID = os.getenv("OZON_CLIENT_ID")
 OZON_API_KEY = os.getenv("OZON_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 
 SELLER_ANALYTICS_URL = "https://api-seller.ozon.ru/v1/analytics/data"
 ANALYTICS_METRICS = ["ordered_units", "revenue"]
@@ -37,6 +39,12 @@ def ozon_headers():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Load Ozon Seller Analytics total orders by SKU/day.")
+    parser.add_argument(
+        "--mode",
+        choices=("daily-yesterday", "full"),
+        default="full",
+        help="daily-yesterday = production D-1 load; full = explicit date/date-range",
+    )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
@@ -53,6 +61,12 @@ def resolve_date_range(args):
         if args.date_from or args.date_to:
             raise RuntimeError("--date нельзя комбинировать с --date-from/--date-to")
         return args.date, args.date
+
+    if args.mode == "daily-yesterday":
+        if args.date_from or args.date_to:
+            raise RuntimeError("daily-yesterday mode нельзя комбинировать с --date-from/--date-to")
+        target_date = datetime.now(ZoneInfo(APP_TIMEZONE)).date() - timedelta(days=1)
+        return target_date.isoformat(), target_date.isoformat()
 
     date_to = args.date_to or date.today().isoformat()
     if args.date_from:

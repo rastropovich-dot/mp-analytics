@@ -31,6 +31,11 @@ def parse_args():
     parser.add_argument("--date-to")
     parser.add_argument("--days-back", type=int, default=1)
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="No-op compatibility flag. This script is preview-only and never writes to DB.",
+    )
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
 

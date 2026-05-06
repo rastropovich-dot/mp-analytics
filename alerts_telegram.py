@@ -113,25 +113,184 @@ def get_ozon_ads_breakdown(expense_date):
     return grouped
 
 
-def get_ozon_organic_warning_count(sale_date):
+def safe_ratio(numerator, denominator):
+    numerator = num(numerator)
+    denominator = num(denominator)
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def parse_warning_tokens(value):
+    if not value:
+        return set()
+    return {token.strip() for token in str(value).split(",") if token and token.strip()}
+
+
+def get_ozon_organic_reconciliation(sale_date):
     try:
         result = (
             supabase
             .table("ozon_daily_sku_organic")
-            .select("warning")
+            .select(
+                "marketplace_sku,total_orders_revenue,ad_orders_revenue,"
+                "organic_orders_revenue,calculation_status,warning"
+            )
             .eq("marketplace_code", "ozon")
             .eq("sale_date", sale_date)
             .execute()
         )
     except Exception as e:
-        print(f"Не удалось загрузить Ozon organic warnings: {e}")
-        return 0
+        print(f"Не удалось загрузить Ozon organic reconciliation: {e}")
+        return {
+            "available": False,
+            "organic_rows_count": 0,
+            "ok_count": 0,
+            "missing_total_count": 0,
+            "warning_count": 0,
+            "problem_rows_count": 0,
+            "ad_attribution_without_total_count": 0,
+            "ad_revenue_exceed_total_count": 0,
+            "ad_orders_exceed_total_count": 0,
+            "unreconciled_revenue": 0.0,
+            "reconciled_total_revenue": 0.0,
+            "reconciled_ad_revenue": 0.0,
+            "reconciled_organic_revenue": 0.0,
+            "reconciled_ad_share_revenue": None,
+            "raw_total_revenue": 0.0,
+            "raw_ad_revenue": 0.0,
+            "raw_organic_revenue": 0.0,
+        }
 
-    count = 0
-    for row in result.data or []:
-        if row.get("warning"):
-            count += 1
-    return count
+    rows = result.data or []
+    if not rows:
+        return {
+            "available": False,
+            "organic_rows_count": 0,
+            "ok_count": 0,
+            "missing_total_count": 0,
+            "warning_count": 0,
+            "problem_rows_count": 0,
+            "ad_attribution_without_total_count": 0,
+            "ad_revenue_exceed_total_count": 0,
+            "ad_orders_exceed_total_count": 0,
+            "unreconciled_revenue": 0.0,
+            "reconciled_total_revenue": 0.0,
+            "reconciled_ad_revenue": 0.0,
+            "reconciled_organic_revenue": 0.0,
+            "reconciled_ad_share_revenue": None,
+            "raw_total_revenue": 0.0,
+            "raw_ad_revenue": 0.0,
+            "raw_organic_revenue": 0.0,
+        }
+
+    organic_rows_count = len(rows)
+    ok_count = 0
+    missing_total_count = 0
+    warning_count = 0
+    problem_rows_count = 0
+    ad_attribution_without_total_count = 0
+    ad_revenue_exceed_total_count = 0
+    ad_orders_exceed_total_count = 0
+
+    raw_total_revenue = 0.0
+    raw_ad_revenue = 0.0
+    raw_organic_revenue = 0.0
+
+    unreconciled_revenue = 0.0
+    reconciled_total_revenue = 0.0
+    reconciled_ad_revenue = 0.0
+    reconciled_organic_revenue = 0.0
+
+    for row in rows:
+        total_revenue = num(row.get("total_orders_revenue"))
+        ad_revenue = num(row.get("ad_orders_revenue"))
+        organic_revenue = num(row.get("organic_orders_revenue"))
+        calculation_status = row.get("calculation_status") or ""
+        warning_tokens = parse_warning_tokens(row.get("warning"))
+
+        raw_total_revenue += total_revenue
+        raw_ad_revenue += ad_revenue
+        raw_organic_revenue += organic_revenue
+
+        if calculation_status == "ok":
+            ok_count += 1
+        if calculation_status == "missing_total":
+            missing_total_count += 1
+        if warning_tokens:
+            warning_count += 1
+            problem_rows_count += 1
+
+        if "ad_attribution_without_total" in warning_tokens:
+            ad_attribution_without_total_count += 1
+            unreconciled_revenue += ad_revenue
+
+        has_ad_revenue_exceed_total = "ad_revenue_exceed_total" in warning_tokens
+        if has_ad_revenue_exceed_total:
+            ad_revenue_exceed_total_count += 1
+            if ad_revenue > total_revenue:
+                unreconciled_revenue += ad_revenue - total_revenue
+
+        if "ad_orders_exceed_total" in warning_tokens:
+            ad_orders_exceed_total_count += 1
+
+        exclude_from_reconciled = (
+            calculation_status == "missing_total"
+            or "ad_attribution_without_total" in warning_tokens
+            or has_ad_revenue_exceed_total
+        )
+        if not exclude_from_reconciled:
+            reconciled_total_revenue += total_revenue
+            reconciled_ad_revenue += ad_revenue
+            reconciled_organic_revenue += organic_revenue
+
+    return {
+        "available": True,
+        "organic_rows_count": organic_rows_count,
+        "ok_count": ok_count,
+        "missing_total_count": missing_total_count,
+        "warning_count": warning_count,
+        "problem_rows_count": problem_rows_count,
+        "ad_attribution_without_total_count": ad_attribution_without_total_count,
+        "ad_revenue_exceed_total_count": ad_revenue_exceed_total_count,
+        "ad_orders_exceed_total_count": ad_orders_exceed_total_count,
+        "unreconciled_revenue": round(unreconciled_revenue, 2),
+        "reconciled_total_revenue": round(reconciled_total_revenue, 2),
+        "reconciled_ad_revenue": round(reconciled_ad_revenue, 2),
+        "reconciled_organic_revenue": round(reconciled_organic_revenue, 2),
+        "reconciled_ad_share_revenue": safe_ratio(reconciled_ad_revenue, reconciled_total_revenue),
+        "raw_total_revenue": round(raw_total_revenue, 2),
+        "raw_ad_revenue": round(raw_ad_revenue, 2),
+        "raw_organic_revenue": round(raw_organic_revenue, 2),
+    }
+
+
+def format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation):
+    if not reconciliation.get("available"):
+        return "Атрибуция Ozon: данные organic attribution недоступны."
+
+    warning_count = int(reconciliation.get("warning_count") or 0)
+    problem_rows_count = int(reconciliation.get("problem_rows_count") or 0)
+    missing_total_count = int(reconciliation.get("missing_total_count") or 0)
+    unreconciled_revenue = num(reconciliation.get("unreconciled_revenue"))
+    reconciled_share = reconciliation.get("reconciled_ad_share_revenue")
+
+    if warning_count <= 0:
+        ad_share_value = reconciled_share if reconciled_share is not None else fallback_ad_share_revenue
+        return (
+            f"Атрибуция: реклама {fmt_money(raw_ad_revenue)} руб., "
+            f"органика {fmt_money(raw_organic_revenue)} руб., "
+            f"ad share {fmt_pct(ad_share_value)}."
+        )
+
+    return (
+        f"Атрибуция Ozon: реклама {fmt_money(raw_ad_revenue)} руб., "
+        f"органика {fmt_money(raw_organic_revenue)} руб.\n"
+        f"⚠️ Атрибуция частичная: {problem_rows_count} SKU с предупреждениями, "
+        f"missing total {missing_total_count}, "
+        f"неразнесено/расхождение {fmt_money(unreconciled_revenue)} руб.\n"
+        f"Сверенная доля рекламы по сопоставленным SKU: {fmt_pct(reconciled_share)}."
+    )
 
 
 def save_today_snapshot(kpi_rows):
@@ -441,7 +600,7 @@ def build_executive_summary(kpi_rows):
             )
         else:
             ads = get_ozon_ads_breakdown(target_date)
-            organic_warning_count = get_ozon_organic_warning_count(target_date)
+            organic_reconciliation = get_ozon_organic_reconciliation(target_date)
             ads_unknown = (
                 ads["advertising_order_other"]
                 + ads["advertising_order_unknown"]
@@ -455,13 +614,12 @@ def build_executive_summary(kpi_rows):
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
             ads_line += "."
-            attribution_line = (
-                f"Атрибуция: реклама {fmt_money(ad_orders_revenue)} руб., "
-                f"органика {fmt_money(organic_orders_revenue)} руб., "
-                f"ad share {fmt_pct(ad_share_revenue)}."
+            attribution_line = format_ozon_attribution_summary(
+                ad_orders_revenue,
+                organic_orders_revenue,
+                ad_share_revenue,
+                organic_reconciliation,
             )
-            if organic_warning_count > 0:
-                attribution_line += f" Warnings: {organic_warning_count}."
 
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"

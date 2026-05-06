@@ -1,6 +1,6 @@
 import argparse
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -134,8 +134,96 @@ def load_organic_rows(date_from, date_to):
         return []
 
 
-def load_recent_stock():
+def build_decision_sku_by_article_map(history_from, date_to):
+    counters = defaultdict(Counter)
+
+    order_rows = fetch_all(
+        "marketplace_orders",
+        filters=[
+            ("marketplace_code", "eq", "ozon"),
+            ("order_date", "gte", history_from),
+            ("order_date", "lte", date_to),
+        ],
+        order="order_date",
+    )
+    for row in order_rows:
+        article = str(row.get("article") or "").strip()
+        sku = str(row.get("marketplace_sku") or "").strip()
+        if article and sku:
+            counters[article][sku] += 1
+
+    attr_rows = fetch_all(
+        "ozon_daily_sku_ad_attribution",
+        filters=[
+            ("marketplace_code", "eq", "ozon"),
+            ("sale_date", "gte", history_from),
+            ("sale_date", "lte", date_to),
+        ],
+        order="sale_date",
+    )
+    for row in attr_rows:
+        article = str(row.get("article") or "").strip()
+        sku = str(row.get("marketplace_sku") or "").strip()
+        if article and sku:
+            counters[article][sku] += 1
+
+    return {
+        article: sku_counts.most_common(1)[0][0]
+        for article, sku_counts in counters.items()
+        if len(sku_counts) == 1
+    }
+
+
+def aggregate_stock_rows(rows, key_field):
+    latest_date_by_key = {}
+
+    for row in rows:
+        key = str(row.get(key_field) or "").strip()
+        row_date = str(row.get("stock_date") or "").strip()
+        if not key or not row_date:
+            continue
+        existing_date = latest_date_by_key.get(key)
+        if existing_date is None or existing_date <= row_date:
+            latest_date_by_key[key] = row_date
+
+    aggregated = {}
+
+    for row in rows:
+        key = str(row.get(key_field) or "").strip()
+        article = str(row.get("article") or "").strip()
+        row_date = str(row.get("stock_date") or "").strip()
+        if not key or not row_date:
+            continue
+        if latest_date_by_key.get(key) != row_date:
+            continue
+
+        if key not in aggregated:
+            aggregated[key] = {
+                "stock_date": row_date,
+                key_field: key,
+                "article": article,
+                "stock_qty": 0.0,
+                "reserved_qty": 0.0,
+                "available_qty": 0.0,
+                "stock_identity_status": str(row.get("stock_identity_status") or "").strip() or None,
+            }
+
+        aggregated[key]["stock_qty"] += num(row.get("stock_qty"))
+        aggregated[key]["reserved_qty"] += num(row.get("reserved_qty"))
+        aggregated[key]["available_qty"] += num(row.get("available_qty"))
+        if not aggregated[key].get("article") and article:
+            aggregated[key]["article"] = article
+        if not aggregated[key].get("stock_identity_status"):
+            status = str(row.get("stock_identity_status") or "").strip()
+            if status:
+                aggregated[key]["stock_identity_status"] = status
+
+    return aggregated
+
+
+def load_recent_stock(history_from, date_to):
     stock_from = (datetime.now(ZoneInfo(APP_TIMEZONE)).date() - timedelta(days=30)).isoformat()
+    decision_sku_by_article = build_decision_sku_by_article_map(history_from, date_to)
     rows = fetch_all(
         "stock_daily",
         filters=[
@@ -145,57 +233,39 @@ def load_recent_stock():
         order="stock_date",
     )
 
-    latest_date_by_sku = {}
-    for row in rows:
-        sku = str(row.get("marketplace_sku") or "")
-        if not sku:
-            continue
-        row_date = str(row.get("stock_date") or "")
-        if not row_date:
-            continue
-        existing_date = latest_date_by_sku.get(sku)
-        if existing_date is None or existing_date <= row_date:
-            latest_date_by_sku[sku] = row_date
+    latest_by_stock_sku = aggregate_stock_rows(rows, "marketplace_sku")
+    latest_by_article = aggregate_stock_rows(rows, "article")
 
-    latest_by_sku = {}
-    latest_by_article = {}
-
-    for row in rows:
-        sku = str(row.get("marketplace_sku") or "")
-        article = str(row.get("article") or "").strip()
-        row_date = str(row.get("stock_date") or "")
-        if not sku or not row_date:
-            continue
-        if latest_date_by_sku.get(sku) != row_date:
-            continue
-
-        if sku not in latest_by_sku:
-            latest_by_sku[sku] = {
-                "stock_date": row_date,
-                "marketplace_sku": sku,
-                "article": article,
-                "stock_qty": 0.0,
-                "reserved_qty": 0.0,
-                "available_qty": 0.0,
-            }
-
-        latest_by_sku[sku]["stock_qty"] += num(row.get("stock_qty"))
-        latest_by_sku[sku]["reserved_qty"] += num(row.get("reserved_qty"))
-        latest_by_sku[sku]["available_qty"] += num(row.get("available_qty"))
-        if not latest_by_sku[sku].get("article") and article:
-            latest_by_sku[sku]["article"] = article
-
-    for stock in latest_by_sku.values():
+    decision_rows = []
+    for stock in latest_by_stock_sku.values():
         article = str(stock.get("article") or "").strip()
-        if not article:
+        decision_sku = str(stock.get("decision_marketplace_sku") or "").strip()
+        if not decision_sku and article:
+            decision_sku = decision_sku_by_article.get(article, "")
+        if not decision_sku:
             continue
-        existing = latest_by_article.get(article)
-        if not existing or str(existing.get("stock_date") or "") <= str(stock.get("stock_date") or ""):
-            latest_by_article[article] = stock
+
+        decision_rows.append(
+            {
+                "stock_date": stock.get("stock_date"),
+                "decision_marketplace_sku": decision_sku,
+                "article": article,
+                "stock_qty": stock.get("stock_qty"),
+                "reserved_qty": stock.get("reserved_qty"),
+                "available_qty": stock.get("available_qty"),
+                "stock_identity_status": stock.get("stock_identity_status") or (
+                    "mapped_by_article" if article else "unresolved"
+                ),
+            }
+        )
+
+    latest_by_decision_sku = aggregate_stock_rows(decision_rows, "decision_marketplace_sku")
 
     return {
-        "by_sku": latest_by_sku,
+        "by_stock_sku": latest_by_stock_sku,
+        "by_decision_sku": latest_by_decision_sku,
         "by_article": latest_by_article,
+        "decision_sku_by_article_count": len(decision_sku_by_article),
     }
 
 
@@ -286,8 +356,9 @@ def build_rows(date_from, date_to):
         for row in load_organic_rows(date_from, date_to)
         if row.get("sale_date") and row.get("marketplace_sku")
     }
-    latest_stock = load_recent_stock()
-    latest_stock_by_sku = latest_stock.get("by_sku", {})
+    latest_stock = load_recent_stock(history_from, date_to)
+    latest_stock_by_stock_sku = latest_stock.get("by_stock_sku", {})
+    latest_stock_by_decision_sku = latest_stock.get("by_decision_sku", {})
     latest_stock_by_article = latest_stock.get("by_article", {})
     latest_price = load_recent_price_points(history_from, date_to)
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
@@ -342,13 +413,15 @@ def build_rows(date_from, date_to):
         else:
             expected_margin_after_ads = None
 
+        organic_row = organic_rows.get((kpi_date, sku), {})
         price_info = latest_price.get(sku, {})
-        stock_info = latest_stock_by_sku.get(sku, {})
+        stock_info = latest_stock_by_decision_sku.get(sku, {})
         if not stock_info:
             article = str(row.get("article") or organic_row.get("article") or "").strip()
             if article:
                 stock_info = latest_stock_by_article.get(article, {})
-        organic_row = organic_rows.get((kpi_date, sku), {})
+        if not stock_info:
+            stock_info = latest_stock_by_stock_sku.get(sku, {})
         run_status_row = latest_run_status.get(kpi_date, {})
 
         quality_flags = []
@@ -368,8 +441,14 @@ def build_rows(date_from, date_to):
             quality_flags.append("missing_buyout_rate")
         if orders_30 <= 0:
             quality_flags.append("low_history")
-        if stock_info.get("available_qty") is None and stock_info.get("stock_qty") is None:
+        stock_qty_value = stock_info.get("available_qty")
+        if stock_qty_value is None:
+            stock_qty_value = stock_info.get("stock_qty")
+
+        if stock_qty_value is None:
             quality_flags.append("missing_stock")
+        elif num(stock_qty_value) <= 0:
+            quality_flags.append("stock_out")
         if num(row.get("orders_qty")) <= 0:
             quality_flags.append("low_data_volume")
 
@@ -403,8 +482,8 @@ def build_rows(date_from, date_to):
             "expected_margin_after_ads": expected_margin_after_ads,
             "stock_qty": (
                 None
-                if stock_info.get("available_qty") is None and stock_info.get("stock_qty") is None
-                else num(stock_info.get("available_qty") or stock_info.get("stock_qty"))
+                if stock_qty_value is None
+                else num(stock_qty_value)
             ),
             "stock_as_of_date": stock_info.get("stock_date"),
             "source_run_status": run_status or None,

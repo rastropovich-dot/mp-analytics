@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
 
 import requests
@@ -19,6 +19,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 DEFAULT_SKU_CATALOG_PAGE_SIZE = int(os.getenv("OZON_STOCKS_SKU_CATALOG_PAGE_SIZE", "1000"))
 DEFAULT_STOCK_API_BATCH_SIZE = int(os.getenv("OZON_STOCKS_API_BATCH_SIZE", "100"))
+DEFAULT_IDENTITY_LOOKBACK_DAYS = int(os.getenv("OZON_STOCKS_IDENTITY_LOOKBACK_DAYS", "90"))
 
 
 def ozon_headers():
@@ -52,6 +53,12 @@ def parse_args():
         type=int,
         default=DEFAULT_STOCK_API_BATCH_SIZE,
         help=f"Batch size for POST /v4/product/info/stocks product_ids (default: {DEFAULT_STOCK_API_BATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--identity-lookback-days",
+        type=int,
+        default=DEFAULT_IDENTITY_LOOKBACK_DAYS,
+        help=f"Lookback window for article -> decision SKU mapping (default: {DEFAULT_IDENTITY_LOOKBACK_DAYS}).",
     )
     return parser.parse_args()
 
@@ -128,6 +135,88 @@ def get_ozon_products_from_db(page_size):
     return summary
 
 
+def fetch_all(table, filters=None, order=None):
+    rows = []
+    offset = 0
+    page_size = 1000
+
+    while True:
+        query = supabase.table(table).select("*")
+
+        for field, operator, value in filters or []:
+            if operator == "eq":
+                query = query.eq(field, value)
+            elif operator == "gte":
+                query = query.gte(field, value)
+            elif operator == "lte":
+                query = query.lte(field, value)
+
+        if order:
+            query = query.order(order)
+
+        page = query.range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(page)
+
+        if len(page) < page_size:
+            break
+
+        offset += page_size
+
+    return rows
+
+
+def stock_identity_columns_supported():
+    try:
+        supabase.table("stock_daily").select(
+            "product_id,stock_marketplace_sku,decision_marketplace_sku,stock_identity_status"
+        ).limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def build_decision_sku_by_article_map(lookback_days):
+    date_to = date.today().isoformat()
+    date_from = date.fromordinal(date.today().toordinal() - lookback_days).isoformat()
+    counters = defaultdict(Counter)
+
+    orders = fetch_all(
+        "marketplace_orders",
+        filters=[
+            ("marketplace_code", "eq", "ozon"),
+            ("order_date", "gte", date_from),
+            ("order_date", "lte", date_to),
+        ],
+        order="order_date",
+    )
+    for row in orders:
+        article = str(row.get("article") or "").strip()
+        sku = str(row.get("marketplace_sku") or "").strip()
+        if article and sku:
+            counters[article][sku] += 1
+
+    attr_rows = fetch_all(
+        "ozon_daily_sku_ad_attribution",
+        filters=[
+            ("marketplace_code", "eq", "ozon"),
+            ("sale_date", "gte", date_from),
+            ("sale_date", "lte", date_to),
+        ],
+        order="sale_date",
+    )
+    for row in attr_rows:
+        article = str(row.get("article") or "").strip()
+        sku = str(row.get("marketplace_sku") or "").strip()
+        if article and sku:
+            counters[article][sku] += 1
+
+    return {
+        article: sku_counts.most_common(1)[0][0]
+        for article, sku_counts in counters.items()
+        if len(sku_counts) == 1
+    }
+
+
 def get_ozon_stocks(products, stock_api_batch_size):
     url = "https://api-seller.ozon.ru/v4/product/info/stocks"
     all_items = []
@@ -179,7 +268,7 @@ def get_ozon_stocks(products, stock_api_batch_size):
     return all_items, batch_count
 
 
-def save_stocks(items):
+def save_stocks(items, identity_columns_enabled, decision_sku_by_article):
     today = date.today().isoformat()
 
     grouped = {}
@@ -191,6 +280,7 @@ def save_stocks(items):
 
         for stock in stocks:
             stock_type = stock.get("type", "unknown")
+            decision_sku = decision_sku_by_article.get(str(offer_id or "").strip())
 
             present = stock.get("present", 0) or 0
             reserved = stock.get("reserved", 0) or 0
@@ -207,7 +297,7 @@ def save_stocks(items):
                     "stock_date": today,
                     "marketplace_code": "ozon",
                     # TODO: stock_daily.marketplace_sku currently stores Ozon product_id.
-                    # Keep this unchanged in this pagination fix; normalize identity separately.
+                    # Keep this column backward-compatible even after identity normalization.
                     "marketplace_sku": str(product_id),
                     "article": str(offer_id or ""),
                     "product_name": None,
@@ -216,6 +306,13 @@ def save_stocks(items):
                     "reserved_qty": 0,
                     "available_qty": 0,
                 }
+                if identity_columns_enabled:
+                    grouped[key]["product_id"] = str(product_id)
+                    grouped[key]["stock_marketplace_sku"] = str(product_id)
+                    grouped[key]["decision_marketplace_sku"] = decision_sku or None
+                    grouped[key]["stock_identity_status"] = (
+                        "mapped_by_article" if decision_sku else "unresolved"
+                    )
 
             grouped[key]["stock_qty"] += present
             grouped[key]["reserved_qty"] += reserved
@@ -258,6 +355,11 @@ if __name__ == "__main__":
         "expected_coverage_improvement_vs_1000_rows": max(catalog["sku_catalog_rows_loaded"] - 1000, 0),
     }
 
+    identity_columns_enabled = stock_identity_columns_supported()
+    decision_sku_by_article = build_decision_sku_by_article_map(args.identity_lookback_days) if identity_columns_enabled else {}
+    plan_summary["stock_identity_columns_enabled"] = identity_columns_enabled
+    plan_summary["decision_sku_by_article_count"] = len(decision_sku_by_article)
+
     print(json.dumps(plan_summary, ensure_ascii=False, indent=2))
 
     if args.plan_only:
@@ -271,8 +373,10 @@ if __name__ == "__main__":
                 "product_ids_count": len(products),
                 "stock_api_batches_count": batch_count,
                 "items_returned": len(stocks),
+                "identity_columns_enabled": identity_columns_enabled,
+                "decision_sku_by_article_count": len(decision_sku_by_article),
             },
             ensure_ascii=False,
         )
     )
-    save_stocks(stocks)
+    save_stocks(stocks, identity_columns_enabled, decision_sku_by_article)

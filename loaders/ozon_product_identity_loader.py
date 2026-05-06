@@ -2,15 +2,18 @@ import argparse
 import json
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 
+import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
 
 load_dotenv()
 
+OZON_CLIENT_ID = os.getenv("OZON_CLIENT_ID")
+OZON_API_KEY = os.getenv("OZON_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
@@ -21,6 +24,7 @@ DEFAULT_INCLUDE_API_SOURCES = "product-list,info-list,attributes,stocks"
 PRODUCT_LIST_LIMIT = 1000
 INFO_LIST_LIMIT = 1000
 STOCKS_BATCH_LIMIT = 100
+REQUEST_TIMEOUT = 60
 
 
 def parse_args():
@@ -39,6 +43,14 @@ def parse_args():
     parser.add_argument("--limit-tail", type=int)
     parser.add_argument("--issue-date", help="Explicit stock_data_quality_issues date. Defaults to latest issue_date.")
     return parser.parse_args()
+
+
+def ozon_headers():
+    return {
+        "Client-Id": OZON_CLIENT_ID,
+        "Api-Key": OZON_API_KEY,
+        "Content-Type": "application/json",
+    }
 
 
 def parse_include_api_sources(raw_value):
@@ -143,6 +155,11 @@ def ceil_div(value, divisor):
     if not value:
         return 0
     return int(math.ceil(float(value) / float(divisor)))
+
+
+def chunks(items, size):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
 
 
 def build_tail_rows(issue_date, marketplace_code, limit_tail=None):
@@ -287,6 +304,7 @@ def build_plan(issue_date, marketplace_code=DEFAULT_MARKETPLACE, only_tail=True,
         marketplace_sku = str(row.get("marketplace_sku") or "").strip()
         recovered_via = (recovered_state.get(marketplace_sku) or {}).get("recovered_via")
         recovered_article = (recovered_state.get(marketplace_sku) or {}).get("recovered_article")
+        sku_catalog_matches = cat_by_sku.get(marketplace_sku) or []
 
         audit = {
             "marketplace_sku": marketplace_sku,
@@ -389,8 +407,10 @@ def build_plan(issue_date, marketplace_code=DEFAULT_MARKETPLACE, only_tail=True,
     sku_ids_to_verify = {value for value in truly_unrecoverable_from_current_db if value}
 
     product_list_requests = ceil_div(sku_catalog_row_count, PRODUCT_LIST_LIMIT) if "product-list" in include_api_sources and truly_unrecoverable_from_current_db else 0
-    info_list_identifiers = len(product_ids_to_verify) + len(offer_ids_to_verify) + len(sku_ids_to_verify)
-    info_list_requests = ceil_div(info_list_identifiers, INFO_LIST_LIMIT) if "info-list" in include_api_sources and info_list_identifiers else 0
+    product_id_batches = ceil_div(len(product_ids_to_verify), INFO_LIST_LIMIT) if "info-list" in include_api_sources and product_ids_to_verify else 0
+    offer_id_batches = ceil_div(len(offer_ids_to_verify), INFO_LIST_LIMIT) if "info-list" in include_api_sources and offer_ids_to_verify else 0
+    sku_batches = ceil_div(len(sku_ids_to_verify), INFO_LIST_LIMIT) if "info-list" in include_api_sources and sku_ids_to_verify else 0
+    info_list_requests = product_id_batches + offer_id_batches + sku_batches
     attributes_requests = ceil_div(len(product_ids_to_verify) + len(offer_ids_to_verify), INFO_LIST_LIMIT) if "attributes" in include_api_sources and (product_ids_to_verify or offer_ids_to_verify) else 0
     stock_requests = ceil_div(len(product_ids_to_verify), STOCKS_BATCH_LIMIT) if "stocks" in include_api_sources and product_ids_to_verify else 0
 
@@ -420,11 +440,17 @@ def build_plan(issue_date, marketplace_code=DEFAULT_MARKETPLACE, only_tail=True,
                 "estimated_requests": product_list_requests,
             },
             "/v3/product/info/list": {
-                "planned": "info-list" in include_api_sources and bool(info_list_identifiers),
+                "planned": "info-list" in include_api_sources and bool(info_list_requests),
                 "identifiers_by_product_id": len(product_ids_to_verify),
                 "identifiers_by_offer_id": len(offer_ids_to_verify),
                 "identifiers_by_sku": len(sku_ids_to_verify),
-                "batches": info_list_requests,
+                "product_id_batches": product_id_batches,
+                "offer_id_batches": offer_id_batches,
+                "sku_batches": sku_batches,
+                "product_id_requests": product_id_batches,
+                "offer_id_requests": offer_id_batches,
+                "sku_requests": sku_batches,
+                "total_info_list_requests": info_list_requests,
                 "estimated_requests": info_list_requests,
             },
             "/v3/products/info/attributes": {
@@ -447,6 +473,441 @@ def build_plan(issue_date, marketplace_code=DEFAULT_MARKETPLACE, only_tail=True,
         "include_api_sources": include_api_sources,
     }
     return plan
+
+
+def post_ozon(url, payload, request_stats, endpoint_key):
+    response = requests.post(url, headers=ozon_headers(), json=payload, timeout=REQUEST_TIMEOUT)
+    request_stats[endpoint_key] += 1
+
+    if response.status_code != 200:
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "text": response.text[:2000],
+            "payload": payload,
+        }
+
+    try:
+        data = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "text": f"invalid_json: {exc}",
+            "payload": payload,
+        }
+
+    return {
+        "ok": True,
+        "status_code": response.status_code,
+        "data": data,
+        "payload": payload,
+    }
+
+
+def fetch_product_list_snapshot(request_stats, max_requests):
+    if max_requests is not None and request_stats["/v3/product/list"] >= max_requests:
+        return [], [{"endpoint": "/v3/product/list", "error": "max_requests_reached"}]
+
+    url = "https://api-seller.ozon.ru/v3/product/list"
+    last_id = ""
+    items = []
+    errors = []
+
+    while True:
+        if max_requests is not None and request_stats["/v3/product/list"] >= max_requests:
+            errors.append({"endpoint": "/v3/product/list", "error": "max_requests_reached"})
+            break
+
+        payload = {
+            "filter": {"visibility": "ALL"},
+            "last_id": last_id,
+            "limit": PRODUCT_LIST_LIMIT,
+        }
+        result = post_ozon(url, payload, request_stats, "/v3/product/list")
+        if not result["ok"]:
+            errors.append(
+                {
+                    "endpoint": "/v3/product/list",
+                    "status_code": result.get("status_code"),
+                    "error": result.get("text"),
+                }
+            )
+            break
+
+        data = result["data"]
+        batch = data.get("result", {}).get("items", []) or data.get("items", []) or []
+        items.extend(batch)
+        last_id = data.get("result", {}).get("last_id")
+        if not last_id or not batch:
+            break
+
+    return items, errors
+
+
+def fetch_product_info_snapshot(product_ids, offer_ids, sku_ids, request_stats, max_requests):
+    url = "https://api-seller.ozon.ru/v3/product/info/list"
+    items = []
+    errors = []
+    stats = Counter()
+
+    identifier_groups = [
+        ("product_id", sorted({str(value).strip() for value in (product_ids or []) if str(value).strip()})),
+        ("offer_id", sorted({str(value).strip() for value in (offer_ids or []) if str(value).strip()})),
+        ("sku", sorted({str(value).strip() for value in (sku_ids or []) if str(value).strip()})),
+    ]
+
+    for identifier_type, identifiers in identifier_groups:
+        if not identifiers:
+            continue
+
+        for batch in chunks(identifiers, INFO_LIST_LIMIT):
+            if max_requests is not None and request_stats["/v3/product/info/list"] >= max_requests:
+                errors.append(
+                    {
+                        "endpoint": "/v3/product/info/list",
+                        "identifier_type": identifier_type,
+                        "error": "max_requests_reached",
+                    }
+                )
+                break
+
+            payload = {identifier_type: batch}
+            result = post_ozon(url, payload, request_stats, "/v3/product/info/list")
+            stats[f"{identifier_type}_requests"] += 1
+            if not result["ok"]:
+                errors.append(
+                    {
+                        "endpoint": "/v3/product/info/list",
+                        "identifier_type": identifier_type,
+                        "status_code": result.get("status_code"),
+                        "error": result.get("text"),
+                        "payload": payload,
+                    }
+                )
+                continue
+            data = result["data"]
+            items.extend(data.get("items", []) or data.get("result", {}).get("items", []) or [])
+
+    return items, errors, dict(stats)
+
+
+def fetch_product_stocks_snapshot(product_ids, offer_ids, request_stats, max_requests):
+    url = "https://api-seller.ozon.ru/v4/product/info/stocks"
+    items = []
+    errors = []
+
+    product_ids = list(product_ids or [])
+    offer_ids = list(offer_ids or [])
+    offer_id_by_product_id = {}
+    for product_id, offer_id in zip(product_ids, offer_ids):
+        if product_id:
+            offer_id_by_product_id[str(product_id)] = offer_id
+
+    batches = list(chunks(product_ids, STOCKS_BATCH_LIMIT))
+    for batch in batches:
+        if max_requests is not None and request_stats["/v4/product/info/stocks"] >= max_requests:
+            errors.append({"endpoint": "/v4/product/info/stocks", "error": "max_requests_reached"})
+            break
+
+        batch_offer_ids = [offer_id_by_product_id.get(str(product_id)) for product_id in batch]
+        payload = {
+            "filter": {
+                "product_id": batch,
+                "offer_id": [value for value in batch_offer_ids if value],
+                "visibility": "ALL",
+            },
+            "last_id": "",
+            "limit": 1000,
+        }
+        result = post_ozon(url, payload, request_stats, "/v4/product/info/stocks")
+        if not result["ok"]:
+            errors.append(
+                {
+                    "endpoint": "/v4/product/info/stocks",
+                    "status_code": result.get("status_code"),
+                    "error": result.get("text"),
+                    "payload": payload,
+                }
+            )
+            continue
+        data = result["data"]
+        items.extend(data.get("items", []) or data.get("result", {}).get("items", []) or [])
+
+    return items, errors
+
+
+def build_identity_rows_from_api(plan, product_list_items, info_items, stock_items):
+    identity_by_key = {}
+
+    for item in product_list_items:
+        product_id = str(item.get("product_id") or item.get("id") or "").strip()
+        offer_id = str(item.get("offer_id") or "").strip()
+        if not product_id and not offer_id:
+            continue
+        identity_key = f"ozon:{product_id or offer_id}"
+        row = identity_by_key.setdefault(
+            identity_key,
+            {
+                "identity_key": identity_key,
+                "marketplace_code": "ozon",
+                "article": offer_id or None,
+                "offer_id": offer_id or None,
+                "product_id": product_id or None,
+                "ozon_sku": None,
+                "fbo_sku": None,
+                "fbs_sku": None,
+                "decision_marketplace_sku": None,
+                "product_name": item.get("name") or None,
+                "visibility": item.get("visibility") or None,
+                "product_status": item.get("status") or None,
+                "archived": item.get("archived") if item.get("archived") is not None else item.get("is_archived"),
+                "has_fbo_stocks": item.get("has_fbo_stocks"),
+                "has_fbs_stocks": item.get("has_fbs_stocks"),
+                "source": "product_list",
+                "evidence": {"product_list": item},
+            },
+        )
+        row["article"] = row["article"] or offer_id or None
+        row["offer_id"] = row["offer_id"] or offer_id or None
+        row["product_id"] = row["product_id"] or product_id or None
+        row["product_name"] = row["product_name"] or item.get("name") or None
+        row["visibility"] = row["visibility"] or item.get("visibility") or None
+        row["product_status"] = row["product_status"] or item.get("status") or None
+        if row["archived"] is None:
+            row["archived"] = item.get("archived") if item.get("archived") is not None else item.get("is_archived")
+        if row["has_fbo_stocks"] is None:
+            row["has_fbo_stocks"] = item.get("has_fbo_stocks")
+        if row["has_fbs_stocks"] is None:
+            row["has_fbs_stocks"] = item.get("has_fbs_stocks")
+
+    for item in info_items:
+        product_id = str(item.get("id") or item.get("product_id") or "").strip()
+        offer_id = str(item.get("offer_id") or "").strip()
+        sku_values = item.get("sources") or item.get("sku") or item.get("skus") or []
+        if isinstance(sku_values, (int, str)):
+            sku_values = [sku_values]
+        sku_values = [str(value).strip() for value in sku_values if str(value).strip()]
+        identity_key = f"ozon:{product_id or offer_id or (sku_values[0] if sku_values else '')}"
+        if identity_key == "ozon:":
+            continue
+        row = identity_by_key.setdefault(
+            identity_key,
+            {
+                "identity_key": identity_key,
+                "marketplace_code": "ozon",
+                "article": offer_id or None,
+                "offer_id": offer_id or None,
+                "product_id": product_id or None,
+                "ozon_sku": sku_values[0] if sku_values else None,
+                "fbo_sku": None,
+                "fbs_sku": None,
+                "decision_marketplace_sku": None,
+                "product_name": item.get("name") or None,
+                "visibility": item.get("visibility") or None,
+                "product_status": item.get("status") or None,
+                "archived": item.get("archived") if item.get("archived") is not None else item.get("is_archived"),
+                "has_fbo_stocks": None,
+                "has_fbs_stocks": None,
+                "source": "product_info_list",
+                "evidence": {"product_info_list": item},
+            },
+        )
+        row["article"] = row["article"] or offer_id or None
+        row["offer_id"] = row["offer_id"] or offer_id or None
+        row["product_id"] = row["product_id"] or product_id or None
+        row["ozon_sku"] = row["ozon_sku"] or (sku_values[0] if sku_values else None)
+        row["product_name"] = row["product_name"] or item.get("name") or None
+        row["visibility"] = row["visibility"] or item.get("visibility") or None
+        row["product_status"] = row["product_status"] or item.get("status") or None
+
+    for item in stock_items:
+        product_id = str(item.get("product_id") or "").strip()
+        offer_id = str(item.get("offer_id") or "").strip()
+        identity_key = f"ozon:{product_id or offer_id}"
+        if identity_key == "ozon:":
+            continue
+        row = identity_by_key.setdefault(
+            identity_key,
+            {
+                "identity_key": identity_key,
+                "marketplace_code": "ozon",
+                "article": offer_id or None,
+                "offer_id": offer_id or None,
+                "product_id": product_id or None,
+                "ozon_sku": None,
+                "fbo_sku": None,
+                "fbs_sku": None,
+                "decision_marketplace_sku": None,
+                "product_name": None,
+                "visibility": None,
+                "product_status": None,
+                "archived": None,
+                "has_fbo_stocks": None,
+                "has_fbs_stocks": None,
+                "source": "stock_api",
+                "evidence": {"stock_api": item},
+            },
+        )
+        row["article"] = row["article"] or offer_id or None
+        row["offer_id"] = row["offer_id"] or offer_id or None
+        row["product_id"] = row["product_id"] or product_id or None
+
+        for stock in item.get("stocks", []) or []:
+            stock_type = str(stock.get("type") or "").lower()
+            sku_value = str(stock.get("sku") or "").strip() or None
+            if stock_type == "fbo" and sku_value and not row["fbo_sku"]:
+                row["fbo_sku"] = sku_value
+            if stock_type in {"fbs", "rfbs"} and sku_value and not row["fbs_sku"]:
+                row["fbs_sku"] = sku_value
+
+    tail_rows = plan["tail_rows"]
+    by_marketplace_sku = {str(row.get("marketplace_sku") or "").strip(): row for row in tail_rows}
+    by_article = defaultdict(list)
+    for row in tail_rows:
+        article = str(row.get("article") or "").strip()
+        if article:
+            by_article[article].append(row)
+
+    for identity in identity_by_key.values():
+        article = str(identity.get("article") or "").strip()
+        if article and len(by_article.get(article) or []) == 1:
+            identity["decision_marketplace_sku"] = by_article[article][0].get("marketplace_sku")
+
+    return list(identity_by_key.values())
+
+
+def run_dry_run(plan, max_requests):
+    request_stats = defaultdict(int)
+    errors = []
+
+    product_list_items, product_list_errors = fetch_product_list_snapshot(request_stats, max_requests)
+    errors.extend(product_list_errors)
+
+    product_ids = set()
+    offer_ids = set()
+    sku_ids = set()
+    for row in plan["tail_rows"]:
+        if row.get("sku_catalog_product_id"):
+            product_ids.add(str(row["sku_catalog_product_id"]))
+        if row.get("article") and row.get("required_source") in {"requires_stock_api_verification", "stock_source_gap"}:
+            offer_ids.add(str(row["article"]))
+        if row.get("required_source") == "requires_product_list":
+            sku_ids.add(str(row.get("marketplace_sku") or "").strip())
+
+    info_items, info_errors, info_stats = fetch_product_info_snapshot(
+        sorted(product_ids),
+        sorted(offer_ids),
+        sorted(sku_ids),
+        request_stats,
+        max_requests,
+    )
+    errors.extend(info_errors)
+
+    stock_items, stock_errors = fetch_product_stocks_snapshot(
+        sorted(product_ids),
+        [next((row.get("article") for row in plan["tail_rows"] if str(row.get("sku_catalog_product_id") or "") == product_id and row.get("article")), None) for product_id in sorted(product_ids)],
+        request_stats,
+        max_requests,
+    )
+    errors.extend(stock_errors)
+
+    identity_rows = build_identity_rows_from_api(plan, product_list_items, info_items, stock_items)
+    identity_by_product_id = rows_by_key(identity_rows, "product_id")
+    identity_by_offer_id = rows_by_key(identity_rows, "offer_id")
+    identity_by_ozon_sku = rows_by_key(identity_rows, "ozon_sku")
+    stock_by_product_id = rows_by_key(stock_items, "product_id")
+
+    identity_gap_found = 0
+    stock_source_verified = 0
+    stock_source_with_stock_rows = 0
+    identity_gap_details = []
+    stock_source_details = []
+
+    for row in plan["tail_rows"]:
+        marketplace_sku = str(row.get("marketplace_sku") or "").strip()
+        article = str(row.get("article") or "").strip()
+        product_id = str(row.get("sku_catalog_product_id") or "").strip()
+        required_source = row.get("required_source")
+
+        if required_source == "requires_product_list":
+            found_by_product_id = bool(product_id and identity_by_product_id.get(product_id))
+            found_by_offer_id = bool(article and identity_by_offer_id.get(article))
+            found_by_sku = bool(identity_by_ozon_sku.get(marketplace_sku))
+            found = found_by_product_id or found_by_offer_id or found_by_sku or any(
+                marketplace_sku == str(item.get("ozon_sku") or "").strip()
+                or marketplace_sku == str(item.get("product_id") or "").strip()
+                for item in identity_rows
+            )
+            if found:
+                identity_gap_found += 1
+            identity_gap_details.append(
+                {
+                    "marketplace_sku": marketplace_sku,
+                    "article": article or None,
+                    "product_name": row.get("product_name"),
+                    "found": found,
+                    "searched_by_product_id": bool(product_id),
+                    "searched_by_offer_id": bool(article),
+                    "searched_by_sku": True,
+                    "found_by_product_id": found_by_product_id,
+                    "found_by_offer_id": found_by_offer_id,
+                    "found_by_sku": found_by_sku,
+                    "reason_if_missing": None if found else "not_returned_by_product_list_or_info_list",
+                }
+            )
+        elif required_source in {"requires_stock_api_verification", "stock_source_gap"}:
+            found_identity = bool(product_id and identity_by_product_id.get(product_id)) or bool(article and identity_by_offer_id.get(article))
+            found_stock = bool(product_id and stock_by_product_id.get(product_id))
+            if found_identity:
+                stock_source_verified += 1
+            if found_stock:
+                stock_source_with_stock_rows += 1
+            stock_source_details.append(
+                {
+                    "marketplace_sku": marketplace_sku,
+                    "article": article or None,
+                    "product_name": row.get("product_name"),
+                    "product_id": product_id or None,
+                    "found_identity": found_identity,
+                    "found_stock": found_stock,
+                    "reason_if_missing": None if found_identity else "identity_not_returned_by_info_list",
+                }
+            )
+
+    errors_by_identifier_type = Counter()
+    for error in errors:
+        identifier_type = str(error.get("identifier_type") or "unknown")
+        errors_by_identifier_type[identifier_type] += 1
+
+    return {
+        "status": "PASSED" if not errors else ("PARTIAL" if identity_rows else "FAILED"),
+        "requests": {
+            "/v3/product/list": request_stats["/v3/product/list"],
+            "/v3/product/info/list": request_stats["/v3/product/info/list"],
+            "/v4/product/info/stocks": request_stats["/v4/product/info/stocks"],
+            "/v3/products/info/attributes": 0,
+        },
+        "info_list_request_breakdown": {
+            "product_id_requests": info_stats.get("product_id_requests", 0),
+            "offer_id_requests": info_stats.get("offer_id_requests", 0),
+            "sku_requests": info_stats.get("sku_requests", 0),
+        },
+        "identity_rows_received": len(identity_rows),
+        "identity_gap_found": identity_gap_found,
+        "identity_gap_missing": max(plan["requires_product_identity_api"] - identity_gap_found, 0),
+        "stock_source_verified": stock_source_verified,
+        "stock_source_with_stock_rows": stock_source_with_stock_rows,
+        "errors_by_identifier_type": dict(errors_by_identifier_type),
+        "errors": errors,
+        "empty_responses": {
+            "product_list_items": len(product_list_items) == 0,
+            "product_info_items": len(info_items) == 0,
+            "stock_items": len(stock_items) == 0,
+        },
+        "identity_gap_details": identity_gap_details,
+        "stock_source_details": stock_source_details,
+    }
 
 
 def print_plan(plan, max_requests=None):
@@ -506,6 +967,11 @@ def run():
     )
 
     if args.plan_only or not args.live:
+        if args.dry_run:
+            summary = run_dry_run(plan, max_requests=args.max_requests)
+            print("=== Ozon Product Identity Loader — Dry Run ===")
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            return
         print_plan(plan, max_requests=args.max_requests)
         return
 

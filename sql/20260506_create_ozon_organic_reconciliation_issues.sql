@@ -1,0 +1,23 @@
+create table if not exists ozon_organic_reconciliation_issues (
+    sale_date date not null,
+    marketplace_code text not null,
+    marketplace_sku text not null,
+    article text,
+    product_name text,
+    order_sku text,
+    promoted_sku text,
+    ad_source text,
+    attribution_type text,
+    ad_orders_qty numeric default 0,
+    ad_orders_revenue numeric default 0,
+    total_orders_qty numeric default 0,
+    total_orders_revenue numeric default 0,
+    organic_orders_revenue numeric default 0,
+    unreconciled_revenue numeric default 0,
+    reconciliation_status text not null default 'clean',
+    reconciliation_reason text,
+    evidence jsonb,
+    suggested_fix text,
+    updated_at timestamptz not null default now(),
+    primary key (sale_date, marketplace_code, marketplace_sku)
+);

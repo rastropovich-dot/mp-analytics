@@ -97,6 +97,9 @@ def evaluate_row(row):
     stock_qty = None if stock_qty is None else num(stock_qty)
     ad_share = num(row.get("ad_share_revenue"))
     data_quality = str(row.get("data_quality_status") or "")
+    stock_status = str(row.get("stock_status") or "")
+    organic_reconciliation_status = str(row.get("organic_reconciliation_status") or "")
+    source_run_status = str(row.get("source_run_status") or "")
 
     roas = None
     if ad_spend > 0:
@@ -105,13 +108,29 @@ def evaluate_row(row):
     risk_flags = []
     if data_quality and data_quality != "ok":
         risk_flags.append(data_quality)
+    if organic_reconciliation_status and organic_reconciliation_status != "clean":
+        risk_flags.append(f"organic:{organic_reconciliation_status}")
+    if source_run_status in {"partial_ads", "partial_quota", "failed"}:
+        risk_flags.append(f"run:{source_run_status}")
     if stock_qty is not None and stock_qty < MIN_STOCK_QTY:
         risk_flags.append("stock_risk")
     if orders_qty < MIN_ORDERS_FOR_ACTION:
         risk_flags.append("low_volume")
 
+    if source_run_status in {"partial_ads", "partial_quota", "failed"}:
+        return "hold", "Источник рекламы неполный; decision layer остаётся в hold", roas, risk_flags
+
+    if stock_status == "missing_stock":
+        return "hold", "Не удалось надёжно сопоставить остатки", roas, risk_flags
+
+    if organic_reconciliation_status and organic_reconciliation_status != "clean":
+        return "hold", "Organic/ad attribution не полностью сверены", roas, risk_flags
+
     if data_quality and data_quality != "ok":
         return "hold", "Неполные или проблемные данные для уверенного решения", roas, risk_flags
+
+    if stock_status == "stock_out":
+        return "stop_ads", "Товар закончился, рекламу стоит остановить", roas, risk_flags
 
     if stock_qty is not None and stock_qty < MIN_STOCK_QTY:
         return "watch", "Остатков мало, лучше не усиливать рекламу и не дёргать цену", roas, risk_flags
@@ -186,6 +205,11 @@ def build_candidates(date_from, date_to, limit=100):
                 "expected_revenue_after_buyout": row.get("expected_revenue_after_buyout"),
                 "expected_margin_after_ads": row.get("expected_margin_after_ads"),
                 "stock_qty": row.get("stock_qty"),
+                "stock_status": row.get("stock_status"),
+                "stock_issue_type": row.get("stock_issue_type"),
+                "organic_reconciliation_status": row.get("organic_reconciliation_status"),
+                "unreconciled_revenue": row.get("unreconciled_revenue"),
+                "source_run_status": row.get("source_run_status"),
                 "data_quality_status": row.get("data_quality_status"),
                 "risk_flags": ",".join(risk_flags),
                 "roas": round(roas, 2) if roas is not None else None,

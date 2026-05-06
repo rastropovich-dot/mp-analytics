@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from supabase import create_client
+from reports_ozon_organic_reconciliation_issues import build_reconciliation_rows
+from reports_stock_data_quality_issues import build_stock_quality_rows
 
 
 load_dotenv()
@@ -315,11 +317,23 @@ def load_latest_ozon_run_status(date_from, date_to):
         return {}
 
     latest = {}
+    mode_rank = {
+        "daily-yesterday": 3,
+        "full": 2,
+        "cpc-backfill": 1,
+    }
     for row in rows:
         target_date = row.get("target_date")
-        if not target_date or target_date in latest:
+        if not target_date:
             continue
-        latest[target_date] = row
+        existing = latest.get(target_date)
+        if not existing:
+            latest[target_date] = row
+            continue
+        existing_rank = mode_rank.get(str(existing.get("mode") or ""), 0)
+        current_rank = mode_rank.get(str(row.get("mode") or ""), 0)
+        if current_rank > existing_rank:
+            latest[target_date] = row
     return latest
 
 
@@ -362,6 +376,18 @@ def build_rows(date_from, date_to):
     latest_stock_by_article = latest_stock.get("by_article", {})
     latest_price = load_recent_price_points(history_from, date_to)
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
+    stock_quality_rows, _ = build_stock_quality_rows(date_from, date_to)
+    stock_quality_by_key = {
+        (row.get("issue_date"), str(row.get("marketplace_sku") or "")): row
+        for row in stock_quality_rows
+        if row.get("issue_date") and row.get("marketplace_sku")
+    }
+    reconciliation_rows, _ = build_reconciliation_rows(date_from, date_to)
+    reconciliation_by_key = {
+        (row.get("sale_date"), str(row.get("marketplace_sku") or "")): row
+        for row in reconciliation_rows
+        if row.get("sale_date") and row.get("marketplace_sku")
+    }
 
     rows = []
     summary = defaultdict(int)
@@ -414,6 +440,8 @@ def build_rows(date_from, date_to):
             expected_margin_after_ads = None
 
         organic_row = organic_rows.get((kpi_date, sku), {})
+        stock_quality_row = stock_quality_by_key.get((kpi_date, sku), {})
+        reconciliation_row = reconciliation_by_key.get((kpi_date, sku), {})
         price_info = latest_price.get(sku, {})
         stock_info = latest_stock_by_decision_sku.get(sku, {})
         if not stock_info:
@@ -428,6 +456,10 @@ def build_rows(date_from, date_to):
         run_status = str(run_status_row.get("run_status") or "")
         organic_status = str(organic_row.get("calculation_status") or "")
         organic_warning = str(organic_row.get("warning") or "")
+        stock_status = str(stock_quality_row.get("stock_status") or "")
+        stock_issue_type = str(stock_quality_row.get("issue_type") or "")
+        organic_reconciliation_status = str(reconciliation_row.get("reconciliation_status") or "")
+        unreconciled_revenue = num(reconciliation_row.get("unreconciled_revenue"))
 
         if run_status in {"partial_ads", "partial_quota", "failed"}:
             quality_flags.append(run_status)
@@ -445,10 +477,17 @@ def build_rows(date_from, date_to):
         if stock_qty_value is None:
             stock_qty_value = stock_info.get("stock_qty")
 
-        if stock_qty_value is None:
+        if stock_status == "missing_stock":
+            quality_flags.append(stock_issue_type or "missing_stock")
+        elif stock_status == "stock_out":
+            quality_flags.append("stock_out")
+        elif stock_qty_value is None:
             quality_flags.append("missing_stock")
         elif num(stock_qty_value) <= 0:
             quality_flags.append("stock_out")
+
+        if organic_reconciliation_status and organic_reconciliation_status != "clean":
+            quality_flags.append(organic_reconciliation_status)
         if num(row.get("orders_qty")) <= 0:
             quality_flags.append("low_data_volume")
 
@@ -485,7 +524,11 @@ def build_rows(date_from, date_to):
                 if stock_qty_value is None
                 else num(stock_qty_value)
             ),
+            "stock_status": stock_status or ("stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "stock_ok" if stock_qty_value is not None else "missing_stock"),
+            "stock_issue_type": stock_issue_type or ("stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "clean_stock_matched" if stock_qty_value is not None else "missing_stock"),
             "stock_as_of_date": stock_info.get("stock_date"),
+            "organic_reconciliation_status": organic_reconciliation_status or "clean",
+            "unreconciled_revenue": unreconciled_revenue,
             "source_run_status": run_status or None,
             "decision_status": decision_status,
             "data_quality_status": data_quality_status,

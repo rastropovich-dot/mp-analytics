@@ -164,6 +164,20 @@ def build_stock_quality_rows(date_from, date_to):
         ],
         order="sale_date",
     )
+    existing_issue_rows = fetch_all(
+        TABLE_NAME,
+        filters=[
+            ("marketplace_code", "eq", "ozon"),
+            ("issue_date", "gte", date_from),
+            ("issue_date", "lte", date_to),
+        ],
+        order="issue_date",
+    )
+    identity_rows = fetch_all(
+        "ozon_product_identity",
+        filters=[("marketplace_code", "eq", "ozon")],
+        order="identity_key",
+    )
 
     stock_by_article = rows_by_key(stock_rows, "article")
     stock_by_product_id = rows_by_key(stock_rows, "product_id")
@@ -179,6 +193,10 @@ def build_stock_quality_rows(date_from, date_to):
     total_by_sku = rows_by_key(total_rows, "marketplace_sku")
     ad_attr_by_sku = rows_by_key(ad_attr_rows, "marketplace_sku")
     organic_by_sku = rows_by_key(organic_rows, "marketplace_sku")
+    existing_issue_by_sku = rows_by_key(existing_issue_rows, "marketplace_sku")
+    identity_by_product_id = rows_by_key(identity_rows, "product_id")
+    identity_by_article = rows_by_key(identity_rows, "article")
+    identity_by_decision_sku = rows_by_key(identity_rows, "decision_marketplace_sku")
 
     output = []
     issue_distribution = Counter()
@@ -216,6 +234,27 @@ def build_stock_quality_rows(date_from, date_to):
         evidence["product_ids_from_catalog"] = sorted(product_ids)
         evidence["in_stock_by_product_id"] = any(stock_by_product_id.get(pid) for pid in product_ids)
 
+        identity_candidates = []
+        for pid in sorted(product_ids):
+            identity_candidates.extend(identity_by_product_id.get(pid) or [])
+        if article:
+            identity_candidates.extend(identity_by_article.get(article) or [])
+        identity_candidates.extend(identity_by_decision_sku.get(sku) or [])
+
+        stock_api_blocks = []
+        for candidate in identity_candidates:
+            candidate_evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+            stock_api = candidate_evidence.get("stock_api")
+            if isinstance(stock_api, dict):
+                stock_api_blocks.append(stock_api)
+
+        evidence["stock_api_verified"] = any(block.get("verified") is True for block in stock_api_blocks)
+        evidence["stock_api_returned_stock_rows"] = any(block.get("returned_stock_rows") is True for block in stock_api_blocks)
+        evidence["stock_api_verified_no_stock_rows"] = any(
+            block.get("verified") is True and block.get("returned_stock_rows") is False
+            for block in stock_api_blocks
+        )
+
         if stock_qty is None:
             stock_status = "missing_stock"
             if not article:
@@ -225,7 +264,13 @@ def build_stock_quality_rows(date_from, date_to):
                     stock_issue_type = "decision_sku_not_mapped"
                     suggested_fix = "product_identity_loader"
             elif not evidence["in_stock_by_article"]:
-                if evidence["stock_history_for_article"]:
+                if evidence["stock_api_verified"] and evidence["stock_api_returned_stock_rows"]:
+                    stock_issue_type = "stock_api_returned_but_not_in_stock_daily"
+                    suggested_fix = "stock_daily_reload_or_identity_alignment"
+                elif evidence["stock_api_verified_no_stock_rows"]:
+                    stock_issue_type = "stock_api_verified_no_stock_rows"
+                    suggested_fix = "none"
+                elif evidence["stock_history_for_article"]:
                     stock_issue_type = "stock_product_unresolved"
                     suggested_fix = "identity_mapping_review"
                 else:
@@ -242,6 +287,31 @@ def build_stock_quality_rows(date_from, date_to):
             stock_status = "stock_ok"
             stock_issue_type = "clean_stock_matched"
             suggested_fix = "none"
+
+        existing_issue = next(
+            (
+                item
+                for item in (existing_issue_by_sku.get(sku) or [])
+                if str(item.get("issue_date") or "") == str(issue_date or "")
+            ),
+            None,
+        )
+        existing_evidence = existing_issue.get("evidence") if existing_issue else {}
+        if not isinstance(existing_evidence, dict):
+            existing_evidence = {}
+        if (
+            stock_issue_type == "decision_sku_not_mapped"
+            and existing_issue
+            and existing_issue.get("issue_type") == "product_identity_not_returned_by_ozon_api"
+            and existing_evidence.get("result") == "not_returned"
+        ):
+            stock_issue_type = "product_identity_not_returned_by_ozon_api"
+            suggested_fix = "manual_identity_review_or_product_list_refresh"
+            evidence["product_status"] = existing_evidence.get("product_status") or "not_returned_by_current_ozon_api"
+            evidence["searched_by"] = existing_evidence.get("searched_by") or ["sku"]
+            evidence["endpoints_tried"] = existing_evidence.get("endpoints_tried") or ["/v3/product/list", "/v3/product/info/list"]
+            evidence["result"] = "not_returned"
+            evidence["possible_reason"] = existing_evidence.get("possible_reason") or "inactive_or_not_visible_possible"
 
         issue_distribution[stock_issue_type] += 1
         output.append(

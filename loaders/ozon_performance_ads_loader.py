@@ -645,16 +645,18 @@ def parse_args():
     )
     parser.add_argument(
         "--mode",
-        choices=("daily-yesterday", "full", "cpc-backfill", "cpo-report-check"),
+        choices=("daily-yesterday", "full", "cpc-backfill", "cpo-report-check", "statistics-json-probe"),
         default=default_mode,
         help=(
             "daily-yesterday = production D-1 load in Europe/Moscow; "
             "full = explicit date/date-range historical run; "
             "cpc-backfill = retry only pending CPC for one day; "
-            "cpo-report-check = generate/poll/download one CPO report and dry-parse it"
+            "cpo-report-check = generate/poll/download one CPO report and dry-parse it; "
+            "statistics-json-probe = generate/poll/download one statistics/json report and dry-parse it"
         ),
     )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
+    parser.add_argument("--campaign-id", help="Single campaign id for statistics-json-probe mode")
     parser.add_argument("--days-back", type=int, default=30)
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
@@ -2185,7 +2187,7 @@ class OzonPerformanceClient:
         self.forget_jobs_by_uuid(uuid)
         raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
 
-    def download_report(self, uuid):
+    def download_report(self, uuid, return_meta=False):
         response = self.request(
             "GET",
             "/api/client/statistics/report",
@@ -2194,12 +2196,18 @@ class OzonPerformanceClient:
 
         text = response.text.strip()
         if not text:
+            if return_meta:
+                return {}, sanitize_value(dict(response.headers))
             return {}
 
         try:
-            return response.json()
+            data = response.json()
         except ValueError:
-            return json.loads(text)
+            data = json.loads(text)
+
+        if return_meta:
+            return data, sanitize_value(dict(response.headers))
+        return data
 
     def download_report_by_link(self, link, uuid=None, return_meta=False):
         if link:
@@ -2220,7 +2228,15 @@ class OzonPerformanceClient:
             return text, sanitize_value(dict(response.headers))
         return text
 
-    def fetch_statistics_json_report(self, campaign_ids, date_from, date_to, group_by, allow_recreate=True):
+    def fetch_statistics_json_report(
+        self,
+        campaign_ids,
+        date_from,
+        date_to,
+        group_by,
+        allow_recreate=True,
+        return_meta=False,
+    ):
         endpoint = "/api/client/statistics/json"
         last_exc = None
 
@@ -2235,6 +2251,9 @@ class OzonPerformanceClient:
             status = self.wait_statistics(uuid, poll_profile="statistics_json")
 
             try:
+                if return_meta:
+                    report_data, download_headers = self.download_report(uuid, return_meta=True)
+                    return uuid, status, report_data, download_headers
                 report_data = self.download_report(uuid)
                 return uuid, status, report_data
             except requests.HTTPError as exc:
@@ -2658,6 +2677,15 @@ def estimate_all_sku_promo_requests():
     }
 
 
+def estimate_statistics_json_probe_requests():
+    return {
+        "generate_requests": 1,
+        "poll_requests_estimate": "1-3",
+        "download_requests": 1,
+        "total_requests_estimate": "3-5",
+    }
+
+
 def analyze_cpo_csv(csv_text):
     lines = csv_text.splitlines()
     title = ""
@@ -2751,6 +2779,81 @@ def print_cpo_report_check_plan(date_from, date_to, report_type):
         ],
     }
     print("Ozon Performance CPO report check plan:")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def analyze_statistics_json_report(report_data):
+    if not isinstance(report_data, dict):
+        return {
+            "campaign_title": "",
+            "row_keys": [],
+            "sample_rows": [],
+            "total_spend": 0.0,
+            "orders_qty": 0.0,
+            "revenue": 0.0,
+            "rate_markers": {
+                "has_5_percent": False,
+                "has_10_percent": False,
+                "has_other_rate": False,
+            },
+        }
+
+    campaign_id, campaign_payload = next(iter(report_data.items()), ("", {}))
+    campaign_payload = campaign_payload or {}
+    title = str(campaign_payload.get("title") or "")
+    report_section = campaign_payload.get("report") or {}
+    rows = list(report_section.get("rows") or [])
+    totals = report_section.get("totals") or {}
+    row_keys = sorted({key for row in rows[:5] for key in row.keys()})
+    sample_rows = rows[:5]
+
+    total_spend = abs(parse_number(value_by_keys(totals, SPEND_KEYS)))
+    orders_qty = parse_number(value_by_keys(totals, ("orders", "Заказы")))
+    revenue = parse_number(value_by_keys(totals, REVENUE_KEYS))
+
+    joined_text = " ".join(
+        [title]
+        + [json.dumps(totals, ensure_ascii=False)]
+        + [json.dumps(row, ensure_ascii=False) for row in sample_rows]
+    ).lower()
+    has_5 = bool(re.search(r"(^|[^0-9])5\s*%", joined_text))
+    has_10 = bool(re.search(r"(^|[^0-9])10\s*%", joined_text))
+    has_other = any(marker in joined_text for marker in ("ставка", "rate", "drr"))
+
+    return {
+        "campaign_id": str(campaign_id),
+        "campaign_title": title,
+        "row_keys": row_keys,
+        "sample_rows": sample_rows,
+        "total_spend": round(total_spend, 2),
+        "orders_qty": orders_qty,
+        "revenue": round(revenue, 2),
+        "rate_markers": {
+            "has_5_percent": has_5,
+            "has_10_percent": has_10,
+            "has_other_rate": has_other and not (has_5 or has_10),
+        },
+    }
+
+
+def print_statistics_json_probe_plan(campaign_id, date_from, date_to, cooldown_until):
+    summary = {
+        "mode": "statistics-json-probe",
+        "campaign_id": str(campaign_id),
+        "date_from": date_from,
+        "date_to": date_to,
+        "planned_campaign_units": 1,
+        "uses_statistics_json": True,
+        "uses_campaign_unit_quota_2000": True,
+        "is_daily_flow": False,
+        "is_full_cpc_flow": False,
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
+        "cooldown_active": bool(cooldown_until),
+        "cooldown_until": to_iso(cooldown_until) if cooldown_until else None,
+        "estimated_requests": estimate_statistics_json_probe_requests(),
+    }
+    print("Ozon Performance statistics/json probe plan:")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
@@ -2919,6 +3022,82 @@ def run():
     target_date = date_to if date_from == date_to else None
     client = OzonPerformanceClient()
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
+
+    if args.mode == "statistics-json-probe":
+        if not args.campaign_id:
+            raise RuntimeError("statistics-json-probe mode requires --campaign-id")
+        if date_from != date_to:
+            raise RuntimeError(
+                "statistics-json-probe mode supports exactly one calendar day. "
+                f"Got {date_from}..{date_to}"
+            )
+
+        cooldown_until = client.get_cooldown(client.scoped_state_key("statistics_json"))
+        print_statistics_json_probe_plan(args.campaign_id, date_from, date_to, cooldown_until)
+        if args.plan_only:
+            return
+        if cooldown_until:
+            raise RuntimeError(
+                f"statistics_json cooldown is active until {to_iso(cooldown_until)}"
+            )
+
+        original_runtime_state = client.snapshot_runtime_state()
+        http_requests_before = len(client.state.get("request_history", []) or [])
+
+        try:
+            try:
+                uuid, status, report_data, download_headers = client.fetch_statistics_json_report(
+                    [str(args.campaign_id)],
+                    date_from,
+                    date_to,
+                    args.group_by,
+                    allow_recreate=False,
+                    return_meta=True,
+                )
+            except RateLimitPending as exc:
+                print("Ozon Performance statistics/json probe result:")
+                print(json.dumps({
+                    "status": "PENDING_429",
+                    "endpoint": exc.endpoint,
+                    "retry_after_seconds": exc.retry_after_seconds,
+                    "cooldown_until": exc.cooldown_until,
+                    "campaign_units_spent": 0,
+                }, ensure_ascii=False, indent=2))
+                return
+
+            http_requests_after = len(client.state.get("request_history", []) or [])
+            probe = analyze_statistics_json_report(report_data)
+            content_disposition = str((download_headers or {}).get("content-disposition") or "")
+            filename = ""
+            match = re.search(r'filename=\"?([^\";]+)\"?', content_disposition, flags=re.IGNORECASE)
+            if match:
+                filename = match.group(1)
+            delta = round(probe["total_spend"] - 25841.80, 2)
+
+            print("Ozon Performance statistics/json probe result:")
+            print(json.dumps({
+                "status": "PASSED",
+                "uuid": uuid,
+                "http_requests_count": max(0, http_requests_after - http_requests_before),
+                "campaign_units_spent": 1,
+                "filename": filename,
+                "report_title": probe["campaign_title"],
+                "campaign_id": probe["campaign_id"],
+                "row_keys": probe["row_keys"],
+                "sample_rows": probe["sample_rows"],
+                "total_spend": probe["total_spend"],
+                "orders_qty": probe["orders_qty"],
+                "revenue": probe["revenue"],
+                "rate_markers": probe["rate_markers"],
+                "matches_25841_80": abs(delta) < 1,
+                "difference_vs_25841_80": delta,
+                "writes_marketplace_expenses": False,
+                "writes_ozon_daily_sku_ad_attribution": False,
+            }, ensure_ascii=False, indent=2))
+        finally:
+            client.restore_runtime_state(original_runtime_state)
+            print("statistics/json probe: runtime state restored, no ad table writes")
+        return
 
     if args.mode == "cpo-report-check":
         print_cpo_report_check_plan(date_from, date_to, args.cpo_report_type)

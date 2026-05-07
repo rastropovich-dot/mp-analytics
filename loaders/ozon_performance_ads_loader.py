@@ -645,12 +645,13 @@ def parse_args():
     )
     parser.add_argument(
         "--mode",
-        choices=("daily-yesterday", "full", "cpc-backfill"),
+        choices=("daily-yesterday", "full", "cpc-backfill", "cpo-report-check"),
         default=default_mode,
         help=(
             "daily-yesterday = production D-1 load in Europe/Moscow; "
             "full = explicit date/date-range historical run; "
-            "cpc-backfill = retry only pending CPC for one day"
+            "cpc-backfill = retry only pending CPC for one day; "
+            "cpo-report-check = generate/poll/download one CPO report and dry-parse it"
         ),
     )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
@@ -696,6 +697,12 @@ def parse_args():
             "Planning-only mode: list campaigns, apply local filters, calculate batches/quota, "
             "then exit before any report jobs, polling, downloads, or DB writes."
         ),
+    )
+    parser.add_argument(
+        "--cpo-report-type",
+        choices=sorted(ALLOWED_CPO_REPORT_TYPES),
+        default="orders",
+        help="CPO report type for cpo-report-check mode or plan-only inspection.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
@@ -2194,11 +2201,13 @@ class OzonPerformanceClient:
         except ValueError:
             return json.loads(text)
 
-    def download_report_by_link(self, link, uuid=None):
+    def download_report_by_link(self, link, uuid=None, return_meta=False):
         if link:
             response = self.request("GET", urljoin(OZON_PERFORMANCE_BASE_URL + "/", link))
             text = response.text.lstrip("\ufeff")
             if text:
+                if return_meta:
+                    return text, sanitize_value(dict(response.headers))
                 return text
 
         response = self.request(
@@ -2206,7 +2215,10 @@ class OzonPerformanceClient:
             "/api/client/statistics/report",
             params={"UUID": uuid},
         )
-        return response.text.lstrip("\ufeff")
+        text = response.text.lstrip("\ufeff")
+        if return_meta:
+            return text, sanitize_value(dict(response.headers))
+        return text
 
     def fetch_statistics_json_report(self, campaign_ids, date_from, date_to, group_by, allow_recreate=True):
         endpoint = "/api/client/statistics/json"
@@ -2242,7 +2254,7 @@ class OzonPerformanceClient:
 
         raise RuntimeError("Не удалось получить statistics/json report")
 
-    def fetch_all_sku_promo_csv(self, report_type, date_from, date_to):
+    def fetch_all_sku_promo_csv(self, report_type, date_from, date_to, return_meta=False):
         last_exc = None
 
         for attempt in range(1, 3):
@@ -2255,6 +2267,13 @@ class OzonPerformanceClient:
             status = self.wait_statistics(uuid, poll_profile="all_sku_promo")
 
             try:
+                if return_meta:
+                    csv_text, download_headers = self.download_report_by_link(
+                        status.get("link"),
+                        uuid=uuid,
+                        return_meta=True,
+                    )
+                    return uuid, status, csv_text, download_headers
                 csv_text = self.download_report_by_link(status.get("link"), uuid=uuid)
                 return uuid, status, csv_text
             except requests.HTTPError as exc:
@@ -2630,6 +2649,111 @@ def aggregate_ad_attribution_rows(rows):
     return list(grouped.values())
 
 
+def estimate_all_sku_promo_requests():
+    return {
+        "generate_requests": 1,
+        "poll_requests_estimate": "1-3",
+        "download_requests": 1,
+        "total_requests_estimate": "3-5",
+    }
+
+
+def analyze_cpo_csv(csv_text):
+    lines = csv_text.splitlines()
+    title = ""
+    if lines and lines[0].startswith(";"):
+        title = lines[0].lstrip(";").strip()
+        lines = lines[1:]
+
+    if not lines:
+        return {
+            "title": title,
+            "columns": [],
+            "sample_rows": [],
+            "row_count": 0,
+            "total_spend": 0.0,
+            "keyword_hits": {},
+        }
+
+    reader = csv.DictReader(io.StringIO("\n".join(lines)), delimiter=";")
+    columns = list(reader.fieldnames or [])
+    sample_rows = []
+    total_spend = 0.0
+    row_count = 0
+
+    for raw_row in reader:
+        row_count += 1
+        total_spend += abs(parse_number(value_by_keys(raw_row, SPEND_KEYS)))
+        if len(sample_rows) < 5:
+            sample_rows.append(raw_row)
+
+    joined_text = " ".join([title] + columns).lower()
+    keyword_hits = {
+        "selected": "selected" in joined_text,
+        "selected_products": "selected_products" in joined_text,
+        "выбранные": "выбранные" in joined_text,
+        "promotion_type": "promotion_type" in joined_text,
+        "product_selection": "product_selection" in joined_text,
+        "campaign_type": "campaign_type" in joined_text,
+        "все_товары": "все товары" in joined_text,
+    }
+
+    return {
+        "title": title,
+        "columns": columns,
+        "sample_rows": sample_rows,
+        "row_count": row_count,
+        "total_spend": round(total_spend, 2),
+        "keyword_hits": keyword_hits,
+    }
+
+
+def print_cpo_report_check_plan(date_from, date_to, report_type):
+    utc_from, utc_to = build_utc_time_bounds(date_from, date_to)
+    summary = {
+        "mode": "cpo-report-check",
+        "cpo_report_type": report_type,
+        "endpoint": f"/api/client/statistics/all_sku_promo/{report_type}/generate",
+        "date_from": date_from,
+        "date_to": date_to,
+        "time_bounds_utc": {
+            "from": utc_from,
+            "to": utc_to,
+        },
+        "estimated_requests": estimate_all_sku_promo_requests(),
+        "creates_report_job": True,
+        "uses_statistics_json": False,
+        "uses_campaign_unit_quota_2000": False,
+        "is_cpc": False,
+        "layer": "cpo_reporting",
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
+        "expected_columns": [
+            "Дата",
+            "SKU",
+            "SKU продвигаемого товара",
+            "Артикул",
+            "Название товара",
+            "Количество",
+            "Стоимость продажи, ₽",
+            "Стоимость, ₽",
+            "Ставка, %",
+            "Ставка, ₽",
+            "Расход, ₽",
+        ],
+        "possible_selected_markers": [
+            "selected",
+            "выбранные",
+            "product_selection",
+            "promotion_type",
+            "campaign_type",
+            "все товары",
+        ],
+    }
+    print("Ozon Performance CPO report check plan:")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 def save_rows(rows):
     if not rows:
         print("Нет рекламных расходов Ozon Performance для записи")
@@ -2795,6 +2919,48 @@ def run():
     target_date = date_to if date_from == date_to else None
     client = OzonPerformanceClient()
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
+
+    if args.mode == "cpo-report-check":
+        print_cpo_report_check_plan(date_from, date_to, args.cpo_report_type)
+        if args.plan_only:
+            return
+
+        original_runtime_state = client.snapshot_runtime_state()
+        http_requests_before = len(client.state.get("request_history", []) or [])
+
+        try:
+            uuid, status, cpo_csv, download_headers = client.fetch_all_sku_promo_csv(
+                args.cpo_report_type,
+                date_from,
+                date_to,
+                return_meta=True,
+            )
+            http_requests_after = len(client.state.get("request_history", []) or [])
+            report_check = analyze_cpo_csv(cpo_csv)
+            content_disposition = str((download_headers or {}).get("content-disposition") or "")
+            filename = ""
+            match = re.search(r'filename=\"?([^\";]+)\"?', content_disposition, flags=re.IGNORECASE)
+            if match:
+                filename = match.group(1)
+
+            print("Ozon Performance CPO report check result:")
+            print(json.dumps({
+                "uuid": uuid,
+                "http_requests_count": max(0, http_requests_after - http_requests_before),
+                "filename": filename,
+                "header_title": report_check["title"],
+                "columns": report_check["columns"],
+                "row_count": report_check["row_count"],
+                "total_spend": report_check["total_spend"],
+                "keyword_hits": report_check["keyword_hits"],
+                "sample_rows": report_check["sample_rows"],
+                "writes_marketplace_expenses": False,
+                "writes_ozon_daily_sku_ad_attribution": False,
+            }, ensure_ascii=False, indent=2))
+        finally:
+            client.restore_runtime_state(original_runtime_state)
+            print("CPO report check: runtime state restored, no ad table writes")
+        return
 
     if args.mode == "cpc-backfill" and args.plan_only:
         ensure_cpc_backfill_window_open()

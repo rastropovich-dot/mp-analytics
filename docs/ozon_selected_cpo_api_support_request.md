@@ -1,5 +1,21 @@
 # Ozon Selected CPO API Support Request
 
+## Status update
+
+Ozon support has now confirmed the official direction:
+
+- for `Оплата за заказ: выбранные товары` use Performance API methods:
+  - `SearchPromoOrdersReportSubmitRequest`
+  - `SearchPromoProductsReportSubmitRequest`
+- `POST /api/client/statistics/json` must not be used for `Оплата за заказ`
+- `all_sku_promo/orders` and `all_sku_promo/products` remain sources only for
+  `Оплата за заказ (все товары)`
+
+This changes the implementation plan:
+- primary path = `SEARCH_PROMO` reporting API
+- fallback path = LK export / XLSX importer
+- Playwright automation remains fallback only
+
 ## Case
 
 We need an automatic API source for Ozon Performance `CPO "selected products"` statistics.
@@ -28,6 +44,19 @@ Business reconciliation for `2026-05-06`:
   - CPO all products = `178 449.50 RUB`
 - Missing layer:
   - `CPO "selected products" = 25 841.80 RUB`
+
+## Support-confirmed implementation direction
+
+Use `SEARCH_PROMO` reporting methods instead of `statistics/json`:
+
+1. `SearchPromoOrdersReportSubmitRequest`
+2. `SearchPromoProductsReportSubmitRequest`
+
+Practical meaning:
+- `statistics/json` failure for campaign `4471285` was expected for this campaign type
+- `all_sku_promo/*` and `search_promo/*` are separate source families
+- XLSX / LK automation should be kept only as fallback if SEARCH_PROMO API still
+  proves insufficient in live dry-runs
 
 ## Questions to Ozon Support
 

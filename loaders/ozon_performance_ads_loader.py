@@ -93,6 +93,11 @@ EXPLICIT_CAMPAIGN_TYPES = {
 }
 
 ALLOWED_CPO_REPORT_TYPES = {"orders", "products"}
+ALLOWED_SEARCH_PROMO_REPORT_TYPES = {"orders", "products"}
+SEARCH_PROMO_REPORT_ENDPOINTS = {
+    "orders": "/api/client/statistics/search_promo/orders/generate",
+    "products": "/api/client/statistics/search_promo/products/generate",
+}
 
 AD_EXPENSE_TYPES = {
     "advertising_clicks",
@@ -645,13 +650,21 @@ def parse_args():
     )
     parser.add_argument(
         "--mode",
-        choices=("daily-yesterday", "full", "cpc-backfill", "cpo-report-check", "statistics-json-probe"),
+        choices=(
+            "daily-yesterday",
+            "full",
+            "cpc-backfill",
+            "cpo-report-check",
+            "search-promo-report-check",
+            "statistics-json-probe",
+        ),
         default=default_mode,
         help=(
             "daily-yesterday = production D-1 load in Europe/Moscow; "
             "full = explicit date/date-range historical run; "
             "cpc-backfill = retry only pending CPC for one day; "
             "cpo-report-check = generate/poll/download one CPO report and dry-parse it; "
+            "search-promo-report-check = plan or dry-run one SEARCH_PROMO report for selected CPO; "
             "statistics-json-probe = generate/poll/download one statistics/json report and dry-parse it"
         ),
     )
@@ -705,6 +718,12 @@ def parse_args():
         choices=sorted(ALLOWED_CPO_REPORT_TYPES),
         default="orders",
         help="CPO report type for cpo-report-check mode or plan-only inspection.",
+    )
+    parser.add_argument(
+        "--search-promo-report-type",
+        choices=sorted(ALLOWED_SEARCH_PROMO_REPORT_TYPES),
+        default="orders",
+        help="SEARCH_PROMO report type for search-promo-report-check mode or plan-only inspection.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
@@ -2159,6 +2178,56 @@ class OzonPerformanceClient:
 
         return uuid, False, payload, endpoint
 
+    def request_search_promo_report(
+        self,
+        report_type,
+        date_from,
+        date_to,
+        campaign_id=None,
+        force_new=False,
+    ):
+        if report_type not in ALLOWED_SEARCH_PROMO_REPORT_TYPES:
+            raise ValueError(
+                f"Недопустимый SEARCH_PROMO report_type: {report_type}. "
+                f"Разрешено только: {sorted(ALLOWED_SEARCH_PROMO_REPORT_TYPES)}"
+            )
+
+        utc_from, utc_to = build_utc_time_bounds(date_from, date_to)
+        print(
+            f"SEARCH_PROMO {report_type} timeBounds ({APP_TIMEZONE}, inclusive): "
+            f"{date_from}..{date_to} -> {utc_from}..{utc_to}"
+        )
+        payload = {
+            "timeBounds.from": utc_from,
+            "timeBounds.to": utc_to,
+        }
+        if campaign_id:
+            payload["campaignId"] = str(campaign_id)
+
+        endpoint = SEARCH_PROMO_REPORT_ENDPOINTS[report_type]
+        _, cached_job = self.get_cached_job(endpoint, payload)
+        if not force_new and cached_job and cached_job.get("uuid"):
+            print(
+                "Используем кэшированный search_promo job: "
+                f"UUID={cached_job['uuid']} payload_hash={cached_job.get('payload_hash')}"
+            )
+            return cached_job["uuid"], True, payload, endpoint
+
+        response = self.request(
+            "GET",
+            endpoint,
+            params=payload,
+        )
+        data = response.json()
+        uuid = data.get("UUID") or data.get("uuid")
+
+        if not uuid:
+            raise RuntimeError(f"Ozon search_promo не вернул UUID: {data}")
+
+        self.remember_job(endpoint, payload, uuid)
+
+        return uuid, False, payload, endpoint
+
     def wait_statistics(self, uuid, poll_profile="default"):
         profile = POLL_PROFILES[poll_profile]
 
@@ -2311,6 +2380,53 @@ class OzonPerformanceClient:
             raise last_exc
 
         raise RuntimeError("Не удалось получить all_sku_promo report")
+
+    def fetch_search_promo_csv(
+        self,
+        report_type,
+        date_from,
+        date_to,
+        campaign_id=None,
+        return_meta=False,
+    ):
+        last_exc = None
+
+        for attempt in range(1, 3):
+            uuid, cache_hit, payload, endpoint = self.request_search_promo_report(
+                report_type,
+                date_from,
+                date_to,
+                campaign_id=campaign_id,
+                force_new=(attempt == 2),
+            )
+            status = self.wait_statistics(uuid, poll_profile="all_sku_promo")
+
+            try:
+                if return_meta:
+                    csv_text, download_headers = self.download_report_by_link(
+                        status.get("link"),
+                        uuid=uuid,
+                        return_meta=True,
+                    )
+                    return uuid, status, csv_text, download_headers
+                csv_text = self.download_report_by_link(status.get("link"), uuid=uuid)
+                return uuid, status, csv_text
+            except requests.HTTPError as exc:
+                status_code = getattr(exc.response, "status_code", None)
+                if cache_hit and status_code in {403, 404}:
+                    print(
+                        f"Cached search_promo UUID invalidated: uuid={uuid}, "
+                        f"status={status_code}, recreating report"
+                    )
+                    self.invalidate_job(endpoint, payload=payload, uuid=uuid)
+                    last_exc = exc
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+
+        raise RuntimeError("Не удалось получить search_promo report")
 
 
 def load_catalog():
@@ -2677,6 +2793,15 @@ def estimate_all_sku_promo_requests():
     }
 
 
+def estimate_search_promo_requests():
+    return {
+        "generate_requests": 1,
+        "poll_requests_estimate": "1-3",
+        "download_requests": 1,
+        "total_requests_estimate": "3-5",
+    }
+
+
 def estimate_statistics_json_probe_requests():
     return {
         "generate_requests": 1,
@@ -2779,6 +2904,61 @@ def print_cpo_report_check_plan(date_from, date_to, report_type):
         ],
     }
     print("Ozon Performance CPO report check plan:")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def print_search_promo_report_check_plan(date_from, date_to, report_type, campaign_id=None):
+    utc_from, utc_to = build_utc_time_bounds(date_from, date_to)
+    payload = {
+        "timeBounds.from": utc_from,
+        "timeBounds.to": utc_to,
+    }
+    if campaign_id:
+        payload["campaignId"] = str(campaign_id)
+
+    summary = {
+        "mode": "search-promo-report-check",
+        "search_promo_report_type": report_type,
+        "endpoint": SEARCH_PROMO_REPORT_ENDPOINTS[report_type],
+        "date_from": date_from,
+        "date_to": date_to,
+        "campaign_id": str(campaign_id) if campaign_id else None,
+        "payload": payload,
+        "estimated_requests": estimate_search_promo_requests(),
+        "creates_report_job": True,
+        "uses_statistics_json": False,
+        "uses_campaign_unit_quota_2000": False,
+        "is_cpc": False,
+        "layer": "search_promo_selected_cpo_reporting",
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
+        "expected_report_format": "csv",
+        "expected_follow_up": {
+            "status_endpoint": "/api/client/statistics/{UUID}",
+            "download_endpoint": "/api/client/statistics/report?UUID={UUID}",
+        },
+        "expected_columns_hint": [
+            "Дата",
+            "SKU",
+            "SKU продвигаемого товара",
+            "Артикул",
+            "Название товара",
+            "Количество",
+            "Стоимость продажи, ₽",
+            "Расход, ₽",
+            "Ставка, %",
+            "Продвижение",
+        ],
+        "possible_selected_markers": [
+            "selected",
+            "выбранные",
+            "product_selection",
+            "promotion_type",
+            "campaign_type",
+            "search_promo",
+        ],
+    }
+    print("Ozon Performance SEARCH_PROMO report check plan:")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
@@ -3097,6 +3277,64 @@ def run():
         finally:
             client.restore_runtime_state(original_runtime_state)
             print("statistics/json probe: runtime state restored, no ad table writes")
+        return
+
+    if args.mode == "search-promo-report-check":
+        if date_from != date_to:
+            raise RuntimeError(
+                "search-promo-report-check currently supports exactly one calendar day. "
+                f"Got {date_from}..{date_to}"
+            )
+        print_search_promo_report_check_plan(
+            date_from,
+            date_to,
+            args.search_promo_report_type,
+            campaign_id=args.campaign_id,
+        )
+        if args.plan_only:
+            return
+        if not args.dry_run:
+            raise RuntimeError(
+                "search-promo-report-check live run is allowed only with --dry-run"
+            )
+
+        original_runtime_state = client.snapshot_runtime_state()
+        http_requests_before = len(client.state.get("request_history", []) or [])
+
+        try:
+            uuid, status, search_promo_csv, download_headers = client.fetch_search_promo_csv(
+                args.search_promo_report_type,
+                date_from,
+                date_to,
+                campaign_id=args.campaign_id,
+                return_meta=True,
+            )
+            http_requests_after = len(client.state.get("request_history", []) or [])
+            report_check = analyze_cpo_csv(search_promo_csv)
+            content_disposition = str((download_headers or {}).get("content-disposition") or "")
+            filename = ""
+            match = re.search(r'filename=\"?([^\";]+)\"?', content_disposition, flags=re.IGNORECASE)
+            if match:
+                filename = match.group(1)
+
+            print("Ozon Performance SEARCH_PROMO report check result:")
+            print(json.dumps({
+                "uuid": uuid,
+                "http_requests_count": max(0, http_requests_after - http_requests_before),
+                "filename": filename,
+                "header_title": report_check["title"],
+                "columns": report_check["columns"],
+                "row_count": report_check["row_count"],
+                "total_spend": report_check["total_spend"],
+                "keyword_hits": report_check["keyword_hits"],
+                "sample_rows": report_check["sample_rows"],
+                "campaign_id": str(args.campaign_id or ""),
+                "writes_marketplace_expenses": False,
+                "writes_ozon_daily_sku_ad_attribution": False,
+            }, ensure_ascii=False, indent=2))
+        finally:
+            client.restore_runtime_state(original_runtime_state)
+            print("search_promo report check: runtime state restored, no ad table writes")
         return
 
     if args.mode == "cpo-report-check":

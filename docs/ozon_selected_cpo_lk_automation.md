@@ -55,6 +55,13 @@ Automation should alert when:
 
 Playwright / browser automation is a fallback path, not the preferred primary path.
 
+Current status:
+- Ozon support has already confirmed that `selected products CPO` should be
+  requested through `SearchPromoOrdersReportSubmitRequest` /
+  `SearchPromoProductsReportSubmitRequest`
+- therefore API remains the primary path
+- LK automation stays fallback only until API live-check proves otherwise
+
 Do **not** invest in LK automation if Ozon support confirms one of these:
 
 1. `statistics/json` supports `SEARCH_PROMO / CPO` campaigns like `Оплата за заказ: выбранные товары`;

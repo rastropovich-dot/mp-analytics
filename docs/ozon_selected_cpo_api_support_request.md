@@ -1,82 +1,141 @@
-# Ozon Selected CPO API Support Request
+# Ozon Selected CPO API Discovery Result
 
-## Status update
+## Status
 
-Ozon support has now confirmed the official direction:
+**API found and confirmed.**
 
-- for `Оплата за заказ: выбранные товары` use Performance API methods:
-  - `SearchPromoOrdersReportSubmitRequest`
-  - `SearchPromoProductsReportSubmitRequest`
-- `POST /api/client/statistics/json` must not be used for `Оплата за заказ`
-- `all_sku_promo/orders` and `all_sku_promo/products` remain sources only for
-  `Оплата за заказ (все товары)`
+Selected CPO for Ozon `Оплата за заказ: выбранные товары` is available through:
 
-This changes the implementation plan:
-- primary path = `SEARCH_PROMO` reporting API
-- fallback path = LK export / XLSX importer
-- Playwright automation remains fallback only
+- `source_report = search_promo_organisation_orders`
+- `promotion_type = cpo_selected_products`
+- `scope = organisation`
 
-## Case
+This report is organisation-level. It does **not** require `campaignId` and current
+campaign-filtered payload probes did not bind `campaignId` in request echo.
 
-We need an automatic API source for Ozon Performance `CPO "selected products"` statistics.
+## Confirmed endpoint contract
 
-Observed campaign:
-- `campaign_id = 4471285`
-- `advObjectType = SEARCH_PROMO`
-- `paymentType = CPO`
-- `title = "Оплата за заказ: выбранные товары"`
+### Submit
 
-Observed API behavior:
-- `POST /api/client/statistics/json` for this campaign and `2026-05-06..2026-05-06` returns:
-  - `400`
-  - `generation of this type of report is forbidden for the transferred list of campaigns`
-- `GET /api/client/statistics/all_sku_promo/orders/generate` returns only:
-  - `Оплата за заказ (все товары). Отчёт по заказам`
-- `GET /api/client/statistics/all_sku_promo/products/generate` returns only:
-  - `Оплата за заказ (все товары). Отчёт по товарам`
+`POST https://api-performance.ozon.ru/api/client/statistic/orders/generate`
 
-Business reconciliation for `2026-05-06`:
-- LK `CPO "selected products"` spend = `25 841.80 RUB`
-- LK `CPO "all products"` spend = `178 449.50 RUB`
-- LK `CPC total` = `54 881.60 RUB`
-- API/database currently load:
-  - CPC = `54 881.59 RUB`
-  - CPO all products = `178 449.50 RUB`
-- Missing layer:
-  - `CPO "selected products" = 25 841.80 RUB`
+Payload:
 
-## Support-confirmed implementation direction
+```json
+{
+  "from": "<Moscow D-1 start converted to UTC>",
+  "to": "<Moscow D-1 end converted to UTC>"
+}
+```
 
-Use `SEARCH_PROMO` reporting methods instead of `statistics/json`:
+Example for `2026-05-06` MSK:
 
-1. `SearchPromoOrdersReportSubmitRequest`
-2. `SearchPromoProductsReportSubmitRequest`
+```json
+{
+  "from": "2026-05-05T21:00:00Z",
+  "to": "2026-05-06T20:59:59Z"
+}
+```
 
-Practical meaning:
-- `statistics/json` failure for campaign `4471285` was expected for this campaign type
-- `all_sku_promo/*` and `search_promo/*` are separate source families
-- XLSX / LK automation should be kept only as fallback if SEARCH_PROMO API still
-  proves insufficient in live dry-runs
+### Status
 
-## Questions to Ozon Support
+Working async backend:
 
-1. Which official API endpoint should be used to download statistics for `Оплата за заказ: выбранные товары`?
-2. Is `SEARCH_PROMO / CPO` campaign type supported through Ozon Performance API?
-3. If `statistics/json` is forbidden for such campaigns, which API report should be used instead?
-4. If there is no API path, can you confirm that `selected products CPO` is available only through LK export (XLSX/CSV)?
+`GET https://api-performance.ozon.ru/api/client/statistics/{UUID}`
 
-## Evidence to attach
+### Download
 
-- campaign metadata:
-  - `campaign_id = 4471285`
-  - `advObjectType = SEARCH_PROMO`
-  - `paymentType = CPO`
-  - `title = "Оплата за заказ: выбранные товары"`
-- `statistics/json` error text:
-  - `generation of this type of report is forbidden for the transferred list of campaigns`
-- `all_sku_promo/orders` and `all_sku_promo/products` both resolve to `все товары`
-- LK screenshot or values for `2026-05-06` with `25 841.80 RUB`
+Working async backend:
 
-## Short message for support
+`GET https://api-performance.ozon.ru/api/client/statistics/report?UUID={UUID}`
 
-We found an Ozon Performance campaign `4471285` with `advObjectType=SEARCH_PROMO`, `paymentType=CPO`, title `Оплата за заказ: выбранные товары`. For `2026-05-06`, LK shows `25 841.80 RUB` spend for this selected-products CPO layer. However, `POST /api/client/statistics/json` returns `400: generation of this type of report is forbidden for the transferred list of campaigns`, while `all_sku_promo/orders` and `all_sku_promo/products` both return only `Оплата за заказ (все товары)`. Please confirm which official API/report should be used for `selected products CPO`, or whether it is available only via LK export.
+## Important namespace detail
+
+Singular status/download paths return `404`:
+
+- `/api/client/statistic/{UUID}`
+- `/api/client/statistic/report?UUID=...`
+
+Plural status/download paths are the working async backend:
+
+- `/api/client/statistics/{UUID}`
+- `/api/client/statistics/report?UUID=...`
+
+## Confirmed report kind
+
+- `kind = SEARCH_PROMO_ORGANISATION_ORDERS`
+
+This is the confirmed selected CPO source family.
+
+## Confirmed CSV structure
+
+Columns:
+
+- `Дата`
+- `ID заказа`
+- `Номер заказа`
+- `SKU`
+- `SKU продвигаемого товара`
+- `Артикул`
+- `Источник заказов`
+- `Название товара`
+- `Количество`
+- `Стоимость продажи, ₽`
+- `Стоимость, ₽`
+- `Ставка, %`
+- `Ставка, ₽`
+- `Расход, ₽`
+
+The file contains:
+
+- data rows
+- one total row with `Дата = Всего`
+
+The total row must be excluded from analytical `spend_sum`.
+
+## Confirmed reconciliation for `2026-05-06`
+
+- expected missing selected CPO = `25 841.80`
+- report data-only `spend_sum = 25 841.80`
+- report total-row `spend_sum = 25 841.80`
+- raw sum including total row = `51 683.60`
+- diff vs expected missing selected CPO = `0.00`
+
+So the selected CPO layer is confirmed by API.
+
+## Campaign filter note
+
+- no `campaignId` is required for the working organisation-level report
+- campaign-filtered payload shapes created UUIDs but did not bind `campaignId`
+- request echo stayed at:
+  - `campaignId = "0"`
+  - or default `1970` payload fields for invalid shapes
+
+Current safe interpretation:
+
+- source is organisation-wide SEARCH_PROMO selected CPO orders
+- this source should be classified by endpoint + report kind + reconciliation result
+- it must **not** be classified as CPC even if some rows contain human-readable
+  `Источник заказов = Кампания за клики`
+
+## Implementation guidance
+
+Use:
+
+- `source_report = search_promo_organisation_orders`
+- `promotion_type = cpo_selected_products`
+- `scope = organisation`
+- `campaign_filter_supported = false`
+
+Do **not** classify this report by the `Источник заказов` column.
+
+## What is no longer needed for this layer
+
+- XLSX importer is **not needed** for this selected CPO layer
+- Playwright automation is **not needed** for this selected CPO layer
+- Ozon support request is **no longer needed for source discovery**
+
+## Current limit
+
+DB load is **not implemented yet**. It requires a separate approved task.
+

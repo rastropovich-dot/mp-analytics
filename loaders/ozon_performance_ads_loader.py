@@ -98,6 +98,8 @@ SEARCH_PROMO_REPORT_ENDPOINTS = {
     "orders": "/api/client/statistics/search_promo/orders/generate",
     "products": "/api/client/statistics/search_promo/products/generate",
 }
+SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT = "/api/client/statistic/orders/generate"
+SEARCH_PROMO_ORGANISATION_ORDERS_KIND = "SEARCH_PROMO_ORGANISATION_ORDERS"
 
 AD_EXPENSE_TYPES = {
     "advertising_clicks",
@@ -2428,6 +2430,105 @@ class OzonPerformanceClient:
 
         raise RuntimeError("Не удалось получить search_promo report")
 
+    def fetch_search_promo_orders_csv(
+        self,
+        date,
+        plan_only=False,
+        dry_run=True,
+        write=False,
+        max_polls=12,
+        poll_interval_sec=10,
+    ):
+        del max_polls
+        del poll_interval_sec
+
+        utc_from, utc_to = build_utc_time_bounds(date, date)
+        payload = {
+            "from": utc_from,
+            "to": utc_to,
+        }
+        classification = {
+            "source_report": "search_promo_organisation_orders",
+            "promotion_type": "cpo_selected_products",
+            "scope": "organisation",
+            "campaign_filter_supported": False,
+        }
+        plan = {
+            "endpoint": SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT,
+            "method": "POST",
+            "payload": payload,
+            "status_endpoint": "/api/client/statistics/{UUID}",
+            "download_endpoint": "/api/client/statistics/report?UUID={UUID}",
+            "classification": classification,
+            "expected_parser_behavior": {
+                "delimiter": ";",
+                "skip_preamble": True,
+                "detect_header": ["Дата", "SKU", "Расход"],
+                "exclude_total_row": "Всего",
+                "spend_sum_basis": "data_rows_excluding_total_rows",
+            },
+            "db_writes": 0,
+            "writes_marketplace_expenses": False,
+            "writes_ozon_daily_sku_ad_attribution": False,
+            "used_statistics_json": False,
+            "used_general_statistics_submit": False,
+        }
+
+        if plan_only:
+            return {
+                "mode": "search_promo_organisation_orders_plan",
+                "date": date,
+                "plan": plan,
+            }
+
+        if write:
+            raise NotImplementedError(
+                "SEARCH_PROMO selected CPO DB write path is not implemented yet. "
+                "Use dry_run/write=False until a separate approved task adds DB persistence."
+            )
+
+        if not dry_run:
+            raise RuntimeError("fetch_search_promo_orders_csv currently supports only plan_only or dry_run mode")
+
+        response = self.request(
+            "POST",
+            SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        data = response.json()
+        uuid = data.get("UUID") or data.get("uuid")
+        if not uuid:
+            raise RuntimeError(f"Ozon search_promo organisation orders did not return UUID: {data}")
+
+        status = self.wait_statistics(uuid, poll_profile="all_sku_promo")
+        csv_text, download_headers = self.download_report_by_link(
+            status.get("link"),
+            uuid=uuid,
+            return_meta=True,
+        )
+        parsed = parse_search_promo_organisation_orders_csv(csv_text)
+        return {
+            "mode": "search_promo_organisation_orders_dry_run",
+            "date": date,
+            "uuid": uuid,
+            "status": status,
+            "download_headers": download_headers,
+            "classification": {
+                **classification,
+                "campaign_id_exact_match": False,
+                "campaign_scope": "organisation_wide_campaign_unbound",
+                "safe_for_db_load": False,
+                "db_load_status": "not_implemented_dry_run_only",
+            },
+            "parsed": parsed,
+            "db_writes": 0,
+            "writes_marketplace_expenses": False,
+            "writes_ozon_daily_sku_ad_attribution": False,
+            "used_statistics_json": False,
+            "used_general_statistics_submit": False,
+        }
+
 
 def load_catalog():
     rows = []
@@ -2857,6 +2958,101 @@ def analyze_cpo_csv(csv_text):
         "sample_rows": sample_rows,
         "row_count": row_count,
         "total_spend": round(total_spend, 2),
+        "keyword_hits": keyword_hits,
+    }
+
+
+def is_search_promo_total_row(row, columns):
+    date_value = str(row.get("Дата") or "").strip()
+    if date_value == "Всего":
+        return True
+
+    for column in columns or []:
+        value = str(row.get(column) or "").strip()
+        if value:
+            return value == "Всего"
+    return False
+
+
+def parse_search_promo_organisation_orders_csv(csv_text):
+    clean_text = (csv_text or "").lstrip("\ufeff")
+    lines = clean_text.splitlines()
+    preamble_lines = []
+    header_index = -1
+
+    for index, line in enumerate(lines):
+        normalized = line.lower()
+        if ";" in line and "дата" in normalized and "sku" in normalized and "расход" in normalized:
+            header_index = index
+            break
+
+    if header_index < 0:
+        return {
+            "preamble_lines": [],
+            "title": "",
+            "columns": [],
+            "row_count_raw": 0,
+            "data_row_count": 0,
+            "total_row_count": 0,
+            "sample_rows": [],
+            "total_rows_preview": [],
+            "spend_sum_including_total_rows": None,
+            "spend_sum_data_rows": None,
+            "spend_sum_total_rows": None,
+            "spend_sum": None,
+            "spend_sum_basis": "data_rows_excluding_total_rows",
+            "keyword_hits": {},
+        }
+
+    preamble_lines = [line for line in lines[:header_index] if line.strip()]
+    title = preamble_lines[0].lstrip(";").strip() if preamble_lines else ""
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_index:])), delimiter=";")
+    columns = list(reader.fieldnames or [])
+    rows = list(reader)
+    data_rows = [row for row in rows if not is_search_promo_total_row(row, columns)]
+    total_rows = [row for row in rows if is_search_promo_total_row(row, columns)]
+
+    def sum_rows(target_rows):
+        if not target_rows:
+            return None
+        total = 0.0
+        found = False
+        for row in target_rows:
+            amount = abs(parse_number(value_by_keys(row, SPEND_KEYS)))
+            if amount:
+                total += amount
+                found = True
+        return round(total, 2) if found else None
+
+    spend_sum_including_total_rows = sum_rows(rows)
+    spend_sum_data_rows = sum_rows(data_rows)
+    spend_sum_total_rows = sum_rows(total_rows)
+
+    joined_text = " ".join([title] + columns).lower()
+    keyword_hits = {
+        "selected": "selected" in joined_text,
+        "selected_products": "selected_products" in joined_text,
+        "выбранные": "выбранные" in joined_text,
+        "promotion_type": "promotion_type" in joined_text,
+        "product_selection": "product_selection" in joined_text,
+        "campaign_type": "campaign_type" in joined_text,
+        "search_promo": "search_promo" in joined_text,
+    }
+
+    return {
+        "preamble_lines": preamble_lines,
+        "title": title,
+        "columns": columns,
+        "row_count_raw": len(rows),
+        "data_row_count": len(data_rows),
+        "total_row_count": len(total_rows),
+        "sample_rows": data_rows[:5],
+        "total_rows_preview": total_rows[:5],
+        "spend_sum_including_total_rows": spend_sum_including_total_rows,
+        "spend_sum_data_rows": spend_sum_data_rows,
+        "spend_sum_total_rows": spend_sum_total_rows,
+        "spend_sum": spend_sum_data_rows,
+        "spend_sum_basis": "data_rows_excluding_total_rows",
         "keyword_hits": keyword_hits,
     }
 

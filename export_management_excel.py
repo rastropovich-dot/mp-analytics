@@ -1,3 +1,4 @@
+import gc
 import os
 from datetime import date, timedelta
 from dotenv import load_dotenv
@@ -200,6 +201,9 @@ def build_excel():
         chart.set_categories(cats)
         ws_wb.add_chart(chart, "H3")
 
+    del wb_daily, wb_rows
+    gc.collect()
+
     ws_ozon = wb.create_sheet("Ozon Realization")
     ozon_rows = []
     for r in ozon_realization:
@@ -218,6 +222,9 @@ def build_excel():
         1
     )
     style_sheet(ws_ozon)
+
+    del ozon_realization, ozon_rows
+    gc.collect()
 
     ws_fbs = wb.create_sheet("Ozon FBS")
     grouped_fbs = {}
@@ -240,6 +247,9 @@ def build_excel():
         1
     )
     style_sheet(ws_fbs)
+
+    del ozon_fbs, grouped_fbs, fbs_rows
+    gc.collect()
 
     ws_ads = wb.create_sheet("Ozon Ads SKU")
     ads_grouped = {}
@@ -324,6 +334,9 @@ def build_excel():
     )
     style_sheet(ws_ads)
 
+    del ozon_expenses, ads_grouped, ads_rows
+    gc.collect()
+
     ws_organic = wb.create_sheet("Ozon Organic SKU")
     organic_rows = []
     for row in ozon_organic:
@@ -367,6 +380,9 @@ def build_excel():
         1,
     )
     style_sheet(ws_organic)
+
+    del ozon_organic, organic_rows
+    gc.collect()
 
     ws_raw = wb.create_sheet("Raw KPI")
     raw_rows = []
@@ -421,6 +437,9 @@ def build_excel():
         1
     )
     style_sheet(ws_raw)
+
+    del daily_sku_kpi, raw_rows
+    gc.collect()
 
     filename = "management_report.xlsx"
     wb.save(filename)

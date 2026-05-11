@@ -2574,24 +2574,32 @@ class OzonPerformanceClient:
         self,
         date,
         write=False,
+        approve_downstream_write=False,
         db_client=None,
         source_rows=None,
     ):
         del self
 
         if write:
-            raise SelectedCpoDownstreamWriteNotApprovedError(
-                "selected CPO downstream write path is implemented only as dry-run mapping in this task; "
-                "live writes to marketplace_expenses and ozon_daily_sku_ad_attribution remain blocked"
-            )
+            if not approve_downstream_write:
+                raise SelectedCpoDownstreamWriteNotApprovedError(
+                    "selected CPO downstream write requires explicit approve_downstream_write=True"
+                )
 
-        rows = copy.deepcopy(source_rows) if source_rows is not None else load_selected_cpo_source_rows(date, db_client=db_client)
+        client = db_client or supabase
+        rows = copy.deepcopy(source_rows) if source_rows is not None else load_selected_cpo_source_rows(date, db_client=client)
         marketplace_expenses_rows = build_selected_cpo_marketplace_expenses_rows(rows)
         ad_attribution_rows = build_selected_cpo_ad_attribution_rows(rows)
         summary = build_selected_cpo_downstream_would_write_summary(rows)
+        marketplace_expenses_writes = 0
+        ozon_daily_sku_ad_attribution_writes = 0
+
+        if write:
+            marketplace_expenses_writes = upsert_selected_cpo_marketplace_expenses_rows(client, marketplace_expenses_rows)
+            ozon_daily_sku_ad_attribution_writes = upsert_selected_cpo_ad_attribution_rows(client, ad_attribution_rows)
 
         return {
-            "mode": "selected_cpo_downstream_dry_run",
+            "mode": "selected_cpo_downstream_write" if write else "selected_cpo_downstream_dry_run",
             "date": date,
             "source_table": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
             "source_row_count": len(rows),
@@ -2604,9 +2612,9 @@ class OzonPerformanceClient:
             "ad_attribution_rows": ad_attribution_rows,
             "ad_attribution_total_spend": round(sum(float(row.get("ad_spend") or 0) for row in ad_attribution_rows), 2),
             "would_write": summary,
-            "db_writes": 0,
-            "marketplace_expenses_writes": 0,
-            "ozon_daily_sku_ad_attribution_writes": 0,
+            "db_writes": marketplace_expenses_writes + ozon_daily_sku_ad_attribution_writes,
+            "marketplace_expenses_writes": marketplace_expenses_writes,
+            "ozon_daily_sku_ad_attribution_writes": ozon_daily_sku_ad_attribution_writes,
             "used_statistics_json": False,
             "used_general_statistics_submit": False,
         }
@@ -3507,6 +3515,32 @@ def build_selected_cpo_downstream_would_write_summary(source_rows):
         "writes_marketplace_expenses": False,
         "writes_ozon_daily_sku_ad_attribution": False,
     }
+
+
+def upsert_selected_cpo_marketplace_expenses_rows(db_client, rows):
+    aggregated_rows = aggregate_rows(rows)
+    if not aggregated_rows:
+        return 0
+
+    for batch in chunks(aggregated_rows, 500):
+        db_client.table("marketplace_expenses").upsert(
+            batch,
+            on_conflict="expense_date,marketplace_code,marketplace_sku,expense_type",
+        ).execute()
+    return len(aggregated_rows)
+
+
+def upsert_selected_cpo_ad_attribution_rows(db_client, rows):
+    aggregated_rows = aggregate_ad_attribution_rows(rows)
+    if not aggregated_rows:
+        return 0
+
+    for batch in chunks(aggregated_rows, 500):
+        db_client.table("ozon_daily_sku_ad_attribution").upsert(
+            batch,
+            on_conflict="sale_date,marketplace_code,marketplace_sku,ad_source,attribution_type,campaign_id",
+        ).execute()
+    return len(aggregated_rows)
 
 
 def print_cpo_report_check_plan(date_from, date_to, report_type):

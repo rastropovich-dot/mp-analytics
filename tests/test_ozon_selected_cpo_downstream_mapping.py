@@ -120,6 +120,32 @@ class SelectedCpoDownstreamMappingTests(unittest.TestCase):
                 source_rows=build_source_rows(),
             )
 
+    def test_downstream_write_true_with_explicit_approval_uses_mocked_upserts(self):
+        client = loader.OzonPerformanceClient.__new__(loader.OzonPerformanceClient)
+
+        execute_mock = mock.Mock()
+        table_mock = mock.Mock()
+        table_mock.upsert.return_value.execute = execute_mock
+        db_client = mock.Mock()
+        db_client.table.return_value = table_mock
+
+        summary = loader.OzonPerformanceClient.selected_cpo_downstream_dry_run(
+            client,
+            date="2026-05-06",
+            write=True,
+            approve_downstream_write=True,
+            db_client=db_client,
+            source_rows=build_source_rows(),
+        )
+
+        self.assertEqual(summary["mode"], "selected_cpo_downstream_write")
+        self.assertEqual(summary["marketplace_expenses_writes"], 3)
+        self.assertEqual(summary["ozon_daily_sku_ad_attribution_writes"], 3)
+        self.assertEqual(summary["db_writes"], 6)
+        self.assertEqual(db_client.table.call_count, 2)
+        db_client.table.assert_any_call("marketplace_expenses")
+        db_client.table.assert_any_call("ozon_daily_sku_ad_attribution")
+
 
 if __name__ == "__main__":
     unittest.main()

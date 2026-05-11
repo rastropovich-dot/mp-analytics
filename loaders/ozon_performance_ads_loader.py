@@ -101,6 +101,8 @@ SEARCH_PROMO_REPORT_ENDPOINTS = {
 SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT = "/api/client/statistic/orders/generate"
 SEARCH_PROMO_ORGANISATION_ORDERS_KIND = "SEARCH_PROMO_ORGANISATION_ORDERS"
 SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE = "ozon_search_promo_selected_cpo_orders"
+SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE = "advertising_order_selected_cpo"
+SELECTED_CPO_AD_SOURCE = "cpo_selected_products"
 
 AD_EXPENSE_TYPES = {
     "advertising_clicks",
@@ -331,6 +333,10 @@ class SelectedCpoDbMappingError(RuntimeError):
 
 class SelectedCpoSchemaNotAppliedError(RuntimeError):
     """Raised when selected CPO source table mapping exists in code, but migration is not applied."""
+
+
+class SelectedCpoDownstreamWriteNotApprovedError(RuntimeError):
+    """Raised when selected CPO downstream aggregation exists, but live write is not approved yet."""
 
 
 def chunks(items, size):
@@ -2564,6 +2570,47 @@ class OzonPerformanceClient:
             "used_general_statistics_submit": False,
         }
 
+    def selected_cpo_downstream_dry_run(
+        self,
+        date,
+        write=False,
+        db_client=None,
+        source_rows=None,
+    ):
+        del self
+
+        if write:
+            raise SelectedCpoDownstreamWriteNotApprovedError(
+                "selected CPO downstream write path is implemented only as dry-run mapping in this task; "
+                "live writes to marketplace_expenses and ozon_daily_sku_ad_attribution remain blocked"
+            )
+
+        rows = copy.deepcopy(source_rows) if source_rows is not None else load_selected_cpo_source_rows(date, db_client=db_client)
+        marketplace_expenses_rows = build_selected_cpo_marketplace_expenses_rows(rows)
+        ad_attribution_rows = build_selected_cpo_ad_attribution_rows(rows)
+        summary = build_selected_cpo_downstream_would_write_summary(rows)
+
+        return {
+            "mode": "selected_cpo_downstream_dry_run",
+            "date": date,
+            "source_table": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
+            "source_row_count": len(rows),
+            "source_sum_spend": round(sum(float(row.get("spend") or 0) for row in rows), 2),
+            "marketplace_expenses_rows": marketplace_expenses_rows,
+            "marketplace_expenses_total": round(
+                sum(float(row.get("expense_amount") or 0) for row in marketplace_expenses_rows),
+                2,
+            ),
+            "ad_attribution_rows": ad_attribution_rows,
+            "ad_attribution_total_spend": round(sum(float(row.get("ad_spend") or 0) for row in ad_attribution_rows), 2),
+            "would_write": summary,
+            "db_writes": 0,
+            "marketplace_expenses_writes": 0,
+            "ozon_daily_sku_ad_attribution_writes": 0,
+            "used_statistics_json": False,
+            "used_general_statistics_submit": False,
+        }
+
 
 def load_catalog():
     rows = []
@@ -3243,6 +3290,108 @@ def build_selected_cpo_source_table_rows(normalized_rows):
     return rows
 
 
+def build_selected_cpo_marketplace_expenses_rows(source_rows):
+    grouped = {}
+
+    for row in source_rows or []:
+        expense_date = str(row.get("sale_date") or row.get("report_date") or "").strip()
+        marketplace_sku = str(row.get("ordered_sku") or row.get("marketplace_sku") or "").strip()
+        if not expense_date or not marketplace_sku:
+            continue
+
+        key = (expense_date, "ozon", marketplace_sku, SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE)
+        if key not in grouped:
+            grouped[key] = {
+                "expense_date": expense_date,
+                "marketplace_code": "ozon",
+                "marketplace_sku": marketplace_sku,
+                "article": str(row.get("offer_id") or row.get("article") or "").strip(),
+                "expense_type": SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE,
+                "expense_amount": 0.0,
+            }
+
+        grouped[key]["expense_amount"] += float(row.get("spend") or 0)
+        if not grouped[key].get("article") and row.get("offer_id"):
+            grouped[key]["article"] = str(row.get("offer_id") or "").strip()
+
+    rows = []
+    for row in grouped.values():
+        row["expense_amount"] = round(float(row.get("expense_amount") or 0), 2)
+        rows.append(row)
+    rows.sort(key=lambda item: (item["expense_date"], item["marketplace_sku"], item["expense_type"]))
+    return rows
+
+
+def build_selected_cpo_ad_attribution_rows(source_rows):
+    grouped = {}
+
+    for row in source_rows or []:
+        sale_date = str(row.get("sale_date") or row.get("report_date") or "").strip()
+        marketplace_sku = str(row.get("ordered_sku") or row.get("marketplace_sku") or "").strip()
+        if not sale_date or not marketplace_sku:
+            continue
+
+        key = (sale_date, "ozon", marketplace_sku, SELECTED_CPO_AD_SOURCE, "direct", "")
+        if key not in grouped:
+            grouped[key] = {
+                "sale_date": sale_date,
+                "marketplace_code": "ozon",
+                "marketplace_sku": marketplace_sku,
+                "order_sku": marketplace_sku,
+                "promoted_sku": "",
+                "promoted_article": None,
+                "raw_sku": marketplace_sku,
+                "raw_promoted_sku": "",
+                "ad_source": SELECTED_CPO_AD_SOURCE,
+                "attribution_type": "direct",
+                "campaign_id": "",
+                "article": str(row.get("offer_id") or row.get("article") or "").strip(),
+                "product_name": str(row.get("product_name") or "").strip(),
+                "ad_orders_qty": 0.0,
+                "ad_orders_revenue": 0.0,
+                "ad_clicks": 0.0,
+                "ad_views": 0.0,
+                "ad_spend": 0.0,
+                "warning": "selected_cpo_search_promo_organisation_level_spend_only",
+            }
+
+        grouped[key]["ad_spend"] += float(row.get("spend") or 0)
+        if not grouped[key].get("article") and row.get("offer_id"):
+            grouped[key]["article"] = str(row.get("offer_id") or "").strip()
+        if not grouped[key].get("product_name") and row.get("product_name"):
+            grouped[key]["product_name"] = str(row.get("product_name") or "").strip()
+
+    rows = []
+    for row in grouped.values():
+        row["ad_spend"] = round(float(row.get("ad_spend") or 0), 2)
+        rows.append(row)
+    rows.sort(key=lambda item: (item["sale_date"], item["marketplace_sku"], item["ad_source"]))
+    return rows
+
+
+def load_selected_cpo_source_rows(date, db_client=None):
+    client = db_client or supabase
+    rows = []
+    start = 0
+    page_size = 1000
+
+    while True:
+        result = (
+            client.table(SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE)
+            .select("*")
+            .eq("sale_date", date)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    return rows
+
+
 def upsert_selected_cpo_source_rows(db_client, rows):
     if not rows:
         return 0
@@ -3319,6 +3468,44 @@ def build_selected_cpo_would_write_summary(normalized_rows, aggregation):
             "proposed_expense_type": "advertising_order_selected_cpo",
         },
         "aggregation": aggregation,
+    }
+
+
+def build_selected_cpo_downstream_would_write_summary(source_rows):
+    marketplace_expenses_rows = build_selected_cpo_marketplace_expenses_rows(source_rows)
+    ad_attribution_rows = build_selected_cpo_ad_attribution_rows(source_rows)
+    total_spend = round(sum(float(row.get("spend") or 0) for row in source_rows or []), 2)
+
+    return {
+        "preferred_targets": [
+            "marketplace_expenses",
+            "ozon_daily_sku_ad_attribution",
+        ],
+        "marketplace_expenses": {
+            "supported": True,
+            "expense_type": SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE,
+            "rows": marketplace_expenses_rows,
+            "row_count": len(marketplace_expenses_rows),
+            "sum_expense_amount": round(
+                sum(float(row.get("expense_amount") or 0) for row in marketplace_expenses_rows),
+                2,
+            ),
+            "on_conflict": ",".join(UPSERT_KEY_FIELDS),
+        },
+        "ozon_daily_sku_ad_attribution": {
+            "supported": True,
+            "ad_source": SELECTED_CPO_AD_SOURCE,
+            "attribution_type": "direct",
+            "campaign_id": "",
+            "rows": ad_attribution_rows,
+            "row_count": len(ad_attribution_rows),
+            "sum_ad_spend": round(sum(float(row.get("ad_spend") or 0) for row in ad_attribution_rows), 2),
+            "on_conflict": ",".join(AD_ATTRIBUTION_UPSERT_KEY_FIELDS),
+        },
+        "source_row_count": len(source_rows or []),
+        "source_sum_spend": total_spend,
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
     }
 
 

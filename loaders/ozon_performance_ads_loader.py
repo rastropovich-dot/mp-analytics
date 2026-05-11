@@ -100,6 +100,7 @@ SEARCH_PROMO_REPORT_ENDPOINTS = {
 }
 SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT = "/api/client/statistic/orders/generate"
 SEARCH_PROMO_ORGANISATION_ORDERS_KIND = "SEARCH_PROMO_ORGANISATION_ORDERS"
+SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE = "ozon_search_promo_selected_cpo_orders"
 
 AD_EXPENSE_TYPES = {
     "advertising_clicks",
@@ -326,6 +327,10 @@ class RateLimitPending(RuntimeError):
 
 class SelectedCpoDbMappingError(RuntimeError):
     """Raised when selected CPO rows are ready but current DB schema cannot store them safely."""
+
+
+class SelectedCpoSchemaNotAppliedError(RuntimeError):
+    """Raised when selected CPO source table mapping exists in code, but migration is not applied."""
 
 
 def chunks(items, size):
@@ -2442,6 +2447,8 @@ class OzonPerformanceClient:
         write=False,
         max_polls=12,
         poll_interval_sec=10,
+        schema_applied=False,
+        db_client=None,
     ):
         del max_polls
         del poll_interval_sec
@@ -2454,8 +2461,6 @@ class OzonPerformanceClient:
         classification = {
             **build_search_promo_selected_cpo_classification(),
         }
-        classification["safe_for_db_load"] = False
-        classification["db_load_status"] = "guarded_schema_mapping_required"
         plan = {
             "endpoint": SEARCH_PROMO_ORGANISATION_ORDERS_SUBMIT_ENDPOINT,
             "method": "POST",
@@ -2463,6 +2468,7 @@ class OzonPerformanceClient:
             "status_endpoint": "/api/client/statistics/{UUID}",
             "download_endpoint": "/api/client/statistics/report?UUID={UUID}",
             "classification": classification,
+            "target_table": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
             "expected_parser_behavior": {
                 "delimiter": ";",
                 "skip_preamble": True,
@@ -2486,12 +2492,23 @@ class OzonPerformanceClient:
             }
 
         if write:
-            raise SelectedCpoDbMappingError(
-                "SEARCH_PROMO selected CPO rows are normalized, but current DB targets are unsafe: "
-                "ozon_daily_sku_ad_attribution cannot distinguish selected-vs-all CPO in the existing key, "
-                "and marketplace_expenses has no distinct selected-CPO expense_type/promotion_type path. "
-                "Use dry_run/write=False until a separate schema task is approved."
-            )
+            if not schema_applied:
+                raise SelectedCpoSchemaNotAppliedError(
+                    f"{SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE} migration is not applied in this environment. "
+                    "Apply the dedicated schema artifact in a separate approved task before live write=True."
+                )
+            if db_client is None:
+                raise SelectedCpoDbMappingError(
+                    "write=True requires an explicit DB client in this guarded path to avoid accidental live writes."
+                )
+            if not dry_run:
+                raise RuntimeError("write=True without dry_run is not allowed in this task")
+
+        if not dry_run and not write:
+            raise RuntimeError("fetch_search_promo_orders_csv currently supports only plan_only, dry_run, or guarded write")
+
+        if not dry_run and write:
+            raise RuntimeError("write=True live execution is not allowed in this task")
 
         if not dry_run:
             raise RuntimeError("fetch_search_promo_orders_csv currently supports only plan_only or dry_run mode")
@@ -2519,10 +2536,16 @@ class OzonPerformanceClient:
             source_uuid=uuid,
             source_kind=str(status.get("kind") or SEARCH_PROMO_ORGANISATION_ORDERS_KIND),
         )
+        source_table_rows = build_selected_cpo_source_table_rows(normalized_rows)
         aggregation = aggregate_search_promo_selected_cpo_rows(normalized_rows, parsed)
         would_write = build_selected_cpo_would_write_summary(normalized_rows, aggregation)
+
+        db_writes = 0
+        if write and schema_applied:
+            db_writes = upsert_selected_cpo_source_rows(db_client, source_table_rows)
+
         return {
-            "mode": "search_promo_organisation_orders_dry_run",
+            "mode": "search_promo_organisation_orders_dry_run" if not write else "search_promo_organisation_orders_write",
             "date": date,
             "uuid": uuid,
             "status": status,
@@ -2530,9 +2553,11 @@ class OzonPerformanceClient:
             "classification": classification,
             "parsed": parsed,
             "normalized_rows": normalized_rows,
+            "source_table_rows": source_table_rows,
             "aggregation": aggregation,
             "would_write": would_write,
-            "db_writes": 0,
+            "target_table": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
+            "db_writes": db_writes,
             "writes_marketplace_expenses": False,
             "writes_ozon_daily_sku_ad_attribution": False,
             "used_statistics_json": False,
@@ -3077,8 +3102,8 @@ def build_search_promo_selected_cpo_classification():
         "campaign_filter_supported": False,
         "campaign_id_exact_match": False,
         "campaign_scope": "organisation_wide_campaign_unbound",
-        "safe_for_db_load": False,
-        "db_load_status": "guarded_schema_mapping_required",
+        "safe_for_db_load": True,
+        "db_load_status": "schema_target_defined_but_not_live_applied",
     }
 
 
@@ -3184,50 +3209,91 @@ def aggregate_search_promo_selected_cpo_rows(normalized_rows, parsed):
     }
 
 
-def build_selected_cpo_would_write_summary(normalized_rows, aggregation):
-    attribution_blocker = (
-        "ozon_daily_sku_ad_attribution keeps ordered_sku and promoted_sku, but current primary key "
-        "(sale_date, marketplace_code, marketplace_sku, ad_source, attribution_type, campaign_id) "
-        "cannot distinguish all-products CPO from selected CPO because source_report/promotion_type "
-        "are not persisted in the key and organisation-level SEARCH_PROMO rows have no campaign_id."
-    )
-    expenses_blocker = (
-        "marketplace_expenses currently groups ad spend by expense_type only "
-        "(e.g. advertising_order_5/10) and has no distinct selected-CPO category or promotion_type field. "
-        "Writing selected CPO there now would mix 'Все товары' with 'Выбранные товары'."
-    )
+def build_selected_cpo_source_table_rows(normalized_rows):
+    rows = []
+    for row in normalized_rows:
+        rows.append(
+            {
+                "sale_date": row.get("report_date"),
+                "marketplace_code": "ozon",
+                "order_id": row.get("order_id"),
+                "posting_number": row.get("posting_number"),
+                "ordered_sku": row.get("ordered_sku"),
+                "promoted_sku": row.get("promoted_sku"),
+                "attribution_sku": row.get("attribution_sku"),
+                "attribution_sku_basis": row.get("attribution_sku_basis"),
+                "offer_id": row.get("offer_id"),
+                "promoted_article": row.get("promoted_article"),
+                "order_source_raw": row.get("order_source_raw"),
+                "product_name": row.get("product_name"),
+                "quantity": row.get("quantity"),
+                "sale_amount": row.get("sale_amount"),
+                "item_amount": row.get("item_amount"),
+                "bid_percent": row.get("bid_percent"),
+                "bid_amount": row.get("bid_amount"),
+                "spend": row.get("spend"),
+                "source_report": row.get("source_report"),
+                "promotion_type": row.get("promotion_type"),
+                "scope": row.get("scope"),
+                "source_kind": row.get("source_kind"),
+                "source_uuid": row.get("source_uuid"),
+                "raw_row": copy.deepcopy(row.get("raw_row") or {}),
+            }
+        )
+    return rows
 
+
+def upsert_selected_cpo_source_rows(db_client, rows):
+    if not rows:
+        return 0
+
+    db_client.table(SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE).upsert(
+        rows,
+        on_conflict=(
+            "sale_date,marketplace_code,source_report,promotion_type,"
+            "order_id,posting_number,ordered_sku,promoted_sku"
+        ),
+    ).execute()
+    return len(rows)
+
+
+def build_selected_cpo_would_write_summary(normalized_rows, aggregation):
     return {
         "normalized_row_count": len(normalized_rows),
-        "preferred_target": "ozon_daily_sku_ad_attribution",
-        "ozon_daily_sku_ad_attribution": {
-            "supported": False,
-            "blocker": attribution_blocker,
+        "preferred_target": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
+        "source_table": {
+            "table_name": SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE,
+            "supported": True,
+            "requires_migration_apply": True,
             "proposed_mapping": {
                 "sale_date": "report_date",
                 "marketplace_code": "ozon",
-                "marketplace_sku": "ordered_sku",
-                "order_sku": "ordered_sku",
+                "order_id": "order_id",
+                "posting_number": "posting_number",
+                "ordered_sku": "ordered_sku",
                 "promoted_sku": "promoted_sku",
-                "ad_source": "cpo",
-                "attribution_type": "direct",
-                "campaign_id": "",
-                "article": "offer_id",
+                "attribution_sku": "attribution_sku",
+                "attribution_sku_basis": "attribution_sku_basis",
+                "offer_id": "offer_id",
+                "promoted_article": "promoted_article",
+                "order_source_raw": "order_source_raw",
                 "product_name": "product_name",
-                "ad_orders_qty": "quantity",
-                "ad_orders_revenue": "sale_amount",
-                "ad_spend": "spend",
+                "quantity": "quantity",
+                "sale_amount": "sale_amount",
+                "item_amount": "item_amount",
+                "bid_percent": "bid_percent",
+                "bid_amount": "bid_amount",
+                "spend": "spend",
+                "source_report": "source_report",
+                "promotion_type": "promotion_type",
+                "scope": "scope",
+                "source_kind": "source_kind",
+                "source_uuid": "source_uuid",
+                "raw_row": "raw_row",
             },
-            "idempotency_key_current_schema": [
+            "idempotency_key": [
                 "sale_date",
                 "marketplace_code",
-                "marketplace_sku",
-                "ad_source",
-                "attribution_type",
-                "campaign_id",
-            ],
-            "idempotency_key_required_for_safe_selected_cpo": [
-                "sale_date",
                 "source_report",
                 "promotion_type",
                 "order_id",
@@ -3236,9 +3302,20 @@ def build_selected_cpo_would_write_summary(normalized_rows, aggregation):
                 "promoted_sku",
             ],
         },
+        "ozon_daily_sku_ad_attribution": {
+            "supported": False,
+            "blocker": (
+                "current primary key (sale_date, marketplace_code, marketplace_sku, ad_source, attribution_type, campaign_id) "
+                "cannot distinguish selected CPO from all-products CPO because source_report/promotion_type "
+                "are absent from the key and organisation-level selected CPO rows have no campaign_id"
+            ),
+        },
         "marketplace_expenses": {
             "supported": False,
-            "blocker": expenses_blocker,
+            "blocker": (
+                "marketplace_expenses groups ad spend by expense_type and has no confirmed selected-CPO expense_type "
+                "or promotion_type field; writing there now would mix all-products and selected-products CPO"
+            ),
             "proposed_expense_type": "advertising_order_selected_cpo",
         },
         "aggregation": aggregation,

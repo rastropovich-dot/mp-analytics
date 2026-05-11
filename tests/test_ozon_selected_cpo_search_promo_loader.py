@@ -58,6 +58,10 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         self.assertFalse(summary["plan"]["used_statistics_json"])
         self.assertFalse(summary["plan"]["used_general_statistics_submit"])
         self.assertEqual(summary["plan"]["db_writes"], 0)
+        self.assertFalse(summary["plan"]["writes_marketplace_expenses"])
+        self.assertFalse(summary["plan"]["writes_ozon_daily_sku_ad_attribution"])
+        self.assertFalse(summary["plan"]["safe_write_blockers"]["ozon_daily_sku_ad_attribution"]["supported"])
+        self.assertFalse(summary["plan"]["safe_write_blockers"]["marketplace_expenses"]["supported"])
 
     def test_parser_excludes_vsego_from_spend_sum(self):
         parsed = loader.parse_search_promo_organisation_orders_csv(CSV_TEXT)
@@ -69,6 +73,8 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         self.assertAlmostEqual(parsed["spend_sum_including_total_rows"], 51683.60, places=2)
         self.assertAlmostEqual(parsed["spend_sum"], 25841.80, places=2)
         self.assertEqual(parsed["spend_sum_basis"], "data_rows_excluding_total_rows")
+        self.assertEqual(parsed["data_rows"][0]["SKU"], "1300079194")
+        self.assertEqual(parsed["total_rows"][0]["Дата"], "Всего")
 
     def test_dry_run_uses_submit_status_download_contract_and_never_general_statistics(self):
         client = self.make_client()
@@ -97,14 +103,32 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         )
         self.assertEqual(summary["classification"]["promotion_type"], "cpo_selected_products")
         self.assertEqual(summary["classification"]["source_report"], "search_promo_organisation_orders")
+        self.assertEqual(summary["classification"]["scope"], "organisation")
         self.assertFalse(summary["used_statistics_json"])
         self.assertFalse(summary["used_general_statistics_submit"])
         self.assertEqual(summary["db_writes"], 0)
         self.assertAlmostEqual(summary["parsed"]["spend_sum"], 25841.80, places=2)
+        self.assertEqual(summary["aggregation"]["data_row_count"], 3)
+        self.assertEqual(summary["aggregation"]["total_row_count"], 1)
+        self.assertEqual(summary["aggregation"]["order_count"], 3)
+        self.assertEqual(summary["aggregation"]["unique_promoted_sku_count"], 2)
+        self.assertEqual(summary["aggregation"]["unique_ordered_sku_count"], 3)
+        self.assertEqual(len(summary["normalized_rows"]), 3)
+        first_row = summary["normalized_rows"][1]
+        self.assertEqual(first_row["ordered_sku"], "1620655754")
+        self.assertEqual(first_row["promoted_sku"], "1300079194")
+        self.assertEqual(
+            first_row["attribution_sku_basis"],
+            "existing_ozon_daily_sku_ad_attribution_convention_uses_ordered_sku_as_marketplace_sku",
+        )
+        self.assertEqual(summary["would_write"]["preferred_target"], "ozon_daily_sku_ad_attribution")
+        self.assertFalse(summary["would_write"]["ozon_daily_sku_ad_attribution"]["supported"])
+        self.assertFalse(summary["would_write"]["marketplace_expenses"]["supported"])
+        self.assertIn("promotion_type", " ".join(summary["would_write"]["ozon_daily_sku_ad_attribution"]["idempotency_key_required_for_safe_selected_cpo"]))
 
     def test_write_true_is_not_implemented(self):
         client = self.make_client()
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises(loader.SelectedCpoDbMappingError):
             loader.OzonPerformanceClient.fetch_search_promo_orders_csv(
                 client,
                 date="2026-05-06",

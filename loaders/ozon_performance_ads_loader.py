@@ -103,6 +103,20 @@ SEARCH_PROMO_ORGANISATION_ORDERS_KIND = "SEARCH_PROMO_ORGANISATION_ORDERS"
 SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE = "ozon_search_promo_selected_cpo_orders"
 SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE = "advertising_order_selected_cpo"
 SELECTED_CPO_AD_SOURCE = "cpo_selected_products"
+ENABLE_OZON_SELECTED_CPO_DAILY = (os.getenv("ENABLE_OZON_SELECTED_CPO_DAILY", "false") or "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+APPROVE_OZON_SELECTED_CPO_DAILY_WRITE = (
+    os.getenv("APPROVE_OZON_SELECTED_CPO_DAILY_WRITE", "false") or "false"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 AD_EXPENSE_TYPES = {
     "advertising_clicks",
@@ -2619,6 +2633,88 @@ class OzonPerformanceClient:
             "used_general_statistics_submit": False,
         }
 
+    def load_ozon_selected_cpo_for_date(
+        self,
+        date,
+        write=False,
+        dry_run=True,
+        approve_write=False,
+        enabled=None,
+        db_client=None,
+    ):
+        if enabled is None:
+            enabled = ENABLE_OZON_SELECTED_CPO_DAILY
+
+        summary = {
+            "selected_cpo_enabled": bool(enabled),
+            "date": date,
+            "source_rows": 0,
+            "source_sum": 0.0,
+            "marketplace_expenses_rows": 0,
+            "marketplace_expenses_sum": 0.0,
+            "ad_attribution_rows": 0,
+            "ad_attribution_sum": 0.0,
+            "totals_match": False,
+            "db_writes": 0,
+            "marketplace_expenses_writes": 0,
+            "ozon_daily_sku_ad_attribution_writes": 0,
+            "used_statistics_json": False,
+            "used_general_statistics_submit": False,
+            "status": "skipped",
+            "reason": "feature_flag_disabled" if not enabled else None,
+        }
+
+        if not enabled:
+            return summary
+
+        if write and not approve_write:
+            raise SelectedCpoDownstreamWriteNotApprovedError(
+                "selected CPO daily integration requires explicit approve_write=True"
+            )
+
+        source_summary = self.fetch_search_promo_orders_csv(
+            date=date,
+            dry_run=True,
+            write=write,
+            schema_applied=bool(write),
+            db_client=(db_client or supabase) if write else None,
+        )
+        downstream_summary = self.selected_cpo_downstream_dry_run(
+            date=date,
+            write=write,
+            approve_downstream_write=approve_write,
+            db_client=(db_client or supabase) if write else None,
+            source_rows=source_summary.get("source_table_rows"),
+        )
+
+        source_sum = round(float((source_summary.get("aggregation") or {}).get("total_spend_data_rows") or 0), 2)
+        marketplace_sum = round(float(downstream_summary.get("marketplace_expenses_total") or 0), 2)
+        attribution_sum = round(float(downstream_summary.get("ad_attribution_total_spend") or 0), 2)
+
+        summary.update(
+            {
+                "source_rows": len(source_summary.get("source_table_rows") or []),
+                "source_sum": source_sum,
+                "marketplace_expenses_rows": len(downstream_summary.get("marketplace_expenses_rows") or []),
+                "marketplace_expenses_sum": marketplace_sum,
+                "ad_attribution_rows": len(downstream_summary.get("ad_attribution_rows") or []),
+                "ad_attribution_sum": attribution_sum,
+                "totals_match": source_sum == marketplace_sum == attribution_sum,
+                "db_writes": int(source_summary.get("db_writes") or 0) + int(downstream_summary.get("db_writes") or 0),
+                "marketplace_expenses_writes": int(downstream_summary.get("marketplace_expenses_writes") or 0),
+                "ozon_daily_sku_ad_attribution_writes": int(
+                    downstream_summary.get("ozon_daily_sku_ad_attribution_writes") or 0
+                ),
+                "used_statistics_json": False,
+                "used_general_statistics_submit": False,
+                "status": "success" if not write else "written",
+                "reason": None,
+                "source_summary": source_summary,
+                "downstream_summary": downstream_summary,
+            }
+        )
+        return summary
+
 
 def load_catalog():
     rows = []
@@ -4483,6 +4579,20 @@ def run():
         "cpc_progress_key": progress_key,
         "cpc": empty_stage_status("not_started"),
         "cpo": empty_stage_status("not_started"),
+        "selected_cpo": {
+            "selected_cpo_enabled": ENABLE_OZON_SELECTED_CPO_DAILY,
+            "date": target_date,
+            "status": "skipped",
+            "reason": "feature_flag_disabled" if not ENABLE_OZON_SELECTED_CPO_DAILY else "not_run_yet",
+            "source_rows": 0,
+            "source_sum": 0.0,
+            "marketplace_expenses_rows": 0,
+            "marketplace_expenses_sum": 0.0,
+            "ad_attribution_rows": 0,
+            "ad_attribution_sum": 0.0,
+            "totals_match": False,
+            "db_writes": 0,
+        },
         "overall_status": "running",
         "created_at": to_iso(utcnow()),
         "updated_at": to_iso(utcnow()),
@@ -4848,6 +4958,17 @@ def run():
         key: round(value, 2)
         for key, value in sorted(by_type.items())
     }
+
+    if args.mode == "daily-yesterday":
+        run_summary["selected_cpo"] = client.load_ozon_selected_cpo_for_date(
+            target_date,
+            write=not args.dry_run,
+            dry_run=True,
+            approve_write=APPROVE_OZON_SELECTED_CPO_DAILY_WRITE,
+            enabled=ENABLE_OZON_SELECTED_CPO_DAILY,
+            db_client=supabase if not args.dry_run else None,
+        )
+
     run_summary["updated_at"] = to_iso(utcnow())
     print("Ozon Performance run summary:")
     print(json.dumps(sanitize_value(run_summary), ensure_ascii=False))

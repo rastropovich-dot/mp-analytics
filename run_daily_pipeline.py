@@ -46,6 +46,11 @@ def parse_args():
         action="store_true",
         help="Skip Telegram executive report step. Useful when report is scheduled by a separate cron job.",
     )
+    parser.add_argument(
+        "--skip-excel",
+        action="store_true",
+        help="Skip Excel export step. Useful as a temporary mitigation if export causes memory pressure.",
+    )
     return parser.parse_args()
 
 
@@ -132,6 +137,9 @@ def main():
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     for title, command in STEPS:
+        if args.skip_excel and title.startswith("Excel:"):
+            print(f"⏭️ Пропускаем шаг: {title}")
+            continue
         if args.skip_telegram and title.startswith("Telegram:"):
             print(f"⏭️ Пропускаем шаг: {title}")
             continue

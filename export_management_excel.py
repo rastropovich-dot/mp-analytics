@@ -1,5 +1,6 @@
 import gc
 import os
+import argparse
 from datetime import date, timedelta
 from dotenv import load_dotenv
 from supabase import create_client
@@ -14,6 +15,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+EXCEL_EXPORT_LOOKBACK_DAYS = int(os.getenv("EXCEL_EXPORT_LOOKBACK_DAYS", "90"))
 
 
 def fetch_all(table, filters=None, order=None):
@@ -90,9 +92,20 @@ def style_sheet(ws):
     ws.sheet_view.showGridLines = False
 
 
-def build_excel():
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build management Excel export.")
+    parser.add_argument(
+        "--full-history",
+        action="store_true",
+        help="Load full history for heavy source tables instead of the default lookback window.",
+    )
+    return parser.parse_args()
+
+
+def build_excel(full_history=False):
     today = date.today()
     date_from_14 = (today - timedelta(days=14)).isoformat()
+    lookback_cutoff = (today - timedelta(days=EXCEL_EXPORT_LOOKBACK_DAYS)).isoformat()
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -119,7 +132,8 @@ def build_excel():
         order="order_date"
     )
 
-    daily_sku_kpi = fetch_all("daily_sku_kpi", order="kpi_date")
+    daily_sku_kpi_filters = None if full_history else [("kpi_date", "gte", lookback_cutoff)]
+    daily_sku_kpi = fetch_all("daily_sku_kpi", filters=daily_sku_kpi_filters, order="kpi_date")
     try:
         ozon_organic = fetch_all(
             "ozon_daily_sku_organic",
@@ -133,9 +147,12 @@ def build_excel():
             f"Ошибка: {e}"
         )
         ozon_organic = []
+    ozon_expenses_filters = [("marketplace_code", "eq", "ozon")]
+    if not full_history:
+        ozon_expenses_filters.append(("expense_date", "gte", lookback_cutoff))
     ozon_expenses = fetch_all(
         "marketplace_expenses",
-        filters=[("marketplace_code", "eq", "ozon")],
+        filters=ozon_expenses_filters,
         order="expense_date"
     )
 
@@ -447,4 +464,5 @@ def build_excel():
 
 
 if __name__ == "__main__":
-    build_excel()
+    args = parse_args()
+    build_excel(full_history=args.full_history)

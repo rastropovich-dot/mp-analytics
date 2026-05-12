@@ -27,24 +27,16 @@ class SelectedCpoDailyIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["reason"], "feature_flag_disabled")
         self.assertEqual(summary["db_writes"], 0)
 
-    def test_explicit_dry_run_calls_source_then_downstream_without_writes(self):
+    def test_explicit_dry_run_uses_existing_source_table_and_no_api_calls(self):
         client = self.make_client()
-        calls = []
-
-        def fake_source(**kwargs):
-            calls.append(("source", kwargs))
-            return {
-                "db_writes": 0,
-                "aggregation": {"total_spend_data_rows": 25841.80},
-                "source_table_rows": [
-                    {"sale_date": "2026-05-06", "ordered_sku": "1300079194", "spend": 11164.50},
-                    {"sale_date": "2026-05-06", "ordered_sku": "1499239951", "spend": 4032.10},
-                    {"sale_date": "2026-05-06", "ordered_sku": "1620655754", "spend": 10645.20},
-                ],
-            }
+        client.fetch_search_promo_orders_csv = mock.Mock(side_effect=AssertionError("no API source fetch"))
+        source_rows = [
+            {"sale_date": "2026-05-06", "ordered_sku": "1300079194", "spend": 11164.50},
+            {"sale_date": "2026-05-06", "ordered_sku": "1499239951", "spend": 4032.10},
+            {"sale_date": "2026-05-06", "ordered_sku": "1620655754", "spend": 10645.20},
+        ]
 
         def fake_downstream(**kwargs):
-            calls.append(("downstream", kwargs))
             return {
                 "db_writes": 0,
                 "marketplace_expenses_writes": 0,
@@ -55,18 +47,24 @@ class SelectedCpoDailyIntegrationTests(unittest.TestCase):
                 "ad_attribution_total_spend": 25841.80,
             }
 
-        client.fetch_search_promo_orders_csv = mock.Mock(side_effect=fake_source)
         client.selected_cpo_downstream_dry_run = mock.Mock(side_effect=fake_downstream)
 
-        summary = loader.OzonPerformanceClient.load_ozon_selected_cpo_for_date(
-            client,
-            date="2026-05-06",
-            enabled=True,
-            dry_run=True,
-            write=False,
-        )
+        with mock.patch.object(loader, "load_selected_cpo_source_rows", return_value=source_rows) as load_rows_mock:
+            summary = loader.OzonPerformanceClient.load_ozon_selected_cpo_for_date(
+                client,
+                date="2026-05-06",
+                enabled=True,
+                dry_run=True,
+                write=False,
+                db_client=object(),
+            )
 
-        self.assertEqual([name for name, _ in calls], ["source", "downstream"])
+        load_rows_mock.assert_called_once()
+        client.fetch_search_promo_orders_csv.assert_not_called()
+        client.selected_cpo_downstream_dry_run.assert_called_once()
+        downstream_kwargs = client.selected_cpo_downstream_dry_run.call_args.kwargs
+        self.assertEqual(downstream_kwargs["source_rows"], source_rows)
+        self.assertFalse(downstream_kwargs["write"])
         self.assertEqual(summary["status"], "success")
         self.assertEqual(summary["source_rows"], 3)
         self.assertEqual(summary["marketplace_expenses_rows"], 3)
@@ -75,8 +73,6 @@ class SelectedCpoDailyIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["db_writes"], 0)
         self.assertFalse(summary["used_statistics_json"])
         self.assertFalse(summary["used_general_statistics_submit"])
-        self.assertFalse(calls[0][1]["write"])
-        self.assertFalse(calls[1][1]["write"])
 
     def test_write_true_without_approval_raises(self):
         client = self.make_client()

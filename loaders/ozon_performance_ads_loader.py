@@ -2672,18 +2672,36 @@ class OzonPerformanceClient:
                 "selected CPO daily integration requires explicit approve_write=True"
             )
 
-        source_summary = self.fetch_search_promo_orders_csv(
-            date=date,
-            dry_run=True,
-            write=write,
-            schema_applied=bool(write),
-            db_client=(db_client or supabase) if write else None,
-        )
+        client = db_client or supabase
+        if dry_run and not write:
+            source_rows = load_selected_cpo_source_rows(date, db_client=client)
+            source_summary = {
+                "mode": "selected_cpo_source_table_dry_run",
+                "date": date,
+                "source_table_rows": copy.deepcopy(source_rows),
+                "aggregation": {
+                    "total_spend_data_rows": round(
+                        sum(float(row.get("spend") or 0) for row in source_rows),
+                        2,
+                    )
+                },
+                "db_writes": 0,
+                "used_statistics_json": False,
+                "used_general_statistics_submit": False,
+            }
+        else:
+            source_summary = self.fetch_search_promo_orders_csv(
+                date=date,
+                dry_run=True,
+                write=write,
+                schema_applied=bool(write),
+                db_client=client if write else None,
+            )
         downstream_summary = self.selected_cpo_downstream_dry_run(
             date=date,
             write=write,
             approve_downstream_write=approve_write,
-            db_client=(db_client or supabase) if write else None,
+            db_client=client if write else None,
             source_rows=source_summary.get("source_table_rows"),
         )
 

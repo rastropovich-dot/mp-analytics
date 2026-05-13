@@ -86,6 +86,51 @@ class SelectedCpoDailyIntegrationTests(unittest.TestCase):
                 approve_write=False,
             )
 
+    def test_daily_style_write_request_without_approval_becomes_safe_no_write(self):
+        client = self.make_client()
+        client.fetch_search_promo_orders_csv = mock.Mock(side_effect=AssertionError("no API source fetch"))
+        source_rows = [
+            {"sale_date": "2026-05-06", "ordered_sku": "1300079194", "spend": 11164.50},
+            {"sale_date": "2026-05-06", "ordered_sku": "1499239951", "spend": 4032.10},
+            {"sale_date": "2026-05-06", "ordered_sku": "1620655754", "spend": 10645.20},
+        ]
+
+        def fake_downstream(**kwargs):
+            self.assertFalse(kwargs["write"])
+            return {
+                "db_writes": 0,
+                "marketplace_expenses_writes": 0,
+                "ozon_daily_sku_ad_attribution_writes": 0,
+                "marketplace_expenses_rows": [1, 2, 3],
+                "marketplace_expenses_total": 25841.80,
+                "ad_attribution_rows": [1, 2, 3],
+                "ad_attribution_total_spend": 25841.80,
+            }
+
+        client.selected_cpo_downstream_dry_run = mock.Mock(side_effect=fake_downstream)
+
+        with mock.patch.object(loader, "load_selected_cpo_source_rows", return_value=source_rows):
+            summary = loader.OzonPerformanceClient.load_ozon_selected_cpo_for_date(
+                client,
+                date="2026-05-06",
+                enabled=True,
+                dry_run=True,
+                write=True,
+                approve_write=False,
+                skip_write_if_not_approved=True,
+                db_client=object(),
+            )
+
+        client.fetch_search_promo_orders_csv.assert_not_called()
+        self.assertTrue(summary["selected_cpo_enabled"])
+        self.assertFalse(summary["write_approved"])
+        self.assertEqual(summary["status"], "dry_run_no_write")
+        self.assertEqual(summary["reason"], "write_not_approved")
+        self.assertEqual(summary["db_writes"], 0)
+        self.assertEqual(summary["marketplace_expenses_writes"], 0)
+        self.assertEqual(summary["ozon_daily_sku_ad_attribution_writes"], 0)
+        self.assertTrue(summary["totals_match"])
+
     def test_enabled_write_path_calls_source_and_downstream_in_order(self):
         client = self.make_client()
         calls = []

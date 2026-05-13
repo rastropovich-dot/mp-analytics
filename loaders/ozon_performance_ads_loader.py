@@ -2641,12 +2641,14 @@ class OzonPerformanceClient:
         approve_write=False,
         enabled=None,
         db_client=None,
+        skip_write_if_not_approved=False,
     ):
         if enabled is None:
             enabled = ENABLE_OZON_SELECTED_CPO_DAILY
 
         summary = {
             "selected_cpo_enabled": bool(enabled),
+            "write_approved": bool(approve_write),
             "date": date,
             "source_rows": 0,
             "source_sum": 0.0,
@@ -2668,9 +2670,14 @@ class OzonPerformanceClient:
             return summary
 
         if write and not approve_write:
-            raise SelectedCpoDownstreamWriteNotApprovedError(
-                "selected CPO daily integration requires explicit approve_write=True"
-            )
+            if not skip_write_if_not_approved:
+                raise SelectedCpoDownstreamWriteNotApprovedError(
+                    "selected CPO daily integration requires explicit approve_write=True"
+                )
+            write = False
+            dry_run = True
+            summary["status"] = "dry_run_no_write"
+            summary["reason"] = "write_not_approved"
 
         client = db_client or supabase
         if dry_run and not write:
@@ -2725,8 +2732,12 @@ class OzonPerformanceClient:
                 ),
                 "used_statistics_json": False,
                 "used_general_statistics_submit": False,
-                "status": "success" if not write else "written",
-                "reason": None,
+                "status": (
+                    "dry_run_no_write"
+                    if (not write and summary.get("reason") == "write_not_approved")
+                    else ("success" if not write else "written")
+                ),
+                "reason": summary.get("reason"),
                 "source_summary": source_summary,
                 "downstream_summary": downstream_summary,
             }
@@ -4985,6 +4996,7 @@ def run():
             approve_write=APPROVE_OZON_SELECTED_CPO_DAILY_WRITE,
             enabled=ENABLE_OZON_SELECTED_CPO_DAILY,
             db_client=supabase if not args.dry_run else None,
+            skip_write_if_not_approved=True,
         )
 
     run_summary["updated_at"] = to_iso(utcnow())

@@ -357,6 +357,10 @@ class CpcMaterializationGuardError(RuntimeError):
     """Raised when CPC progress is marked complete, but no CPC rows were materialized or verified downstream."""
 
 
+class CpcRecoveryWriteNotApprovedError(RuntimeError):
+    """Raised when CPC recovery write is requested without an explicit approval flag."""
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -689,6 +693,7 @@ def parse_args():
             "daily-yesterday",
             "full",
             "cpc-backfill",
+            "cpc-recovery",
             "cpo-report-check",
             "search-promo-report-check",
             "statistics-json-probe",
@@ -698,6 +703,7 @@ def parse_args():
             "daily-yesterday = production D-1 load in Europe/Moscow; "
             "full = explicit date/date-range historical run; "
             "cpc-backfill = retry only pending CPC for one day; "
+            "cpc-recovery = quota-aware CPC-only refetch for one day without CPO; "
             "cpo-report-check = generate/poll/download one CPO report and dry-parse it; "
             "search-promo-report-check = plan or dry-run one SEARCH_PROMO report for selected CPO; "
             "statistics-json-probe = generate/poll/download one statistics/json report and dry-parse it"
@@ -761,6 +767,10 @@ def parse_args():
         help="SEARCH_PROMO report type for search-promo-report-check mode or plan-only inspection.",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--write", action="store_true")
+    parser.add_argument("--no-write", action="store_true")
+    parser.add_argument("--approve-cpc-recovery-write", action="store_true")
+    parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
 
@@ -3783,6 +3793,406 @@ def guard_cpc_materialization(
     )
 
 
+def find_cpc_progress_for_date(client, target_date):
+    candidates = []
+    for progress_key in (client.state.get("cpc_progress", {}) or {}).keys():
+        progress = client.get_cpc_progress(progress_key)
+        if not progress:
+            continue
+        if progress.get("date_from") != target_date or progress.get("date_to") != target_date:
+            continue
+        candidates.append((progress_key, progress))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(
+        key=lambda item: (
+            1 if str(item[1].get("selection_mode") or "") == "complete" else 0,
+            1 if int(item[1].get("pending_batches") or 0) == 0 else 0,
+            int(item[1].get("completed_batches") or 0),
+            int(item[1].get("total_campaigns") or 0),
+            str(item[1].get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def stateless_ozon_request(method, path, token, retry_profile="default", **kwargs):
+    del retry_profile
+
+    endpoint = path
+    if str(path).startswith("http://") or str(path).startswith("https://"):
+        url = str(path)
+    else:
+        url = f"{OZON_PERFORMANCE_BASE_URL}{path}"
+
+    headers = kwargs.pop("headers", {})
+    headers.update({
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    })
+
+    response = requests.request(
+        method,
+        url,
+        headers=headers,
+        timeout=120,
+        **kwargs,
+    )
+
+    if response.status_code == 429:
+        retry_after_seconds = parse_retry_after_seconds(response.headers.get("Retry-After"))
+        if retry_after_seconds is None:
+            retry_after_seconds = compute_backoff_seconds(
+                CPC_BASE_SLEEP_SECONDS,
+                CPC_MAX_SLEEP_SECONDS,
+                1,
+            )
+        cooldown_until = to_iso(utcnow() + timedelta(seconds=max(0, int(retry_after_seconds or 0))))
+        raise RateLimitPending(
+            endpoint=endpoint,
+            retry_after_seconds=retry_after_seconds,
+            cooldown_until=cooldown_until,
+            attempt=1,
+        )
+
+    response.raise_for_status()
+    return response
+
+
+def list_campaigns_stateless(token):
+    campaigns = []
+    seen_ids = set()
+
+    for adv_object_type in ADV_OBJECT_TYPES or ["SKU"]:
+        response = stateless_ozon_request(
+            "GET",
+            "/api/client/campaign",
+            token,
+            params={"advObjectType": adv_object_type},
+        )
+        data = response.json()
+        batch = data.get("list") or data.get("campaigns") or data.get("items") or []
+
+        for campaign in batch:
+            campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "")
+            if not campaign_id or campaign_id in seen_ids:
+                continue
+            seen_ids.add(campaign_id)
+            campaigns.append(campaign)
+
+    return campaigns
+
+
+def request_statistics_stateless(token, campaign_ids, date_from, date_to, group_by):
+    payload = {
+        "campaigns": [str(campaign_id) for campaign_id in campaign_ids],
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "groupBy": group_by,
+    }
+    response = stateless_ozon_request(
+        "POST",
+        "/api/client/statistics/json",
+        token,
+        retry_profile="statistics_json",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    data = response.json()
+    uuid = data.get("UUID") or data.get("uuid")
+    if not uuid:
+        raise RuntimeError(f"Ozon Performance did not return UUID for CPC recovery: {data}")
+    return uuid
+
+
+def wait_statistics_stateless(token, uuid, poll_profile="statistics_json"):
+    profile = POLL_PROFILES[poll_profile]
+
+    for attempt in range(1, int(profile["max_attempts"]) + 1):
+        response = stateless_ozon_request("GET", f"/api/client/statistics/{uuid}", token)
+        data = response.json()
+        state = str(data.get("state") or data.get("status") or "").upper()
+
+        if state in {"OK", "SUCCESS", "DONE", "COMPLETED", "READY"}:
+            return data
+
+        if state in {"ERROR", "FAILED", "FAIL"}:
+            raise RuntimeError(f"Ozon Performance report failed during CPC recovery: {data}")
+
+        sleep_seconds = min(
+            int(profile["cap_sleep_seconds"]),
+            int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
+        )
+        print(
+            f"Ozon Performance CPC recovery polling UUID={uuid} state={state or 'PENDING'} "
+            f"attempt={attempt} sleep={sleep_seconds}"
+        )
+        time.sleep(sleep_seconds)
+
+    raise TimeoutError(f"Ozon Performance CPC recovery report timeout: {uuid}")
+
+
+def download_statistics_report_stateless(token, uuid):
+    response = stateless_ozon_request(
+        "GET",
+        "/api/client/statistics/report",
+        token,
+        params={"UUID": uuid},
+    )
+    text = response.text.strip()
+    if not text:
+        return {}
+    try:
+        return response.json()
+    except ValueError:
+        return json.loads(text)
+
+
+def build_cpc_recovery_plan(
+    client,
+    target_date,
+    requested_batch_size,
+    max_stats_campaigns,
+    db_client=None,
+    campaigns=None,
+):
+    campaigns = campaigns if campaigns is not None else list_campaigns_stateless(client.ensure_token())
+    selection = build_daily_cpc_selection(campaigns, target_date, target_date, "complete")
+    selected_campaigns = list(selection["selected_campaigns"])
+    ordered_campaign_ids = preserve_campaign_id_order(
+        [campaign.get("id") or campaign.get("campaignId") for campaign in selected_campaigns]
+    )
+    batch_size = max(1, int(requested_batch_size or DEFAULT_CAMPAIGN_BATCH_SIZE))
+    cpc_batches = build_cpc_batches(ordered_campaign_ids, batch_size)
+    stale_progress_key, stale_progress = find_cpc_progress_for_date(client, target_date)
+    downstream_verification = verify_cpc_downstream_materialized(target_date, db_client=db_client)
+    safe_campaign_budget = min(
+        max(0, int(max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN)),
+        max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE),
+    )
+
+    return {
+        "target_date": target_date,
+        "selection_mode": "complete",
+        "campaign_count": len(ordered_campaign_ids),
+        "batch_size": batch_size,
+        "total_batches": len(cpc_batches),
+        "campaign_units": len(ordered_campaign_ids),
+        "expected_statistics_json_submit_count": len(cpc_batches),
+        "safe_campaign_budget": safe_campaign_budget,
+        "fits_safe_budget": len(ordered_campaign_ids) <= safe_campaign_budget,
+        "stale_progress_key": stale_progress_key,
+        "stale_progress": stale_progress or {},
+        "downstream_verification": downstream_verification,
+        "cpc_missing_globally": not bool(downstream_verification.get("materialized")),
+        "ordered_campaign_ids": ordered_campaign_ids,
+        "cpc_batches": cpc_batches,
+        "campaigns_by_id": {
+            str(campaign.get("id") or campaign.get("campaignId") or ""): campaign
+            for campaign in campaigns
+            if campaign.get("id") or campaign.get("campaignId")
+        },
+        "planning_counts": {
+            "raw_cpc_count": len(selection["raw_cpc_campaigns"]),
+            "date_overlap_cpc_count": len(selection["date_overlap_cpc_campaigns"]),
+            "recent_cpc_count": len(selection["recent_cpc_campaigns"]),
+            "excluded_by_recent_filter_count": int(selection["excluded_by_recent_filter_count"] or 0),
+        },
+    }
+
+
+def run_cpc_recovery_mode(
+    client,
+    target_date,
+    group_by,
+    requested_batch_size,
+    max_stats_campaigns,
+    dry_run=True,
+    write=False,
+    approve_write=False,
+    ignore_stale_progress_for_date_only=False,
+    no_write=True,
+    db_client=None,
+    campaigns=None,
+    fetch_batch_fn=None,
+):
+    if write and not approve_write:
+        raise CpcRecoveryWriteNotApprovedError(
+            "CPC recovery write requires explicit --write --approve-cpc-recovery-write"
+        )
+
+    plan = build_cpc_recovery_plan(
+        client,
+        target_date,
+        requested_batch_size,
+        max_stats_campaigns,
+        db_client=db_client,
+        campaigns=campaigns,
+    )
+    stale_progress = plan.get("stale_progress") or {}
+    stale_progress_summary = {
+        "progress_key": plan.get("stale_progress_key"),
+        "selection_mode": stale_progress.get("selection_mode"),
+        "campaign_count": stale_progress.get("total_campaigns"),
+        "batch_size": stale_progress.get("batch_size"),
+        "completed_batches": stale_progress.get("completed_batches"),
+        "pending_batches": stale_progress.get("pending_batches"),
+        "updated_at": stale_progress.get("updated_at"),
+    }
+    summary = {
+        "mode": "cpc-recovery",
+        "target_date": target_date,
+        "date_from": target_date,
+        "date_to": target_date,
+        "dry_run": bool(dry_run),
+        "write": bool(write),
+        "no_write": bool(no_write or not write),
+        "write_approved": bool(approve_write),
+        "ignore_stale_progress_for_date_only": bool(ignore_stale_progress_for_date_only),
+        "status": "planned",
+        "reason": None,
+        "db_writes": 0,
+        "marketplace_expenses_writes": 0,
+        "ozon_daily_sku_ad_attribution_writes": 0,
+        "used_statistics_json": True,
+        "used_general_statistics_submit": False,
+        "cpo_touched": False,
+        "selected_cpo_touched": False,
+        "preflight": {
+            "cpc_missing_globally": plan["cpc_missing_globally"],
+            "downstream_verification": plan["downstream_verification"],
+            "stale_progress": stale_progress_summary,
+            "campaign_count": plan["campaign_count"],
+            "batch_size": plan["batch_size"],
+            "total_batches": plan["total_batches"],
+            "campaign_units": plan["campaign_units"],
+            "expected_statistics_json_submit_count": plan["expected_statistics_json_submit_count"],
+            "safe_campaign_budget": plan["safe_campaign_budget"],
+            "fits_safe_budget": plan["fits_safe_budget"],
+            "stale_progress_ignored": bool(ignore_stale_progress_for_date_only and plan.get("stale_progress_key")),
+        },
+        "statistics_json_submit_attempts": 0,
+        "processed_batches": 0,
+        "advertising_clicks_total": 0.0,
+        "cpc_attribution_spend_total": 0.0,
+        "expense_rows_count": 0,
+        "attribution_rows_count": 0,
+    }
+
+    if not plan["fits_safe_budget"]:
+        summary["status"] = "plan_exceeds_safe_budget"
+        summary["reason"] = "estimated_requests_exceed_safe_budget"
+        return summary
+
+    if not dry_run and not write:
+        summary["status"] = "planned"
+        summary["reason"] = "explicit_write_not_requested"
+        return summary
+
+    expense_rows_by_key = {}
+    ad_attribution_rows_by_key = {}
+    batch_fetcher = fetch_batch_fn or fetch_cpc_recovery_batch_stateless
+
+    for batch_index, campaign_batch in enumerate(plan["cpc_batches"]):
+        try:
+            batch_result = batch_fetcher(
+                client=client,
+                campaign_batch=campaign_batch,
+                date_from=target_date,
+                date_to=target_date,
+                group_by=group_by,
+            )
+        except RateLimitPending as exc:
+            summary["statistics_json_submit_attempts"] += 1
+            summary["status"] = "quota_limited_before_refetch" if batch_index == 0 else "quota_limited_during_refetch"
+            summary["reason"] = "statistics_json_429"
+            summary["retry_after_seconds"] = exc.retry_after_seconds
+            summary["cooldown_until"] = exc.cooldown_until
+            summary["failed_batch_index"] = batch_index
+            summary["failed_batch_campaign_ids"] = list(campaign_batch)
+            return summary
+
+        summary["statistics_json_submit_attempts"] += 1
+        summary["processed_batches"] += 1
+        report_data = batch_result.get("report_data") or {}
+
+        rows, _ = build_rows(report_data, plan["campaigns_by_id"], target_date)
+        attribution_rows, _ = build_cpc_attribution_rows(report_data, target_date)
+
+        for row in rows:
+            if str(row.get("expense_type") or "") not in {"advertising_clicks", "advertising_other"}:
+                continue
+            key = tuple(str(row.get(field) or "") for field in UPSERT_KEY_FIELDS)
+            existing = expense_rows_by_key.get(key)
+            if existing is None:
+                expense_rows_by_key[key] = dict(row)
+            else:
+                existing["expense_amount"] = round(
+                    float(existing.get("expense_amount") or 0) + float(row.get("expense_amount") or 0),
+                    2,
+                )
+
+        for row in attribution_rows:
+            if str(row.get("ad_source") or "") != "cpc":
+                continue
+            key = tuple(str(row.get(field) or "") for field in AD_ATTRIBUTION_UPSERT_KEY_FIELDS)
+            existing = ad_attribution_rows_by_key.get(key)
+            if existing is None:
+                ad_attribution_rows_by_key[key] = dict(row)
+            else:
+                for field in ("ad_orders_qty", "ad_orders_revenue", "ad_clicks", "ad_views", "ad_spend"):
+                    existing[field] = round(
+                        float(existing.get(field) or 0) + float(row.get(field) or 0),
+                        2,
+                    )
+
+    expense_rows = aggregate_rows(list(expense_rows_by_key.values()))
+    ad_attribution_rows = aggregate_ad_attribution_rows(list(ad_attribution_rows_by_key.values()))
+
+    if write:
+        save_rows(expense_rows)
+        save_ad_attribution_rows(ad_attribution_rows)
+        summary["marketplace_expenses_writes"] = len(expense_rows)
+        summary["ozon_daily_sku_ad_attribution_writes"] = len(ad_attribution_rows)
+        summary["db_writes"] = len(expense_rows) + len(ad_attribution_rows)
+        summary["status"] = "written"
+    else:
+        summary["status"] = "dry_run_no_write"
+
+    summary["expense_rows_count"] = len(expense_rows)
+    summary["attribution_rows_count"] = len(ad_attribution_rows)
+    summary["advertising_clicks_total"] = round(
+        sum(float(row.get("expense_amount") or 0) for row in expense_rows),
+        2,
+    )
+    summary["cpc_attribution_spend_total"] = round(
+        sum(float(row.get("ad_spend") or 0) for row in ad_attribution_rows),
+        2,
+    )
+    summary["marketplace_expenses_rows"] = expense_rows
+    summary["ad_attribution_rows"] = ad_attribution_rows
+    return summary
+
+
+def fetch_cpc_recovery_batch_stateless(client, campaign_batch, date_from, date_to, group_by):
+    uuid = request_statistics_stateless(
+        client.ensure_token(),
+        campaign_batch,
+        date_from,
+        date_to,
+        group_by,
+    )
+    wait_statistics_stateless(client.ensure_token(), uuid, poll_profile="statistics_json")
+    report_data = download_statistics_report_stateless(client.ensure_token(), uuid)
+    return {
+        "uuid": uuid,
+        "report_data": report_data,
+    }
+
+
 def print_cpo_report_check_plan(date_from, date_to, report_type):
     utc_from, utc_to = build_utc_time_bounds(date_from, date_to)
     summary = {
@@ -4299,6 +4709,32 @@ def run():
         finally:
             client.restore_runtime_state(original_runtime_state)
             print("CPO report check: runtime state restored, no ad table writes")
+        return
+
+    if args.mode == "cpc-recovery":
+        if date_from != date_to:
+            raise RuntimeError(
+                "cpc-recovery mode supports exactly one calendar day. "
+                f"Got {date_from}..{date_to}"
+            )
+        if args.write and args.no_write:
+            raise RuntimeError("cpc-recovery mode does not allow --write and --no-write together")
+
+        summary = run_cpc_recovery_mode(
+            client=client,
+            target_date=date_from,
+            group_by=args.group_by,
+            requested_batch_size=requested_batch_size,
+            max_stats_campaigns=int(args.max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN),
+            dry_run=bool(args.dry_run or not args.write),
+            write=bool(args.write),
+            approve_write=bool(args.approve_cpc_recovery_write),
+            ignore_stale_progress_for_date_only=bool(args.ignore_stale_progress_for_date_only),
+            no_write=bool(args.no_write or not args.write),
+            db_client=supabase,
+        )
+        print("Ozon Performance CPC recovery summary:")
+        print(json.dumps(sanitize_value(summary), ensure_ascii=False, indent=2))
         return
 
     if args.mode == "cpc-backfill" and args.plan_only:

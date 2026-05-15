@@ -353,6 +353,10 @@ class SelectedCpoDownstreamWriteNotApprovedError(RuntimeError):
     """Raised when selected CPO downstream aggregation exists, but live write is not approved yet."""
 
 
+class CpcMaterializationGuardError(RuntimeError):
+    """Raised when CPC progress is marked complete, but no CPC rows were materialized or verified downstream."""
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -3668,6 +3672,117 @@ def upsert_selected_cpo_ad_attribution_rows(db_client, rows):
     return len(aggregated_rows)
 
 
+def verify_cpc_downstream_materialized(target_date, db_client=None, marketplace_code="ozon"):
+    client = db_client or supabase
+
+    marketplace_expenses_rows = []
+    start = 0
+    page_size = 1000
+    while True:
+        result = (
+            client.table("marketplace_expenses")
+            .select("expense_type,expense_amount")
+            .eq("marketplace_code", marketplace_code)
+            .eq("expense_date", target_date)
+            .in_("expense_type", ["advertising_clicks", "advertising_other"])
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        marketplace_expenses_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    ad_attribution_rows = []
+    start = 0
+    while True:
+        result = (
+            client.table("ozon_daily_sku_ad_attribution")
+            .select("ad_spend")
+            .eq("marketplace_code", marketplace_code)
+            .eq("sale_date", target_date)
+            .eq("ad_source", "cpc")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        ad_attribution_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    marketplace_sum = round(
+        sum(float(row.get("expense_amount") or 0) for row in marketplace_expenses_rows),
+        2,
+    )
+    ad_attribution_sum = round(
+        sum(float(row.get("ad_spend") or 0) for row in ad_attribution_rows),
+        2,
+    )
+
+    return {
+        "target_date": target_date,
+        "marketplace_expenses_cpc_rows": len(marketplace_expenses_rows),
+        "marketplace_expenses_cpc_sum": marketplace_sum,
+        "ad_attribution_cpc_rows": len(ad_attribution_rows),
+        "ad_attribution_cpc_sum": ad_attribution_sum,
+        "materialized": bool(
+            marketplace_expenses_rows
+            or ad_attribution_rows
+            or marketplace_sum > 0
+            or ad_attribution_sum > 0
+        ),
+    }
+
+
+def guard_cpc_materialization(
+    target_date,
+    cpc_status,
+    pending_batches,
+    processed_batches_this_run,
+    current_run_cpc_expense_rows_count,
+    current_run_cpc_ad_attribution_rows_count,
+    db_client=None,
+):
+    summary = {
+        "target_date": target_date,
+        "cpc_status": cpc_status,
+        "pending_batches": int(pending_batches or 0),
+        "processed_batches_this_run": int(processed_batches_this_run or 0),
+        "current_run_cpc_expense_rows_count": int(current_run_cpc_expense_rows_count or 0),
+        "current_run_cpc_ad_attribution_rows_count": int(current_run_cpc_ad_attribution_rows_count or 0),
+        "verification_performed": False,
+        "downstream_verification": None,
+        "guard_triggered": False,
+    }
+
+    should_verify = (
+        cpc_status == "success"
+        and int(pending_batches or 0) == 0
+        and int(processed_batches_this_run or 0) == 0
+        and int(current_run_cpc_expense_rows_count or 0) == 0
+        and int(current_run_cpc_ad_attribution_rows_count or 0) == 0
+    )
+    if not should_verify:
+        return summary
+
+    summary["verification_performed"] = True
+    verification = verify_cpc_downstream_materialized(target_date, db_client=db_client)
+    summary["downstream_verification"] = verification
+
+    if verification.get("materialized"):
+        summary["guard_triggered"] = False
+        summary["status_override"] = "success_existing_downstream_verified"
+        return summary
+
+    summary["guard_triggered"] = True
+    raise CpcMaterializationGuardError(
+        "CPC progress complete but no current-run CPC rows and no downstream CPC materialization "
+        f"for target date {target_date}. Remediation: run controlled CPC refetch/backfill for this date."
+    )
+
+
 def print_cpo_report_check_plan(date_from, date_to, report_type):
     utc_from, utc_to = build_utc_time_bounds(date_from, date_to)
     summary = {
@@ -4634,6 +4749,8 @@ def run():
     rows_by_key = {}
     ad_attribution_rows = []
     total_counters = defaultdict(int)
+    cpc_current_run_expense_rows_count = 0
+    cpc_current_run_ad_attribution_rows_count = 0
 
     cpc_batches_total = len(cpc_batches)
     processed_batch_indexes = []
@@ -4762,6 +4879,16 @@ def run():
 
             rows, counters = build_rows(report_data, campaigns_by_id, date_from)
             attribution_rows, attribution_counters = build_cpc_attribution_rows(report_data, date_from)
+            cpc_current_run_expense_rows_count += sum(
+                1
+                for row in rows
+                if str(row.get("expense_type") or "") in {"advertising_clicks", "advertising_other"}
+            )
+            cpc_current_run_ad_attribution_rows_count += sum(
+                1
+                for row in attribution_rows
+                if str(row.get("ad_source") or "") == "cpc"
+            )
 
             for row in rows:
                 key = (
@@ -4813,6 +4940,45 @@ def run():
             )
             if cpc_status == "success":
                 client.clear_batch_recommendation(client.scoped_state_key("statistics_json"))
+
+        guard_summary = None
+        if run_summary.get("cpc", {}).get("status") == "success":
+            try:
+                guard_summary = guard_cpc_materialization(
+                    target_date=target_date,
+                    cpc_status=run_summary["cpc"]["status"],
+                    pending_batches=run_summary["cpc"].get("pending_batches", 0),
+                    processed_batches_this_run=len(processed_batch_indexes),
+                    current_run_cpc_expense_rows_count=cpc_current_run_expense_rows_count,
+                    current_run_cpc_ad_attribution_rows_count=cpc_current_run_ad_attribution_rows_count,
+                    db_client=supabase,
+                )
+            except CpcMaterializationGuardError as exc:
+                run_summary["cpc"] = empty_stage_status(
+                    "failed_materialization_guard",
+                    batch_size=batch_size,
+                    campaign_count=len(ordered_campaign_ids),
+                    processed_batches=len(processed_batch_indexes),
+                    completed_batches=cpc_progress_snapshot.get("completed_batches", 0),
+                    pending_batches=cpc_progress_snapshot.get("pending_batches", 0),
+                    error=str(exc),
+                    current_run_cpc_expense_rows_count=cpc_current_run_expense_rows_count,
+                    current_run_cpc_ad_attribution_rows_count=cpc_current_run_ad_attribution_rows_count,
+                )
+                run_summary["overall_status"] = "failed"
+                run_summary["updated_at"] = to_iso(utcnow())
+                client.write_run_status(run_summary)
+                save_daily_load_status(run_summary)
+                raise
+
+            if guard_summary:
+                run_summary["cpc"]["current_run_cpc_expense_rows_count"] = cpc_current_run_expense_rows_count
+                run_summary["cpc"]["current_run_cpc_ad_attribution_rows_count"] = (
+                    cpc_current_run_ad_attribution_rows_count
+                )
+                run_summary["cpc"]["downstream_verification"] = guard_summary.get("downstream_verification")
+                if guard_summary.get("status_override"):
+                    run_summary["cpc"]["status"] = guard_summary["status_override"]
 
     if args.mode == "cpc-backfill":
         run_summary["cpo"] = empty_stage_status(
@@ -4962,7 +5128,7 @@ def run():
     )
 
     if args.mode == "cpc-backfill":
-        if run_summary["cpc"]["status"] == "success":
+        if run_summary["cpc"]["status"] in {"success", "success_existing_downstream_verified"}:
             run_summary["overall_status"] = "success"
         elif run_summary["cpc"]["status"] == "pending_quota":
             run_summary["overall_status"] = "partial_quota"
@@ -4976,7 +5142,7 @@ def run():
         run_summary["overall_status"] = "partial_quota"
     elif run_summary["cpc"]["status"] in {"pending_429", "pending_backfill"} and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "partial_ads"
-    elif run_summary["cpc"]["status"] == "success" and run_summary["cpo"]["status"] == "success":
+    elif run_summary["cpc"]["status"] in {"success", "success_existing_downstream_verified"} and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"
     elif run_summary["cpc"]["status"] == "skipped" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"

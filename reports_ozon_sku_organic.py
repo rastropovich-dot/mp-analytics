@@ -327,6 +327,84 @@ def calculate_row(total_row, ad_row, ad_coverage_exists):
     }
 
 
+def build_reconciliation_breakdown(rows):
+    raw_total_orders_qty = round(sum(float(row.get("total_orders_qty") or 0) for row in rows), 2)
+    raw_total_orders_revenue = round(sum(float(row.get("total_orders_revenue") or 0) for row in rows), 2)
+    raw_ad_orders_qty = round(sum(float(row.get("ad_orders_qty") or 0) for row in rows), 2)
+    raw_ad_orders_revenue = round(sum(float(row.get("ad_orders_revenue") or 0) for row in rows), 2)
+    raw_organic_orders_qty = round(sum(float(row.get("organic_orders_qty") or 0) for row in rows), 2)
+    raw_organic_orders_revenue = round(sum(float(row.get("organic_orders_revenue") or 0) for row in rows), 2)
+
+    missing_total_rows = [row for row in rows if row.get("calculation_status") == "missing_total"]
+    missing_total_ad_orders_qty = round(
+        sum(float(row.get("ad_orders_qty") or 0) for row in missing_total_rows),
+        2,
+    )
+    missing_total_ad_orders_revenue = round(
+        sum(float(row.get("ad_orders_revenue") or 0) for row in missing_total_rows),
+        2,
+    )
+
+    ad_exceeds_total_orders_qty_excess = 0.0
+    ad_exceeds_total_revenue_excess = 0.0
+    ad_exceeds_total_rows_count = 0
+    reconciled_rows_count = 0
+
+    for row in rows:
+        total_qty = float(row.get("total_orders_qty") or 0)
+        total_revenue = float(row.get("total_orders_revenue") or 0)
+        ad_qty = float(row.get("ad_orders_qty") or 0)
+        ad_revenue = float(row.get("ad_orders_revenue") or 0)
+        qty_excess = max(ad_qty - total_qty, 0) if total_qty > 0 else 0.0
+        revenue_excess = max(ad_revenue - total_revenue, 0) if total_revenue > 0 else 0.0
+
+        if qty_excess > 0 or revenue_excess > 0:
+            ad_exceeds_total_rows_count += 1
+
+        ad_exceeds_total_orders_qty_excess += qty_excess
+        ad_exceeds_total_revenue_excess += revenue_excess
+
+        if row.get("calculation_status") == "ok" and not row.get("warning"):
+            reconciled_rows_count += 1
+
+    ad_exceeds_total_orders_qty_excess = round(ad_exceeds_total_orders_qty_excess, 2)
+    ad_exceeds_total_revenue_excess = round(ad_exceeds_total_revenue_excess, 2)
+
+    raw_gap_orders_qty = round(raw_ad_orders_qty + raw_organic_orders_qty - raw_total_orders_qty, 2)
+    raw_gap_orders_revenue = round(
+        raw_ad_orders_revenue + raw_organic_orders_revenue - raw_total_orders_revenue,
+        2,
+    )
+
+    explained_gap_orders_qty = round(
+        missing_total_ad_orders_qty + ad_exceeds_total_orders_qty_excess,
+        2,
+    )
+    explained_gap_orders_revenue = round(
+        missing_total_ad_orders_revenue + ad_exceeds_total_revenue_excess,
+        2,
+    )
+
+    unexplained_gap_orders_qty = round(raw_gap_orders_qty - explained_gap_orders_qty, 2)
+    unexplained_gap_orders_revenue = round(raw_gap_orders_revenue - explained_gap_orders_revenue, 2)
+
+    return {
+        "raw_gap_orders_qty": raw_gap_orders_qty,
+        "raw_gap_orders_revenue": raw_gap_orders_revenue,
+        "missing_total_rows_count": len(missing_total_rows),
+        "missing_total_ad_orders_qty": missing_total_ad_orders_qty,
+        "missing_total_ad_orders_revenue": missing_total_ad_orders_revenue,
+        "ad_exceeds_total_rows_count": ad_exceeds_total_rows_count,
+        "ad_exceeds_total_orders_qty_excess": ad_exceeds_total_orders_qty_excess,
+        "ad_exceeds_total_revenue_excess": ad_exceeds_total_revenue_excess,
+        "explained_gap_orders_qty": explained_gap_orders_qty,
+        "explained_gap_orders_revenue": explained_gap_orders_revenue,
+        "unexplained_gap_orders_qty": unexplained_gap_orders_qty,
+        "unexplained_gap_orders_revenue": unexplained_gap_orders_revenue,
+        "reconciled_rows_count": reconciled_rows_count,
+    }
+
+
 def build_organic_rows(date_from, date_to):
     total_by_key = load_total_orders(date_from, date_to)
     ad_by_key, attribution_dates = load_ad_attribution(date_from, date_to)
@@ -379,6 +457,7 @@ def build_organic_rows(date_from, date_to):
             "marketplace_orders": sum(1 for row in rows if row.get("total_revenue_source") == "marketplace_orders"),
             "missing_total": sum(1 for row in rows if row.get("calculation_status") == "missing_total"),
         },
+        "reconciliation_breakdown": build_reconciliation_breakdown(rows),
     }
 
     return rows, summary

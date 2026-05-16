@@ -299,6 +299,15 @@ def calculate_row(total_row, ad_row, ad_coverage_exists):
         calculation_status = "missing_total"
         if ad_row is not None and (ad_qty > 0 or ad_revenue > 0):
             warnings.append("ad_attribution_without_total")
+    elif (
+        total_row is not None
+        and total_qty == 0
+        and total_revenue == 0
+        and ad_row is not None
+        and (ad_qty > 0 or ad_revenue > 0)
+    ):
+        calculation_status = "missing_total"
+        warnings.append("zero_total_with_ad_attribution")
     elif ad_row is None and ad_coverage_exists:
         ad_qty = 0.0
         ad_revenue = 0.0

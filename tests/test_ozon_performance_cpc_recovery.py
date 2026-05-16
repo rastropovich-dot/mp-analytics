@@ -283,6 +283,79 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         save_rows_mock.assert_not_called()
         save_attr_mock.assert_not_called()
 
+    def test_existing_report_uuid_path_uses_existing_report_only(self):
+        client = _FakeClient()
+        db_client = _FakeDbClient({"marketplace_expenses": [], "ozon_daily_sku_ad_attribution": []})
+        fetch_batch_fn = mock.Mock()
+        fetch_existing_report_fn = mock.Mock(
+            return_value={"uuid": "15c6d258-e4e8-4c9b-bd53-cbcee9ecbc15", "report_data": _sample_report()}
+        )
+
+        with mock.patch.object(loader, "save_rows") as save_rows_mock, mock.patch.object(
+            loader, "save_ad_attribution_rows"
+        ) as save_attr_mock:
+            summary = loader.run_cpc_recovery_mode(
+                client=client,
+                target_date="2026-05-12",
+                group_by="DATE",
+                requested_batch_size=10,
+                max_stats_campaigns=1800,
+                dry_run=True,
+                write=False,
+                approve_write=False,
+                ignore_stale_progress_for_date_only=True,
+                no_write=True,
+                db_client=db_client,
+                campaigns=[_sample_campaign()],
+                campaign_ids=["24375352"],
+                existing_report_uuid="15c6d258-e4e8-4c9b-bd53-cbcee9ecbc15",
+                fetch_batch_fn=fetch_batch_fn,
+                fetch_existing_report_fn=fetch_existing_report_fn,
+            )
+
+        self.assertEqual(summary["status"], "dry_run_no_write")
+        self.assertFalse(summary["used_statistics_json"])
+        self.assertTrue(summary["used_existing_report_uuid"])
+        self.assertEqual(summary["statistics_json_submit_attempts"], 0)
+        self.assertEqual(summary["processed_batches"], 1)
+        self.assertEqual(summary["preflight"]["expected_statistics_json_submit_count"], 0)
+        self.assertEqual(summary["preflight"]["selected_campaign_ids"], ["24375352"])
+        self.assertAlmostEqual(summary["advertising_clicks_total"], 1412.30, places=2)
+        self.assertEqual(summary["marketplace_expenses_rows"][0]["marketplace_sku"], "1300079194")
+        self.assertEqual(summary["ad_attribution_rows"][0]["campaign_id"], "24375352")
+        fetch_batch_fn.assert_not_called()
+        fetch_existing_report_fn.assert_called_once()
+        save_rows_mock.assert_not_called()
+        save_attr_mock.assert_not_called()
+
+    def test_existing_report_uuid_fails_when_campaign_scoped_row_not_found(self):
+        client = _FakeClient()
+        fetch_existing_report_fn = mock.Mock(
+            return_value={"uuid": "15c6d258-e4e8-4c9b-bd53-cbcee9ecbc15", "report_data": _sample_report(campaign_id="999")}
+        )
+
+        summary = loader.run_cpc_recovery_mode(
+            client=client,
+            target_date="2026-05-12",
+            group_by="DATE",
+            requested_batch_size=10,
+            max_stats_campaigns=1800,
+            dry_run=True,
+            write=False,
+            approve_write=False,
+            ignore_stale_progress_for_date_only=True,
+            no_write=True,
+            db_client=_FakeDbClient({"marketplace_expenses": [], "ozon_daily_sku_ad_attribution": []}),
+            campaigns=[_sample_campaign()],
+            campaign_ids=["24375352"],
+            existing_report_uuid="15c6d258-e4e8-4c9b-bd53-cbcee9ecbc15",
+            fetch_existing_report_fn=fetch_existing_report_fn,
+        )
+
+        self.assertEqual(summary["status"], "expected_row_not_found")
+        self.assertEqual(summary["reason"], "campaign_scoped_report_has_no_matching_rows")
+        self.assertEqual(summary["db_writes"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

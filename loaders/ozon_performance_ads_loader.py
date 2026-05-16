@@ -779,6 +779,7 @@ def parse_args():
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
+    parser.add_argument("--existing-report-uuid")
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
 
@@ -3959,6 +3960,25 @@ def download_statistics_report_stateless(token, uuid):
         return json.loads(text)
 
 
+def fetch_cpc_recovery_existing_report_stateless(client, uuid):
+    token = client.ensure_token()
+    wait_statistics_stateless(token, uuid, poll_profile="statistics_json")
+    report_data = download_statistics_report_stateless(token, uuid)
+    return {"uuid": uuid, "report_data": report_data}
+
+
+def filter_statistics_report_to_campaign_ids(report_data, campaign_ids):
+    requested_campaign_ids = preserve_campaign_id_order(campaign_ids or [])
+    requested_campaign_ids_set = set(requested_campaign_ids)
+    if not requested_campaign_ids_set:
+        return report_data or {}
+    return {
+        str(campaign_id): data
+        for campaign_id, data in (report_data or {}).items()
+        if str(campaign_id) in requested_campaign_ids_set
+    }
+
+
 def build_cpc_recovery_plan(
     client,
     target_date,
@@ -4038,6 +4058,8 @@ def run_cpc_recovery_mode(
     campaigns=None,
     campaign_ids=None,
     fetch_batch_fn=None,
+    existing_report_uuid=None,
+    fetch_existing_report_fn=None,
 ):
     if write and not approve_write:
         raise CpcRecoveryWriteNotApprovedError(
@@ -4073,13 +4095,15 @@ def run_cpc_recovery_mode(
         "no_write": bool(no_write or not write),
         "write_approved": bool(approve_write),
         "ignore_stale_progress_for_date_only": bool(ignore_stale_progress_for_date_only),
+        "existing_report_uuid": str(existing_report_uuid or ""),
         "status": "planned",
         "reason": None,
         "db_writes": 0,
         "marketplace_expenses_writes": 0,
         "ozon_daily_sku_ad_attribution_writes": 0,
-        "used_statistics_json": True,
+        "used_statistics_json": not bool(existing_report_uuid),
         "used_general_statistics_submit": False,
+        "used_existing_report_uuid": bool(existing_report_uuid),
         "cpo_touched": False,
         "selected_cpo_touched": False,
         "preflight": {
@@ -4090,9 +4114,11 @@ def run_cpc_recovery_mode(
             "requested_campaign_ids": list(plan.get("requested_campaign_ids") or []),
             "selected_campaign_ids": list(plan.get("selected_campaign_ids") or []),
             "batch_size": plan["batch_size"],
-            "total_batches": plan["total_batches"],
+            "total_batches": 1 if existing_report_uuid else plan["total_batches"],
             "campaign_units": plan["campaign_units"],
-            "expected_statistics_json_submit_count": plan["expected_statistics_json_submit_count"],
+            "expected_statistics_json_submit_count": (
+                0 if existing_report_uuid else plan["expected_statistics_json_submit_count"]
+            ),
             "safe_campaign_budget": plan["safe_campaign_budget"],
             "fits_safe_budget": plan["fits_safe_budget"],
             "stale_progress_ignored": bool(ignore_stale_progress_for_date_only and plan.get("stale_progress_key")),
@@ -4105,7 +4131,7 @@ def run_cpc_recovery_mode(
         "attribution_rows_count": 0,
     }
 
-    if not plan["fits_safe_budget"]:
+    if not existing_report_uuid and not plan["fits_safe_budget"]:
         summary["status"] = "plan_exceeds_safe_budget"
         summary["reason"] = "estimated_requests_exceed_safe_budget"
         return summary
@@ -4118,29 +4144,51 @@ def run_cpc_recovery_mode(
     expense_rows_by_key = {}
     ad_attribution_rows_by_key = {}
     batch_fetcher = fetch_batch_fn or fetch_cpc_recovery_batch_stateless
+    existing_report_fetcher = fetch_existing_report_fn or fetch_cpc_recovery_existing_report_stateless
 
-    for batch_index, campaign_batch in enumerate(plan["cpc_batches"]):
-        try:
-            batch_result = batch_fetcher(
-                client=client,
-                campaign_batch=campaign_batch,
-                date_from=target_date,
-                date_to=target_date,
-                group_by=group_by,
-            )
-        except RateLimitPending as exc:
+    report_batches = []
+    if existing_report_uuid:
+        report_batches.append(
+            {
+                "batch_index": 0,
+                "campaign_batch": list(plan.get("selected_campaign_ids") or plan.get("ordered_campaign_ids") or []),
+                "batch_result": existing_report_fetcher(client=client, uuid=existing_report_uuid),
+            }
+        )
+    else:
+        for batch_index, campaign_batch in enumerate(plan["cpc_batches"]):
+            try:
+                batch_result = batch_fetcher(
+                    client=client,
+                    campaign_batch=campaign_batch,
+                    date_from=target_date,
+                    date_to=target_date,
+                    group_by=group_by,
+                )
+            except RateLimitPending as exc:
+                summary["statistics_json_submit_attempts"] += 1
+                summary["status"] = "quota_limited_before_refetch" if batch_index == 0 else "quota_limited_during_refetch"
+                summary["reason"] = "statistics_json_429"
+                summary["retry_after_seconds"] = exc.retry_after_seconds
+                summary["cooldown_until"] = exc.cooldown_until
+                summary["failed_batch_index"] = batch_index
+                summary["failed_batch_campaign_ids"] = list(campaign_batch)
+                return summary
+
             summary["statistics_json_submit_attempts"] += 1
-            summary["status"] = "quota_limited_before_refetch" if batch_index == 0 else "quota_limited_during_refetch"
-            summary["reason"] = "statistics_json_429"
-            summary["retry_after_seconds"] = exc.retry_after_seconds
-            summary["cooldown_until"] = exc.cooldown_until
-            summary["failed_batch_index"] = batch_index
-            summary["failed_batch_campaign_ids"] = list(campaign_batch)
-            return summary
+            report_batches.append(
+                {
+                    "batch_index": batch_index,
+                    "campaign_batch": list(campaign_batch),
+                    "batch_result": batch_result,
+                }
+            )
 
-        summary["statistics_json_submit_attempts"] += 1
+    for batch_item in report_batches:
         summary["processed_batches"] += 1
-        report_data = batch_result.get("report_data") or {}
+        report_data = batch_item["batch_result"].get("report_data") or {}
+        if campaign_ids:
+            report_data = filter_statistics_report_to_campaign_ids(report_data, campaign_ids)
 
         rows, _ = build_rows(report_data, plan["campaigns_by_id"], target_date)
         attribution_rows, _ = build_cpc_attribution_rows(report_data, target_date)
@@ -4174,6 +4222,13 @@ def run_cpc_recovery_mode(
 
     expense_rows = aggregate_rows(list(expense_rows_by_key.values()))
     ad_attribution_rows = aggregate_ad_attribution_rows(list(ad_attribution_rows_by_key.values()))
+
+    if campaign_ids and not expense_rows and not ad_attribution_rows:
+        summary["status"] = "expected_row_not_found"
+        summary["reason"] = "campaign_scoped_report_has_no_matching_rows"
+        summary["expense_rows_count"] = 0
+        summary["attribution_rows_count"] = 0
+        return summary
 
     if write:
         save_rows(expense_rows)
@@ -4757,6 +4812,7 @@ def run():
             no_write=bool(args.no_write or not args.write),
             db_client=supabase,
             campaign_ids=list(args.campaign_id or []),
+            existing_report_uuid=str(args.existing_report_uuid or ""),
         )
         print("Ozon Performance CPC recovery summary:")
         print(json.dumps(sanitize_value(summary), ensure_ascii=False, indent=2))

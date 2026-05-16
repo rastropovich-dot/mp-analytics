@@ -216,6 +216,35 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         self.assertEqual(summary["preflight"]["stale_progress"]["campaign_count"], 10)
         self.assertTrue(summary["preflight"]["stale_progress_ignored"])
 
+    def test_campaign_id_limits_selection_to_one_campaign_and_one_submit(self):
+        client = _FakeClient()
+        campaigns = [_sample_campaign("24375352"), _sample_campaign("24375331")]
+
+        summary = loader.run_cpc_recovery_mode(
+            client=client,
+            target_date="2026-05-12",
+            group_by="DATE",
+            requested_batch_size=10,
+            max_stats_campaigns=1800,
+            dry_run=True,
+            write=False,
+            approve_write=False,
+            ignore_stale_progress_for_date_only=True,
+            no_write=True,
+            db_client=_FakeDbClient({"marketplace_expenses": [], "ozon_daily_sku_ad_attribution": []}),
+            campaigns=campaigns,
+            campaign_ids=["24375352"],
+            fetch_batch_fn=mock.Mock(return_value={"uuid": "uuid-1", "report_data": _sample_report()}),
+        )
+
+        self.assertEqual(summary["preflight"]["requested_campaign_ids"], ["24375352"])
+        self.assertEqual(summary["preflight"]["selected_campaign_ids"], ["24375352"])
+        self.assertEqual(summary["preflight"]["campaign_count"], 1)
+        self.assertEqual(summary["preflight"]["campaign_units"], 1)
+        self.assertEqual(summary["preflight"]["total_batches"], 1)
+        self.assertEqual(summary["preflight"]["expected_statistics_json_submit_count"], 1)
+        self.assertEqual(summary["statistics_json_submit_attempts"], 1)
+
     def test_dry_run_builds_cpc_rows_and_does_not_write(self):
         client = _FakeClient()
         db_client = _FakeDbClient({"marketplace_expenses": [], "ozon_daily_sku_ad_attribution": []})

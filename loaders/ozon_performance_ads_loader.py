@@ -771,6 +771,12 @@ def parse_args():
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
+    parser.add_argument(
+        "--campaign-id",
+        action="append",
+        default=[],
+        help="Optional CPC recovery filter. Repeat to restrict recovery to specific campaign IDs.",
+    )
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
 
@@ -3958,10 +3964,19 @@ def build_cpc_recovery_plan(
     max_stats_campaigns,
     db_client=None,
     campaigns=None,
+    campaign_ids=None,
 ):
     campaigns = campaigns if campaigns is not None else list_campaigns_stateless(client.ensure_token())
     selection = build_daily_cpc_selection(campaigns, target_date, target_date, "complete")
     selected_campaigns = list(selection["selected_campaigns"])
+    requested_campaign_ids = preserve_campaign_id_order(campaign_ids or [])
+    requested_campaign_ids_set = set(requested_campaign_ids)
+    if requested_campaign_ids_set:
+        selected_campaigns = [
+            campaign
+            for campaign in selected_campaigns
+            if str(campaign.get("id") or campaign.get("campaignId") or "") in requested_campaign_ids_set
+        ]
     ordered_campaign_ids = preserve_campaign_id_order(
         [campaign.get("id") or campaign.get("campaignId") for campaign in selected_campaigns]
     )
@@ -3988,6 +4003,8 @@ def build_cpc_recovery_plan(
         "stale_progress": stale_progress or {},
         "downstream_verification": downstream_verification,
         "cpc_missing_globally": not bool(downstream_verification.get("materialized")),
+        "requested_campaign_ids": requested_campaign_ids,
+        "selected_campaign_ids": ordered_campaign_ids,
         "ordered_campaign_ids": ordered_campaign_ids,
         "cpc_batches": cpc_batches,
         "campaigns_by_id": {
@@ -4017,6 +4034,7 @@ def run_cpc_recovery_mode(
     no_write=True,
     db_client=None,
     campaigns=None,
+    campaign_ids=None,
     fetch_batch_fn=None,
 ):
     if write and not approve_write:
@@ -4031,6 +4049,7 @@ def run_cpc_recovery_mode(
         max_stats_campaigns,
         db_client=db_client,
         campaigns=campaigns,
+        campaign_ids=campaign_ids,
     )
     stale_progress = plan.get("stale_progress") or {}
     stale_progress_summary = {
@@ -4066,6 +4085,8 @@ def run_cpc_recovery_mode(
             "downstream_verification": plan["downstream_verification"],
             "stale_progress": stale_progress_summary,
             "campaign_count": plan["campaign_count"],
+            "requested_campaign_ids": list(plan.get("requested_campaign_ids") or []),
+            "selected_campaign_ids": list(plan.get("selected_campaign_ids") or []),
             "batch_size": plan["batch_size"],
             "total_batches": plan["total_batches"],
             "campaign_units": plan["campaign_units"],
@@ -4732,6 +4753,7 @@ def run():
             ignore_stale_progress_for_date_only=bool(args.ignore_stale_progress_for_date_only),
             no_write=bool(args.no_write or not args.write),
             db_client=supabase,
+            campaign_ids=list(args.campaign_id or []),
         )
         print("Ozon Performance CPC recovery summary:")
         print(json.dumps(sanitize_value(summary), ensure_ascii=False, indent=2))

@@ -522,6 +522,11 @@ def build_rows(date_from, date_to):
         stock_status = str(stock_quality_row.get("stock_status") or "")
         stock_issue_type = str(stock_quality_row.get("issue_type") or "")
         organic_reconciliation_status = str(reconciliation_row.get("reconciliation_status") or "")
+        if not organic_reconciliation_status:
+            if organic_status and organic_status != "ok":
+                organic_reconciliation_status = organic_status
+            elif organic_warning:
+                organic_reconciliation_status = "warning"
         unreconciled_revenue = num(reconciliation_row.get("unreconciled_revenue"))
 
         if run_status in {"partial_ads", "partial_quota", "failed"}:

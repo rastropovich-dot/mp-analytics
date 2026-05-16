@@ -710,7 +710,15 @@ def parse_args():
         ),
     )
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
-    parser.add_argument("--campaign-id", help="Single campaign id for statistics-json-probe mode")
+    parser.add_argument(
+        "--campaign-id",
+        action="append",
+        default=[],
+        help=(
+            "Campaign id filter. statistics-json-probe uses the first value; "
+            "cpc-recovery can repeat it to restrict recovery to specific campaigns."
+        ),
+    )
     parser.add_argument("--days-back", type=int, default=30)
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
@@ -771,12 +779,6 @@ def parse_args():
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
-    parser.add_argument(
-        "--campaign-id",
-        action="append",
-        default=[],
-        help="Optional CPC recovery filter. Repeat to restrict recovery to specific campaign IDs.",
-    )
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
 
@@ -4559,6 +4561,7 @@ def run():
     if args.mode == "statistics-json-probe":
         if not args.campaign_id:
             raise RuntimeError("statistics-json-probe mode requires --campaign-id")
+        probe_campaign_id = str((args.campaign_id or [None])[0] or "")
         if date_from != date_to:
             raise RuntimeError(
                 "statistics-json-probe mode supports exactly one calendar day. "
@@ -4566,7 +4569,7 @@ def run():
             )
 
         cooldown_until = client.get_cooldown(client.scoped_state_key("statistics_json"))
-        print_statistics_json_probe_plan(args.campaign_id, date_from, date_to, cooldown_until)
+        print_statistics_json_probe_plan(probe_campaign_id, date_from, date_to, cooldown_until)
         if args.plan_only:
             return
         if cooldown_until:
@@ -4580,7 +4583,7 @@ def run():
         try:
             try:
                 uuid, status, report_data, download_headers = client.fetch_statistics_json_report(
-                    [str(args.campaign_id)],
+                    [probe_campaign_id],
                     date_from,
                     date_to,
                     args.group_by,
@@ -4642,7 +4645,7 @@ def run():
             date_from,
             date_to,
             args.search_promo_report_type,
-            campaign_id=args.campaign_id,
+            campaign_id=str((args.campaign_id or [None])[0] or ""),
         )
         if args.plan_only:
             return
@@ -4659,7 +4662,7 @@ def run():
                 args.search_promo_report_type,
                 date_from,
                 date_to,
-                campaign_id=args.campaign_id,
+                campaign_id=str((args.campaign_id or [None])[0] or ""),
                 return_meta=True,
             )
             http_requests_after = len(client.state.get("request_history", []) or [])
@@ -4681,7 +4684,7 @@ def run():
                 "total_spend": report_check["total_spend"],
                 "keyword_hits": report_check["keyword_hits"],
                 "sample_rows": report_check["sample_rows"],
-                "campaign_id": str(args.campaign_id or ""),
+                "campaign_id": str((args.campaign_id or [None])[0] or ""),
                 "writes_marketplace_expenses": False,
                 "writes_ozon_daily_sku_ad_attribution": False,
             }, ensure_ascii=False, indent=2))

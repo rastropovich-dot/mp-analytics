@@ -51,6 +51,11 @@ def parse_args():
         action="store_true",
         help="Skip Excel export step. Useful as a temporary mitigation if export causes memory pressure.",
     )
+    parser.add_argument(
+        "--skip-decision",
+        action="store_true",
+        help="Skip Decision: SKU daily input step. Useful as an emergency mitigation if decision rebuild causes memory pressure.",
+    )
     return parser.parse_args()
 
 
@@ -138,6 +143,9 @@ def main():
 
     for title, command in STEPS:
         if args.skip_excel and title.startswith("Excel:"):
+            print(f"⏭️ Пропускаем шаг: {title}")
+            continue
+        if args.skip_decision and title == "Decision: SKU daily input":
             print(f"⏭️ Пропускаем шаг: {title}")
             continue
         if args.skip_telegram and title.startswith("Telegram:"):

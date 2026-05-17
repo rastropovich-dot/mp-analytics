@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--date", help="single-day shortcut, sets both --date-from and --date-to")
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
+    parser.add_argument("--sku", help="Optional marketplace_sku filter for targeted debug/rebuild.")
     parser.add_argument("--days-back", type=int, default=7)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
@@ -408,31 +409,50 @@ def tokens(value):
     return {item.strip() for item in str(value).split(",") if item and item.strip()}
 
 
-def build_rows(date_from, date_to):
+def build_rows(date_from, date_to, sku_filter=None):
     history_from = (datetime.fromisoformat(date_from).date() - timedelta(days=29)).isoformat()
+    if sku_filter:
+        print(f"[decision] target sku filter: {sku_filter}")
+    print(f"[decision] load_daily_kpi history_from={history_from} date_to={date_to}")
     kpi_rows = load_daily_kpi(history_from, date_to)
+    print(f"[decision] load_daily_kpi done rows={len(kpi_rows)}")
     by_sku, current_rows = build_history_indexes(kpi_rows)
+    print(f"[decision] load_organic_rows date_from={date_from} date_to={date_to}")
+    organic_rows_list = load_organic_rows(date_from, date_to)
+    print(f"[decision] load_organic_rows done rows={len(organic_rows_list)}")
     organic_rows = {
         (row.get("sale_date"), str(row.get("marketplace_sku") or "")): row
-        for row in load_organic_rows(date_from, date_to)
+        for row in organic_rows_list
         if row.get("sale_date") and row.get("marketplace_sku")
     }
+    print(f"[decision] load_recent_stock history_from={history_from} date_to={date_to}")
     latest_stock = load_recent_stock(history_from, date_to)
+    print("[decision] load_recent_stock done")
     latest_stock_by_stock_sku = latest_stock.get("by_stock_sku", {})
     latest_stock_by_decision_sku = latest_stock.get("by_decision_sku", {})
     latest_stock_by_article = latest_stock.get("by_article", {})
+    print("[decision] load_identity_stock_evidence")
     identity_stock = load_identity_stock_evidence()
+    print("[decision] load_identity_stock_evidence done")
     identity_stock_by_decision_sku = identity_stock.get("by_decision_sku", {})
     identity_stock_by_article = identity_stock.get("by_article", {})
+    print(f"[decision] load_recent_price_points history_from={history_from} date_to={date_to}")
     latest_price = load_recent_price_points(history_from, date_to)
+    print("[decision] load_recent_price_points done")
+    print(f"[decision] load_latest_ozon_run_status date_from={date_from} date_to={date_to}")
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
+    print("[decision] load_latest_ozon_run_status done")
+    print(f"[decision] build_stock_quality_rows date_from={date_from} date_to={date_to}")
     stock_quality_rows, _ = build_stock_quality_rows(date_from, date_to)
+    print(f"[decision] build_stock_quality_rows done rows={len(stock_quality_rows)}")
     stock_quality_by_key = {
         (row.get("issue_date"), str(row.get("marketplace_sku") or "")): row
         for row in stock_quality_rows
         if row.get("issue_date") and row.get("marketplace_sku")
     }
+    print(f"[decision] build_reconciliation_rows date_from={date_from} date_to={date_to}")
     reconciliation_rows, _ = build_reconciliation_rows(date_from, date_to)
+    print(f"[decision] build_reconciliation_rows done rows={len(reconciliation_rows)}")
     reconciliation_by_key = {
         (row.get("sale_date"), str(row.get("marketplace_sku") or "")): row
         for row in reconciliation_rows
@@ -441,8 +461,16 @@ def build_rows(date_from, date_to):
 
     rows = []
     summary = defaultdict(int)
+    candidate_keys = sorted(current_rows.items())
+    if sku_filter:
+        candidate_keys = [
+            ((kpi_date, sku), row)
+            for (kpi_date, sku), row in candidate_keys
+            if str(sku) == str(sku_filter)
+        ]
+    print(f"[decision] build loop candidates={len(candidate_keys)}")
 
-    for (kpi_date, sku), row in sorted(current_rows.items()):
+    for (kpi_date, sku), row in candidate_keys:
         if not (date_from <= kpi_date <= date_to):
             continue
 
@@ -640,6 +668,7 @@ def build_rows(date_from, date_to):
         summary[f"decision_status:{decision_status}"] += 1
         summary[f"data_quality:{data_quality_status}"] += 1
 
+    print(f"[decision] build loop done rows={len(rows)}")
     return rows, summary
 
 
@@ -648,13 +677,16 @@ def save_rows(rows):
         print("Нет decision input строк для записи")
         return
 
+    print(f"[decision] save_rows start total_rows={len(rows)}")
     for batch in chunks(rows, 500):
+        print(f"[decision] save_rows batch_size={len(batch)}")
         supabase.table("sku_decision_daily_input").upsert(
             batch,
             on_conflict="kpi_date,marketplace_code,marketplace_sku",
         ).execute()
 
     print(f"✅ sku_decision_daily_input обновлена: {len(rows)} строк")
+    print("[decision] save_rows done")
 
 
 def print_sample(rows, limit=10):
@@ -665,13 +697,14 @@ def print_sample(rows, limit=10):
 def main():
     args = parse_args()
     date_from, date_to = resolve_date_range(args)
-    rows, summary = build_rows(date_from, date_to)
+    rows, summary = build_rows(date_from, date_to, sku_filter=args.sku)
 
     print("SKU decision input summary:")
     print(
         {
             "date_from": date_from,
             "date_to": date_to,
+            "sku_filter": args.sku,
             "rows": len(rows),
             "summary": dict(summary),
         }

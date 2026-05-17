@@ -97,6 +97,9 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
             date_from=None,
             date_to=None,
             sku="1300079194",
+            sku_offset=0,
+            sku_batch_size=None,
+            list_skus_only=False,
             days_back=7,
             dry_run=True,
             debug_sample=False,
@@ -114,6 +117,9 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
             date_from=None,
             date_to=None,
             sku="1300079194",
+            sku_offset=0,
+            sku_batch_size=None,
+            list_skus_only=False,
             days_back=7,
             dry_run=False,
             debug_sample=False,
@@ -137,6 +143,138 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
         self.assertIn("missing_total", row["data_quality_status"])
         self.assertIn("zero_total_with_ad_attribution", row["data_quality_status"])
         self.assertNotEqual(row["organic_reconciliation_status"], "clean")
+
+    def test_batch_selection_uses_sorted_skus_deterministically(self):
+        kpi_rows = [
+            _kpi_row("300"),
+            _kpi_row("100"),
+            _kpi_row("200"),
+        ]
+        organic_rows = [_organic_row("300"), _organic_row("100"), _organic_row("200")]
+        with self._patch_dependencies(kpi_rows, organic_rows):
+            rows, summary = decision.build_rows(
+                "2026-05-12",
+                "2026-05-12",
+                sku_offset=1,
+                sku_batch_size=1,
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["marketplace_sku"], "200")
+        self.assertEqual(summary["total_available_skus"], 3)
+        self.assertEqual(summary["selected_sku_count"], 1)
+        self.assertEqual(summary["first_selected_sku"], "200")
+        self.assertEqual(summary["last_selected_sku"], "200")
+
+    def test_batch_dry_run_does_not_call_save_rows(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-12",
+            date_from=None,
+            date_to=None,
+            sku=None,
+            sku_offset=0,
+            sku_batch_size=2,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=True,
+            debug_sample=False,
+        )
+        kpi_rows = [_kpi_row("1300079194"), _kpi_row("9999999999", article="A2", product_name="Item 2")]
+        organic_rows = [_organic_row("1300079194"), _organic_row("9999999999")]
+        with self._patch_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "parse_args", return_value=args), \
+            mock.patch.object(decision, "save_rows") as save_rows_mock:
+            decision.main()
+        save_rows_mock.assert_not_called()
+
+    def test_batch_write_calls_save_rows_only_with_selected_rows(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-12",
+            date_from=None,
+            date_to=None,
+            sku=None,
+            sku_offset=0,
+            sku_batch_size=1,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=False,
+            debug_sample=False,
+        )
+        kpi_rows = [_kpi_row("1300079194"), _kpi_row("9999999999", article="A2", product_name="Item 2")]
+        organic_rows = [_organic_row("1300079194"), _organic_row("9999999999")]
+        with self._patch_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "parse_args", return_value=args), \
+            mock.patch.object(decision, "save_rows") as save_rows_mock:
+            decision.main()
+        save_rows_mock.assert_called_once()
+        saved_rows = save_rows_mock.call_args[0][0]
+        self.assertEqual(len(saved_rows), 1)
+        self.assertEqual(saved_rows[0]["marketplace_sku"], "1300079194")
+
+    def test_sku_and_batch_args_are_mutually_exclusive(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-12",
+            date_from=None,
+            date_to=None,
+            sku="1300079194",
+            sku_offset=0,
+            sku_batch_size=100,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=True,
+            debug_sample=False,
+        )
+        with mock.patch.object(decision, "parse_args", return_value=args):
+            with self.assertRaises(RuntimeError):
+                decision.main()
+
+    def test_zero_batch_writes_nothing(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-12",
+            date_from=None,
+            date_to=None,
+            sku=None,
+            sku_offset=10,
+            sku_batch_size=5,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=False,
+            debug_sample=False,
+        )
+        kpi_rows = [_kpi_row("1300079194")]
+        organic_rows = [_organic_row("1300079194")]
+        with self._patch_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "parse_args", return_value=args), \
+            mock.patch.object(decision, "save_rows") as save_rows_mock:
+            decision.main()
+        save_rows_mock.assert_not_called()
+
+    def test_1300079194_like_row_can_be_included_in_batch(self):
+        kpi_rows = [
+            _kpi_row("1200000000", article="A0", product_name="Item 0", ad_spend=0, ad_orders_revenue=0, organic_orders_revenue=5000),
+            _kpi_row("1300079194"),
+            _kpi_row("1400000000", article="A1", product_name="Item 1", ad_spend=0, ad_orders_revenue=0, organic_orders_revenue=7000),
+        ]
+        organic_rows = [
+            _organic_row("1200000000", ad_orders_revenue=0, organic_orders_revenue=5000),
+            _organic_row("1300079194"),
+            _organic_row("1400000000", ad_orders_revenue=0, organic_orders_revenue=7000),
+        ]
+        with self._patch_dependencies(kpi_rows, organic_rows):
+            rows, _ = decision.build_rows(
+                "2026-05-12",
+                "2026-05-12",
+                sku_offset=1,
+                sku_batch_size=2,
+            )
+        target_rows = [row for row in rows if row["marketplace_sku"] == "1300079194"]
+        self.assertEqual(len(target_rows), 1)
+        self.assertAlmostEqual(target_rows[0]["ad_spend"], 1412.30, places=2)
+        self.assertAlmostEqual(target_rows[0]["ad_attributed_revenue"], 112863.0, places=2)
+        self.assertAlmostEqual(target_rows[0]["organic_revenue"], 0.0, places=2)
 
 
 if __name__ == "__main__":

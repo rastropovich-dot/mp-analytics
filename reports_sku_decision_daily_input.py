@@ -31,6 +31,9 @@ def parse_args():
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--sku", help="Optional marketplace_sku filter for targeted debug/rebuild.")
+    parser.add_argument("--sku-offset", type=int, default=0, help="Optional offset in sorted SKU list for batched rebuilds.")
+    parser.add_argument("--sku-batch-size", type=int, help="Optional batch size in sorted SKU list for batched rebuilds.")
+    parser.add_argument("--list-skus-only", action="store_true", help="Print selected SKU list metadata without building decision rows.")
     parser.add_argument("--days-back", type=int, default=7)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug-sample", action="store_true")
@@ -119,6 +122,62 @@ def load_daily_kpi(history_from, date_to):
         ],
         order="kpi_date",
     )
+
+
+def resolve_target_skus(current_rows, date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size=None):
+    available_skus = sorted(
+        {
+            str(sku)
+            for (kpi_date, sku) in current_rows.keys()
+            if sku and date_from <= str(kpi_date) <= date_to
+        }
+    )
+
+    if sku_filter:
+        selected_skus = [str(sku_filter)] if str(sku_filter) in available_skus else []
+    elif sku_batch_size is not None:
+        selected_skus = available_skus[sku_offset:sku_offset + sku_batch_size]
+    else:
+        selected_skus = available_skus
+
+    return available_skus, selected_skus
+
+
+def build_sku_batch_metadata(available_skus, selected_skus, sku_filter=None, sku_offset=0, sku_batch_size=None):
+    return {
+        "status": "ok" if selected_skus else "empty_batch",
+        "sku_filter": str(sku_filter) if sku_filter else None,
+        "sku_offset": sku_offset,
+        "sku_batch_size": sku_batch_size,
+        "total_available_skus": len(available_skus),
+        "selected_sku_count": len(selected_skus),
+        "first_selected_sku": selected_skus[0] if selected_skus else None,
+        "last_selected_sku": selected_skus[-1] if selected_skus else None,
+    }
+
+
+def list_target_skus(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size=None):
+    history_from = (datetime.fromisoformat(date_from).date() - timedelta(days=29)).isoformat()
+    print(f"[decision] list_skus load_daily_kpi history_from={history_from} date_to={date_to}")
+    kpi_rows = load_daily_kpi(history_from, date_to)
+    print(f"[decision] list_skus load_daily_kpi done rows={len(kpi_rows)}")
+    _, current_rows = build_history_indexes(kpi_rows)
+    available_skus, selected_skus = resolve_target_skus(
+        current_rows,
+        date_from,
+        date_to,
+        sku_filter=sku_filter,
+        sku_offset=sku_offset,
+        sku_batch_size=sku_batch_size,
+    )
+    metadata = build_sku_batch_metadata(
+        available_skus,
+        selected_skus,
+        sku_filter=sku_filter,
+        sku_offset=sku_offset,
+        sku_batch_size=sku_batch_size,
+    )
+    return selected_skus, metadata
 
 
 def load_organic_rows(date_from, date_to):
@@ -409,7 +468,7 @@ def tokens(value):
     return {item.strip() for item in str(value).split(",") if item and item.strip()}
 
 
-def build_rows(date_from, date_to, sku_filter=None):
+def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size=None):
     history_from = (datetime.fromisoformat(date_from).date() - timedelta(days=29)).isoformat()
     if sku_filter:
         print(f"[decision] target sku filter: {sku_filter}")
@@ -417,6 +476,28 @@ def build_rows(date_from, date_to, sku_filter=None):
     kpi_rows = load_daily_kpi(history_from, date_to)
     print(f"[decision] load_daily_kpi done rows={len(kpi_rows)}")
     by_sku, current_rows = build_history_indexes(kpi_rows)
+    available_skus, selected_skus = resolve_target_skus(
+        current_rows,
+        date_from,
+        date_to,
+        sku_filter=sku_filter,
+        sku_offset=sku_offset,
+        sku_batch_size=sku_batch_size,
+    )
+    batch_metadata = build_sku_batch_metadata(
+        available_skus,
+        selected_skus,
+        sku_filter=sku_filter,
+        sku_offset=sku_offset,
+        sku_batch_size=sku_batch_size,
+    )
+    print(
+        "[decision] target selection "
+        f"available={batch_metadata['total_available_skus']} "
+        f"selected={batch_metadata['selected_sku_count']} "
+        f"offset={sku_offset} "
+        f"batch_size={sku_batch_size}"
+    )
     print(f"[decision] load_organic_rows date_from={date_from} date_to={date_to}")
     organic_rows_list = load_organic_rows(date_from, date_to)
     print(f"[decision] load_organic_rows done rows={len(organic_rows_list)}")
@@ -462,11 +543,12 @@ def build_rows(date_from, date_to, sku_filter=None):
     rows = []
     summary = defaultdict(int)
     candidate_keys = sorted(current_rows.items())
-    if sku_filter:
+    if selected_skus != available_skus:
+        selected_sku_set = set(selected_skus)
         candidate_keys = [
             ((kpi_date, sku), row)
             for (kpi_date, sku), row in candidate_keys
-            if str(sku) == str(sku_filter)
+            if str(sku) in selected_sku_set
         ]
     print(f"[decision] build loop candidates={len(candidate_keys)}")
 
@@ -669,6 +751,8 @@ def build_rows(date_from, date_to, sku_filter=None):
         summary[f"data_quality:{data_quality_status}"] += 1
 
     print(f"[decision] build loop done rows={len(rows)}")
+    for key, value in batch_metadata.items():
+        summary[key] = value
     return rows, summary
 
 
@@ -696,8 +780,39 @@ def print_sample(rows, limit=10):
 
 def main():
     args = parse_args()
+    if args.sku and args.sku_batch_size is not None:
+        raise RuntimeError("--sku нельзя комбинировать с --sku-batch-size/--sku-offset")
+    if args.sku_offset < 0:
+        raise RuntimeError("--sku-offset должен быть >= 0")
+    if args.sku_batch_size is not None and args.sku_batch_size <= 0:
+        raise RuntimeError("--sku-batch-size должен быть > 0")
     date_from, date_to = resolve_date_range(args)
-    rows, summary = build_rows(date_from, date_to, sku_filter=args.sku)
+    if args.list_skus_only:
+        selected_skus, metadata = list_target_skus(
+            date_from,
+            date_to,
+            sku_filter=args.sku,
+            sku_offset=args.sku_offset,
+            sku_batch_size=args.sku_batch_size,
+        )
+        print("SKU decision input batch selection:")
+        print(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                **metadata,
+            }
+        )
+        print_sample([{"marketplace_sku": sku} for sku in selected_skus], limit=20)
+        return
+
+    rows, summary = build_rows(
+        date_from,
+        date_to,
+        sku_filter=args.sku,
+        sku_offset=args.sku_offset,
+        sku_batch_size=args.sku_batch_size,
+    )
 
     print("SKU decision input summary:")
     print(
@@ -705,8 +820,28 @@ def main():
             "date_from": date_from,
             "date_to": date_to,
             "sku_filter": args.sku,
+            "sku_offset": args.sku_offset,
+            "sku_batch_size": args.sku_batch_size,
+            "total_available_skus": summary.get("total_available_skus"),
+            "selected_sku_count": summary.get("selected_sku_count"),
+            "first_selected_sku": summary.get("first_selected_sku"),
+            "last_selected_sku": summary.get("last_selected_sku"),
+            "status": summary.get("status"),
             "rows": len(rows),
-            "summary": dict(summary),
+            "summary": {
+                key: value
+                for key, value in dict(summary).items()
+                if key not in {
+                    "total_available_skus",
+                    "selected_sku_count",
+                    "first_selected_sku",
+                    "last_selected_sku",
+                    "sku_filter",
+                    "sku_offset",
+                    "sku_batch_size",
+                    "status",
+                }
+            },
         }
     )
 
@@ -715,6 +850,10 @@ def main():
 
     if args.dry_run:
         print("Dry run: sku_decision_daily_input не обновлялась")
+        return
+
+    if not rows:
+        print("Empty batch: sku_decision_daily_input не обновлялась")
         return
 
     save_rows(rows)

@@ -286,17 +286,21 @@ def aggregate_stock_rows(rows, key_field):
     return aggregated
 
 
-def load_recent_stock(history_from, date_to):
+def load_recent_stock(history_from, date_to, sku_filter=None, article_filter=None):
     stock_from = (datetime.now(ZoneInfo(APP_TIMEZONE)).date() - timedelta(days=30)).isoformat()
-    decision_sku_by_article = build_decision_sku_by_article_map(history_from, date_to)
-    rows = fetch_all(
-        "stock_daily",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("stock_date", "gte", stock_from),
-        ],
-        order="stock_date",
-    )
+    if sku_filter and article_filter:
+        decision_sku_by_article = {str(article_filter): str(sku_filter)}
+    else:
+        decision_sku_by_article = build_decision_sku_by_article_map(history_from, date_to)
+
+    stock_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("stock_date", "gte", stock_from),
+    ]
+    if article_filter:
+        stock_filters.append(("article", "eq", str(article_filter)))
+
+    rows = fetch_all("stock_daily", filters=stock_filters, order="stock_date")
 
     latest_by_stock_sku = aggregate_stock_rows(rows, "marketplace_sku")
     latest_by_article = aggregate_stock_rows(rows, "article")
@@ -304,9 +308,15 @@ def load_recent_stock(history_from, date_to):
     decision_rows = []
     for stock in latest_by_stock_sku.values():
         article = str(stock.get("article") or "").strip()
+        if article_filter and article and article != str(article_filter):
+            continue
         decision_sku = str(stock.get("decision_marketplace_sku") or "").strip()
         if not decision_sku and article:
             decision_sku = decision_sku_by_article.get(article, "")
+        if not decision_sku and sku_filter and article and article == str(article_filter or ""):
+            decision_sku = str(sku_filter)
+        if sku_filter and decision_sku and decision_sku != str(sku_filter):
+            continue
         if not decision_sku:
             continue
 
@@ -509,8 +519,24 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
         for row in organic_rows_list
         if row.get("sale_date") and row.get("marketplace_sku")
     }
+    selected_article = None
+    if sku_filter and selected_skus:
+        selected_row = current_rows.get((date_to, str(selected_skus[0]))) or next(
+            (
+                row
+                for (kpi_date, sku), row in sorted(current_rows.items())
+                if str(sku) == str(selected_skus[0]) and date_from <= str(kpi_date) <= date_to
+            ),
+            {},
+        )
+        selected_article = str(selected_row.get("article") or "").strip() or None
     print(f"[decision] load_recent_stock history_from={history_from} date_to={date_to}")
-    latest_stock = load_recent_stock(history_from, date_to)
+    latest_stock = load_recent_stock(
+        history_from,
+        date_to,
+        sku_filter=str(selected_skus[0]) if sku_filter and selected_skus else None,
+        article_filter=selected_article,
+    )
     print("[decision] load_recent_stock done")
     latest_stock_by_stock_sku = latest_stock.get("by_stock_sku", {})
     latest_stock_by_decision_sku = latest_stock.get("by_decision_sku", {})
@@ -526,17 +552,6 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
     print(f"[decision] load_latest_ozon_run_status date_from={date_from} date_to={date_to}")
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
     print("[decision] load_latest_ozon_run_status done")
-    selected_article = None
-    if sku_filter and selected_skus:
-        selected_row = current_rows.get((date_to, str(selected_skus[0]))) or next(
-            (
-                row
-                for (kpi_date, sku), row in sorted(current_rows.items())
-                if str(sku) == str(selected_skus[0]) and date_from <= str(kpi_date) <= date_to
-            ),
-            {},
-        )
-        selected_article = str(selected_row.get("article") or "").strip() or None
     print(f"[decision] build_stock_quality_rows date_from={date_from} date_to={date_to}")
     stock_quality_rows, _ = build_stock_quality_rows(
         date_from,

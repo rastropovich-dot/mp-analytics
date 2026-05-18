@@ -156,6 +156,89 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
             article_filter="F000283615",
         )
 
+    def test_targeted_mode_passes_narrow_recent_stock_filters(self):
+        with self._patch_dependencies([_kpi_row()], [_organic_row()]), \
+            mock.patch.object(
+                decision,
+                "load_recent_stock",
+                return_value={"by_stock_sku": {}, "by_decision_sku": {}, "by_article": {}, "decision_sku_by_article_count": 0},
+            ) as recent_stock_mock:
+            rows, _ = decision.build_rows("2026-05-12", "2026-05-12", sku_filter="1300079194")
+        self.assertEqual(len(rows), 1)
+        recent_stock_mock.assert_called_once_with(
+            "2026-04-13",
+            "2026-05-12",
+            sku_filter="1300079194",
+            article_filter="F000283615",
+        )
+
+    def test_load_recent_stock_with_filters_returns_only_selected_sku(self):
+        stock_rows = [
+            {
+                "stock_date": "2026-05-16",
+                "marketplace_sku": "product-a",
+                "article": "F000283615",
+                "stock_qty": 7,
+                "reserved_qty": 1,
+                "available_qty": 6,
+                "decision_marketplace_sku": "",
+                "stock_identity_status": None,
+            },
+            {
+                "stock_date": "2026-05-16",
+                "marketplace_sku": "product-b",
+                "article": "OTHER",
+                "stock_qty": 9,
+                "reserved_qty": 1,
+                "available_qty": 8,
+                "decision_marketplace_sku": "",
+                "stock_identity_status": None,
+            },
+        ]
+        with mock.patch.object(decision, "fetch_all", return_value=stock_rows) as fetch_all_mock, \
+            mock.patch.object(decision, "build_decision_sku_by_article_map") as map_mock:
+            result = decision.load_recent_stock(
+                "2026-04-17",
+                "2026-05-16",
+                sku_filter="1300079194",
+                article_filter="F000283615",
+            )
+        map_mock.assert_not_called()
+        fetch_all_mock.assert_called_once_with(
+            "stock_daily",
+            filters=[
+                ("marketplace_code", "eq", "ozon"),
+                ("stock_date", "gte", mock.ANY),
+                ("article", "eq", "F000283615"),
+            ],
+            order="stock_date",
+        )
+        self.assertEqual(sorted(result["by_decision_sku"].keys()), ["1300079194"])
+        self.assertAlmostEqual(result["by_decision_sku"]["1300079194"]["available_qty"], 6.0, places=2)
+
+    def test_broad_mode_keeps_broad_recent_stock_call(self):
+        with self._patch_dependencies([_kpi_row()], [_organic_row()]), \
+            mock.patch.object(
+                decision,
+                "load_recent_stock",
+                return_value={"by_stock_sku": {}, "by_decision_sku": {}, "by_article": {}, "decision_sku_by_article_count": 0},
+            ) as recent_stock_mock:
+            rows, _ = decision.build_rows("2026-05-12", "2026-05-12")
+        self.assertEqual(len(rows), 1)
+        recent_stock_mock.assert_called_once_with(
+            "2026-04-13",
+            "2026-05-12",
+            sku_filter=None,
+            article_filter=None,
+        )
+
+    def test_targeted_missing_stock_still_builds_row_with_warning(self):
+        with self._patch_dependencies([_kpi_row()], [_organic_row()]):
+            rows, _ = decision.build_rows("2026-05-12", "2026-05-12", sku_filter="1300079194")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("missing_stock", rows[0]["data_quality_status"])
+        self.assertEqual(rows[0]["decision_status"], "hold")
+
     def test_batch_selection_uses_sorted_skus_deterministically(self):
         kpi_rows = [
             _kpi_row("300"),

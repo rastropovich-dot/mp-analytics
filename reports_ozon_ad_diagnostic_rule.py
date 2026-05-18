@@ -45,15 +45,20 @@ KNOWN_CAMPAIGN_HINTS = {
 
 KNOWN_PARTIAL_DATES = {"2026-05-12"}
 LOOKBACK_WINDOWS = (3, 5, 7, 14)
+KNOWN_SKU_COGS = {
+    "1300079194": 32963.0,
+}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Dry-run diagnostic ad rule for one Ozon SKU.")
     parser.add_argument("--marketplace-code", default="ozon")
-    parser.add_argument("--sku", required=True)
+    parser.add_argument("--sku")
+    parser.add_argument("--top-ready", type=int, help="Run batch dry-run for top ready/ok/clean SKU on the target date.")
     parser.add_argument("--date", required=True)
     parser.add_argument("--campaign-id", action="append", dest="campaign_ids", default=[])
-    parser.add_argument("--cogs", type=float, required=True)
+    parser.add_argument("--cogs", type=float)
+    parser.add_argument("--cogs-source", default="manual_or_default")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -165,6 +170,44 @@ def load_decision_row(marketplace_code: str, sku: str, target_date: str):
         order="kpi_date",
     )
     return rows[0] if rows else None
+
+
+def load_ready_decision_rows(marketplace_code: str, target_date: str):
+    return fetch_all(
+        "sku_decision_daily_input",
+        filters=[
+            ("marketplace_code", "eq", marketplace_code),
+            ("kpi_date", "eq", target_date),
+            ("decision_status", "eq", "ready"),
+            ("data_quality_status", "eq", "ok"),
+            ("organic_reconciliation_status", "eq", "clean"),
+        ],
+        order="marketplace_sku",
+    )
+
+
+def discover_campaign_ids(marketplace_code: str, sku: str, target_date: str, lookback_days: int = 7):
+    date_from = iso_days_back(target_date, lookback_days)
+    rows = load_attribution_rows(marketplace_code, sku, date_from, target_date, [])
+    campaign_ids = sorted(
+        {
+            str(row.get("campaign_id") or "").strip()
+            for row in rows
+            if str(row.get("campaign_id") or "").strip()
+        }
+    )
+    return campaign_ids
+
+
+def resolve_cogs_for_sku(sku: str, manual_cogs: Optional[float], cogs_source: str):
+    if manual_cogs is not None:
+        return float(manual_cogs), "manual"
+    if cogs_source == "manual_or_default":
+        known = KNOWN_SKU_COGS.get(str(sku))
+        if known is not None:
+            return float(known), "known_default"
+        return None, "missing"
+    return None, "missing"
 
 
 def aggregate_expenses_by_date(expense_rows: List[dict]) -> Dict[str, dict]:
@@ -284,7 +327,8 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     orders_revenue_mismatch_pct = safe_div(orders_revenue_mismatch_abs, orders_revenue_from_ad_plus_organic)
     buyouts_qty = num(target_kpi_row.get("buyouts_qty"))
     buyouts_revenue = num(target_kpi_row.get("buyouts_amount_seller"))
-    cogs_total = buyouts_qty * num(cogs)
+    cogs_value = None if cogs is None else num(cogs)
+    cogs_total = None if cogs_value is None else buyouts_qty * cogs_value
     commission = num(target_expense_summary.get("commission"))
     logistics = num(target_expense_summary.get("logistics"))
     other = num(target_expense_summary.get("other"))
@@ -294,7 +338,7 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     controllable_ad_spend = cpc_spend
     non_controllable_ad_spend = cpo_all_spend + selected_cpo_spend
     total_ad_spend = controllable_ad_spend + non_controllable_ad_spend
-    net_estimate = buyouts_revenue - cogs_total - commission - logistics - other - total_ad_spend
+    net_estimate = None if cogs_total is None else buyouts_revenue - cogs_total - commission - logistics - other - total_ad_spend
     total_order_tacos = safe_div(total_ad_spend, orders_revenue_used_for_tacos)
     cpc_order_tacos = safe_div(cpc_spend, orders_revenue_used_for_tacos)
     cpo_all_order_tacos = safe_div(cpo_all_spend, orders_revenue_used_for_tacos)
@@ -321,7 +365,7 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
         "non_controllable_ad_spend": round(non_controllable_ad_spend, 2),
         "total_ad_spend": round(total_ad_spend, 2),
         "actual_ad_spend": round(total_ad_spend, 2),
-        "net_estimate": round(net_estimate, 2),
+        "net_estimate": round(net_estimate, 2) if net_estimate is not None else None,
         "total_order_tacos": round(total_order_tacos, 4) if total_order_tacos is not None else None,
         "cpc_order_tacos": round(cpc_order_tacos, 4) if cpc_order_tacos is not None else None,
         "cpo_all_order_tacos": round(cpo_all_order_tacos, 4) if cpo_all_order_tacos is not None else None,
@@ -335,7 +379,8 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
         "commission": round(commission, 2),
         "logistics": round(logistics, 2),
         "other": round(other, 2),
-        "cogs_total": round(cogs_total, 2),
+        "cogs_total": round(cogs_total, 2) if cogs_total is not None else None,
+        "cogs_missing": cogs_total is None,
     }
 
 
@@ -363,7 +408,9 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
         base_blockers.append(
             f"insufficient_buyout_history:buyouts_7d={buyout_lookbacks['buyouts_7d']}:buyouts_14d={buyout_lookbacks['buyouts_14d']}"
         )
-    if sku_economics["net_estimate"] <= 0:
+    if sku_economics["cogs_missing"]:
+        total_economics_reasons.append("cogs_missing")
+    elif sku_economics["net_estimate"] <= 0:
         base_blockers.append(f"net_estimate_non_positive={sku_economics['net_estimate']}")
 
     total_order_tacos = sku_economics.get("total_order_tacos")
@@ -637,6 +684,137 @@ def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids
     }
 
 
+def choose_best_campaign(campaigns: List[dict]):
+    if not campaigns:
+        return None
+
+    def score(campaign):
+        status_rank = {"GREEN": 3, "YELLOW": 2, "RED": 1}.get(campaign.get("status"), 0)
+        metrics = campaign.get("windows", {}).get("5d", {})
+        return (
+            status_rank,
+            num(metrics.get("revenue")),
+            num(metrics.get("orders")),
+            num(metrics.get("roas") or 0),
+        )
+
+    return sorted(campaigns, key=score, reverse=True)[0]
+
+
+def choose_worst_campaign(campaigns: List[dict]):
+    if not campaigns:
+        return None
+
+    def score(campaign):
+        status_rank = {"GREEN": 3, "YELLOW": 2, "RED": 1}.get(campaign.get("status"), 0)
+        metrics = campaign.get("windows", {}).get("5d", {})
+        return (
+            status_rank,
+            num(metrics.get("revenue")),
+            num(metrics.get("orders")),
+            num(metrics.get("roas") or 0),
+        )
+
+    return sorted(campaigns, key=score)[0]
+
+
+def summarize_batch_row(report: dict):
+    best_campaign = choose_best_campaign(report.get("campaigns") or [])
+    worst_campaign = choose_worst_campaign(report.get("campaigns") or [])
+    return {
+        "marketplace_sku": report["sku"],
+        "article": report.get("article"),
+        "product_name": report.get("product_name"),
+        "orders_revenue": report["sku_economics"].get("orders_revenue"),
+        "buyouts_revenue": report["sku_economics"].get("buyouts_revenue"),
+        "total_ad_spend": report["sku_economics"].get("total_ad_spend"),
+        "cpc_spend": report["sku_economics"].get("cpc_spend"),
+        "selected_cpo_spend": report["sku_economics"].get("selected_cpo_spend"),
+        "total_order_tacos": report["sku_economics"].get("total_order_tacos"),
+        "cpc_order_tacos": report["sku_economics"].get("cpc_order_tacos"),
+        "selected_cpo_order_tacos": report["sku_economics"].get("selected_cpo_order_tacos"),
+        "buyout_tacos": report["sku_economics"].get("buyout_tacos"),
+        "cpc_campaign_count": len(report.get("campaigns") or []),
+        "best_campaign_id": best_campaign.get("campaign_id") if best_campaign else None,
+        "best_campaign_status": best_campaign.get("status") if best_campaign else None,
+        "worst_campaign_id": worst_campaign.get("campaign_id") if worst_campaign else None,
+        "worst_campaign_status": worst_campaign.get("status") if worst_campaign else None,
+        "final_status": report["final_recommendation"].get("status"),
+        "final_recommendation": report["final_recommendation"].get("action"),
+        "blockers": report["eligibility"].get("reasons") or [],
+        "live_action_allowed": False,
+        "cogs_missing": report["sku_economics"].get("cogs_missing"),
+    }
+
+
+def run_batch_dry_report(marketplace_code: str, target_date: str, top_ready: int, manual_cogs: Optional[float], cogs_source: str):
+    ready_rows = load_ready_decision_rows(marketplace_code, target_date)
+    ready_skus = {str(row.get("marketplace_sku")): row for row in ready_rows}
+    if not ready_skus:
+        return {
+            "mode": "batch_dry_run",
+            "date": target_date,
+            "rows": [],
+            "summary": {"green": 0, "yellow": 0, "red": 0},
+            "common_blockers": [],
+            "db_writes": 0,
+            "api_calls": 0,
+            "campaign_mutations": 0,
+        }
+
+    kpi_rows = fetch_all(
+        "daily_sku_kpi",
+        filters=[
+            ("marketplace_code", "eq", marketplace_code),
+            ("kpi_date", "eq", target_date),
+            ("marketplace_sku", "in", sorted(ready_skus.keys())),
+        ],
+        order="kpi_date",
+    )
+    ranked = sorted(
+        kpi_rows,
+        key=lambda row: (
+            num(row.get("buyouts_amount_seller")),
+            num(row.get("orders_amount_seller")),
+        ),
+        reverse=True,
+    )[:top_ready]
+
+    reports = []
+    blocker_counter = defaultdict(int)
+    status_counter = defaultdict(int)
+    for row in ranked:
+        sku = str(row.get("marketplace_sku") or "")
+        campaign_ids = discover_campaign_ids(marketplace_code, sku, target_date, lookback_days=7)
+        cogs_value, cogs_resolution = resolve_cogs_for_sku(sku, manual_cogs, cogs_source)
+        report = run_dry_report(marketplace_code, sku, target_date, campaign_ids, cogs_value)
+        report["article"] = row.get("article")
+        report["product_name"] = row.get("product_name")
+        report["cogs_source"] = cogs_resolution
+        reports.append(report)
+        status_counter[report["final_recommendation"]["status"].lower()] += 1
+        for blocker in report["eligibility"].get("reasons") or []:
+            blocker_counter[blocker] += 1
+
+    summary_rows = [summarize_batch_row(report) for report in reports]
+    return {
+        "mode": "batch_dry_run",
+        "date": target_date,
+        "rows": summary_rows,
+        "summary": {
+            "green": status_counter.get("green", 0),
+            "yellow": status_counter.get("yellow", 0),
+            "red": status_counter.get("red", 0),
+        },
+        "common_blockers": sorted(blocker_counter.items(), key=lambda item: item[1], reverse=True),
+        "db_writes": 0,
+        "api_calls": 0,
+        "campaign_mutations": 0,
+        "pipeline_runs": 0,
+        "render_changes": 0,
+    }
+
+
 def run_dry_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float):
     history_from = iso_days_back(target_date, 14)
     kpi_rows = load_daily_kpi_rows(marketplace_code, sku, history_from, target_date)
@@ -658,16 +836,30 @@ def run_dry_report(marketplace_code: str, sku: str, target_date: str, campaign_i
 
 def main():
     args = parse_args()
-    if not args.campaign_ids:
-        raise RuntimeError("At least one --campaign-id is required")
+    if not args.sku and not args.top_ready:
+        raise RuntimeError("Either --sku or --top-ready is required")
+    if args.top_ready and args.sku:
+        raise RuntimeError("Use either --sku or --top-ready, not both")
 
-    report = run_dry_report(
-        args.marketplace_code,
-        args.sku,
-        args.date,
-        args.campaign_ids,
-        args.cogs,
-    )
+    if args.top_ready:
+        report = run_batch_dry_report(
+            args.marketplace_code,
+            args.date,
+            args.top_ready,
+            args.cogs,
+            args.cogs_source,
+        )
+    else:
+        if not args.campaign_ids:
+            raise RuntimeError("At least one --campaign-id is required")
+        cogs_value, _ = resolve_cogs_for_sku(args.sku, args.cogs, args.cogs_source)
+        report = run_dry_report(
+            args.marketplace_code,
+            args.sku,
+            args.date,
+            args.campaign_ids,
+            cogs_value,
+        )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

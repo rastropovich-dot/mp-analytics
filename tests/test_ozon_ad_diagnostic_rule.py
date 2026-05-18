@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import reports_ozon_ad_diagnostic_rule as rule
 
@@ -390,6 +391,93 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertIn("weaker_by_revenue_volume:24375352", by_campaign["24375331"]["reasons"])
         self.assertIn("weaker_by_roas:24375352", by_campaign["24375331"]["reasons"])
         self.assertIn("weaker_by_stability:24375352", by_campaign["24375331"]["reasons"])
+
+    def test_batch_selects_only_ready_ok_clean_sku(self):
+        ready_row = {
+            "kpi_date": "2026-05-16",
+            "marketplace_code": "ozon",
+            "marketplace_sku": "1300079194",
+            "decision_status": "ready",
+            "data_quality_status": "ok",
+            "organic_reconciliation_status": "clean",
+        }
+        kpi_row = _kpi_row()
+        with mock.patch.object(rule, "load_ready_decision_rows", return_value=[ready_row]), \
+            mock.patch.object(rule, "fetch_all", return_value=[kpi_row]), \
+            mock.patch.object(rule, "discover_campaign_ids", return_value=["24375352"]), \
+            mock.patch.object(rule, "run_dry_report", return_value={
+                "sku": "1300079194",
+                "sku_economics": {
+                    "orders_revenue": 221646.0,
+                    "buyouts_revenue": 223513.0,
+                    "total_ad_spend": 25417.14,
+                    "cpc_spend": 3369.84,
+                    "selected_cpo_spend": 22047.3,
+                    "total_order_tacos": 0.0764,
+                    "cpc_order_tacos": 0.0101,
+                    "selected_cpo_order_tacos": 0.0663,
+                    "buyout_tacos": 0.1137,
+                    "cogs_missing": False,
+                },
+                "campaigns": [{"campaign_id": "24375352", "status": "GREEN"}],
+                "eligibility": {"reasons": []},
+                "final_recommendation": {"status": "YELLOW", "action": "diagnostic_only_hold", "live_action_allowed": False},
+            }):
+            report = rule.run_batch_dry_report("ozon", "2026-05-16", 20, None, "manual_or_default")
+        self.assertEqual(len(report["rows"]), 1)
+        self.assertEqual(report["rows"][0]["marketplace_sku"], "1300079194")
+        self.assertFalse(report["rows"][0]["live_action_allowed"])
+
+    def test_cogs_missing_does_not_crash_batch_or_single(self):
+        kpi_rows = [
+            _kpi_row(kpi_date="2026-05-16", sku="999", orders_revenue=100000, ad_orders_revenue=50000, organic_orders_revenue=50000),
+            _kpi_row(kpi_date="2026-05-15", sku="999", buyouts_qty=2, buyouts_revenue=210000),
+            _kpi_row(kpi_date="2026-05-14", sku="999", buyouts_qty=2, buyouts_revenue=205000),
+        ]
+        report = rule.build_report(
+            "ozon",
+            "999",
+            "2026-05-16",
+            ["24375352"],
+            None,
+            kpi_rows=kpi_rows,
+            expense_rows=[_expense_row("2026-05-16", "advertising_clicks", 1000)],
+            attribution_rows=[_attr_row("2026-05-16", "24375352", 500, 1, 50000)],
+            decision_row=_decision_row(),
+        )
+        self.assertTrue(report["sku_economics"]["cogs_missing"])
+        self.assertIn("cogs_missing", report["eligibility"]["sku_total_economics_reasons"])
+        self.assertFalse(report["final_recommendation"]["live_action_allowed"])
+
+    def test_batch_output_contains_order_and_buyout_tacos(self):
+        row = rule.summarize_batch_row(
+            {
+                "sku": "1300079194",
+                "article": "F000283615",
+                "product_name": "Item",
+                "sku_economics": {
+                    "orders_revenue": 221646.0,
+                    "buyouts_revenue": 223513.0,
+                    "total_ad_spend": 25417.14,
+                    "cpc_spend": 3369.84,
+                    "selected_cpo_spend": 22047.3,
+                    "total_order_tacos": 0.0764,
+                    "cpc_order_tacos": 0.0101,
+                    "selected_cpo_order_tacos": 0.0663,
+                    "buyout_tacos": 0.1137,
+                    "cogs_missing": False,
+                },
+                "campaigns": [
+                    {"campaign_id": "24375352", "status": "GREEN"},
+                    {"campaign_id": "24375331", "status": "YELLOW"},
+                ],
+                "eligibility": {"reasons": ["selected_cpo_pressure"]},
+                "final_recommendation": {"status": "YELLOW", "action": "diagnostic_only_hold", "live_action_allowed": False},
+            }
+        )
+        self.assertIn("total_order_tacos", row)
+        self.assertIn("buyout_tacos", row)
+        self.assertFalse(row["live_action_allowed"])
 
 
 if __name__ == "__main__":

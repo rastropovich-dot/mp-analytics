@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--sku", help="Optional marketplace_sku filter for targeted debug/rebuild.")
+    parser.add_argument("--fast-sku", action="store_true", help="Fast targeted rebuild for one SKU/date without broad stock/reconciliation helpers.")
     parser.add_argument("--sku-offset", type=int, default=0, help="Optional offset in sorted SKU list for batched rebuilds.")
     parser.add_argument("--sku-batch-size", type=int, help="Optional batch size in sorted SKU list for batched rebuilds.")
     parser.add_argument("--list-skus-only", action="store_true", help="Print selected SKU list metadata without building decision rows.")
@@ -115,16 +116,15 @@ def fetch_all(table, filters=None, order=None, desc=False):
     return rows
 
 
-def load_daily_kpi(history_from, date_to):
-    return fetch_all(
-        "daily_sku_kpi",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("kpi_date", "gte", history_from),
-            ("kpi_date", "lte", date_to),
-        ],
-        order="kpi_date",
-    )
+def load_daily_kpi(history_from, date_to, sku_filter=None):
+    filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("kpi_date", "gte", history_from),
+        ("kpi_date", "lte", date_to),
+    ]
+    if sku_filter:
+        filters.append(("marketplace_sku", "eq", str(sku_filter)))
+    return fetch_all("daily_sku_kpi", filters=filters, order="kpi_date")
 
 
 def resolve_target_skus(current_rows, date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size=None):
@@ -183,15 +183,18 @@ def list_target_skus(date_from, date_to, sku_filter=None, sku_offset=0, sku_batc
     return selected_skus, metadata
 
 
-def load_organic_rows(date_from, date_to):
+def load_organic_rows(date_from, date_to, sku_filter=None):
     try:
+        filters = [
+            ("marketplace_code", "eq", "ozon"),
+            ("sale_date", "gte", date_from),
+            ("sale_date", "lte", date_to),
+        ]
+        if sku_filter:
+            filters.append(("marketplace_sku", "eq", str(sku_filter)))
         return fetch_all(
             "ozon_daily_sku_organic",
-            filters=[
-                ("marketplace_code", "eq", "ozon"),
-                ("sale_date", "gte", date_from),
-                ("sale_date", "lte", date_to),
-            ],
+            filters=filters,
             order="sale_date",
         )
     except Exception as exc:
@@ -345,9 +348,18 @@ def load_recent_stock(history_from, date_to, sku_filter=None, article_filter=Non
 
 
 def load_identity_stock_evidence():
+    return load_identity_stock_evidence_filtered()
+
+
+def load_identity_stock_evidence_filtered(decision_sku_filter=None, article_filter=None):
+    filters = [("marketplace_code", "eq", "ozon")]
+    if decision_sku_filter:
+        filters.append(("decision_marketplace_sku", "eq", str(decision_sku_filter)))
+    elif article_filter:
+        filters.append(("article", "eq", str(article_filter)))
     rows = fetch_all(
         "ozon_product_identity",
-        filters=[("marketplace_code", "eq", "ozon")],
+        filters=filters,
         order="identity_key",
     )
 
@@ -391,14 +403,17 @@ def load_identity_stock_evidence():
     }
 
 
-def load_recent_price_points(history_from, date_to):
+def load_recent_price_points(history_from, date_to, sku_filter=None):
+    filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("order_date", "gte", history_from),
+        ("order_date", "lte", date_to),
+    ]
+    if sku_filter:
+        filters.append(("marketplace_sku", "eq", str(sku_filter)))
     rows = fetch_all(
         "marketplace_orders",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("order_date", "gte", history_from),
-            ("order_date", "lte", date_to),
-        ],
+        filters=filters,
         order="order_date",
     )
 
@@ -418,6 +433,21 @@ def load_recent_price_points(history_from, date_to):
                 "order_date": order_date,
             }
     return latest
+
+
+def load_reconciliation_issue_rows(date_from, date_to, sku_filter=None):
+    filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("sale_date", "gte", date_from),
+        ("sale_date", "lte", date_to),
+    ]
+    if sku_filter:
+        filters.append(("marketplace_sku", "eq", str(sku_filter)))
+    try:
+        return fetch_all("ozon_organic_reconciliation_issues", filters=filters, order="sale_date")
+    except Exception as exc:
+        print(f"WARNING: Не удалось загрузить ozon_organic_reconciliation_issues: {exc}")
+        return []
 
 
 def load_latest_ozon_run_status(date_from, date_to):
@@ -475,10 +505,292 @@ def build_history_indexes(kpi_rows):
     return by_sku, current_rows
 
 
+def resolve_selected_row(current_rows, date_from, date_to, selected_sku):
+    return current_rows.get((date_to, str(selected_sku))) or next(
+        (
+            row
+            for (kpi_date, sku), row in sorted(current_rows.items())
+            if str(sku) == str(selected_sku) and date_from <= str(kpi_date) <= date_to
+        ),
+        {},
+    )
+
+
 def tokens(value):
     if not value:
         return set()
     return {item.strip() for item in str(value).split(",") if item and item.strip()}
+
+
+def build_fast_sku_rows(date_from, date_to, sku_filter):
+    history_from = (datetime.fromisoformat(date_from).date() - timedelta(days=29)).isoformat()
+    print(f"[decision-fast] target sku filter: {sku_filter}")
+    print(f"[decision-fast] load_daily_kpi history_from={history_from} date_to={date_to}")
+    kpi_rows = load_daily_kpi(history_from, date_to, sku_filter=sku_filter)
+    print(f"[decision-fast] load_daily_kpi done rows={len(kpi_rows)}")
+    by_sku, current_rows = build_history_indexes(kpi_rows)
+    available_skus, selected_skus = resolve_target_skus(
+        current_rows,
+        date_from,
+        date_to,
+        sku_filter=sku_filter,
+    )
+    batch_metadata = build_sku_batch_metadata(
+        available_skus,
+        selected_skus,
+        sku_filter=sku_filter,
+    )
+    if not selected_skus:
+        return [], defaultdict(int, **batch_metadata)
+
+    selected_sku = str(selected_skus[0])
+    selected_row = resolve_selected_row(current_rows, date_from, date_to, selected_sku)
+    selected_article = str(selected_row.get("article") or "").strip() or None
+
+    print(f"[decision-fast] load_organic_rows date_from={date_from} date_to={date_to}")
+    organic_rows_list = load_organic_rows(date_from, date_to, sku_filter=selected_sku)
+    print(f"[decision-fast] load_organic_rows done rows={len(organic_rows_list)}")
+    organic_rows = {
+        (row.get("sale_date"), str(row.get("marketplace_sku") or "")): row
+        for row in organic_rows_list
+        if row.get("sale_date") and row.get("marketplace_sku")
+    }
+
+    print("[decision-fast] load_identity_stock_evidence")
+    identity_stock = load_identity_stock_evidence_filtered(
+        decision_sku_filter=selected_sku,
+        article_filter=selected_article,
+    )
+    print("[decision-fast] load_identity_stock_evidence done")
+    identity_stock_by_decision_sku = identity_stock.get("by_decision_sku", {})
+    identity_stock_by_article = identity_stock.get("by_article", {})
+
+    print(f"[decision-fast] load_recent_price_points history_from={history_from} date_to={date_to}")
+    latest_price = load_recent_price_points(history_from, date_to, sku_filter=selected_sku)
+    print("[decision-fast] load_recent_price_points done")
+
+    print(f"[decision-fast] load_latest_ozon_run_status date_from={date_from} date_to={date_to}")
+    latest_run_status = load_latest_ozon_run_status(date_from, date_to)
+    print("[decision-fast] load_latest_ozon_run_status done")
+
+    print(f"[decision-fast] load_reconciliation_issue_rows date_from={date_from} date_to={date_to}")
+    reconciliation_rows_list = load_reconciliation_issue_rows(date_from, date_to, sku_filter=selected_sku)
+    print(f"[decision-fast] load_reconciliation_issue_rows done rows={len(reconciliation_rows_list)}")
+    reconciliation_by_key = {
+        (row.get("sale_date"), str(row.get("marketplace_sku") or "")): row
+        for row in reconciliation_rows_list
+        if row.get("sale_date") and row.get("marketplace_sku")
+    }
+
+    rows = []
+    summary = defaultdict(int)
+    history_rows = by_sku.get(selected_sku, [])
+    row = selected_row
+    if not row:
+        for key, value in batch_metadata.items():
+            summary[key] = value
+        return rows, summary
+
+    kpi_date = str(row.get("kpi_date") or date_to)
+    window_14_from = (datetime.fromisoformat(kpi_date).date() - timedelta(days=13)).isoformat()
+    window_30_from = (datetime.fromisoformat(kpi_date).date() - timedelta(days=29)).isoformat()
+
+    window_14 = [item for item in history_rows if window_14_from <= str(item.get("kpi_date") or "") <= kpi_date]
+    window_30 = [item for item in history_rows if window_30_from <= str(item.get("kpi_date") or "") <= kpi_date]
+
+    orders_14 = sum(num(item.get("orders_qty")) for item in window_14)
+    buyouts_14 = sum(num(item.get("buyouts_qty")) for item in window_14)
+    orders_30 = sum(num(item.get("orders_qty")) for item in window_30)
+    buyouts_30 = sum(num(item.get("buyouts_qty")) for item in window_30)
+    buyouts_rev_30 = sum(num(item.get("buyouts_amount_seller")) for item in window_30)
+
+    buyout_rate_14d = safe_div(buyouts_14, orders_14)
+    buyout_rate_30d = safe_div(buyouts_30, orders_30)
+    buyout_rate_for_model = buyout_rate_14d if buyout_rate_14d is not None else buyout_rate_30d
+
+    commission_rate_30d = safe_div(sum(num(item.get("commission_amount")) for item in window_30), buyouts_rev_30) or 0
+    logistics_rate_30d = safe_div(sum(num(item.get("logistics_amount")) for item in window_30), buyouts_rev_30) or 0
+    other_rate_30d = safe_div(sum(num(item.get("other_expenses_amount")) for item in window_30), buyouts_rev_30) or 0
+
+    orders_revenue = num(row.get("orders_amount_seller"))
+    ad_attributed_revenue = num(row.get("ad_orders_revenue"))
+    organic_revenue = num(row.get("organic_orders_revenue"))
+    ad_spend = num(row.get("ad_spend"))
+
+    expected_revenue_after_buyout = (
+        round(orders_revenue * buyout_rate_for_model, 2)
+        if buyout_rate_for_model is not None
+        else None
+    )
+    if expected_revenue_after_buyout is not None:
+        expected_margin_after_ads = round(
+            expected_revenue_after_buyout
+            - (expected_revenue_after_buyout * commission_rate_30d)
+            - (expected_revenue_after_buyout * logistics_rate_30d)
+            - (expected_revenue_after_buyout * other_rate_30d)
+            - ad_spend,
+            2,
+        )
+    else:
+        expected_margin_after_ads = None
+
+    organic_row = organic_rows.get((kpi_date, selected_sku), {})
+    reconciliation_row = reconciliation_by_key.get((kpi_date, selected_sku), {})
+    price_info = latest_price.get(selected_sku, {})
+
+    stock_info = {}
+    stock_qty_value = row.get("stock_qty")
+    if stock_qty_value is not None:
+        stock_info = {
+            "stock_qty": num(stock_qty_value),
+            "available_qty": num(stock_qty_value),
+            "stock_date": row.get("stock_as_of_date"),
+            "stock_as_of_date": row.get("stock_as_of_date"),
+        }
+
+    stock_source_kind = "daily_sku_kpi"
+    used_identity_stock_fallback = False
+    if not stock_info:
+        stock_info = identity_stock_by_decision_sku.get(selected_sku, {})
+        if not stock_info and selected_article:
+            stock_info = identity_stock_by_article.get(selected_article, {})
+        if stock_info:
+            stock_source_kind = "product_identity_stock_api_evidence"
+            used_identity_stock_fallback = True
+
+    run_status_row = latest_run_status.get(kpi_date, {})
+
+    quality_flags = []
+    run_status = str(run_status_row.get("run_status") or "")
+    organic_status = str(organic_row.get("calculation_status") or "")
+    organic_warning = str(organic_row.get("warning") or "")
+    organic_reconciliation_status = str(reconciliation_row.get("reconciliation_status") or "")
+    if not organic_reconciliation_status:
+        if organic_status and organic_status != "ok":
+            organic_reconciliation_status = organic_status
+        elif organic_warning:
+            organic_reconciliation_status = "warning"
+    unreconciled_revenue = num(reconciliation_row.get("unreconciled_revenue"))
+
+    if run_status in {"partial_ads", "partial_quota", "failed"}:
+        quality_flags.append(run_status)
+    if not organic_row and ad_spend > 0:
+        quality_flags.append("missing_organic_attribution")
+    if organic_status and organic_status != "ok":
+        quality_flags.append(organic_status)
+    if organic_warning:
+        quality_flags.extend(sorted(tokens(organic_warning)))
+    if buyout_rate_for_model is None:
+        quality_flags.append("missing_buyout_rate")
+    if orders_30 <= 0:
+        quality_flags.append("low_history")
+
+    if used_identity_stock_fallback:
+        quality_flags.append("stock_from_identity_evidence")
+
+    if stock_qty_value is None:
+        stock_qty_value = stock_info.get("available_qty")
+    if stock_qty_value is None:
+        stock_qty_value = stock_info.get("stock_qty")
+
+    explicit_stock_status = str(row.get("stock_status") or "")
+    explicit_stock_issue_type = str(row.get("stock_issue_type") or "")
+
+    if explicit_stock_status == "missing_stock":
+        quality_flags.append(explicit_stock_issue_type or "missing_stock")
+    elif explicit_stock_status == "stock_out":
+        quality_flags.append("stock_out")
+    elif stock_qty_value is None:
+        quality_flags.append("stock_quality_unknown_fast_sku")
+    elif num(stock_qty_value) <= 0:
+        quality_flags.append("stock_out")
+
+    if organic_reconciliation_status and organic_reconciliation_status != "clean":
+        quality_flags.append(organic_reconciliation_status)
+    if num(row.get("orders_qty")) <= 0:
+        quality_flags.append("low_data_volume")
+
+    final_stock_status = explicit_stock_status or (
+        "stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "stock_ok" if stock_qty_value is not None else "missing_stock"
+    )
+    final_stock_issue_type = explicit_stock_issue_type or (
+        "stock_out" if stock_qty_value is not None and num(stock_qty_value) <= 0 else "clean_stock_matched" if stock_qty_value is not None else "stock_quality_unknown_fast_sku"
+    )
+
+    if used_identity_stock_fallback:
+        if stock_qty_value is None:
+            final_stock_status = "missing_stock"
+            final_stock_issue_type = "stock_from_identity_evidence"
+        elif num(stock_qty_value) <= 0:
+            final_stock_status = "stock_out"
+            final_stock_issue_type = "stock_from_identity_evidence"
+        else:
+            final_stock_status = "stock_from_identity_evidence"
+            final_stock_issue_type = "stock_from_identity_evidence"
+
+    quality_flags = sorted(set(flag for flag in quality_flags if flag))
+    data_quality_status = "ok" if not quality_flags else ",".join(quality_flags)
+    decision_status = "ready" if data_quality_status == "ok" else "hold"
+
+    decision_row = {
+        "kpi_date": kpi_date,
+        "marketplace_code": "ozon",
+        "marketplace_sku": selected_sku,
+        "article": row.get("article") or organic_row.get("article") or "",
+        "product_name": row.get("product_name") or organic_row.get("product_name") or "",
+        "current_price": price_info.get("current_price"),
+        "current_price_source": price_info.get("current_price_source"),
+        "orders_qty": num(row.get("orders_qty")),
+        "orders_revenue": orders_revenue,
+        "buyouts_qty": num(row.get("buyouts_qty")),
+        "buyouts_revenue": num(row.get("buyouts_amount_seller")),
+        "buyout_rate_rolling_14d": round(buyout_rate_14d, 4) if buyout_rate_14d is not None else None,
+        "buyout_rate_rolling_30d": round(buyout_rate_30d, 4) if buyout_rate_30d is not None else None,
+        "ad_spend": ad_spend,
+        "ad_attributed_revenue": ad_attributed_revenue,
+        "organic_revenue": organic_revenue,
+        "ad_share_revenue": round(ad_attributed_revenue / orders_revenue, 4) if orders_revenue > 0 else None,
+        "organic_share_revenue": round(organic_revenue / orders_revenue, 4) if orders_revenue > 0 else None,
+        "commission": num(row.get("commission_amount")),
+        "logistics": num(row.get("logistics_amount")),
+        "other_expenses": num(row.get("other_expenses_amount")),
+        "expected_revenue_after_buyout": expected_revenue_after_buyout,
+        "expected_margin_after_ads": expected_margin_after_ads,
+        "stock_qty": None if stock_qty_value is None else num(stock_qty_value),
+        "stock_status": final_stock_status,
+        "stock_issue_type": final_stock_issue_type,
+        "stock_as_of_date": stock_info.get("stock_date") or stock_info.get("stock_as_of_date") or row.get("stock_as_of_date"),
+        "organic_reconciliation_status": organic_reconciliation_status or "clean",
+        "unreconciled_revenue": unreconciled_revenue,
+        "source_run_status": run_status or None,
+        "decision_status": decision_status,
+        "data_quality_status": data_quality_status,
+        "warning": (
+            organic_warning
+            if not used_identity_stock_fallback
+            else ", ".join(
+                [
+                    part
+                    for part in [
+                        organic_warning or None,
+                        "stock_source:product_identity_stock_api_evidence",
+                        stock_info.get("note"),
+                        f"stock_verified_at:{stock_info.get('stock_verified_at')}" if stock_info.get("stock_verified_at") else None,
+                    ]
+                    if part
+                ]
+            )
+            or None
+        ),
+        "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+    }
+    rows.append(decision_row)
+    summary["rows"] += 1
+    summary[f"decision_status:{decision_status}"] += 1
+    summary[f"data_quality:{data_quality_status}"] += 1
+    for key, value in batch_metadata.items():
+        summary[key] = value
+    return rows, summary
 
 
 def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size=None):
@@ -814,8 +1126,13 @@ def print_sample(rows, limit=10):
 
 def main():
     args = parse_args()
+    fast_sku = getattr(args, "fast_sku", False)
     if args.sku and args.sku_batch_size is not None:
         raise RuntimeError("--sku нельзя комбинировать с --sku-batch-size/--sku-offset")
+    if fast_sku and not args.sku:
+        raise RuntimeError("--fast-sku требует --sku")
+    if fast_sku and not args.date:
+        raise RuntimeError("--fast-sku требует --date")
     if args.sku_offset < 0:
         raise RuntimeError("--sku-offset должен быть >= 0")
     if args.sku_batch_size is not None and args.sku_batch_size <= 0:
@@ -840,13 +1157,16 @@ def main():
         print_sample([{"marketplace_sku": sku} for sku in selected_skus], limit=20)
         return
 
-    rows, summary = build_rows(
-        date_from,
-        date_to,
-        sku_filter=args.sku,
-        sku_offset=args.sku_offset,
-        sku_batch_size=args.sku_batch_size,
-    )
+    if fast_sku:
+        rows, summary = build_fast_sku_rows(date_from, date_to, sku_filter=args.sku)
+    else:
+        rows, summary = build_rows(
+            date_from,
+            date_to,
+            sku_filter=args.sku,
+            sku_offset=args.sku_offset,
+            sku_batch_size=args.sku_batch_size,
+        )
 
     print("SKU decision input summary:")
     print(
@@ -854,6 +1174,7 @@ def main():
             "date_from": date_from,
             "date_to": date_to,
             "sku_filter": args.sku,
+            "fast_sku": fast_sku,
             "sku_offset": args.sku_offset,
             "sku_batch_size": args.sku_batch_size,
             "total_available_skus": summary.get("total_available_skus"),

@@ -12,9 +12,10 @@ def _kpi_row(
     ad_spend=1412.30,
     ad_orders_revenue=112863,
     organic_orders_revenue=0,
+    kpi_date="2026-05-12",
 ):
     return {
-        "kpi_date": "2026-05-12",
+        "kpi_date": kpi_date,
         "marketplace_code": "ozon",
         "marketplace_sku": sku,
         "article": article,
@@ -40,9 +41,10 @@ def _organic_row(
     warning="",
     ad_orders_revenue=112863,
     organic_orders_revenue=0,
+    sale_date="2026-05-12",
 ):
     return {
-        "sale_date": "2026-05-12",
+        "sale_date": sale_date,
         "marketplace_code": "ozon",
         "marketplace_sku": sku,
         "article": "F000283615" if sku == "1300079194" else "",
@@ -70,6 +72,20 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
             load_latest_ozon_run_status=mock.Mock(return_value={}),
             build_stock_quality_rows=mock.Mock(return_value=([], {})),
             build_reconciliation_rows=mock.Mock(return_value=([], {})),
+        )
+
+    def _patch_fast_dependencies(self, kpi_rows=None, organic_rows=None, identity_rows=None, reconciliation_rows=None):
+        return mock.patch.multiple(
+            decision,
+            load_daily_kpi=mock.Mock(return_value=kpi_rows or []),
+            load_organic_rows=mock.Mock(return_value=organic_rows or []),
+            load_recent_price_points=mock.Mock(return_value={}),
+            load_latest_ozon_run_status=mock.Mock(return_value={}),
+            load_identity_stock_evidence_filtered=mock.Mock(return_value=identity_rows or {"by_decision_sku": {}, "by_article": {}}),
+            load_reconciliation_issue_rows=mock.Mock(return_value=reconciliation_rows or []),
+            load_recent_stock=mock.Mock(),
+            build_stock_quality_rows=mock.Mock(),
+            build_reconciliation_rows=mock.Mock(),
         )
 
     def test_sku_filter_limits_final_rows_to_one_sku(self):
@@ -238,6 +254,105 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("missing_stock", rows[0]["data_quality_status"])
         self.assertEqual(rows[0]["decision_status"], "hold")
+
+    def test_fast_sku_requires_date_and_sku(self):
+        args = SimpleNamespace(
+            mode="full",
+            date=None,
+            date_from=None,
+            date_to=None,
+            sku=None,
+            fast_sku=True,
+            sku_offset=0,
+            sku_batch_size=None,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=True,
+            debug_sample=False,
+        )
+        with mock.patch.object(decision, "parse_args", return_value=args):
+            with self.assertRaises(RuntimeError):
+                decision.main()
+
+    def test_fast_sku_does_not_call_broad_stock_or_reconciliation_builders(self):
+        kpi_rows = [_kpi_row("1620587321", article="A162", product_name="Fast Item", ad_spend=6345.76, ad_orders_revenue=56762, organic_orders_revenue=28381, kpi_date="2026-05-16")]
+        organic_rows = [_organic_row("1620587321", ad_orders_revenue=56762, organic_orders_revenue=28381, sale_date="2026-05-16")]
+        with self._patch_fast_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "load_recent_stock") as recent_stock_mock, \
+            mock.patch.object(decision, "build_stock_quality_rows") as stock_quality_mock, \
+            mock.patch.object(decision, "build_reconciliation_rows") as reconciliation_mock:
+            rows, _ = decision.build_fast_sku_rows("2026-05-16", "2026-05-16", "1620587321")
+        self.assertEqual(len(rows), 1)
+        recent_stock_mock.assert_not_called()
+        stock_quality_mock.assert_not_called()
+        reconciliation_mock.assert_not_called()
+
+    def test_fast_sku_builds_row_from_daily_kpi_values(self):
+        kpi_rows = [_kpi_row("1620587321", article="A162", product_name="Fast Item", ad_spend=6345.76, ad_orders_revenue=56762, organic_orders_revenue=28381, kpi_date="2026-05-16")]
+        organic_rows = [_organic_row("1620587321", ad_orders_revenue=56762, organic_orders_revenue=28381, sale_date="2026-05-16")]
+        with self._patch_fast_dependencies(kpi_rows, organic_rows):
+            rows, _ = decision.build_fast_sku_rows("2026-05-16", "2026-05-16", "1620587321")
+        row = rows[0]
+        self.assertAlmostEqual(row["ad_spend"], 6345.76, places=2)
+        self.assertAlmostEqual(row["ad_attributed_revenue"], 56762.0, places=2)
+        self.assertAlmostEqual(row["organic_revenue"], 28381.0, places=2)
+
+    def test_fast_sku_missing_stock_still_builds_row(self):
+        kpi_rows = [_kpi_row("1620587321", article="A162", product_name="Fast Item", ad_spend=6345.76, ad_orders_revenue=56762, organic_orders_revenue=28381, kpi_date="2026-05-16")]
+        organic_rows = [_organic_row("1620587321", ad_orders_revenue=56762, organic_orders_revenue=28381, sale_date="2026-05-16")]
+        with self._patch_fast_dependencies(kpi_rows, organic_rows):
+            rows, _ = decision.build_fast_sku_rows("2026-05-16", "2026-05-16", "1620587321")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("stock_quality_unknown_fast_sku", rows[0]["data_quality_status"])
+
+    def test_fast_sku_dry_run_does_not_save(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-16",
+            date_from=None,
+            date_to=None,
+            sku="1620587321",
+            fast_sku=True,
+            sku_offset=0,
+            sku_batch_size=None,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=True,
+            debug_sample=False,
+        )
+        kpi_rows = [_kpi_row("1620587321", article="A162", product_name="Fast Item", ad_spend=6345.76, ad_orders_revenue=56762, organic_orders_revenue=28381, kpi_date="2026-05-16")]
+        organic_rows = [_organic_row("1620587321", ad_orders_revenue=56762, organic_orders_revenue=28381, sale_date="2026-05-16")]
+        with self._patch_fast_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "parse_args", return_value=args), \
+            mock.patch.object(decision, "save_rows") as save_rows_mock:
+            decision.main()
+        save_rows_mock.assert_not_called()
+
+    def test_fast_sku_write_saves_exactly_one_row(self):
+        args = SimpleNamespace(
+            mode="full",
+            date="2026-05-16",
+            date_from=None,
+            date_to=None,
+            sku="1620587321",
+            fast_sku=True,
+            sku_offset=0,
+            sku_batch_size=None,
+            list_skus_only=False,
+            days_back=7,
+            dry_run=False,
+            debug_sample=False,
+        )
+        kpi_rows = [_kpi_row("1620587321", article="A162", product_name="Fast Item", ad_spend=6345.76, ad_orders_revenue=56762, organic_orders_revenue=28381, kpi_date="2026-05-16")]
+        organic_rows = [_organic_row("1620587321", ad_orders_revenue=56762, organic_orders_revenue=28381, sale_date="2026-05-16")]
+        with self._patch_fast_dependencies(kpi_rows, organic_rows), \
+            mock.patch.object(decision, "parse_args", return_value=args), \
+            mock.patch.object(decision, "save_rows") as save_rows_mock:
+            decision.main()
+        save_rows_mock.assert_called_once()
+        saved_rows = save_rows_mock.call_args[0][0]
+        self.assertEqual(len(saved_rows), 1)
+        self.assertEqual(saved_rows[0]["marketplace_sku"], "1620587321")
 
     def test_batch_selection_uses_sorted_skus_deterministically(self):
         kpi_rows = [

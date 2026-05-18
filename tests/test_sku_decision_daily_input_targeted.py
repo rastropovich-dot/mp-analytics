@@ -144,6 +144,18 @@ class TargetedSkuDecisionDailyInputTests(unittest.TestCase):
         self.assertIn("zero_total_with_ad_attribution", row["data_quality_status"])
         self.assertNotEqual(row["organic_reconciliation_status"], "clean")
 
+    def test_targeted_mode_passes_narrow_stock_quality_filters(self):
+        with self._patch_dependencies([_kpi_row()], [_organic_row()]), \
+            mock.patch.object(decision, "build_stock_quality_rows", return_value=([], {})) as stock_quality_mock:
+            rows, _ = decision.build_rows("2026-05-12", "2026-05-12", sku_filter="1300079194")
+        self.assertEqual(len(rows), 1)
+        stock_quality_mock.assert_called_once_with(
+            "2026-05-12",
+            "2026-05-12",
+            sku_filter="1300079194",
+            article_filter="F000283615",
+        )
+
     def test_batch_selection_uses_sorted_skus_deterministically(self):
         kpi_rows = [
             _kpi_row("300"),

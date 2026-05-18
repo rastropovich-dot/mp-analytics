@@ -526,8 +526,24 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
     print(f"[decision] load_latest_ozon_run_status date_from={date_from} date_to={date_to}")
     latest_run_status = load_latest_ozon_run_status(date_from, date_to)
     print("[decision] load_latest_ozon_run_status done")
+    selected_article = None
+    if sku_filter and selected_skus:
+        selected_row = current_rows.get((date_to, str(selected_skus[0]))) or next(
+            (
+                row
+                for (kpi_date, sku), row in sorted(current_rows.items())
+                if str(sku) == str(selected_skus[0]) and date_from <= str(kpi_date) <= date_to
+            ),
+            {},
+        )
+        selected_article = str(selected_row.get("article") or "").strip() or None
     print(f"[decision] build_stock_quality_rows date_from={date_from} date_to={date_to}")
-    stock_quality_rows, _ = build_stock_quality_rows(date_from, date_to)
+    stock_quality_rows, _ = build_stock_quality_rows(
+        date_from,
+        date_to,
+        sku_filter=str(selected_skus[0]) if sku_filter and selected_skus else None,
+        article_filter=selected_article,
+    )
     print(f"[decision] build_stock_quality_rows done rows={len(stock_quality_rows)}")
     stock_quality_by_key = {
         (row.get("issue_date"), str(row.get("marketplace_sku") or "")): row

@@ -102,6 +102,18 @@ def fetch_all(table, filters=None, order=None, desc=False):
     return rows
 
 
+def build_filters(filters=None, query=None):
+    query = query or supabase
+    for field, operator, value in filters or []:
+        if operator == "eq":
+            query = query.eq(field, value)
+        elif operator == "gte":
+            query = query.gte(field, value)
+        elif operator == "lte":
+            query = query.lte(field, value)
+    return query
+
+
 def num(value):
     try:
         return float(value or 0)
@@ -118,100 +130,140 @@ def rows_by_key(rows, key):
     return grouped
 
 
-def latest_stock_snapshot_date():
-    rows = fetch_all(
-        "stock_daily",
-        filters=[("marketplace_code", "eq", "ozon")],
-        order="stock_date",
-        desc=True,
+def latest_stock_snapshot_date(marketplace_code="ozon"):
+    query = supabase.table("stock_daily").select("stock_date")
+    query = build_filters([("marketplace_code", "eq", marketplace_code)], query=query)
+    query = query.order("stock_date", desc=True)
+    result = execute_read_with_retry(
+        lambda: query.range(0, 0).execute(),
+        label=f"stock:latest_snapshot_date:{marketplace_code}",
     )
+    rows = result.data or []
     if not rows:
         return None
     return str(rows[0].get("stock_date") or "").strip() or None
 
 
-def build_stock_quality_rows(date_from, date_to):
+def build_stock_quality_rows(date_from, date_to, sku_filter=None, article_filter=None):
     stock_date = latest_stock_snapshot_date()
     if not stock_date:
         return [], {"rows": 0, "issue_distribution": {}, "unknown_count": 0}
 
+    decision_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("kpi_date", "gte", date_from),
+        ("kpi_date", "lte", date_to),
+    ]
+    if sku_filter:
+        decision_filters.append(("marketplace_sku", "eq", str(sku_filter)))
+
     decision_rows = fetch_all(
         "sku_decision_daily_input",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("kpi_date", "gte", date_from),
-            ("kpi_date", "lte", date_to),
-        ],
+        filters=decision_filters,
         order="marketplace_sku",
     )
+    target_article = article_filter
+    if not target_article and decision_rows:
+        target_article = str(decision_rows[0].get("article") or "").strip() or None
+
+    stock_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("stock_date", "eq", stock_date),
+    ]
+    stock_history_filters = [("marketplace_code", "eq", "ozon")]
+    if target_article:
+        stock_filters.append(("article", "eq", target_article))
+        stock_history_filters.append(("article", "eq", target_article))
+
     stock_rows = fetch_all(
         "stock_daily",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("stock_date", "eq", stock_date),
-        ],
+        filters=stock_filters,
         order="marketplace_sku",
     )
     stock_rows_all = fetch_all(
         "stock_daily",
-        filters=[("marketplace_code", "eq", "ozon")],
+        filters=stock_history_filters,
         order="stock_date",
     )
-    sku_catalog_rows = fetch_all(
-        "sku_catalog",
-        filters=[("marketplace_code", "eq", "ozon")],
-        order="article",
-    )
-    order_rows = fetch_all(
+    catalog_filters = [("marketplace_code", "eq", "ozon")]
+    if sku_filter:
+        catalog_filters.append(("marketplace_sku", "eq", str(sku_filter)))
+    elif target_article:
+        catalog_filters.append(("article", "eq", target_article))
+
+    sku_catalog_rows = fetch_all("sku_catalog", filters=catalog_filters, order="article")
+
+    fact_filters = [
         "marketplace_orders",
-        filters=[
+        [
             ("marketplace_code", "eq", "ozon"),
             ("order_date", "gte", date_from),
             ("order_date", "lte", date_to),
         ],
-        order="order_date",
-    )
+        "order_date",
+    ]
+    if sku_filter:
+        fact_filters[1].append(("marketplace_sku", "eq", str(sku_filter)))
+
+    order_rows = fetch_all(fact_filters[0], filters=fact_filters[1], order=fact_filters[2])
+
+    total_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("sale_date", "gte", date_from),
+        ("sale_date", "lte", date_to),
+    ]
+    if sku_filter:
+        total_filters.append(("marketplace_sku", "eq", str(sku_filter)))
     total_rows = fetch_all(
         "ozon_daily_sku_total_orders",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("sale_date", "gte", date_from),
-            ("sale_date", "lte", date_to),
-        ],
+        filters=total_filters,
         order="sale_date",
     )
+
+    ad_attr_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("sale_date", "gte", date_from),
+        ("sale_date", "lte", date_to),
+    ]
+    if sku_filter:
+        ad_attr_filters.append(("marketplace_sku", "eq", str(sku_filter)))
     ad_attr_rows = fetch_all(
         "ozon_daily_sku_ad_attribution",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("sale_date", "gte", date_from),
-            ("sale_date", "lte", date_to),
-        ],
+        filters=ad_attr_filters,
         order="sale_date",
     )
+
+    organic_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("sale_date", "gte", date_from),
+        ("sale_date", "lte", date_to),
+    ]
+    if sku_filter:
+        organic_filters.append(("marketplace_sku", "eq", str(sku_filter)))
     organic_rows = fetch_all(
         "ozon_daily_sku_organic",
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("sale_date", "gte", date_from),
-            ("sale_date", "lte", date_to),
-        ],
+        filters=organic_filters,
         order="sale_date",
     )
+
+    issue_filters = [
+        ("marketplace_code", "eq", "ozon"),
+        ("issue_date", "gte", date_from),
+        ("issue_date", "lte", date_to),
+    ]
+    if sku_filter:
+        issue_filters.append(("marketplace_sku", "eq", str(sku_filter)))
     existing_issue_rows = fetch_all(
         TABLE_NAME,
-        filters=[
-            ("marketplace_code", "eq", "ozon"),
-            ("issue_date", "gte", date_from),
-            ("issue_date", "lte", date_to),
-        ],
+        filters=issue_filters,
         order="issue_date",
     )
-    identity_rows = fetch_all(
-        "ozon_product_identity",
-        filters=[("marketplace_code", "eq", "ozon")],
-        order="identity_key",
-    )
+    identity_filters = [("marketplace_code", "eq", "ozon")]
+    if sku_filter:
+        identity_filters.append(("decision_marketplace_sku", "eq", str(sku_filter)))
+    elif target_article:
+        identity_filters.append(("article", "eq", target_article))
+    identity_rows = fetch_all("ozon_product_identity", filters=identity_filters, order="identity_key")
 
     stock_by_article = rows_by_key(stock_rows, "article")
     stock_by_product_id = rows_by_key(stock_rows, "product_id")

@@ -15,14 +15,20 @@ class _Result:
 class _RangeQuery:
     def __init__(self, data):
         self._data = data
+        self.range_calls = []
 
     def execute(self):
         return _Result(self._data)
+
+    def range(self, _start, _end):
+        self.range_calls.append((_start, _end))
+        return self
 
 
 class _Query:
     def __init__(self, data):
         self._data = data
+        self.last_range_query = None
 
     def select(self, _fields):
         return self
@@ -46,15 +52,20 @@ class _Query:
         return self
 
     def range(self, _start, _end):
-        return _RangeQuery(self._data)
+        range_query = _RangeQuery(self._data)
+        range_query.range(_start, _end)
+        self.last_range_query = range_query
+        return range_query
 
 
 class _Supabase:
     def __init__(self, data):
         self._data = data
+        self.last_query = None
 
     def table(self, _name):
-        return _Query(self._data)
+        self.last_query = _Query(self._data)
+        return self.last_query
 
 
 class ReadRetryTests(unittest.TestCase):
@@ -119,6 +130,15 @@ class ReadRetryTests(unittest.TestCase):
         self.assertEqual(rows, [{"stock_date": "2026-05-16"}])
         retry_mock.assert_called_once()
         self.assertIn("stock:stock_daily:0", retry_mock.call_args.kwargs["label"])
+
+    def test_latest_stock_snapshot_date_reads_only_first_row(self):
+        fake_supabase = _Supabase([{"stock_date": "2026-05-16"}])
+
+        with mock.patch.object(stock_quality, "supabase", fake_supabase):
+            result = stock_quality.latest_stock_snapshot_date()
+
+        self.assertEqual(result, "2026-05-16")
+        self.assertEqual(fake_supabase.last_query.last_range_query.range_calls, [(0, 0)])
 
     def test_write_helpers_are_not_wrapped_by_read_retry(self):
         with mock.patch.object(decision.supabase, "table") as table_mock, mock.patch.object(

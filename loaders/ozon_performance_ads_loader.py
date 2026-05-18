@@ -103,6 +103,7 @@ SEARCH_PROMO_ORGANISATION_ORDERS_KIND = "SEARCH_PROMO_ORGANISATION_ORDERS"
 SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE = "ozon_search_promo_selected_cpo_orders"
 SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE = "advertising_order_selected_cpo"
 SELECTED_CPO_AD_SOURCE = "cpo_selected_products"
+OZON_PERFORMANCE_CAMPAIGN_METADATA_TABLE = "ozon_performance_campaign_metadata"
 ENABLE_OZON_SELECTED_CPO_DAILY = (os.getenv("ENABLE_OZON_SELECTED_CPO_DAILY", "false") or "false").strip().lower() in {
     "1",
     "true",
@@ -4423,6 +4424,138 @@ def analyze_statistics_json_report(report_data):
             "has_10_percent": has_10,
             "has_other_rate": has_other and not (has_5 or has_10),
         },
+    }
+
+
+def build_ozon_campaign_metadata_snapshot_rows(campaigns, snapshot_date, marketplace_code="ozon"):
+    rows = []
+
+    for campaign in campaigns or []:
+        campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "").strip()
+        if not campaign_id:
+            continue
+
+        placement = campaign.get("placement")
+        if placement is None:
+            placement = campaign.get("placements")
+
+        rows.append(
+            {
+                "snapshot_date": str(snapshot_date),
+                "marketplace_code": str(marketplace_code or "ozon"),
+                "campaign_id": campaign_id,
+                "title": str(campaign.get("title") or ""),
+                "state": str(campaign.get("state") or ""),
+                "adv_object_type": str(campaign.get("advObjectType") or ""),
+                "payment_type": str(campaign.get("PaymentType") or campaign.get("paymentType") or ""),
+                "placement": copy.deepcopy(placement),
+                "budget": str(campaign.get("budget") or ""),
+                "daily_budget": str(campaign.get("dailyBudget") or ""),
+                "weekly_budget": str(campaign.get("weeklyBudget") or ""),
+                "budget_type": str(campaign.get("budgetType") or ""),
+                "expense_strategy": str(campaign.get("expenseStrategy") or ""),
+                "product_campaign_mode": str(campaign.get("productCampaignMode") or ""),
+                "product_autopilot_strategy": str(campaign.get("productAutopilotStrategy") or ""),
+                "created_at": str(campaign.get("createdAt") or ""),
+                "updated_at": str(campaign.get("updatedAt") or ""),
+                "raw_campaign_json": copy.deepcopy(campaign),
+                "captured_at": to_iso(utcnow()),
+            }
+        )
+
+    return rows
+
+
+def build_campaign_metadata_field_summary(rows):
+    expected_fields = [
+        "campaign_id",
+        "title",
+        "state",
+        "adv_object_type",
+        "payment_type",
+        "placement",
+        "budget",
+        "daily_budget",
+        "weekly_budget",
+        "budget_type",
+        "expense_strategy",
+        "product_campaign_mode",
+        "product_autopilot_strategy",
+        "created_at",
+        "updated_at",
+    ]
+    present_fields = []
+    missing_fields = []
+
+    for field_name in expected_fields:
+        has_value = False
+        for row in rows or []:
+            value = row.get(field_name)
+            if isinstance(value, list) and value:
+                has_value = True
+                break
+            if value not in (None, "", []):
+                has_value = True
+                break
+        if has_value:
+            present_fields.append(field_name)
+        else:
+            missing_fields.append(field_name)
+
+    return {
+        "present_fields": present_fields,
+        "missing_fields": missing_fields,
+    }
+
+
+def build_campaign_metadata_snapshot_plan(snapshot_date, marketplace_code="ozon"):
+    return {
+        "mode": "campaign-metadata-snapshot-plan",
+        "snapshot_date": str(snapshot_date),
+        "marketplace_code": str(marketplace_code or "ozon"),
+        "endpoint": "/api/client/campaign",
+        "method": "GET",
+        "adv_object_types": list(ADV_OBJECT_TYPES or ["SKU"]),
+        "estimated_request_count": len(ADV_OBJECT_TYPES or ["SKU"]),
+        "target_table": OZON_PERFORMANCE_CAMPAIGN_METADATA_TABLE,
+        "db_writes": 0,
+        "campaign_mutations": 0,
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
+        "writes_campaign_metadata": False,
+    }
+
+
+def campaign_metadata_snapshot_dry_run(client, snapshot_date, campaign_ids=None, campaigns=None, marketplace_code="ozon"):
+    campaign_ids = [str(value) for value in (campaign_ids or []) if str(value)]
+    requested_ids = set(campaign_ids)
+    plan = build_campaign_metadata_snapshot_plan(snapshot_date, marketplace_code=marketplace_code)
+    campaigns = list(campaigns) if campaigns is not None else client.list_campaigns()
+    rows = build_ozon_campaign_metadata_snapshot_rows(campaigns, snapshot_date, marketplace_code=marketplace_code)
+
+    if requested_ids:
+        filtered_rows = [row for row in rows if row.get("campaign_id") in requested_ids]
+    else:
+        filtered_rows = list(rows)
+
+    field_summary = build_campaign_metadata_field_summary(filtered_rows)
+
+    return {
+        "mode": "campaign_metadata_snapshot_dry_run",
+        "snapshot_date": str(snapshot_date),
+        "marketplace_code": str(marketplace_code or "ozon"),
+        "plan": plan,
+        "total_campaigns": len(rows),
+        "requested_campaign_ids": campaign_ids,
+        "matched_campaign_count": len(filtered_rows),
+        "campaign_rows": filtered_rows,
+        "present_fields": field_summary["present_fields"],
+        "missing_fields": field_summary["missing_fields"],
+        "db_writes": 0,
+        "campaign_mutations": 0,
+        "writes_marketplace_expenses": False,
+        "writes_ozon_daily_sku_ad_attribution": False,
+        "writes_campaign_metadata": False,
     }
 
 

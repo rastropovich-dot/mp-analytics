@@ -185,7 +185,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
 
     def test_selected_cpo_pressure_does_not_make_cpc_campaign_red_by_itself(self):
         kpi_rows = [
-            _kpi_row(kpi_date="2026-05-16", ad_spend=25417.14),
+            _kpi_row(kpi_date="2026-05-16", ad_spend=25417.14, orders_revenue=221646),
             _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
             _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
         ]
@@ -210,6 +210,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertEqual(report["eligibility"]["sku_total_economics_status"], "YELLOW")
         self.assertEqual(report["eligibility"]["cpc_control_eligibility_status"], "eligible_for_diagnostic")
         self.assertIn("selected_cpo_pressure", report["eligibility"]["sku_total_economics_reasons"])
+        self.assertIn("orders_revenue_denominator_mismatch", report["eligibility"]["sku_total_economics_reasons"])
         self.assertIn("buyout_economics_caution=0.1137", report["eligibility"]["sku_total_economics_reasons"])
         self.assertEqual(report["campaigns"][0]["status"], "GREEN")
         self.assertEqual(report["final_recommendation"]["status"], "YELLOW")
@@ -217,7 +218,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
 
     def test_selected_cpo_included_in_total_but_excluded_from_controllable_cpc_spend(self):
         kpi_rows = [
-            _kpi_row(kpi_date="2026-05-16", ad_spend=25417.14),
+            _kpi_row(kpi_date="2026-05-16", ad_spend=25417.14, orders_revenue=221646),
             _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
             _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
         ]
@@ -244,6 +245,12 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertAlmostEqual(report["sku_economics"]["controllable_ad_spend"], 3369.84, places=2)
         self.assertAlmostEqual(report["sku_economics"]["non_controllable_ad_spend"], 22047.30, places=2)
         self.assertAlmostEqual(report["sku_economics"]["total_ad_spend"], 25417.14, places=2)
+        self.assertEqual(report["sku_economics"]["orders_revenue_source"], "ad_attributed_plus_organic")
+        self.assertAlmostEqual(report["sku_economics"]["orders_revenue_from_kpi"], 221646.0, places=2)
+        self.assertAlmostEqual(report["sku_economics"]["orders_revenue_from_ad_plus_organic"], 332469.0, places=2)
+        self.assertAlmostEqual(report["sku_economics"]["orders_revenue_used_for_tacos"], 332469.0, places=2)
+        self.assertAlmostEqual(report["sku_economics"]["orders_revenue_mismatch_abs"], 110823.0, places=2)
+        self.assertAlmostEqual(report["sku_economics"]["orders_revenue_mismatch_pct"], 0.3333, places=4)
         self.assertAlmostEqual(report["sku_economics"]["total_orders_revenue"], 332469.0, places=2)
         self.assertAlmostEqual(report["sku_economics"]["ad_attributed_revenue"], 110823.0, places=2)
         self.assertAlmostEqual(report["sku_economics"]["organic_revenue"], 221646.0, places=2)
@@ -256,7 +263,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
 
     def test_total_order_tacos_uses_total_orders_revenue_including_organic(self):
         kpi_rows = [
-            _kpi_row(kpi_date="2026-05-16", orders_revenue=332469, ad_orders_revenue=110823, organic_orders_revenue=221646),
+            _kpi_row(kpi_date="2026-05-16", orders_revenue=221646, ad_orders_revenue=110823, organic_orders_revenue=221646),
             _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
             _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
         ]
@@ -278,6 +285,25 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertAlmostEqual(report["sku_economics"]["total_order_tacos"], 0.0764, places=4)
         self.assertAlmostEqual(report["sku_economics"]["cpc_order_tacos"], 0.0101, places=4)
         self.assertAlmostEqual(report["sku_economics"]["selected_cpo_order_tacos"], 0.0663, places=4)
+
+    def test_kpi_orders_revenue_mismatch_is_reported_in_diagnostics(self):
+        kpi_rows = [
+            _kpi_row(kpi_date="2026-05-16", orders_revenue=221646, ad_orders_revenue=110823, organic_orders_revenue=221646),
+            _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
+            _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
+        ]
+        report = rule.build_report(
+            "ozon",
+            "1300079194",
+            "2026-05-16",
+            ["24375352"],
+            32963,
+            kpi_rows=kpi_rows,
+            expense_rows=[_expense_row("2026-05-16", "advertising_clicks", 3369.84)],
+            attribution_rows=[_attr_row("2026-05-16", "24375352", 1697.90, 1, 110823)],
+            decision_row=_decision_row(),
+        )
+        self.assertIn("orders_revenue_denominator_mismatch", report["eligibility"]["sku_total_economics_reasons"])
 
     def test_high_buyout_tacos_alone_does_not_make_healthy_campaign_red(self):
         kpi_rows = [

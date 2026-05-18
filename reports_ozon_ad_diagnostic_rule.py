@@ -267,9 +267,21 @@ def compute_buyout_lookbacks(kpi_rows: List[dict], target_date: str) -> dict:
 
 
 def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs: float) -> dict:
-    total_orders_revenue = num(target_kpi_row.get("orders_amount_seller"))
+    orders_revenue_from_kpi = num(target_kpi_row.get("orders_amount_seller"))
     ad_attributed_revenue = num(target_kpi_row.get("ad_orders_revenue"))
     organic_revenue = num(target_kpi_row.get("organic_orders_revenue"))
+    orders_revenue_from_ad_plus_organic = ad_attributed_revenue + organic_revenue
+    if orders_revenue_from_ad_plus_organic > 0:
+        orders_revenue_used_for_tacos = orders_revenue_from_ad_plus_organic
+        orders_revenue_source = "ad_attributed_plus_organic"
+    elif orders_revenue_from_kpi > 0:
+        orders_revenue_used_for_tacos = orders_revenue_from_kpi
+        orders_revenue_source = "daily_sku_kpi_orders_amount_seller"
+    else:
+        orders_revenue_used_for_tacos = 0.0
+        orders_revenue_source = "unavailable"
+    orders_revenue_mismatch_abs = abs(orders_revenue_from_kpi - orders_revenue_from_ad_plus_organic)
+    orders_revenue_mismatch_pct = safe_div(orders_revenue_mismatch_abs, orders_revenue_from_ad_plus_organic)
     buyouts_qty = num(target_kpi_row.get("buyouts_qty"))
     buyouts_revenue = num(target_kpi_row.get("buyouts_amount_seller"))
     cogs_total = buyouts_qty * num(cogs)
@@ -283,15 +295,21 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     non_controllable_ad_spend = cpo_all_spend + selected_cpo_spend
     total_ad_spend = controllable_ad_spend + non_controllable_ad_spend
     net_estimate = buyouts_revenue - cogs_total - commission - logistics - other - total_ad_spend
-    total_order_tacos = safe_div(total_ad_spend, total_orders_revenue)
-    cpc_order_tacos = safe_div(cpc_spend, total_orders_revenue)
-    cpo_all_order_tacos = safe_div(cpo_all_spend, total_orders_revenue)
-    selected_cpo_order_tacos = safe_div(selected_cpo_spend, total_orders_revenue)
+    total_order_tacos = safe_div(total_ad_spend, orders_revenue_used_for_tacos)
+    cpc_order_tacos = safe_div(cpc_spend, orders_revenue_used_for_tacos)
+    cpo_all_order_tacos = safe_div(cpo_all_spend, orders_revenue_used_for_tacos)
+    selected_cpo_order_tacos = safe_div(selected_cpo_spend, orders_revenue_used_for_tacos)
     buyout_tacos = safe_div(total_ad_spend, buyouts_revenue)
     return {
         "orders": num(target_kpi_row.get("orders_qty")),
-        "orders_revenue": num(target_kpi_row.get("orders_amount_seller")),
-        "total_orders_revenue": total_orders_revenue,
+        "orders_revenue": orders_revenue_from_kpi,
+        "total_orders_revenue": orders_revenue_used_for_tacos,
+        "orders_revenue_source": orders_revenue_source,
+        "orders_revenue_from_kpi": orders_revenue_from_kpi,
+        "orders_revenue_from_ad_plus_organic": orders_revenue_from_ad_plus_organic,
+        "orders_revenue_used_for_tacos": orders_revenue_used_for_tacos,
+        "orders_revenue_mismatch_abs": round(orders_revenue_mismatch_abs, 2),
+        "orders_revenue_mismatch_pct": round(orders_revenue_mismatch_pct, 4) if orders_revenue_mismatch_pct is not None else None,
         "ad_attributed_revenue": ad_attributed_revenue,
         "organic_revenue": organic_revenue,
         "buyouts": buyouts_qty,
@@ -352,8 +370,11 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
     cpc_order_tacos = sku_economics.get("cpc_order_tacos")
     selected_cpo_order_tacos = sku_economics.get("selected_cpo_order_tacos")
     buyout_tacos = sku_economics.get("buyout_tacos")
+    orders_revenue_mismatch_pct = sku_economics.get("orders_revenue_mismatch_pct")
     if selected_cpo_order_tacos is not None and selected_cpo_order_tacos > 0.05:
         total_economics_reasons.append("selected_cpo_pressure")
+    if orders_revenue_mismatch_pct is not None and orders_revenue_mismatch_pct > 0.05:
+        total_economics_reasons.append("orders_revenue_denominator_mismatch")
 
     if total_order_tacos is None:
         total_economics_reasons.append("total_order_tacos_unavailable")

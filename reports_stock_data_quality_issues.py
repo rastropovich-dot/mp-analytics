@@ -1,10 +1,12 @@
 import argparse
 import json
 import os
+import time
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -17,6 +19,16 @@ APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 TABLE_NAME = "stock_data_quality_issues"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+READ_RETRY_SLEEP_SECONDS = (2, 5)
+TRANSIENT_READ_ERRORS = (
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.ReadError,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    TimeoutError,
+)
 
 
 def parse_args():
@@ -42,6 +54,25 @@ def resolve_date_range(args):
     return date_from, date_to
 
 
+def execute_read_with_retry(execute_fn, label, max_attempts=3, sleep_seconds=READ_RETRY_SLEEP_SECONDS):
+    attempt = 0
+
+    while True:
+        attempt += 1
+        try:
+            return execute_fn()
+        except TRANSIENT_READ_ERRORS as exc:
+            if attempt >= max_attempts:
+                raise
+
+            sleep_for = sleep_seconds[min(attempt - 1, len(sleep_seconds) - 1)] if sleep_seconds else 0
+            print(
+                f"[read-retry] label={label} attempt={attempt} error={exc.__class__.__name__} sleep={sleep_for}s"
+            )
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+
 def fetch_all(table, filters=None, order=None, desc=False):
     rows = []
     start = 0
@@ -58,7 +89,10 @@ def fetch_all(table, filters=None, order=None, desc=False):
                 query = query.lte(field, value)
         if order:
             query = query.order(order, desc=desc)
-        result = query.range(start, start + page_size - 1).execute()
+        result = execute_read_with_retry(
+            lambda: query.range(start, start + page_size - 1).execute(),
+            label=f"stock:{table}:{start}",
+        )
         batch = result.data or []
         rows.extend(batch)
         if len(batch) < page_size:

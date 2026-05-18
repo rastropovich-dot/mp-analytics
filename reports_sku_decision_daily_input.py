@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client
 from reports_ozon_organic_reconciliation_issues import build_reconciliation_rows
-from reports_stock_data_quality_issues import build_stock_quality_rows
+from reports_stock_data_quality_issues import build_stock_quality_rows, execute_read_with_retry
 
 
 load_dotenv()
@@ -100,7 +100,10 @@ def fetch_all(table, filters=None, order=None, desc=False):
         if order:
             query = query.order(order, desc=desc)
 
-        result = query.range(start, start + page_size - 1).execute()
+        result = execute_read_with_retry(
+            lambda: query.range(start, start + page_size - 1).execute(),
+            label=f"decision:{table}:{start}",
+        )
         batch = result.data or []
         rows.extend(batch)
 

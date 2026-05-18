@@ -267,6 +267,9 @@ def compute_buyout_lookbacks(kpi_rows: List[dict], target_date: str) -> dict:
 
 
 def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs: float) -> dict:
+    total_orders_revenue = num(target_kpi_row.get("orders_amount_seller"))
+    ad_attributed_revenue = num(target_kpi_row.get("ad_orders_revenue"))
+    organic_revenue = num(target_kpi_row.get("organic_orders_revenue"))
     buyouts_qty = num(target_kpi_row.get("buyouts_qty"))
     buyouts_revenue = num(target_kpi_row.get("buyouts_amount_seller"))
     cogs_total = buyouts_qty * num(cogs)
@@ -280,13 +283,17 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     non_controllable_ad_spend = cpo_all_spend + selected_cpo_spend
     total_ad_spend = controllable_ad_spend + non_controllable_ad_spend
     net_estimate = buyouts_revenue - cogs_total - commission - logistics - other - total_ad_spend
-    total_tacos = safe_div(total_ad_spend, buyouts_revenue)
-    cpc_tacos = safe_div(cpc_spend, buyouts_revenue)
-    cpo_all_tacos = safe_div(cpo_all_spend, buyouts_revenue)
-    selected_cpo_tacos = safe_div(selected_cpo_spend, buyouts_revenue)
+    total_order_tacos = safe_div(total_ad_spend, total_orders_revenue)
+    cpc_order_tacos = safe_div(cpc_spend, total_orders_revenue)
+    cpo_all_order_tacos = safe_div(cpo_all_spend, total_orders_revenue)
+    selected_cpo_order_tacos = safe_div(selected_cpo_spend, total_orders_revenue)
+    buyout_tacos = safe_div(total_ad_spend, buyouts_revenue)
     return {
         "orders": num(target_kpi_row.get("orders_qty")),
         "orders_revenue": num(target_kpi_row.get("orders_amount_seller")),
+        "total_orders_revenue": total_orders_revenue,
+        "ad_attributed_revenue": ad_attributed_revenue,
+        "organic_revenue": organic_revenue,
         "buyouts": buyouts_qty,
         "buyouts_revenue": buyouts_revenue,
         "cpc_spend": round(cpc_spend, 2),
@@ -297,11 +304,16 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
         "total_ad_spend": round(total_ad_spend, 2),
         "actual_ad_spend": round(total_ad_spend, 2),
         "net_estimate": round(net_estimate, 2),
-        "total_tacos": round(total_tacos, 4) if total_tacos is not None else None,
-        "cpc_tacos": round(cpc_tacos, 4) if cpc_tacos is not None else None,
-        "cpo_all_tacos": round(cpo_all_tacos, 4) if cpo_all_tacos is not None else None,
-        "selected_cpo_tacos": round(selected_cpo_tacos, 4) if selected_cpo_tacos is not None else None,
-        "tacos": round(total_tacos, 4) if total_tacos is not None else None,
+        "total_order_tacos": round(total_order_tacos, 4) if total_order_tacos is not None else None,
+        "cpc_order_tacos": round(cpc_order_tacos, 4) if cpc_order_tacos is not None else None,
+        "cpo_all_order_tacos": round(cpo_all_order_tacos, 4) if cpo_all_order_tacos is not None else None,
+        "selected_cpo_order_tacos": round(selected_cpo_order_tacos, 4) if selected_cpo_order_tacos is not None else None,
+        "buyout_tacos": round(buyout_tacos, 4) if buyout_tacos is not None else None,
+        "total_tacos": round(total_order_tacos, 4) if total_order_tacos is not None else None,
+        "cpc_tacos": round(cpc_order_tacos, 4) if cpc_order_tacos is not None else None,
+        "cpo_all_tacos": round(cpo_all_order_tacos, 4) if cpo_all_order_tacos is not None else None,
+        "selected_cpo_tacos": round(selected_cpo_order_tacos, 4) if selected_cpo_order_tacos is not None else None,
+        "tacos": round(total_order_tacos, 4) if total_order_tacos is not None else None,
         "commission": round(commission, 2),
         "logistics": round(logistics, 2),
         "other": round(other, 2),
@@ -336,22 +348,36 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
     if sku_economics["net_estimate"] <= 0:
         base_blockers.append(f"net_estimate_non_positive={sku_economics['net_estimate']}")
 
-    total_tacos = sku_economics.get("total_tacos")
-    cpc_tacos = sku_economics.get("cpc_tacos")
-    selected_cpo_tacos = sku_economics.get("selected_cpo_tacos")
-    if total_tacos is None:
-        total_economics_reasons.append("total_tacos_unavailable")
-    elif total_tacos > 0.08:
-        total_economics_reasons.append(f"total_tacos_above_threshold={total_tacos}")
-        if selected_cpo_tacos is not None and selected_cpo_tacos > 0.05:
-            total_economics_reasons.append("selected_cpo_pressure")
+    total_order_tacos = sku_economics.get("total_order_tacos")
+    cpc_order_tacos = sku_economics.get("cpc_order_tacos")
+    selected_cpo_order_tacos = sku_economics.get("selected_cpo_order_tacos")
+    buyout_tacos = sku_economics.get("buyout_tacos")
+    if selected_cpo_order_tacos is not None and selected_cpo_order_tacos > 0.05:
+        total_economics_reasons.append("selected_cpo_pressure")
+
+    if total_order_tacos is None:
+        total_economics_reasons.append("total_order_tacos_unavailable")
+    elif total_order_tacos > 0.08:
+        total_economics_reasons.append(f"total_order_tacos_above_threshold={total_order_tacos}")
         if sku_economics["non_controllable_ad_spend"] > sku_economics["controllable_ad_spend"]:
             total_economics_reasons.append("total_economics_caution")
 
-    if cpc_tacos is None:
-        cpc_control_reasons.append("cpc_tacos_unavailable")
-    elif cpc_tacos > 0.08:
-        cpc_control_reasons.append(f"cpc_tacos_above_threshold={cpc_tacos}")
+    if buyout_tacos is None:
+        total_economics_reasons.append("buyout_tacos_unavailable")
+    elif buyout_tacos > 0.08:
+        total_economics_reasons.append(f"buyout_economics_caution={buyout_tacos}")
+
+    if (
+        "selected_cpo_pressure" in total_economics_reasons
+        and "total_economics_caution" not in total_economics_reasons
+        and sku_economics["non_controllable_ad_spend"] > sku_economics["controllable_ad_spend"]
+    ):
+        total_economics_reasons.append("total_economics_caution")
+
+    if cpc_order_tacos is None:
+        cpc_control_reasons.append("cpc_order_tacos_unavailable")
+    elif cpc_order_tacos > 0.08:
+        cpc_control_reasons.append(f"cpc_order_tacos_above_threshold={cpc_order_tacos}")
 
     cpc_control_reasons.extend(base_blockers)
 

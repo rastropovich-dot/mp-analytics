@@ -171,12 +171,13 @@ def aggregate_expenses_by_date(expense_rows: List[dict]) -> Dict[str, dict]:
     by_date = defaultdict(
         lambda: {
             "advertising_clicks": 0.0,
+            "advertising_other": 0.0,
             "advertising_order_5": 0.0,
             "advertising_order_selected_cpo": 0.0,
             "commission": 0.0,
             "logistics": 0.0,
             "other": 0.0,
-            "actual_ad_spend": 0.0,
+            "total_ad_spend": 0.0,
         }
     )
     for row in expense_rows:
@@ -187,12 +188,12 @@ def aggregate_expenses_by_date(expense_rows: List[dict]) -> Dict[str, dict]:
         if expense_type in bucket:
             bucket[expense_type] += amount
         elif expense_type.startswith("advertising"):
-            bucket["actual_ad_spend"] += amount
+            bucket["total_ad_spend"] += amount
             continue
         else:
             bucket["other"] += amount
         if expense_type.startswith("advertising"):
-            bucket["actual_ad_spend"] += amount
+            bucket["total_ad_spend"] += amount
     return dict(by_date)
 
 
@@ -272,19 +273,35 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     commission = num(target_expense_summary.get("commission"))
     logistics = num(target_expense_summary.get("logistics"))
     other = num(target_expense_summary.get("other"))
+    cpc_spend = num(target_expense_summary.get("advertising_clicks")) + num(target_expense_summary.get("advertising_other"))
+    cpo_all_spend = num(target_expense_summary.get("advertising_order_5"))
     selected_cpo_spend = num(target_expense_summary.get("advertising_order_selected_cpo"))
-    actual_ad_spend = num(target_expense_summary.get("actual_ad_spend"))
-    net_estimate = buyouts_revenue - cogs_total - commission - logistics - other - actual_ad_spend
-    tacos = safe_div(actual_ad_spend, buyouts_revenue)
+    controllable_ad_spend = cpc_spend
+    non_controllable_ad_spend = cpo_all_spend + selected_cpo_spend
+    total_ad_spend = controllable_ad_spend + non_controllable_ad_spend
+    net_estimate = buyouts_revenue - cogs_total - commission - logistics - other - total_ad_spend
+    total_tacos = safe_div(total_ad_spend, buyouts_revenue)
+    cpc_tacos = safe_div(cpc_spend, buyouts_revenue)
+    cpo_all_tacos = safe_div(cpo_all_spend, buyouts_revenue)
+    selected_cpo_tacos = safe_div(selected_cpo_spend, buyouts_revenue)
     return {
         "orders": num(target_kpi_row.get("orders_qty")),
         "orders_revenue": num(target_kpi_row.get("orders_amount_seller")),
         "buyouts": buyouts_qty,
         "buyouts_revenue": buyouts_revenue,
-        "actual_ad_spend": round(actual_ad_spend, 2),
+        "cpc_spend": round(cpc_spend, 2),
+        "cpo_all_spend": round(cpo_all_spend, 2),
         "selected_cpo_spend": round(selected_cpo_spend, 2),
+        "controllable_ad_spend": round(controllable_ad_spend, 2),
+        "non_controllable_ad_spend": round(non_controllable_ad_spend, 2),
+        "total_ad_spend": round(total_ad_spend, 2),
+        "actual_ad_spend": round(total_ad_spend, 2),
         "net_estimate": round(net_estimate, 2),
-        "tacos": round(tacos, 4) if tacos is not None else None,
+        "total_tacos": round(total_tacos, 4) if total_tacos is not None else None,
+        "cpc_tacos": round(cpc_tacos, 4) if cpc_tacos is not None else None,
+        "cpo_all_tacos": round(cpo_all_tacos, 4) if cpo_all_tacos is not None else None,
+        "selected_cpo_tacos": round(selected_cpo_tacos, 4) if selected_cpo_tacos is not None else None,
+        "tacos": round(total_tacos, 4) if total_tacos is not None else None,
         "commission": round(commission, 2),
         "logistics": round(logistics, 2),
         "other": round(other, 2),
@@ -293,7 +310,9 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
 
 
 def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict], sku_economics: dict, buyout_lookbacks: dict) -> dict:
-    reasons = []
+    base_blockers = []
+    total_economics_reasons = []
+    cpc_control_reasons = []
     decision_status = str((decision_row or {}).get("decision_status") or "")
     data_quality_status = str((decision_row or {}).get("data_quality_status") or "")
     organic_reconciliation_status = str((decision_row or {}).get("organic_reconciliation_status") or "")
@@ -303,26 +322,47 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
         stock_qty = num((target_kpi_row or {}).get("stock_qty"))
 
     if decision_status != "ready":
-        reasons.append(f"decision_status={decision_status or 'missing'}")
+        base_blockers.append(f"decision_status={decision_status or 'missing'}")
     if data_quality_status != "ok":
-        reasons.append(f"data_quality_status={data_quality_status or 'missing'}")
+        base_blockers.append(f"data_quality_status={data_quality_status or 'missing'}")
     if organic_reconciliation_status != "clean":
-        reasons.append(f"organic_reconciliation_status={organic_reconciliation_status or 'missing'}")
+        base_blockers.append(f"organic_reconciliation_status={organic_reconciliation_status or 'missing'}")
     if not (stock_status == "stock_ok" or stock_qty >= 30):
-        reasons.append(f"stock_not_ok:{stock_status or 'unknown'}:{stock_qty:g}")
+        base_blockers.append(f"stock_not_ok:{stock_status or 'unknown'}:{stock_qty:g}")
     if buyout_lookbacks["buyouts_14d"] < 5 and buyout_lookbacks["buyouts_7d"] < 3:
-        reasons.append(
+        base_blockers.append(
             f"insufficient_buyout_history:buyouts_7d={buyout_lookbacks['buyouts_7d']}:buyouts_14d={buyout_lookbacks['buyouts_14d']}"
         )
     if sku_economics["net_estimate"] <= 0:
-        reasons.append(f"net_estimate_non_positive={sku_economics['net_estimate']}")
-    tacos = sku_economics.get("tacos")
-    if tacos is None or tacos > 0.08:
-        reasons.append(f"tacos_above_threshold={tacos}")
+        base_blockers.append(f"net_estimate_non_positive={sku_economics['net_estimate']}")
 
+    total_tacos = sku_economics.get("total_tacos")
+    cpc_tacos = sku_economics.get("cpc_tacos")
+    selected_cpo_tacos = sku_economics.get("selected_cpo_tacos")
+    if total_tacos is None:
+        total_economics_reasons.append("total_tacos_unavailable")
+    elif total_tacos > 0.08:
+        total_economics_reasons.append(f"total_tacos_above_threshold={total_tacos}")
+        if selected_cpo_tacos is not None and selected_cpo_tacos > 0.05:
+            total_economics_reasons.append("selected_cpo_pressure")
+        if sku_economics["non_controllable_ad_spend"] > sku_economics["controllable_ad_spend"]:
+            total_economics_reasons.append("total_economics_caution")
+
+    if cpc_tacos is None:
+        cpc_control_reasons.append("cpc_tacos_unavailable")
+    elif cpc_tacos > 0.08:
+        cpc_control_reasons.append(f"cpc_tacos_above_threshold={cpc_tacos}")
+
+    cpc_control_reasons.extend(base_blockers)
+
+    cpc_control_status = "eligible_for_diagnostic" if not cpc_control_reasons else "blocked"
     return {
-        "status": "eligible" if not reasons else "not_eligible",
-        "reasons": reasons,
+        "status": "eligible" if cpc_control_status == "eligible_for_diagnostic" else "not_eligible",
+        "reasons": list(base_blockers + total_economics_reasons),
+        "sku_total_economics_status": "YELLOW" if total_economics_reasons else "GREEN",
+        "sku_total_economics_reasons": total_economics_reasons,
+        "cpc_control_eligibility_status": cpc_control_status,
+        "cpc_control_eligibility_reasons": cpc_control_reasons,
         "stock_qty": stock_qty,
         "stock_status": stock_status or None,
         "buyouts_7d": buyout_lookbacks["buyouts_7d"],
@@ -330,26 +370,36 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
     }
 
 
-def choose_stronger_campaign(campaigns: List[dict]) -> Optional[str]:
+def compare_campaign_strength(campaigns: List[dict]) -> dict:
     if not campaigns:
-        return None
+        return {}
 
-    def score(item):
+    def revenue_volume_score(item):
+        metrics_5d = item.get("windows", {}).get("5d", {})
+        return (num(metrics_5d.get("revenue")), num(metrics_5d.get("orders")), num(metrics_5d.get("spend")))
+
+    def roas_score(item):
+        metrics_5d = item.get("windows", {}).get("5d", {})
+        return (num(metrics_5d.get("roas") or 0), num(metrics_5d.get("revenue")), num(metrics_5d.get("orders")))
+
+    def stability_score(item):
         metrics_5d = item.get("windows", {}).get("5d", {})
         metrics_3d = item.get("windows", {}).get("3d", {})
         return (
-            num(metrics_5d.get("revenue")),
-            num(metrics_5d.get("orders")),
-            num(metrics_5d.get("roas") or 0),
             -int(metrics_5d.get("zero_order_spend_days") or 0),
-            num(metrics_3d.get("revenue")),
+            -int(item.get("trailing_zero_order_days") or 0),
+            num(metrics_5d.get("orders")),
+            num(metrics_3d.get("orders")),
         )
 
-    ordered = sorted(campaigns, key=score, reverse=True)
-    return ordered[0].get("campaign_id")
+    return {
+        "stronger_by_revenue_volume": sorted(campaigns, key=revenue_volume_score, reverse=True)[0].get("campaign_id"),
+        "stronger_by_roas": sorted(campaigns, key=roas_score, reverse=True)[0].get("campaign_id"),
+        "stronger_by_stability": sorted(campaigns, key=stability_score, reverse=True)[0].get("campaign_id"),
+    }
 
 
-def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str, dict], target_date: str, sku_eligibility: dict, stronger_campaign_id: Optional[str]) -> dict:
+def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str, dict], target_date: str, sku_eligibility: dict, peer_comparison: dict) -> dict:
     windows = {
         f"{window_days}d": compute_window_metrics(daily_metrics, target_date, window_days)
         for window_days in LOOKBACK_WINDOWS
@@ -359,8 +409,8 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
     status = "YELLOW"
     recommendation = "hold_watch"
 
-    if sku_eligibility["status"] != "eligible":
-        reasons.append("sku_not_eligible_for_live_action")
+    if sku_eligibility["cpc_control_eligibility_status"] != "eligible_for_diagnostic":
+        reasons.append("cpc_control_eligibility_blocked")
 
     spend_3d = windows["3d"]["spend"]
     orders_3d = windows["3d"]["orders"]
@@ -388,13 +438,34 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
         recommendation = "hold_watch"
         reasons.append("mixed_or_small_sample")
 
-    if stronger_campaign_id and stronger_campaign_id == campaign_id:
-        reasons.append("stronger_than_peer")
-    elif stronger_campaign_id:
-        reasons.append(f"weaker_than_peer:{stronger_campaign_id}")
-        if status == "GREEN":
-            status = "YELLOW"
-            recommendation = "hold_watch"
+    stronger_by_revenue_volume = peer_comparison.get("stronger_by_revenue_volume")
+    stronger_by_roas = peer_comparison.get("stronger_by_roas")
+    stronger_by_stability = peer_comparison.get("stronger_by_stability")
+
+    if stronger_by_revenue_volume == campaign_id:
+        reasons.append("stronger_by_revenue_volume")
+    elif stronger_by_revenue_volume:
+        reasons.append(f"weaker_by_revenue_volume:{stronger_by_revenue_volume}")
+
+    if stronger_by_roas == campaign_id:
+        reasons.append("stronger_by_roas")
+    elif stronger_by_roas:
+        reasons.append(f"weaker_by_roas:{stronger_by_roas}")
+
+    if stronger_by_stability == campaign_id:
+        reasons.append("stronger_by_stability")
+    elif stronger_by_stability:
+        reasons.append(f"weaker_by_stability:{stronger_by_stability}")
+
+    if (
+        stronger_by_revenue_volume
+        and campaign_id != stronger_by_revenue_volume
+        and stronger_by_stability
+        and campaign_id != stronger_by_stability
+        and status == "GREEN"
+    ):
+        status = "YELLOW"
+        recommendation = "hold_watch"
 
     if windows["5d"]["contains_partial_date"]:
         reasons.append("lookback_contains_known_partial_date")
@@ -414,6 +485,11 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
         "role": metadata.get("role") or "unknown",
         "windows": windows,
         "trailing_zero_order_days": trailing_zero_days,
+        "peer_comparison": {
+            "stronger_by_revenue_volume": stronger_by_revenue_volume,
+            "stronger_by_roas": stronger_by_roas,
+            "stronger_by_stability": stronger_by_stability,
+        },
         "status": status,
         "recommendation": recommendation,
         "reasons": reasons,
@@ -421,12 +497,12 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
 
 
 def build_final_recommendation(eligibility: dict, campaigns: List[dict]) -> dict:
-    if eligibility["status"] != "eligible":
+    if eligibility["cpc_control_eligibility_status"] != "eligible_for_diagnostic":
         return {
             "status": "RED",
             "action": "diagnostic_only_hold",
             "live_action_allowed": False,
-            "reason": "diagnostic only: sku not eligible",
+            "reason": "diagnostic only: cpc control eligibility blocked",
         }
 
     if any(campaign["status"] == "RED" for campaign in campaigns):
@@ -435,6 +511,14 @@ def build_final_recommendation(eligibility: dict, campaigns: List[dict]) -> dict
             "action": "diagnostic_only_watch_or_reduce_candidate",
             "live_action_allowed": False,
             "reason": "diagnostic only: at least one campaign is a reduce candidate",
+        }
+
+    if eligibility["sku_total_economics_status"] != "GREEN":
+        return {
+            "status": "YELLOW",
+            "action": "diagnostic_only_hold",
+            "live_action_allowed": False,
+            "reason": "diagnostic only: total economics caution",
         }
 
     if any(campaign["status"] == "YELLOW" for campaign in campaigns):
@@ -467,21 +551,18 @@ def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids
     eligibility = evaluate_sku_eligibility(target_kpi_row, decision_row, sku_economics, buyout_lookbacks)
 
     daily_attr = aggregate_attr_daily(attribution_rows, campaign_ids)
-    campaign_payloads = []
-    for campaign_id in campaign_ids:
-        metadata = dict(KNOWN_CAMPAIGN_HINTS.get(campaign_id, {}))
-        campaign_payloads.append(
-            evaluate_campaign(
-                campaign_id,
-                metadata,
-                daily_attr.get(campaign_id, {}),
-                target_date,
-                eligibility,
-                stronger_campaign_id=None,
-            )
-        )
-
-    stronger_campaign_id = choose_stronger_campaign(campaign_payloads)
+    campaign_payloads = [
+        {
+            "campaign_id": campaign_id,
+            "windows": {
+                f"{window_days}d": compute_window_metrics(daily_attr.get(campaign_id, {}), target_date, window_days)
+                for window_days in LOOKBACK_WINDOWS
+            },
+            "trailing_zero_order_days": trailing_zero_order_days(daily_attr.get(campaign_id, {}), target_date),
+        }
+        for campaign_id in campaign_ids
+    ]
+    peer_comparison = compare_campaign_strength(campaign_payloads)
     campaign_payloads = [
         evaluate_campaign(
             campaign["campaign_id"],
@@ -489,7 +570,7 @@ def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids
             daily_attr.get(campaign["campaign_id"], {}),
             target_date,
             eligibility,
-            stronger_campaign_id,
+            peer_comparison,
         )
         for campaign in campaign_payloads
     ]

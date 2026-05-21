@@ -85,6 +85,96 @@ def get_kpi_rows(days_back=30):
     return result.data or []
 
 
+def table_has_rows(table_name, filters):
+    query = supabase.table(table_name).select("*").limit(1)
+
+    for field, operator, value in filters or []:
+        if operator == "eq":
+            query = query.eq(field, value)
+        elif operator == "gte":
+            query = query.gte(field, value)
+        elif operator == "lte":
+            query = query.lte(field, value)
+        elif operator == "in":
+            query = query.in_(field, value)
+        else:
+            raise RuntimeError(f"Unsupported operator: {operator}")
+
+    result = query.execute()
+    return bool(result.data or [])
+
+
+def get_ozon_report_completeness(target_date):
+    daily_marketplace_kpi_present = table_has_rows(
+        "daily_marketplace_kpi",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("kpi_date", "eq", target_date),
+        ],
+    )
+    daily_sku_kpi_present = table_has_rows(
+        "daily_sku_kpi",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("kpi_date", "eq", target_date),
+        ],
+    )
+    organic_present = table_has_rows(
+        "ozon_daily_sku_organic",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("sale_date", "eq", target_date),
+        ],
+    )
+    ads_in_expenses = table_has_rows(
+        "marketplace_expenses",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("expense_date", "eq", target_date),
+            (
+                "in",
+                "expense_type",
+                [
+                    "advertising_clicks",
+                    "advertising_other",
+                    "advertising_order_10",
+                    "advertising_order_5",
+                    "advertising_order_other",
+                    "advertising_order_unknown",
+                    "advertising_order_selected_cpo",
+                ],
+            ),
+        ],
+    )
+    ads_in_attribution = table_has_rows(
+        "ozon_daily_sku_ad_attribution",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("sale_date", "eq", target_date),
+        ],
+    )
+    ads_present = ads_in_expenses or ads_in_attribution
+
+    blockers = []
+    if not daily_marketplace_kpi_present:
+        blockers.append("daily_marketplace_kpi_missing")
+    if not daily_sku_kpi_present:
+        blockers.append("daily_sku_kpi_missing")
+    if not organic_present:
+        blockers.append("ozon_daily_sku_organic_missing")
+    if not ads_present:
+        blockers.append("ozon_ads_layer_missing")
+
+    return {
+        "complete": not blockers,
+        "blockers": blockers,
+        "daily_marketplace_kpi_present": daily_marketplace_kpi_present,
+        "daily_sku_kpi_present": daily_sku_kpi_present,
+        "organic_present": organic_present,
+        "ads_present": ads_present,
+    }
+
+
 def get_ozon_ads_breakdown(expense_date):
     result = (
         supabase
@@ -385,8 +475,18 @@ def build_completed_day_alerts(kpi_rows):
 
     target_date = (today_local() - timedelta(days=1)).isoformat()
     previous_from = (today_local() - timedelta(days=8)).isoformat()
+    ozon_completeness = get_ozon_report_completeness(target_date)
 
     for mp in ["wb", "ozon"]:
+        if mp == "ozon" and not ozon_completeness.get("complete"):
+            blockers = ", ".join(ozon_completeness.get("blockers") or []) or "unknown"
+            alerts.append(
+                f"⚠️ <b>Ozon: вчера данные неполные</b>\n"
+                f"{target_date}: пропускаем сравнение с 7 днями.\n"
+                f"Причины: {blockers}."
+            )
+            continue
+
         mp_rows = [
             r for r in kpi_rows
             if r.get("marketplace_code") == mp
@@ -542,6 +642,7 @@ def build_executive_summary(kpi_rows):
     """
     target_date = (today_local() - timedelta(days=1)).isoformat()
     previous_from = (today_local() - timedelta(days=8)).isoformat()
+    ozon_completeness = get_ozon_report_completeness(target_date)
 
     lines = [
         "<b>0. Короткая управленческая сводка</b>"
@@ -599,6 +700,15 @@ def build_executive_summary(kpi_rows):
                 f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."
             )
         else:
+            if not ozon_completeness.get("complete"):
+                blockers = ", ".join(ozon_completeness.get("blockers") or []) or "unknown"
+                lines.append(
+                    f"🔵 <b>Ozon вчера</b>\n"
+                    f"⚠️ Ozon вчера: данные неполные, управленческий вывод не строим.\n"
+                    f"Причины: {blockers}."
+                )
+                continue
+
             ads = get_ozon_ads_breakdown(target_date)
             organic_reconciliation = get_ozon_organic_reconciliation(target_date)
             ads_unknown = (

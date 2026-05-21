@@ -251,6 +251,8 @@ def aggregate_attr_daily(attr_rows: List[dict], campaign_ids: Iterable[str]) -> 
             "spend": num(row.get("ad_spend")),
             "orders": num(row.get("ad_orders_qty")),
             "revenue": num(row.get("ad_orders_revenue")),
+            "clicks": num(row.get("ad_clicks")),
+            "views": num(row.get("ad_views")),
         }
     return result
 
@@ -265,16 +267,27 @@ def compute_window_metrics(daily_metrics: Dict[str, dict], target_date: str, win
     spend = sum(num(daily_metrics[date_key].get("spend")) for date_key in date_keys)
     orders = sum(num(daily_metrics[date_key].get("orders")) for date_key in date_keys)
     revenue = sum(num(daily_metrics[date_key].get("revenue")) for date_key in date_keys)
+    clicks = sum(num(daily_metrics[date_key].get("clicks")) for date_key in date_keys)
+    views = sum(num(daily_metrics[date_key].get("views")) for date_key in date_keys)
     zero_order_spend_days = sum(
         1 for date_key in date_keys if num(daily_metrics[date_key].get("spend")) > 0 and num(daily_metrics[date_key].get("orders")) <= 0
     )
+    ctr = safe_div(clicks, views)
+    cvr = safe_div(orders, clicks)
+    avg_cpc = safe_div(spend, clicks)
+    cost_per_ad_order = safe_div(spend, orders)
     return {
         "days_available": len(date_keys),
         "spend": round(spend, 2),
         "orders": round(orders, 2),
         "revenue": round(revenue, 2),
+        "clicks": round(clicks, 2),
+        "views": round(views, 2),
         "roas": round(safe_div(revenue, spend), 4) if safe_div(revenue, spend) is not None else None,
-        "cost_per_ad_order": round(safe_div(spend, orders), 2) if safe_div(spend, orders) is not None else None,
+        "ctr": round(ctr, 4) if ctr is not None else None,
+        "cvr": round(cvr, 4) if cvr is not None else None,
+        "avg_cpc": round(avg_cpc, 2) if avg_cpc is not None else None,
+        "cost_per_ad_order": round(cost_per_ad_order, 2) if cost_per_ad_order is not None else None,
         "zero_order_spend_days": zero_order_spend_days,
         "contains_partial_date": any(date_key in KNOWN_PARTIAL_DATES for date_key in date_keys),
     }
@@ -510,18 +523,26 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
     orders_3d = windows["3d"]["orders"]
     orders_5d = windows["5d"]["orders"]
     roas_5d = windows["5d"]["roas"]
+    clicks_5d = windows["5d"]["clicks"]
+    views_5d = windows["5d"]["views"]
+    ctr_5d = windows["5d"]["ctr"]
+    cvr_5d = windows["5d"]["cvr"]
+    avg_cpc_5d = windows["5d"]["avg_cpc"]
 
     if spend_3d > 3000 and orders_3d <= 0:
         status = "RED"
         recommendation = "reduce_candidate"
+        reasons.append("zero_order_spend")
         reasons.append("spend_3d_gt_3000_and_orders_3d_eq_0")
     elif trailing_zero_days >= 2:
         status = "RED"
         recommendation = "reduce_candidate"
+        reasons.append("zero_order_spend")
         reasons.append("trailing_high_spend_zero_order_days_gte_2")
     elif orders_5d <= 0 and windows["5d"]["spend"] > 0:
         status = "RED"
         recommendation = "reduce_candidate"
+        reasons.append("zero_order_spend")
         reasons.append("spend_present_but_no_orders_5d")
     elif sku_eligibility["status"] == "eligible" and orders_5d > 0 and roas_5d and trailing_zero_days < 2:
         status = "GREEN"
@@ -551,6 +572,12 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
     elif stronger_by_stability:
         reasons.append(f"weaker_by_stability:{stronger_by_stability}")
 
+    if views_5d >= 5000 and ctr_5d is not None and ctr_5d < 0.015:
+        reasons.append("low_ctr_watch")
+
+    if clicks_5d >= 300 and cvr_5d is not None and cvr_5d < 0.004:
+        reasons.append("low_cvr_watch")
+
     if (
         stronger_by_revenue_volume
         and campaign_id != stronger_by_revenue_volume
@@ -577,6 +604,12 @@ def evaluate_campaign(campaign_id: str, metadata: dict, daily_metrics: Dict[str,
         "product_campaign_mode": metadata.get("product_campaign_mode"),
         "product_autopilot_strategy": metadata.get("product_autopilot_strategy"),
         "role": metadata.get("role") or "unknown",
+        "views_5d": windows["5d"]["views"],
+        "clicks_5d": windows["5d"]["clicks"],
+        "ctr_5d": windows["5d"]["ctr"],
+        "cvr_5d": windows["5d"]["cvr"],
+        "avg_cpc_5d": windows["5d"]["avg_cpc"],
+        "cost_per_ad_order_5d": windows["5d"]["cost_per_ad_order"],
         "windows": windows,
         "trailing_zero_order_days": trailing_zero_days,
         "peer_comparison": {

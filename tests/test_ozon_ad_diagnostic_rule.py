@@ -47,7 +47,15 @@ def _expense_row(expense_date="2026-05-16", expense_type="advertising_clicks", a
     }
 
 
-def _attr_row(sale_date="2026-05-16", campaign_id="24375352", spend=1500.0, orders=1, revenue=110823.0):
+def _attr_row(
+    sale_date="2026-05-16",
+    campaign_id="24375352",
+    spend=1500.0,
+    orders=1,
+    revenue=110823.0,
+    clicks=100,
+    views=4000,
+):
     return {
         "sale_date": sale_date,
         "marketplace_code": "ozon",
@@ -57,6 +65,8 @@ def _attr_row(sale_date="2026-05-16", campaign_id="24375352", spend=1500.0, orde
         "ad_spend": spend,
         "ad_orders_qty": orders,
         "ad_orders_revenue": revenue,
+        "ad_clicks": clicks,
+        "ad_views": views,
     }
 
 
@@ -391,6 +401,61 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertIn("weaker_by_revenue_volume:24375352", by_campaign["24375331"]["reasons"])
         self.assertIn("weaker_by_roas:24375352", by_campaign["24375331"]["reasons"])
         self.assertIn("weaker_by_stability:24375352", by_campaign["24375331"]["reasons"])
+
+    def test_campaign_aggregation_includes_clicks_views_and_derived_metrics(self):
+        report = rule.build_report(
+            "ozon",
+            "1300079194",
+            "2026-05-16",
+            ["24375352"],
+            32963,
+            kpi_rows=[
+                _kpi_row(kpi_date="2026-05-16"),
+                _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
+                _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
+            ],
+            expense_rows=[_expense_row("2026-05-16", "advertising_clicks", 3369.84)],
+            attribution_rows=[
+                _attr_row("2026-05-16", "24375352", 1697.90, 1, 110823, clicks=142, views=5112),
+                _attr_row("2026-05-15", "24375352", 1409.74, 0, 0, clicks=127, views=4830),
+                _attr_row("2026-05-14", "24375352", 1941.28, 0, 0, clicks=156, views=5587),
+                _attr_row("2026-05-13", "24375352", 1716.53, 2, 221300, clicks=152, views=5184),
+                _attr_row("2026-05-12", "24375352", 1412.30, 1, 112863, clicks=122, views=4674),
+            ],
+            decision_row=_decision_row(),
+        )
+        campaign = report["campaigns"][0]
+        self.assertEqual(campaign["views_5d"], 25387.0)
+        self.assertEqual(campaign["clicks_5d"], 699.0)
+        self.assertAlmostEqual(campaign["ctr_5d"], 0.0275, places=4)
+        self.assertAlmostEqual(campaign["cvr_5d"], 0.0057, places=4)
+        self.assertAlmostEqual(campaign["avg_cpc_5d"], 11.70, places=2)
+        self.assertAlmostEqual(campaign["cost_per_ad_order_5d"], 2044.44, places=2)
+
+    def test_low_ctr_and_low_cvr_add_watch_reasons_without_live_action(self):
+        report = rule.build_report(
+            "ozon",
+            "1300079194",
+            "2026-05-16",
+            ["24375331"],
+            32963,
+            kpi_rows=[
+                _kpi_row(kpi_date="2026-05-16"),
+                _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
+                _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
+            ],
+            expense_rows=[_expense_row("2026-05-16", "advertising_clicks", 3000)],
+            attribution_rows=[
+                _attr_row("2026-05-16", "24375331", 1000, 1, 50000, clicks=250, views=20000),
+                _attr_row("2026-05-15", "24375331", 1000, 0, 0, clicks=250, views=20000),
+                _attr_row("2026-05-14", "24375331", 1000, 0, 0, clicks=250, views=20000),
+            ],
+            decision_row=_decision_row(),
+        )
+        campaign = report["campaigns"][0]
+        self.assertIn("low_ctr_watch", campaign["reasons"])
+        self.assertIn("low_cvr_watch", campaign["reasons"])
+        self.assertFalse(report["final_recommendation"]["live_action_allowed"])
 
     def test_batch_selects_only_ready_ok_clean_sku(self):
         ready_row = {

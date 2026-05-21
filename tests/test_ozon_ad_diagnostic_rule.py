@@ -90,6 +90,76 @@ def _decision_row(
 
 
 class OzonAdDiagnosticRuleTests(unittest.TestCase):
+    def test_article_unit_costs_preferred_over_known_fallback(self):
+        cost, source, warning = rule.resolve_cogs_for_sku(
+            "ozon",
+            "1300079194",
+            "F000283615",
+            "2026-05-16",
+            None,
+            "manual_or_default",
+            article_costs={"F000283615": 40000.0},
+        )
+        self.assertEqual(cost, 40000.0)
+        self.assertEqual(source, "article_unit_costs")
+        self.assertIsNone(warning)
+
+    def test_cli_cogs_still_works(self):
+        cost, source, warning = rule.resolve_cogs_for_sku(
+            "ozon",
+            "999",
+            "X",
+            "2026-05-16",
+            12345.0,
+            "manual_or_default",
+            article_costs={},
+        )
+        self.assertEqual(cost, 12345.0)
+        self.assertEqual(source, "cli")
+        self.assertIsNone(warning)
+
+    def test_missing_article_unit_costs_table_does_not_crash(self):
+        api_error = rule.APIError({"message": "Could not find the table 'public.article_unit_costs' in the schema cache", "code": "PGRST205"})
+        with mock.patch.object(rule, "execute_read_with_retry", side_effect=api_error):
+            mapping, warning = rule.load_article_unit_costs("ozon", ["F000283615"], "2026-05-16")
+        self.assertEqual(mapping, {})
+        self.assertEqual(warning, "article_unit_costs_table_missing")
+
+    def test_known_sku_fallback_still_works_for_1300079194(self):
+        cost, source, warning = rule.resolve_cogs_for_sku(
+            "ozon",
+            "1300079194",
+            "F000283615",
+            "2026-05-16",
+            None,
+            "manual_or_default",
+            article_costs={},
+        )
+        self.assertEqual(cost, 32963.0)
+        self.assertEqual(source, "known_sku_cogs")
+        self.assertIsNone(warning)
+
+    def test_cogs_source_shown_in_output(self):
+        report = rule.build_report(
+            "ozon",
+            "1300079194",
+            "2026-05-16",
+            ["24375352"],
+            32963,
+            kpi_rows=[
+                _kpi_row(kpi_date="2026-05-16"),
+                _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
+                _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
+            ],
+            expense_rows=[_expense_row("2026-05-16", "advertising_clicks", 1000)],
+            attribution_rows=[_attr_row("2026-05-16", "24375352", 500, 1, 50000)],
+            decision_row=_decision_row(),
+            cogs_source="known_sku_cogs",
+            cogs_lookup_warning="article_unit_costs_table_missing",
+        )
+        self.assertEqual(report["cogs_source"], "known_sku_cogs")
+        self.assertEqual(report["cogs_lookup_warning"], "article_unit_costs_table_missing")
+
     def test_eligible_sku_and_healthy_campaign_green_keep(self):
         kpi_rows = [
             _kpi_row(kpi_date="2026-05-16", ad_spend=3500.0),

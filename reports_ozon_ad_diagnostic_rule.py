@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+from postgrest.exceptions import APIError
 from supabase import create_client
 
 from reports_stock_data_quality_issues import execute_read_with_retry
@@ -199,15 +200,67 @@ def discover_campaign_ids(marketplace_code: str, sku: str, target_date: str, loo
     return campaign_ids
 
 
-def resolve_cogs_for_sku(sku: str, manual_cogs: Optional[float], cogs_source: str):
+def load_article_unit_costs(marketplace_code: str, articles: Iterable[str], as_of_date: str):
+    article_list = sorted({str(article or "").strip() for article in articles if str(article or "").strip()})
+    if not article_list:
+        return {}, None
+
+    query = (
+        supabase
+        .table("article_unit_costs")
+        .select("*")
+        .eq("marketplace_code", marketplace_code)
+        .in_("article", article_list)
+        .lte("valid_from", as_of_date)
+        .order("valid_from", desc=True)
+    )
+
+    try:
+        result = execute_read_with_retry(
+            lambda: query.execute(),
+            label=f"ad-diagnostic:article_unit_costs:{marketplace_code}:{as_of_date}",
+        )
+    except APIError as exc:
+        if str(getattr(exc, "message", "")) or "PGRST205" in str(exc):
+            if "PGRST205" in str(exc) or "article_unit_costs" in str(exc):
+                return {}, "article_unit_costs_table_missing"
+        raise
+
+    rows = result.data or []
+    resolved = {}
+    for row in rows:
+        article = str(row.get("article") or "").strip()
+        if not article or article in resolved:
+            continue
+        valid_to = str(row.get("valid_to") or "").strip()
+        if valid_to and valid_to < as_of_date:
+            continue
+        resolved[article] = float(row.get("unit_cost") or 0)
+
+    return resolved, None
+
+
+def resolve_cogs_for_sku(
+    marketplace_code: str,
+    sku: str,
+    article: Optional[str],
+    as_of_date: str,
+    manual_cogs: Optional[float],
+    cogs_source: str,
+    article_costs: Optional[Dict[str, float]] = None,
+    article_costs_warning: Optional[str] = None,
+):
+    article_key = str(article or "").strip()
+    if article_key and article_costs and article_key in article_costs:
+        return float(article_costs[article_key]), "article_unit_costs", article_costs_warning
     if manual_cogs is not None:
-        return float(manual_cogs), "manual"
+        return float(manual_cogs), "cli", article_costs_warning
     if cogs_source == "manual_or_default":
         known = KNOWN_SKU_COGS.get(str(sku))
         if known is not None:
-            return float(known), "known_default"
-        return None, "missing"
-    return None, "missing"
+            return float(known), "known_sku_cogs", article_costs_warning
+        return None, "missing", article_costs_warning
+    return None, "missing", article_costs_warning
 
 
 def aggregate_expenses_by_date(expense_rows: List[dict]) -> Dict[str, dict]:
@@ -664,7 +717,7 @@ def build_final_recommendation(eligibility: dict, campaigns: List[dict]) -> dict
     }
 
 
-def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float, *, kpi_rows: List[dict], expense_rows: List[dict], attribution_rows: List[dict], decision_row: Optional[dict]):
+def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float, *, kpi_rows: List[dict], expense_rows: List[dict], attribution_rows: List[dict], decision_row: Optional[dict], cogs_source: Optional[str] = None, cogs_lookup_warning: Optional[str] = None):
     campaign_ids = [str(c) for c in campaign_ids]
     kpi_by_date = row_map_by_date(kpi_rows, "kpi_date")
     target_kpi_row = kpi_by_date.get(target_date)
@@ -707,6 +760,8 @@ def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids
         "date": target_date,
         "eligibility": eligibility,
         "sku_economics": sku_economics,
+        "cogs_source": cogs_source or ("missing" if sku_economics.get("cogs_missing") else None),
+        "cogs_lookup_warning": cogs_lookup_warning,
         "campaigns": campaign_payloads,
         "final_recommendation": build_final_recommendation(eligibility, campaign_payloads),
         "db_writes": 0,
@@ -777,6 +832,7 @@ def summarize_batch_row(report: dict):
         "blockers": report["eligibility"].get("reasons") or [],
         "live_action_allowed": False,
         "cogs_missing": report["sku_economics"].get("cogs_missing"),
+        "cogs_source": report.get("cogs_source"),
     }
 
 
@@ -812,6 +868,11 @@ def run_batch_dry_report(marketplace_code: str, target_date: str, top_ready: int
         ),
         reverse=True,
     )[:top_ready]
+    article_costs, article_costs_warning = load_article_unit_costs(
+        marketplace_code,
+        [row.get("article") for row in ranked],
+        target_date,
+    )
 
     reports = []
     blocker_counter = defaultdict(int)
@@ -819,11 +880,29 @@ def run_batch_dry_report(marketplace_code: str, target_date: str, top_ready: int
     for row in ranked:
         sku = str(row.get("marketplace_sku") or "")
         campaign_ids = discover_campaign_ids(marketplace_code, sku, target_date, lookback_days=7)
-        cogs_value, cogs_resolution = resolve_cogs_for_sku(sku, manual_cogs, cogs_source)
-        report = run_dry_report(marketplace_code, sku, target_date, campaign_ids, cogs_value)
+        cogs_value, cogs_resolution, cogs_warning = resolve_cogs_for_sku(
+            marketplace_code,
+            sku,
+            row.get("article"),
+            target_date,
+            manual_cogs,
+            cogs_source,
+            article_costs=article_costs,
+            article_costs_warning=article_costs_warning,
+        )
+        report = run_dry_report(
+            marketplace_code,
+            sku,
+            target_date,
+            campaign_ids,
+            cogs_value,
+            cogs_resolution,
+            cogs_warning,
+        )
         report["article"] = row.get("article")
         report["product_name"] = row.get("product_name")
         report["cogs_source"] = cogs_resolution
+        report["cogs_lookup_warning"] = cogs_warning
         reports.append(report)
         status_counter[report["final_recommendation"]["status"].lower()] += 1
         for blocker in report["eligibility"].get("reasons") or []:
@@ -848,7 +927,7 @@ def run_batch_dry_report(marketplace_code: str, target_date: str, top_ready: int
     }
 
 
-def run_dry_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float):
+def run_dry_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float, cogs_resolution: Optional[str] = None, cogs_lookup_warning: Optional[str] = None):
     history_from = iso_days_back(target_date, 14)
     kpi_rows = load_daily_kpi_rows(marketplace_code, sku, history_from, target_date)
     expense_rows = load_expense_rows(marketplace_code, sku, history_from, target_date)
@@ -864,6 +943,8 @@ def run_dry_report(marketplace_code: str, sku: str, target_date: str, campaign_i
         expense_rows=expense_rows,
         attribution_rows=attribution_rows,
         decision_row=decision_row,
+        cogs_source=cogs_resolution,
+        cogs_lookup_warning=cogs_lookup_warning,
     )
 
 
@@ -885,13 +966,27 @@ def main():
     else:
         if not args.campaign_ids:
             raise RuntimeError("At least one --campaign-id is required")
-        cogs_value, _ = resolve_cogs_for_sku(args.sku, args.cogs, args.cogs_source)
+        kpi_rows = load_daily_kpi_rows(args.marketplace_code, args.sku, args.date, args.date)
+        article = kpi_rows[0].get("article") if kpi_rows else None
+        article_costs, article_costs_warning = load_article_unit_costs(args.marketplace_code, [article], args.date)
+        cogs_value, cogs_resolution, cogs_warning = resolve_cogs_for_sku(
+            args.marketplace_code,
+            args.sku,
+            article,
+            args.date,
+            args.cogs,
+            args.cogs_source,
+            article_costs=article_costs,
+            article_costs_warning=article_costs_warning,
+        )
         report = run_dry_report(
             args.marketplace_code,
             args.sku,
             args.date,
             args.campaign_ids,
             cogs_value,
+            cogs_resolution,
+            cogs_warning,
         )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

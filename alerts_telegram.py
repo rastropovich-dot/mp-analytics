@@ -481,8 +481,8 @@ def build_completed_day_alerts(kpi_rows):
         if mp == "ozon" and not ozon_completeness.get("complete"):
             blockers = ", ".join(ozon_completeness.get("blockers") or []) or "unknown"
             alerts.append(
-                f"⚠️ <b>Ozon: вчера данные неполные</b>\n"
-                f"{target_date}: пропускаем сравнение с 7 днями.\n"
+                f"⚠️ <b>Ozon</b>\n"
+                f"{target_date}: данные неполные, полный дневной вывод пропущен.\n"
                 f"Причины: {blockers}."
             )
             continue

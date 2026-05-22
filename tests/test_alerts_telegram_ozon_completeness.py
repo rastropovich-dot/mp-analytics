@@ -77,7 +77,8 @@ class OzonCompletenessGateTests(unittest.TestCase):
             }):
             rows = alerts.build_completed_day_alerts(kpi_rows)
         joined = "\n".join(rows)
-        self.assertIn("Ozon: вчера данные неполные", joined)
+        self.assertIn("<b>Ozon</b>", joined)
+        self.assertIn("полный дневной вывод пропущен", joined)
         self.assertNotIn("Ozon: вчера падение заказов", joined)
 
     def test_wb_summary_unaffected_when_ozon_incomplete(self):
@@ -93,6 +94,81 @@ class OzonCompletenessGateTests(unittest.TestCase):
             lines = alerts.build_executive_summary(kpi_rows)
         text = "\n".join(lines)
         self.assertIn("🟣 <b>WB вчера</b>", text)
+
+    def test_incomplete_ozon_preserves_section_zero_and_warning_block(self):
+        kpi_rows = [
+            _kpi_row("wb"),
+            _kpi_row("ozon"),
+        ]
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
+                "complete": False,
+                "blockers": ["ozon_daily_sku_organic_missing", "ozon_ads_layer_missing"],
+            }):
+            lines = alerts.build_executive_summary(kpi_rows)
+        text = "\n".join(lines)
+        self.assertIn("<b>0. Короткая управленческая сводка</b>", text)
+        self.assertIn("🟣 <b>WB вчера</b>", text)
+        self.assertIn("🔵 <b>Ozon вчера</b>", text)
+        self.assertIn("Ozon вчера: данные неполные, управленческий вывод не строим", text)
+
+    def test_build_message_keeps_section_one_when_ozon_incomplete(self):
+        kpi_rows = [
+            _kpi_row("wb", "2026-05-20"),
+            _kpi_row("wb", "2026-05-19", orders_qty=12, buyouts_qty=10),
+            _kpi_row("ozon", "2026-05-20"),
+            _kpi_row("ozon", "2026-05-19", orders_qty=20, buyouts_qty=15),
+        ]
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_kpi_rows", return_value=kpi_rows), \
+            mock.patch.object(alerts, "overlay_wb_orders_from_sales_funnel", side_effect=lambda rows: rows), \
+            mock.patch.object(alerts, "save_today_snapshot", return_value=[]), \
+            mock.patch.object(alerts, "build_short_snapshot", return_value=["<b>2. Сегодня на текущий час против вчера</b>"]), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
+                "complete": False,
+                "blockers": ["ozon_daily_sku_organic_missing", "ozon_ads_layer_missing"],
+            }), \
+            mock.patch.object(alerts.supabase, "table") as mock_table:
+            mock_table.return_value.select.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+            message = alerts.build_message()
+        self.assertIn("<b>0. Короткая управленческая сводка</b>", message)
+        self.assertIn("<b>1. Полный вчерашний день</b>", message)
+        self.assertIn("🟣 <b>WB вчера</b>", message)
+        self.assertIn("🔵 <b>Ozon вчера</b>", message)
+        self.assertIn("полный дневной вывод пропущен", message)
+
+    def test_complete_ozon_still_renders_normal_details(self):
+        kpi_rows = [
+            _kpi_row("wb"),
+            _kpi_row("ozon"),
+        ]
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
+                "complete": True,
+                "blockers": [],
+            }), \
+            mock.patch.object(alerts, "get_ozon_ads_breakdown", return_value={
+                "advertising_clicks": 1200,
+                "advertising_order_10": 0,
+                "advertising_order_5": 5000,
+                "advertising_order_other": 0,
+                "advertising_order_unknown": 0,
+                "advertising_other": 0,
+            }), \
+            mock.patch.object(alerts, "get_ozon_organic_reconciliation", return_value={
+                "available": True,
+                "sum_total_orders_revenue": 25000,
+                "sum_ad_orders_revenue": 5000,
+                "sum_organic_orders_revenue": 20000,
+                "status_counts": {"ok": 1},
+                "warning_count": 0,
+            }):
+            lines = alerts.build_executive_summary(kpi_rows)
+        text = "\n".join(lines)
+        self.assertIn("🔵 <b>Ozon вчера</b>", text)
+        self.assertIn("Реклама: клики", text)
+        self.assertIn("Атрибуция:", text)
+        self.assertNotIn("данные неполные", text)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import argparse
 import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -132,8 +133,8 @@ def get_ozon_report_completeness(target_date):
             ("marketplace_code", "eq", "ozon"),
             ("expense_date", "eq", target_date),
             (
-                "in",
                 "expense_type",
+                "in",
                 [
                     "advertising_clicks",
                     "advertising_other",
@@ -467,13 +468,13 @@ def get_yesterday_same_hour_snapshots(current_snapshots):
     return indexed
 
 
-def build_completed_day_alerts(kpi_rows):
+def build_completed_day_alerts(kpi_rows, target_date=None):
     """
     Анализируем вчерашний полный день против предыдущих 7 полных дней.
     """
     alerts = []
 
-    target_date = (today_local() - timedelta(days=1)).isoformat()
+    target_date = target_date or (today_local() - timedelta(days=1)).isoformat()
     previous_from = (today_local() - timedelta(days=8)).isoformat()
     ozon_completeness = get_ozon_report_completeness(target_date)
 
@@ -636,11 +637,11 @@ def overlay_wb_orders_from_sales_funnel(kpi_rows):
     return kpi_rows
 
 
-def build_executive_summary(kpi_rows):
+def build_executive_summary(kpi_rows, target_date=None):
     """
     Короткая управленческая сводка по вчерашнему полному дню.
     """
-    target_date = (today_local() - timedelta(days=1)).isoformat()
+    target_date = target_date or (today_local() - timedelta(days=1)).isoformat()
     previous_from = (today_local() - timedelta(days=8)).isoformat()
     ozon_completeness = get_ozon_report_completeness(target_date)
 
@@ -866,12 +867,12 @@ def build_short_snapshot(intraday_rows):
 
 
 
-def build_message():
+def build_message(target_date=None, skip_snapshot=False):
     kpi_rows = get_kpi_rows(days_back=30)
     kpi_rows = overlay_wb_orders_from_sales_funnel(kpi_rows)
-    current_snapshots = save_today_snapshot(kpi_rows)
+    current_snapshots = [] if skip_snapshot else save_today_snapshot(kpi_rows)
 
-    completed_day_alerts = build_completed_day_alerts(kpi_rows)
+    completed_day_alerts = build_completed_day_alerts(kpi_rows, target_date=target_date)
     intraday_alerts = build_intraday_alerts(current_snapshots)
 
     lines = [
@@ -880,7 +881,7 @@ def build_message():
         "",
     ]
 
-    lines.extend(build_executive_summary(kpi_rows))
+    lines.extend(build_executive_summary(kpi_rows, target_date=target_date))
 
     lines.extend([
         "",
@@ -910,12 +911,37 @@ def build_message():
     return "\n\n".join(lines)
 
 
-if __name__ == "__main__":
-    if not TELEGRAM_BOT_TOKEN:
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Build or send MP Analytics Telegram alert.")
+    parser.add_argument("--dry-run", action="store_true", help="Build message and print to stdout without sending.")
+    parser.add_argument("--no-send", action="store_true", help="Do not send Telegram message; print message to stdout.")
+    parser.add_argument("--preview", action="store_true", help="Alias for --dry-run.")
+    parser.add_argument("--skip-snapshot", action="store_true", help="Do not write intraday_snapshots during this run.")
+    parser.add_argument("--target-date", help="Override yesterday date for completed-day sections, format YYYY-MM-DD.")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    dry_run = bool(args.dry_run or args.preview)
+    no_send = bool(args.no_send or dry_run)
+    skip_snapshot = bool(args.skip_snapshot or dry_run)
+
+    if not no_send and not TELEGRAM_BOT_TOKEN:
         raise ValueError("Не заполнен TELEGRAM_BOT_TOKEN")
 
-    if not TELEGRAM_CHAT_ID:
+    if not no_send and not TELEGRAM_CHAT_ID:
         raise ValueError("Не заполнен TELEGRAM_CHAT_ID")
 
-    message = build_message()
+    message = build_message(target_date=args.target_date, skip_snapshot=skip_snapshot)
+
+    if no_send:
+        print(message)
+        return message
+
     send_telegram(message)
+    return message
+
+
+if __name__ == "__main__":
+    main()

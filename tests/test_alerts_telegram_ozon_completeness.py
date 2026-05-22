@@ -170,6 +170,40 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertIn("Атрибуция:", text)
         self.assertNotIn("данные неполные", text)
 
+    def test_dry_run_does_not_send_or_save_snapshot(self):
+        with mock.patch.object(alerts, "build_message", return_value="preview message") as build_message, \
+            mock.patch.object(alerts, "send_telegram") as send_telegram, \
+            mock.patch("builtins.print") as print_mock:
+            result = alerts.main(["--dry-run"])
+        self.assertEqual(result, "preview message")
+        build_message.assert_called_once_with(target_date=None, skip_snapshot=True)
+        send_telegram.assert_not_called()
+        print_mock.assert_any_call("preview message")
+
+    def test_no_send_skip_snapshot_preview_target_date(self):
+        with mock.patch.object(alerts, "build_message", return_value="preview message") as build_message, \
+            mock.patch.object(alerts, "send_telegram") as send_telegram:
+            result = alerts.main(["--no-send", "--skip-snapshot", "--target-date", "2026-05-20"])
+        self.assertEqual(result, "preview message")
+        build_message.assert_called_once_with(target_date="2026-05-20", skip_snapshot=True)
+        send_telegram.assert_not_called()
+
+    def test_build_message_skip_snapshot_does_not_write_intraday(self):
+        kpi_rows = [
+            _kpi_row("wb", "2026-05-20"),
+            _kpi_row("ozon", "2026-05-20"),
+        ]
+        with mock.patch.object(alerts, "get_kpi_rows", return_value=kpi_rows), \
+            mock.patch.object(alerts, "overlay_wb_orders_from_sales_funnel", side_effect=lambda rows: rows), \
+            mock.patch.object(alerts, "save_today_snapshot") as save_today_snapshot, \
+            mock.patch.object(alerts, "build_completed_day_alerts", return_value=["ozon complete"]), \
+            mock.patch.object(alerts, "build_executive_summary", return_value=["summary"]), \
+            mock.patch.object(alerts, "build_short_snapshot", return_value=["snapshot"]), \
+            mock.patch.object(alerts.supabase, "table") as mock_table:
+            mock_table.return_value.select.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+            alerts.build_message(skip_snapshot=True)
+        save_today_snapshot.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

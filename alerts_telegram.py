@@ -105,6 +105,40 @@ def table_has_rows(table_name, filters):
     return bool(result.data or [])
 
 
+def get_latest_ozon_performance_status(target_date):
+    select_variants = [
+        (
+            "target_date,marketplace_code,mode,cpc_status,cpo_status,run_status,"
+            "cpc_pending_campaigns,cpc_campaign_units_pending_total,"
+            "cpc_campaign_units_failed_429_this_run,cpc_stop_reason,updated_at"
+        ),
+        (
+            "target_date,marketplace_code,mode,cpc_status,cpo_status,run_status,"
+            "cpc_pending_campaigns,updated_at"
+        ),
+    ]
+
+    for select_clause in select_variants:
+        try:
+            rows = (
+                supabase
+                .table("ozon_performance_daily_load_status")
+                .select(select_clause)
+                .eq("marketplace_code", "ozon")
+                .eq("target_date", target_date)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            return rows[0] if rows else None
+        except Exception:
+            continue
+
+    return None
+
+
 def get_ozon_report_completeness(target_date):
     daily_marketplace_kpi_present = table_has_rows(
         "daily_marketplace_kpi",
@@ -155,6 +189,7 @@ def get_ozon_report_completeness(target_date):
         ],
     )
     ads_present = ads_in_expenses or ads_in_attribution
+    performance_status = get_latest_ozon_performance_status(target_date)
 
     blockers = []
     if not daily_marketplace_kpi_present:
@@ -166,6 +201,24 @@ def get_ozon_report_completeness(target_date):
     if not ads_present:
         blockers.append("ozon_ads_layer_missing")
 
+    performance_status_present = bool(performance_status)
+    if performance_status_present:
+        run_status = str(performance_status.get("run_status") or "")
+        cpc_status = str(performance_status.get("cpc_status") or "")
+        cpc_pending_campaigns = int(performance_status.get("cpc_pending_campaigns") or 0)
+        cpc_units_pending_total = int(performance_status.get("cpc_campaign_units_pending_total") or 0)
+
+        if run_status == "partial_ads":
+            blockers.append("ozon_performance_partial_ads")
+        if cpc_status == "pending_429":
+            blockers.append("ozon_cpc_pending_429")
+        elif cpc_status in {"pending_backfill", "pending_quota"}:
+            blockers.append("ozon_performance_cpc_incomplete")
+        if cpc_pending_campaigns > 0 or cpc_units_pending_total > 0:
+            blockers.append("ozon_performance_cpc_incomplete")
+
+    blockers = list(dict.fromkeys(blockers))
+
     return {
         "complete": not blockers,
         "blockers": blockers,
@@ -173,6 +226,10 @@ def get_ozon_report_completeness(target_date):
         "daily_sku_kpi_present": daily_sku_kpi_present,
         "organic_present": organic_present,
         "ads_present": ads_present,
+        "performance_status_present": performance_status_present,
+        "performance_run_status": (performance_status or {}).get("run_status"),
+        "performance_cpc_status": (performance_status or {}).get("cpc_status"),
+        "performance_cpo_status": (performance_status or {}).get("cpo_status"),
     }
 
 

@@ -24,14 +24,16 @@ def _kpi_row(marketplace_code, kpi_date="2026-05-20", orders_qty=10, orders_amou
 
 class OzonCompletenessGateTests(unittest.TestCase):
     def test_missing_organic_marks_ozon_incomplete(self):
-        with mock.patch.object(alerts, "table_has_rows") as table_has_rows:
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
             table_has_rows.side_effect = [True, True, False, True, False]
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_daily_sku_organic_missing", result["blockers"])
 
     def test_missing_ads_marks_ozon_incomplete_not_zero(self):
-        with mock.patch.object(alerts, "table_has_rows") as table_has_rows:
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
             table_has_rows.side_effect = [True, True, True, False, False]
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertFalse(result["complete"])
@@ -39,11 +41,78 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertFalse(result["ads_present"])
 
     def test_all_required_layers_present_marks_complete(self):
-        with mock.patch.object(alerts, "table_has_rows") as table_has_rows:
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
             table_has_rows.side_effect = [True, True, True, True, False]
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertTrue(result["complete"])
         self.assertEqual(result["blockers"], [])
+
+    def test_partial_ads_status_marks_ozon_incomplete_even_with_ad_rows(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={
+                "run_status": "partial_ads",
+                "cpc_status": "pending_429",
+                "cpo_status": "success",
+                "cpc_pending_campaigns": 13,
+                "cpc_campaign_units_pending_total": 13,
+            }):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertFalse(result["complete"])
+        self.assertIn("ozon_performance_partial_ads", result["blockers"])
+        self.assertIn("ozon_cpc_pending_429", result["blockers"])
+
+    def test_pending_429_alone_marks_ozon_incomplete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={
+                "run_status": "running",
+                "cpc_status": "pending_429",
+                "cpo_status": "success",
+                "cpc_pending_campaigns": 0,
+                "cpc_campaign_units_pending_total": 0,
+            }):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertFalse(result["complete"])
+        self.assertIn("ozon_cpc_pending_429", result["blockers"])
+
+    def test_pending_campaigns_mark_ozon_incomplete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={
+                "run_status": "success",
+                "cpc_status": "success",
+                "cpo_status": "success",
+                "cpc_pending_campaigns": 3,
+                "cpc_campaign_units_pending_total": 0,
+            }):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertFalse(result["complete"])
+        self.assertIn("ozon_performance_cpc_incomplete", result["blockers"])
+
+    def test_all_layers_present_with_performance_success_marks_complete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={
+                "run_status": "success",
+                "cpc_status": "success",
+                "cpo_status": "success",
+                "cpc_pending_campaigns": 0,
+                "cpc_campaign_units_pending_total": 0,
+            }):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["performance_status_present"])
+        self.assertEqual(result["blockers"], [])
+
+    def test_missing_performance_row_does_not_fail_complete_layers(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["performance_status_present"])
 
     def test_executive_summary_skips_normal_ozon_block_when_incomplete(self):
         kpi_rows = [

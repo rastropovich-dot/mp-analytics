@@ -1321,6 +1321,65 @@ def resolve_existing_cpc_backfill_progress(client, target_date):
     return candidates[0]
 
 
+def resolve_daily_pending_cpc_progress_from_db(client, target_date):
+    try:
+        result = (
+            supabase
+            .table(PIPELINE_RUNTIME_STATE_TABLE)
+            .select("state_key,payload,updated_at")
+            .eq("account_signature", client.account_signature)
+            .eq("state_type", "cpc_progress")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось прочитать cpc_progress из pipeline_runtime_state. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return None, None
+
+    candidates = []
+    for row in result.data or []:
+        payload = row.get("payload") or {}
+        if payload.get("date_from") != target_date or payload.get("date_to") != target_date:
+            continue
+        if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
+            continue
+        if str(payload.get("selection_mode") or "") != "complete":
+            continue
+        pending_batch_indexes = normalize_batch_indexes(payload.get("pending_batch_indexes"))
+        pending_batches = int(payload.get("pending_batches") or len(pending_batch_indexes) or 0)
+        if not pending_batch_indexes and pending_batches <= 0:
+            continue
+        logical_key = parse_db_state_key("cpc_progress", row.get("state_key"))
+        if not logical_key:
+            continue
+        progress = dict(payload)
+        progress["updated_at"] = progress.get("updated_at") or row.get("updated_at")
+        progress["pending_batch_indexes"] = pending_batch_indexes
+        progress["pending_batches"] = pending_batches
+        candidates.append((logical_key, progress))
+
+    if len(candidates) != 1:
+        return None, None
+
+    return candidates[0]
+
+
+def resolve_cpc_backfill_progress(client, target_date):
+    progress_key, progress = resolve_existing_cpc_backfill_progress(client, target_date)
+    if progress:
+        return progress_key, progress, "existing_backfill_progress"
+
+    progress_key, progress = resolve_daily_pending_cpc_progress_from_db(client, target_date)
+    if progress:
+        client.state.setdefault("cpc_progress", {})[progress_key] = progress
+        return progress_key, progress, "daily_yesterday_pending"
+
+    return None, None, None
+
+
 def is_metric_key(key):
     normalized = str(key).lower().replace(" ", "").replace("_", "")
     return any(metric.lower().replace("_", "") == normalized for metric in METRIC_KEYS)
@@ -4965,13 +5024,13 @@ def run():
                 "cpc-backfill mode requires today's daily-yesterday run to be written first. "
                 f"No daily load status found for load_date={load_date}, target_date={daily_target}."
             )
-        existing_progress_key, existing_progress = resolve_existing_cpc_backfill_progress(
+        existing_progress_key, existing_progress, source_progress_kind = resolve_cpc_backfill_progress(
             client,
             target_date,
         )
         if not existing_progress:
             raise RuntimeError(
-                f"No existing D-1 complete CPC progress found for target_date={target_date}"
+                f"No pending CPC progress found for target_date={target_date}"
             )
 
         saved_ordered_campaign_ids = preserve_campaign_id_order(
@@ -5015,6 +5074,14 @@ def run():
             saved_batches = build_cpc_batches(saved_ordered_campaign_ids, batch_size)
             if first_pending_batch_index is not None and 0 <= int(first_pending_batch_index) < len(saved_batches):
                 first_pending_batch_campaign_ids = saved_batches[int(first_pending_batch_index)]
+        pending_campaign_ids = []
+        if saved_ordered_campaign_ids and pending_batch_indexes:
+            pending_campaign_ids = [
+                campaign_id
+                for batch_index in pending_batch_indexes
+                if 0 <= int(batch_index) < len(saved_batches)
+                for campaign_id in saved_batches[int(batch_index)]
+            ]
 
         planning_summary = {
             "mode": args.mode,
@@ -5023,6 +5090,8 @@ def run():
             "date_to": date_to,
             "campaign_scope": "complete_resume",
             "daily_cpc_selection_mode": "complete",
+            "planned_operation": "cpc_pending_resume_only",
+            "source_progress_kind": source_progress_kind,
             "raw_campaign_count": None,
             "raw_cpc_count": None,
             "filtered_recent_count": None,
@@ -5053,9 +5122,14 @@ def run():
             "existing_progress_completed_batches": existing_progress.get("completed_batches"),
             "existing_progress_pending_batches": existing_progress.get("pending_batches"),
             "existing_progress_next_batch_index": existing_progress.get("next_batch_index"),
+            "pending_batch_indexes": pending_batch_indexes,
             "first_pending_batch_index": first_pending_batch_index,
             "first_pending_batch_campaign_ids": first_pending_batch_campaign_ids,
             "estimated_campaign_units_to_run": pending_campaign_units,
+            "pending_campaign_units": pending_campaign_units,
+            "pending_campaign_ids": pending_campaign_ids,
+            "cpo_status": daily_status.get("cpo_status"),
+            "db_writes": 0,
             "create_new_progress_key": False,
             "warning": ordering_warning,
         }
@@ -5080,6 +5154,7 @@ def run():
     excluded_by_recent_filter_count = 0
     existing_backfill_progress_key = None
     existing_backfill_progress = None
+    existing_backfill_progress_source_kind = None
 
     if args.mode == "daily-yesterday":
         daily_selection = build_daily_cpc_selection(
@@ -5105,17 +5180,7 @@ def run():
             )
     elif args.mode == "cpc-backfill":
         daily_selection_mode = "complete"
-        daily_selection = build_daily_cpc_selection(
-            campaigns,
-            date_from,
-            date_to,
-            daily_selection_mode,
-        )
-        raw_cpc_count = len(daily_selection["raw_cpc_campaigns"])
-        date_overlap_cpc_count = len(daily_selection["date_overlap_cpc_campaigns"])
-        recent_cpc_count = len(daily_selection["recent_cpc_campaigns"])
-        excluded_by_recent_filter_count = int(daily_selection["excluded_by_recent_filter_count"] or 0)
-        cpc_campaigns = list(daily_selection["selected_campaigns"])
+        cpc_campaigns = []
     else:
         cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
         print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")
@@ -5160,14 +5225,26 @@ def run():
                 "cpc-backfill mode requires today's daily-yesterday run to be written first. "
                 f"No daily load status found for load_date={load_date}, target_date={daily_target}."
             )
-        existing_backfill_progress_key, existing_backfill_progress = resolve_existing_cpc_backfill_progress(
+        existing_backfill_progress_key, existing_backfill_progress, existing_backfill_progress_source_kind = resolve_cpc_backfill_progress(
             client,
             target_date,
         )
         if not existing_backfill_progress:
             raise RuntimeError(
-                f"No existing D-1 complete CPC progress found for target_date={target_date}"
+                f"No pending CPC progress found for target_date={target_date}"
             )
+        saved_ordered_campaign_ids = preserve_campaign_id_order(
+            existing_backfill_progress.get("ordered_campaign_ids") or []
+        )
+        cpc_campaigns = [
+            campaign
+            for campaign in campaigns
+            if str(campaign.get("id") or campaign.get("campaignId") or "") in set(saved_ordered_campaign_ids)
+        ]
+        raw_cpc_count = len(saved_ordered_campaign_ids)
+        date_overlap_cpc_count = len(saved_ordered_campaign_ids)
+        recent_cpc_count = len(saved_ordered_campaign_ids)
+        excluded_by_recent_filter_count = 0
 
     ordering_source = "deterministic_sort"
     ordering_warning = None
@@ -5259,6 +5336,7 @@ def run():
         "current_campaign_list_hash": current_campaign_list_hash,
         "existing_progress_selected": bool(existing_backfill_progress),
         "existing_progress_key": existing_backfill_progress_key,
+        "source_progress_kind": existing_backfill_progress_source_kind,
         "existing_progress_selection_mode": (
             (existing_backfill_progress or {}).get("selection_mode")
             if existing_backfill_progress
@@ -5291,6 +5369,11 @@ def run():
         ),
         "first_pending_batch_index": first_pending_batch_index,
         "first_pending_batch_campaign_ids": first_pending_batch_campaign_ids,
+        "pending_batch_indexes": (
+            (existing_backfill_progress or {}).get("pending_batch_indexes")
+            if existing_backfill_progress
+            else None
+        ),
         "estimated_campaign_units_to_run": sum_campaign_units_for_batches(
             cpc_batches,
             (existing_backfill_progress or {}).get("pending_batch_indexes") or [],
@@ -5821,7 +5904,8 @@ def run():
 
     if args.dry_run:
         client.restore_runtime_state(original_runtime_state)
-        client.write_run_status(run_summary)
+        if not args.no_write:
+            client.write_run_status(run_summary)
         print("Dry run: данные не записывались")
         return
 

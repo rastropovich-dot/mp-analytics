@@ -16,6 +16,8 @@ class _FakeQuery:
         self._in = {}
         self._start = 0
         self._end = None
+        self._order_field = None
+        self._order_desc = False
 
     def select(self, _fields):
         return self
@@ -33,12 +35,19 @@ class _FakeQuery:
         self._end = end
         return self
 
+    def order(self, field, desc=False):
+        self._order_field = field
+        self._order_desc = desc
+        return self
+
     def execute(self):
         rows = list(self._rows)
         for field, value in self._eq.items():
             rows = [row for row in rows if row.get(field) == value]
         for field, values in self._in.items():
             rows = [row for row in rows if row.get(field) in values]
+        if self._order_field:
+            rows = sorted(rows, key=lambda row: row.get(self._order_field), reverse=self._order_desc)
         if self._end is None:
             batch = rows[self._start :]
         else:
@@ -55,9 +64,10 @@ class _FakeDbClient:
 
 
 class _FakeClient:
-    def __init__(self, progress_map=None):
+    def __init__(self, progress_map=None, account_signature="acct_d743d49318d3"):
         self.state = {"cpc_progress": {key: {} for key in (progress_map or {}).keys()}}
         self._progress_map = progress_map or {}
+        self.account_signature = account_signature
 
     def get_cpc_progress(self, key):
         return self._progress_map.get(key)
@@ -100,6 +110,126 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_resolve_cpc_backfill_progress_keeps_existing_progress_behavior(self):
+        client = _FakeClient(
+            progress_map={
+                "existing-progress": {
+                    "date_from": "2026-05-21",
+                    "date_to": "2026-05-21",
+                    "selection_mode": "complete",
+                    "pending_batches": 2,
+                    "pending_batch_indexes": [131, 132],
+                    "total_campaigns": 1323,
+                    "batch_size": 10,
+                    "updated_at": "2026-05-22T06:48:32.270712+00:00",
+                }
+            }
+        )
+
+        progress_key, progress, source_kind = loader.resolve_cpc_backfill_progress(client, "2026-05-21")
+
+        self.assertEqual(progress_key, "existing-progress")
+        self.assertEqual(source_kind, "existing_backfill_progress")
+        self.assertEqual(progress["pending_batch_indexes"], [131, 132])
+
+    def test_resolve_cpc_backfill_progress_falls_back_to_daily_pending_progress(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-22T06:48:32.270712+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-21",
+                    "date_to": "2026-05-21",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 2,
+                    "pending_batch_indexes": [131, 132],
+                    "batch_size": 10,
+                    "total_campaigns": 1323,
+                    "ordered_campaign_ids": ["9834517", "9834530", "9834536"],
+                    "updated_at": "2026-05-22T06:48:32.270712+00:00",
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress, source_kind = loader.resolve_cpc_backfill_progress(client, "2026-05-21")
+
+        self.assertEqual(progress_key, "cpc_progress:pending-tail")
+        self.assertEqual(source_kind, "daily_yesterday_pending")
+        self.assertEqual(progress["pending_batch_indexes"], [131, 132])
+        self.assertIn(progress_key, client.state["cpc_progress"])
+
+    def test_resolve_daily_pending_progress_requires_exactly_one_match(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:one",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-22T06:48:32.270712+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-21",
+                    "date_to": "2026-05-21",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 1,
+                    "pending_batch_indexes": [131],
+                },
+            },
+            {
+                "state_key": "cpc_progress:cpc_progress:two",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-22T06:48:33.270712+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-21",
+                    "date_to": "2026-05-21",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 1,
+                    "pending_batch_indexes": [132],
+                },
+            },
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress = loader.resolve_daily_pending_cpc_progress_from_db(client, "2026-05-21")
+
+        self.assertIsNone(progress_key)
+        self.assertIsNone(progress)
+
+    def test_resolve_daily_pending_progress_refuses_completed_success_progress(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:done",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-22T06:48:32.270712+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-21",
+                    "date_to": "2026-05-21",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 0,
+                    "pending_batch_indexes": [],
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress = loader.resolve_daily_pending_cpc_progress_from_db(client, "2026-05-21")
+
+        self.assertIsNone(progress_key)
+        self.assertIsNone(progress)
+
     def test_write_without_approval_raises(self):
         client = _FakeClient()
         with self.assertRaises(loader.CpcRecoveryWriteNotApprovedError):

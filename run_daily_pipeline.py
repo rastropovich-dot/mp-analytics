@@ -1,5 +1,6 @@
 import argparse
 import html
+import json
 import os
 import subprocess
 import sys
@@ -16,6 +17,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 STEPS = [
+    (
+        "Ozon Performance: CPC recovery",
+        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write",
+    ),
     ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
     ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
     ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
@@ -55,6 +60,11 @@ def parse_args():
         "--skip-decision",
         action="store_true",
         help="Skip Decision: SKU daily input step. Useful as an emergency mitigation if decision rebuild causes memory pressure.",
+    )
+    parser.add_argument(
+        "--skip-recovery",
+        action="store_true",
+        help="Skip Ozon Performance CPC recovery step. Useful as an emergency mitigation if recovery should be temporarily disabled.",
     )
     return parser.parse_args()
 
@@ -100,6 +110,24 @@ def prepare_command(command):
     return command
 
 
+def parse_recovery_worker_result(output_text):
+    marker = "Ozon Performance recovery worker result:"
+    if marker not in output_text:
+        return None
+
+    marker_index = output_text.rfind(marker)
+    after_marker = output_text[marker_index + len(marker):].lstrip()
+    if not after_marker.startswith("{"):
+        return None
+
+    decoder = json.JSONDecoder()
+    try:
+        parsed, _ = decoder.raw_decode(after_marker)
+    except json.JSONDecodeError:
+        return None
+    return parsed
+
+
 def run_step(title, command):
     prepared_command = prepare_command(command)
 
@@ -117,11 +145,13 @@ def run_step(title, command):
         bufsize=1,
     )
     tail_lines = deque(maxlen=20)
+    full_output_lines = []
 
     assert process.stdout is not None
 
     for line in process.stdout:
         tail_lines.append(line.rstrip())
+        full_output_lines.append(line)
         print(line, end="", flush=True)
 
     process.stdout.close()
@@ -133,6 +163,14 @@ def run_step(title, command):
         send_failure_alert(title, returncode, list(tail_lines))
         sys.exit(returncode)
 
+    if title == "Ozon Performance: CPC recovery":
+        recovery_result = parse_recovery_worker_result("".join(full_output_lines))
+        if recovery_result and recovery_result.get("status") == "failed":
+            print(f"❌ Ошибка на шаге: {title}")
+            print("Recovery worker returned status=failed")
+            send_failure_alert(title, 1, list(tail_lines))
+            sys.exit(1)
+
     print(f"✅ Готово: {title}")
 
 
@@ -142,6 +180,9 @@ def main():
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     for title, command in STEPS:
+        if args.skip_recovery and title == "Ozon Performance: CPC recovery":
+            print(f"⏭️ Пропускаем шаг: {title}")
+            continue
         if args.skip_excel and title.startswith("Excel:"):
             print(f"⏭️ Пропускаем шаг: {title}")
             continue

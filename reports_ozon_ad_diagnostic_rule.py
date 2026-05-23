@@ -160,6 +160,16 @@ def load_attribution_rows(marketplace_code: str, sku: str, date_from: str, date_
     return fetch_all("ozon_daily_sku_ad_attribution", filters=filters, order="sale_date")
 
 
+def load_selected_cpo_source_rows(target_date: str):
+    return fetch_all(
+        "ozon_search_promo_selected_cpo_orders",
+        filters=[
+            ("sale_date", "eq", target_date),
+        ],
+        order="sale_date",
+    )
+
+
 def load_decision_row(marketplace_code: str, sku: str, target_date: str):
     rows = fetch_all(
         "sku_decision_daily_input",
@@ -375,7 +385,55 @@ def compute_buyout_lookbacks(kpi_rows: List[dict], target_date: str) -> dict:
     return result
 
 
-def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs: float) -> dict:
+def classify_selected_cpo_coverage(target_date: str, sku: str, source_rows_for_date: List[dict], target_expense_summary: dict, attribution_rows: List[dict]) -> dict:
+    ordered_rows = [row for row in source_rows_for_date if str(row.get("ordered_sku") or "") == str(sku)]
+    promoted_rows = [row for row in source_rows_for_date if str(row.get("promoted_sku") or "") == str(sku)]
+    ordered_spend = sum(num(row.get("spend")) for row in ordered_rows)
+    promoted_spend = sum(num(row.get("spend")) for row in promoted_rows)
+    expense_spend = num(target_expense_summary.get("advertising_order_selected_cpo"))
+    attr_spend = sum(
+        num(row.get("ad_spend"))
+        for row in attribution_rows
+        if str(row.get("ad_source") or "") == "cpo_selected_products"
+    )
+    downstream_spend = max(expense_spend, attr_spend)
+    warning = None
+
+    if ordered_spend > 0 or promoted_spend > 0:
+        status = "confirmed_present"
+    elif source_rows_for_date:
+        status = "confirmed_zero"
+    elif downstream_spend > 0:
+        status = "downstream_only"
+        warning = "selected_cpo_source_missing_downstream_only"
+    else:
+        status = "not_loaded_unknown"
+        warning = "selected_cpo_unknown_may_understate_ad_spend"
+
+    if (ordered_spend > 0 or promoted_spend > 0) and (
+        abs(expense_spend - ordered_spend) > 0.01 or abs(attr_spend - ordered_spend) > 0.01
+    ):
+        status = "inconsistent"
+        warning = "selected_cpo_source_downstream_mismatch"
+
+    selected_cpo_spend = downstream_spend
+    if status in {"confirmed_present", "inconsistent"}:
+        selected_cpo_spend = max(ordered_spend, downstream_spend)
+
+    return {
+        "date": target_date,
+        "selected_cpo_status": status,
+        "selected_cpo_source_rows_for_date": len(source_rows_for_date),
+        "selected_cpo_source_total_spend_for_date": round(sum(num(row.get("spend")) for row in source_rows_for_date), 2),
+        "selected_cpo_ordered_sku_source_spend": round(ordered_spend, 2),
+        "selected_cpo_promoted_sku_source_spend": round(promoted_spend, 2),
+        "selected_cpo_downstream_spend": round(downstream_spend, 2),
+        "selected_cpo_warning": warning,
+        "selected_cpo_spend_for_economics": round(selected_cpo_spend, 2),
+    }
+
+
+def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs: float, selected_cpo_coverage: Optional[dict] = None) -> dict:
     orders_revenue_from_kpi = num(target_kpi_row.get("orders_amount_seller"))
     ad_attributed_revenue = num(target_kpi_row.get("ad_orders_revenue"))
     organic_revenue = num(target_kpi_row.get("organic_orders_revenue"))
@@ -401,6 +459,8 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
     cpc_spend = num(target_expense_summary.get("advertising_clicks")) + num(target_expense_summary.get("advertising_other"))
     cpo_all_spend = num(target_expense_summary.get("advertising_order_5"))
     selected_cpo_spend = num(target_expense_summary.get("advertising_order_selected_cpo"))
+    if selected_cpo_coverage:
+        selected_cpo_spend = num(selected_cpo_coverage.get("selected_cpo_spend_for_economics"))
     controllable_ad_spend = cpc_spend
     non_controllable_ad_spend = cpo_all_spend + selected_cpo_spend
     total_ad_spend = controllable_ad_spend + non_controllable_ad_spend
@@ -427,6 +487,13 @@ def build_sku_economics(target_kpi_row: dict, target_expense_summary: dict, cogs
         "cpc_spend": round(cpc_spend, 2),
         "cpo_all_spend": round(cpo_all_spend, 2),
         "selected_cpo_spend": round(selected_cpo_spend, 2),
+        "selected_cpo_status": (selected_cpo_coverage or {}).get("selected_cpo_status"),
+        "selected_cpo_source_rows_for_date": (selected_cpo_coverage or {}).get("selected_cpo_source_rows_for_date"),
+        "selected_cpo_source_total_spend_for_date": (selected_cpo_coverage or {}).get("selected_cpo_source_total_spend_for_date"),
+        "selected_cpo_ordered_sku_source_spend": (selected_cpo_coverage or {}).get("selected_cpo_ordered_sku_source_spend"),
+        "selected_cpo_promoted_sku_source_spend": (selected_cpo_coverage or {}).get("selected_cpo_promoted_sku_source_spend"),
+        "selected_cpo_downstream_spend": (selected_cpo_coverage or {}).get("selected_cpo_downstream_spend"),
+        "selected_cpo_warning": (selected_cpo_coverage or {}).get("selected_cpo_warning"),
         "controllable_ad_spend": round(controllable_ad_spend, 2),
         "non_controllable_ad_spend": round(non_controllable_ad_spend, 2),
         "total_ad_spend": round(total_ad_spend, 2),
@@ -486,6 +553,12 @@ def evaluate_sku_eligibility(target_kpi_row: dict, decision_row: Optional[dict],
     orders_revenue_mismatch_pct = sku_economics.get("orders_revenue_mismatch_pct")
     if selected_cpo_order_tacos is not None and selected_cpo_order_tacos > 0.05:
         total_economics_reasons.append("selected_cpo_pressure")
+    if sku_economics.get("selected_cpo_status") == "not_loaded_unknown":
+        total_economics_reasons.append("selected_cpo_unknown_may_understate_ad_spend")
+    elif sku_economics.get("selected_cpo_status") == "inconsistent":
+        total_economics_reasons.append("selected_cpo_source_downstream_mismatch")
+    elif sku_economics.get("selected_cpo_status") == "downstream_only":
+        total_economics_reasons.append("selected_cpo_source_missing_downstream_only")
     if orders_revenue_mismatch_pct is not None and orders_revenue_mismatch_pct > 0.05:
         total_economics_reasons.append("orders_revenue_denominator_mismatch")
 
@@ -717,7 +790,7 @@ def build_final_recommendation(eligibility: dict, campaigns: List[dict]) -> dict
     }
 
 
-def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float, *, kpi_rows: List[dict], expense_rows: List[dict], attribution_rows: List[dict], decision_row: Optional[dict], cogs_source: Optional[str] = None, cogs_lookup_warning: Optional[str] = None):
+def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids: Iterable[str], cogs: float, *, kpi_rows: List[dict], expense_rows: List[dict], attribution_rows: List[dict], decision_row: Optional[dict], cogs_source: Optional[str] = None, cogs_lookup_warning: Optional[str] = None, selected_cpo_source_rows: Optional[List[dict]] = None):
     campaign_ids = [str(c) for c in campaign_ids]
     kpi_by_date = row_map_by_date(kpi_rows, "kpi_date")
     target_kpi_row = kpi_by_date.get(target_date)
@@ -726,7 +799,9 @@ def build_report(marketplace_code: str, sku: str, target_date: str, campaign_ids
 
     expense_by_date = aggregate_expenses_by_date(expense_rows)
     target_expense_summary = expense_by_date.get(target_date, {})
-    sku_economics = build_sku_economics(target_kpi_row, target_expense_summary, cogs)
+    selected_cpo_source_rows = selected_cpo_source_rows if selected_cpo_source_rows is not None else load_selected_cpo_source_rows(target_date)
+    selected_cpo_coverage = classify_selected_cpo_coverage(target_date, sku, selected_cpo_source_rows, target_expense_summary, attribution_rows)
+    sku_economics = build_sku_economics(target_kpi_row, target_expense_summary, cogs, selected_cpo_coverage=selected_cpo_coverage)
     buyout_lookbacks = compute_buyout_lookbacks(kpi_rows, target_date)
     eligibility = evaluate_sku_eligibility(target_kpi_row, decision_row, sku_economics, buyout_lookbacks)
 

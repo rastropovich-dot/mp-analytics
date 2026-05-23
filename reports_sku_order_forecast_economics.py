@@ -156,6 +156,91 @@ def load_attribution_rows(marketplace_code: str, sku: str, date_from: str, date_
     return rows
 
 
+def load_selected_cpo_source_rows(date_from: str, date_to: str):
+    return fetch_all(
+        "ozon_search_promo_selected_cpo_orders",
+        filters=[
+            ("sale_date", "gte", date_from),
+            ("sale_date", "lte", date_to),
+        ],
+        order="sale_date",
+    )
+
+
+def load_selected_cpo_expense_rows(marketplace_code: str, sku: str, date_from: str, date_to: str):
+    return fetch_all(
+        "marketplace_expenses",
+        filters=[
+            ("marketplace_code", "eq", marketplace_code),
+            ("marketplace_sku", "eq", str(sku)),
+            ("expense_date", "gte", date_from),
+            ("expense_date", "lte", date_to),
+            ("expense_type", "eq", "advertising_order_selected_cpo"),
+        ],
+        order="expense_date",
+    )
+
+
+def classify_selected_cpo_coverage(
+    target_date: str,
+    sku: str,
+    source_rows_for_date: List[Dict],
+    expense_rows_for_date: List[Dict],
+    attribution_rows_for_date: List[Dict],
+):
+    ordered_rows = [row for row in source_rows_for_date if str(row.get("ordered_sku") or "") == str(sku)]
+    promoted_rows = [row for row in source_rows_for_date if str(row.get("promoted_sku") or "") == str(sku)]
+    ordered_spend = sum(num(row.get("spend")) for row in ordered_rows)
+    promoted_spend = sum(num(row.get("spend")) for row in promoted_rows)
+    expense_spend = sum(num(row.get("expense_amount")) for row in expense_rows_for_date)
+    attr_rows = [
+        row
+        for row in attribution_rows_for_date
+        if str(row.get("ad_source") or "") == "cpo_selected_products"
+    ]
+    attr_spend = sum(num(row.get("ad_spend")) for row in attr_rows)
+    downstream_spend = max(expense_spend, attr_spend)
+    mismatch_count = sum(1 for row in promoted_rows if str(row.get("ordered_sku") or "") != str(sku))
+
+    warning = None
+    if ordered_spend > 0 or promoted_spend > 0:
+        status = "confirmed_present"
+    elif source_rows_for_date:
+        status = "confirmed_zero"
+    elif downstream_spend > 0:
+        status = "downstream_only"
+        warning = "selected_cpo_source_missing_downstream_only"
+    else:
+        status = "not_loaded_unknown"
+        warning = "selected_cpo_not_loaded_may_understate_ad_spend"
+
+    if (ordered_spend > 0 or promoted_spend > 0) and (
+        abs(expense_spend - ordered_spend) > 0.01 or abs(attr_spend - ordered_spend) > 0.01
+    ):
+        status = "inconsistent"
+        warning = "selected_cpo_source_downstream_mismatch"
+
+    if status in {"confirmed_present", "inconsistent"}:
+        selected_cpo_spend_for_economics = max(ordered_spend, downstream_spend)
+    elif status == "downstream_only":
+        selected_cpo_spend_for_economics = downstream_spend
+    else:
+        selected_cpo_spend_for_economics = 0.0
+
+    return {
+        "date": target_date,
+        "selected_cpo_status": status,
+        "selected_cpo_source_rows_for_date": len(source_rows_for_date),
+        "selected_cpo_source_total_spend_for_date": round(sum(num(row.get("spend")) for row in source_rows_for_date), 2),
+        "selected_cpo_ordered_sku_source_spend": round(ordered_spend, 2),
+        "selected_cpo_promoted_sku_source_spend": round(promoted_spend, 2),
+        "selected_cpo_downstream_spend": round(downstream_spend, 2),
+        "selected_cpo_warning": warning,
+        "ordered_promoted_mismatch_count": mismatch_count,
+        "selected_cpo_spend_for_economics": round(selected_cpo_spend_for_economics, 2),
+    }
+
+
 def select_expected_buyout_rate(kpi_rows: List[Dict]) -> Dict:
     rate_rows = []
     for row in sorted(kpi_rows, key=lambda item: date_key(item, "report_date", "kpi_date") or ""):
@@ -294,6 +379,13 @@ def build_forecast_row(
         assumption_flags.append("cogs_missing")
     if num(cost_assumptions.get("acquiring_rate")) == 0:
         assumption_flags.append("acquiring_rate_zero_assumption")
+    selected_cpo_status = base_row.get("selected_cpo_status")
+    selected_cpo_warning = base_row.get("selected_cpo_warning")
+    expected_fin_result_confidence = "high"
+    if selected_cpo_status in {"not_loaded_unknown", "downstream_only", "inconsistent"}:
+        expected_fin_result_confidence = "lower"
+    if selected_cpo_warning:
+        assumption_flags.append(selected_cpo_warning)
 
     return {
         "date": base_row.get("date"),
@@ -311,6 +403,13 @@ def build_forecast_row(
         "cpo_all_spend": num(base_row.get("cpo_all_spend")),
         "selected_cpo_spend": num(base_row.get("selected_cpo_spend")),
         "total_ad_spend": total_ad_spend,
+        "selected_cpo_status": selected_cpo_status,
+        "selected_cpo_source_rows_for_date": num(base_row.get("selected_cpo_source_rows_for_date")),
+        "selected_cpo_source_total_spend_for_date": num(base_row.get("selected_cpo_source_total_spend_for_date")),
+        "selected_cpo_ordered_sku_source_spend": num(base_row.get("selected_cpo_ordered_sku_source_spend")),
+        "selected_cpo_promoted_sku_source_spend": num(base_row.get("selected_cpo_promoted_sku_source_spend")),
+        "selected_cpo_downstream_spend": num(base_row.get("selected_cpo_downstream_spend")),
+        "selected_cpo_warning": selected_cpo_warning,
         "cpc_acos": safe_div(base_row.get("cpc_spend"), ad_orders_revenue),
         "total_order_tacos": safe_div(total_ad_spend, total_orders_revenue),
         "cpc_order_tacos": safe_div(base_row.get("cpc_spend"), total_orders_revenue),
@@ -340,6 +439,7 @@ def build_forecast_row(
         "expected_gross_margin": expected_gross_margin,
         "expected_fin_result": expected_fin_result,
         "expected_fin_result_margin": safe_div(expected_fin_result, orders_revenue),
+        "expected_fin_result_confidence": expected_fin_result_confidence,
         "target_profit_amount": num(target_profit_amount),
         "target_profit_rate": num(target_profit_rate),
         "max_affordable_ad_spend": max_affordable_ad_spend,
@@ -363,17 +463,33 @@ def build_report(
     organic_rows: Optional[List[Dict]] = None,
     attribution_rows: Optional[List[Dict]] = None,
     decision_rows: Optional[List[Dict]] = None,
+    selected_cpo_source_rows: Optional[List[Dict]] = None,
+    selected_cpo_expense_rows: Optional[List[Dict]] = None,
 ):
     kpi_rows = kpi_rows if kpi_rows is not None else load_daily_kpi_rows(marketplace_code, sku, date_from, date_to)[0]
     organic_rows = organic_rows if organic_rows is not None else load_organic_rows(marketplace_code, sku, date_from, date_to)
     attribution_rows = attribution_rows if attribution_rows is not None else load_attribution_rows(marketplace_code, sku, date_from, date_to)
     decision_rows = decision_rows if decision_rows is not None else load_decision_rows(marketplace_code, sku, date_from, date_to)[0]
+    selected_cpo_source_rows = (
+        selected_cpo_source_rows if selected_cpo_source_rows is not None else load_selected_cpo_source_rows(date_from, date_to)
+    )
+    selected_cpo_expense_rows = (
+        selected_cpo_expense_rows
+        if selected_cpo_expense_rows is not None
+        else load_selected_cpo_expense_rows(marketplace_code, sku, date_from, date_to)
+    )
 
     organic_by_date = {date_key(row, "sale_date"): row for row in organic_rows}
     decision_by_date = {date_key(row, "report_date", "kpi_date"): row for row in decision_rows}
     attr_by_date = {}
     for row in attribution_rows:
         attr_by_date.setdefault(date_key(row, "sale_date"), []).append(row)
+    selected_cpo_source_by_date = {}
+    for row in selected_cpo_source_rows:
+        selected_cpo_source_by_date.setdefault(date_key(row, "sale_date"), []).append(row)
+    selected_cpo_expense_by_date = {}
+    for row in selected_cpo_expense_rows:
+        selected_cpo_expense_by_date.setdefault(date_key(row, "expense_date"), []).append(row)
 
     ordered_kpi_rows = sorted(kpi_rows, key=lambda item: date_key(item, "report_date", "kpi_date") or "")
     article = next((str(row.get("article") or "").strip() for row in ordered_kpi_rows if str(row.get("article") or "").strip()), "")
@@ -406,7 +522,14 @@ def build_report(
             for item in attrs
             if str(item.get("ad_source") or "").startswith("cpo_") and str(item.get("ad_source") or "") != "cpo_selected_products"
         )
-        selected_cpo_spend = sum(num(item.get("ad_spend")) for item in attrs if str(item.get("ad_source") or "") == "cpo_selected_products")
+        selected_cpo_coverage = classify_selected_cpo_coverage(
+            report_date,
+            sku,
+            selected_cpo_source_by_date.get(report_date, []),
+            selected_cpo_expense_by_date.get(report_date, []),
+            attrs,
+        )
+        selected_cpo_spend = selected_cpo_coverage["selected_cpo_spend_for_economics"]
         total_ad_spend = cpc_spend + cpo_all_spend + selected_cpo_spend
 
         base_row = {
@@ -425,6 +548,7 @@ def build_report(
             "cpo_all_spend": cpo_all_spend,
             "selected_cpo_spend": selected_cpo_spend,
             "total_ad_spend": total_ad_spend,
+            **selected_cpo_coverage,
             "decision_status": decision_row.get("decision_status") if decision_row else None,
             "data_quality_status": decision_row.get("data_quality_status") if decision_row else None,
             "organic_reconciliation_status": decision_row.get("organic_reconciliation_status") if decision_row else None,
@@ -440,6 +564,8 @@ def build_report(
         )
         if forecast_row["acquiring_rate"] == 0:
             blockers.append({"date": report_date, "blocker": "acquiring_rate_assumed_zero"})
+        if forecast_row.get("selected_cpo_warning"):
+            blockers.append({"date": report_date, "blocker": forecast_row["selected_cpo_warning"]})
         rows.append(forecast_row)
 
     return {

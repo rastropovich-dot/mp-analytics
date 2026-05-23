@@ -189,6 +189,14 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
             expense_rows=expenses,
             attribution_rows=attrs,
             decision_row=_decision_row(),
+            selected_cpo_source_rows=[
+                {
+                    "sale_date": "2026-05-16",
+                    "ordered_sku": "other-sku",
+                    "promoted_sku": "other-sku",
+                    "spend": 1000.0,
+                }
+            ],
         )
         self.assertEqual(report["eligibility"]["cpc_control_eligibility_status"], "eligible_for_diagnostic")
         self.assertEqual(report["eligibility"]["sku_total_economics_status"], "GREEN")
@@ -341,6 +349,35 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         self.assertAlmostEqual(report["sku_economics"]["buyout_tacos"], 0.1137, places=4)
         self.assertAlmostEqual(report["campaigns"][0]["windows"]["5d"]["revenue"], 110823.0, places=2)
         self.assertFalse(report["final_recommendation"]["live_action_allowed"])
+
+    def test_selected_cpo_unknown_is_surfaced_without_downgrading_cpc_campaign(self):
+        kpi_rows = [
+            _kpi_row(kpi_date="2026-05-16", ad_spend=3369.84, orders_revenue=221646, ad_orders_revenue=110823, organic_orders_revenue=221646),
+            _kpi_row(kpi_date="2026-05-15", buyouts_qty=2, buyouts_revenue=210000),
+            _kpi_row(kpi_date="2026-05-14", buyouts_qty=2, buyouts_revenue=205000),
+        ]
+        expenses = [
+            _expense_row("2026-05-16", "advertising_clicks", 3369.84),
+            _expense_row("2026-05-16", "commission", 48772.92),
+            _expense_row("2026-05-16", "other", 1071.5),
+        ]
+        attrs = [_attr_row("2026-05-16", "24375352", 1697.90, 1, 110823)]
+        report = rule.build_report(
+            "ozon",
+            "1300079194",
+            "2026-05-16",
+            ["24375352"],
+            32963,
+            kpi_rows=kpi_rows,
+            expense_rows=expenses,
+            attribution_rows=attrs,
+            decision_row=_decision_row(),
+            selected_cpo_source_rows=[],
+        )
+        self.assertEqual(report["sku_economics"]["selected_cpo_status"], "not_loaded_unknown")
+        self.assertEqual(report["sku_economics"]["selected_cpo_warning"], "selected_cpo_unknown_may_understate_ad_spend")
+        self.assertIn("selected_cpo_unknown_may_understate_ad_spend", report["eligibility"]["sku_total_economics_reasons"])
+        self.assertEqual(report["campaigns"][0]["status"], "GREEN")
 
     def test_total_order_tacos_uses_total_orders_revenue_including_organic(self):
         kpi_rows = [

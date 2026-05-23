@@ -780,6 +780,14 @@ def parse_args():
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
+    parser.add_argument(
+        "--allow-recovery-worker-before-daily-status",
+        action="store_true",
+        help=(
+            "Allow cpc-backfill to resume an existing pending progress before today's "
+            "daily-yesterday status row exists. Intended only for the recovery worker."
+        ),
+    )
     parser.add_argument("--existing-report-uuid")
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
@@ -1160,6 +1168,20 @@ def build_limited_batch_indexes(cpc_batches, pending_batch_indexes, max_campaign
         consumed_units += batch_units
 
     return selected, consumed_units
+
+
+def can_resume_pending_progress_without_daily_status(progress):
+    progress = progress or {}
+    pending_batch_indexes = list(progress.get("pending_batch_indexes") or [])
+    pending_batches = int(progress.get("pending_batches") or 0)
+    return bool(pending_batch_indexes or pending_batches > 0)
+
+
+def should_allow_cpc_backfill_before_daily_status(args, progress):
+    return bool(
+        getattr(args, "allow_recovery_worker_before_daily_status", False)
+        and can_resume_pending_progress_without_daily_status(progress)
+    )
 
 
 def mask_client_id(value):
@@ -5017,13 +5039,6 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
-        daily_target = (today_local() - timedelta(days=1)).isoformat()
-        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
-        if not daily_status:
-            raise RuntimeError(
-                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
-                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
-            )
         existing_progress_key, existing_progress, source_progress_kind = resolve_cpc_backfill_progress(
             client,
             target_date,
@@ -5031,6 +5046,14 @@ def run():
         if not existing_progress:
             raise RuntimeError(
                 f"No pending CPC progress found for target_date={target_date}"
+            )
+        daily_target = (today_local() - timedelta(days=1)).isoformat()
+        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
+        allow_before_daily_status = should_allow_cpc_backfill_before_daily_status(args, existing_progress)
+        if not daily_status and not allow_before_daily_status:
+            raise RuntimeError(
+                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
+                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
             )
 
         saved_ordered_campaign_ids = preserve_campaign_id_order(
@@ -5129,6 +5152,7 @@ def run():
             "pending_campaign_units": pending_campaign_units,
             "pending_campaign_ids": pending_campaign_ids,
             "cpo_status": daily_status.get("cpo_status"),
+            "allowed_before_daily_status": allow_before_daily_status,
             "db_writes": 0,
             "create_new_progress_key": False,
             "warning": ordering_warning,
@@ -5218,13 +5242,6 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
-        daily_target = (today_local() - timedelta(days=1)).isoformat()
-        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
-        if not daily_status:
-            raise RuntimeError(
-                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
-                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
-            )
         existing_backfill_progress_key, existing_backfill_progress, existing_backfill_progress_source_kind = resolve_cpc_backfill_progress(
             client,
             target_date,
@@ -5232,6 +5249,14 @@ def run():
         if not existing_backfill_progress:
             raise RuntimeError(
                 f"No pending CPC progress found for target_date={target_date}"
+            )
+        daily_target = (today_local() - timedelta(days=1)).isoformat()
+        daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
+        allow_before_daily_status = should_allow_cpc_backfill_before_daily_status(args, existing_backfill_progress)
+        if not daily_status and not allow_before_daily_status:
+            raise RuntimeError(
+                "cpc-backfill mode requires today's daily-yesterday run to be written first. "
+                f"No daily load status found for load_date={load_date}, target_date={daily_target}."
             )
         saved_ordered_campaign_ids = preserve_campaign_id_order(
             existing_backfill_progress.get("ordered_campaign_ids") or []

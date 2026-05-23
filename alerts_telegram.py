@@ -88,8 +88,14 @@ def get_kpi_rows(days_back=30):
 
 def table_has_rows(table_name, filters):
     query = supabase.table(table_name).select("*").limit(1)
+    supported_operators = {"eq", "gte", "lte", "in"}
 
-    for field, operator, value in filters or []:
+    for first, second, value in filters or []:
+        if first in supported_operators and second not in supported_operators:
+            operator, field = first, second
+        else:
+            field, operator = first, second
+
         if operator == "eq":
             query = query.eq(field, value)
         elif operator == "gte":

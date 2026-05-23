@@ -139,6 +139,7 @@ def build_loader_command(target_date, max_batches_per_run, write=False):
         str(target_date),
         "--max-cpc-batches",
         str(max_batches_per_run),
+        "--allow-recovery-worker-before-daily-status",
     ]
     if write:
         command.extend(["--write", "--approve-cpc-recovery-write"])

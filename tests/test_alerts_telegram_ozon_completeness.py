@@ -23,6 +23,58 @@ def _kpi_row(marketplace_code, kpi_date="2026-05-20", orders_qty=10, orders_amou
 
 
 class OzonCompletenessGateTests(unittest.TestCase):
+    def test_table_has_rows_supports_in_filter_regardless_of_tuple_order(self):
+        class _FakeResult:
+            def __init__(self, data):
+                self.data = data
+
+        class _FakeQuery:
+            def __init__(self):
+                self.calls = []
+
+            def select(self, _fields):
+                return self
+
+            def limit(self, _value):
+                return self
+
+            def eq(self, field, value):
+                self.calls.append(("eq", field, value))
+                return self
+
+            def in_(self, field, value):
+                self.calls.append(("in", field, tuple(value)))
+                return self
+
+            def execute(self):
+                return _FakeResult([{"ok": True}])
+
+        fake_query = _FakeQuery()
+        fake_supabase = mock.Mock()
+        fake_supabase.table.return_value = fake_query
+
+        with mock.patch.object(alerts, "supabase", fake_supabase):
+            self.assertTrue(
+                alerts.table_has_rows(
+                    "marketplace_expenses",
+                    [
+                        ("marketplace_code", "eq", "ozon"),
+                        ("expense_type", "in", ["advertising_clicks"]),
+                    ],
+                )
+            )
+            self.assertTrue(
+                alerts.table_has_rows(
+                    "marketplace_expenses",
+                    [
+                        ("eq", "marketplace_code", "ozon"),
+                        ("in", "expense_type", ["advertising_clicks"]),
+                    ],
+                )
+            )
+
+        self.assertIn(("in", "expense_type", ("advertising_clicks",)), fake_query.calls)
+
     def test_missing_organic_marks_ozon_incomplete(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
@@ -256,6 +308,13 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertEqual(result, "preview message")
         build_message.assert_called_once_with(target_date="2026-05-20", skip_snapshot=True)
         send_telegram.assert_not_called()
+
+    def test_get_ozon_report_completeness_checks_expense_type_in_without_crash(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            table_has_rows.side_effect = [True, True, True, True, False]
+            result = alerts.get_ozon_report_completeness("2026-05-21")
+        self.assertTrue(result["ads_present"])
 
     def test_build_message_skip_snapshot_does_not_write_intraday(self):
         kpi_rows = [

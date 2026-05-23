@@ -231,6 +231,7 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertIn("cpc-backfill", command)
         self.assertIn("--write", command)
         self.assertIn("--approve-cpc-recovery-write", command)
+        self.assertIn("--allow-recovery-worker-before-daily-status", command)
 
 
 if __name__ == "__main__":

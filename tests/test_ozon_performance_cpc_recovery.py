@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 import loaders.ozon_performance_ads_loader as loader
 
@@ -110,6 +111,41 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_can_resume_pending_progress_without_daily_status(self):
+        self.assertTrue(
+            loader.can_resume_pending_progress_without_daily_status(
+                {"pending_batch_indexes": [131, 132], "pending_batches": 2}
+            )
+        )
+        self.assertFalse(
+            loader.can_resume_pending_progress_without_daily_status(
+                {"pending_batch_indexes": [], "pending_batches": 0}
+            )
+        )
+
+    def test_allow_before_daily_status_requires_flag_and_pending_progress(self):
+        args = SimpleNamespace(allow_recovery_worker_before_daily_status=False)
+        self.assertFalse(
+            loader.should_allow_cpc_backfill_before_daily_status(
+                args,
+                {"pending_batch_indexes": [131], "pending_batches": 1},
+            )
+        )
+
+        args.allow_recovery_worker_before_daily_status = True
+        self.assertTrue(
+            loader.should_allow_cpc_backfill_before_daily_status(
+                args,
+                {"pending_batch_indexes": [131], "pending_batches": 1},
+            )
+        )
+        self.assertFalse(
+            loader.should_allow_cpc_backfill_before_daily_status(
+                args,
+                {"pending_batch_indexes": [], "pending_batches": 0},
+            )
+        )
+
     def test_resolve_cpc_backfill_progress_keeps_existing_progress_behavior(self):
         client = _FakeClient(
             progress_map={

@@ -428,13 +428,42 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(plan["budget_skip_reason"], "skipped_no_recovery_budget")
 
     def test_write_command_is_gated_and_bounded(self):
-        command = worker.build_loader_command("2026-05-21", 1, write=True)
+        command = worker.build_loader_command("2026-05-21", 1, write=True, progress_key="cpc_progress:pending-tail")
         self.assertIn("--mode", command)
         self.assertIn("cpc-backfill", command)
         self.assertIn("--write", command)
         self.assertIn("--approve-cpc-recovery-write", command)
         self.assertIn("--allow-recovery-worker-before-daily-status", command)
         self.assertIn("--allow-recovery-worker-before-backfill-window", command)
+        self.assertIn("--progress-key", command)
+        self.assertIn("cpc_progress:pending-tail", command)
+
+    def test_build_candidate_plan_passes_progress_key_to_command(self):
+        client = _FakeClient()
+        status_row = _status_row()
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress()):
+            candidate = worker.build_candidate_plan(client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["progress_key"], "cpc_progress:pending-tail")
+        self.assertIn("--progress-key", candidate["recovery_command"])
+        self.assertIn("cpc_progress:pending-tail", candidate["recovery_command"])
+
+    def test_runtime_state_unavailable_is_controlled_worker_result(self):
+        plan = {
+            "will_run": True,
+            "candidates": [
+                {
+                    "will_run": True,
+                    "target_date": "2026-05-23",
+                    "planned_batch_indexes": [67],
+                    "progress_key": "cpc_progress:pending-tail",
+                }
+            ],
+        }
+        completed = mock.Mock(returncode=0, stdout='{"status": "runtime_state_unavailable"}', stderr="")
+        with mock.patch.object(worker.subprocess, "run", return_value=completed):
+            result = worker.run_recovery_write(plan, approve_write=True)
+        self.assertEqual(result["status"], "runtime_state_unavailable")
 
 
 if __name__ == "__main__":

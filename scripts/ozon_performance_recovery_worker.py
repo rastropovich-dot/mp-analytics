@@ -27,6 +27,7 @@ CONTROLLED_FINAL_STATUSES = {
     "max_attempts_exhausted",
     "partial_remaining",
     "pending_429",
+    "runtime_state_unavailable",
 }
 
 
@@ -251,7 +252,7 @@ def pick_recovery_batches(cpc_batches, pending_batch_indexes, recovery_budget_av
     return limited_batch_indexes, limited_units
 
 
-def build_loader_command(target_date, max_batches_per_run, write=False):
+def build_loader_command(target_date, max_batches_per_run, write=False, progress_key=None):
     loader_script = Path(loader.__file__).resolve()
     command = [
         sys.executable,
@@ -265,6 +266,8 @@ def build_loader_command(target_date, max_batches_per_run, write=False):
         "--allow-recovery-worker-before-daily-status",
         "--allow-recovery-worker-before-backfill-window",
     ]
+    if progress_key:
+        command.extend(["--progress-key", str(progress_key)])
     if write:
         command.extend(["--write", "--approve-cpc-recovery-write"])
     else:
@@ -307,6 +310,7 @@ def build_candidate_plan(client, status_row, budget_guard, max_batches_per_run):
         target_date=target_date,
         max_batches_per_run=max(1, len(planned_batch_indexes) or int(max_batches_per_run or 1)),
         write=False,
+        progress_key=progress_key,
     )
 
     will_run = bool(planned_batch_indexes) and budget_guard["will_run"]
@@ -491,6 +495,7 @@ def run_recovery_write(plan, approve_write=False):
         target_date=candidate["target_date"],
         max_batches_per_run=max(1, len(candidate.get("planned_batch_indexes") or [])),
         write=True,
+        progress_key=candidate.get("progress_key"),
     )
     completed = subprocess.run(
         write_command,
@@ -511,6 +516,8 @@ def run_recovery_write(plan, approve_write=False):
 
     if "\"pending_429\"" in stdout or "\"status\": \"pending_429\"" in stdout:
         result["status"] = "pending_429"
+    elif "\"runtime_state_unavailable\"" in stdout or "\"status\": \"runtime_state_unavailable\"" in stdout:
+        result["status"] = "runtime_state_unavailable"
     return result
 
 
@@ -615,6 +622,15 @@ def execute_recovery_session(
         if result.get("status") == "failed":
             return {
                 "status": "failed",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+                "result": result,
+            }
+
+        if result.get("status") == "runtime_state_unavailable":
+            return {
+                "status": "runtime_state_unavailable",
                 "attempts": attempts,
                 "history": history,
                 "plan": plan,

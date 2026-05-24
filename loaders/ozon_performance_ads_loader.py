@@ -363,6 +363,10 @@ class CpcRecoveryWriteNotApprovedError(RuntimeError):
     """Raised when CPC recovery write is requested without an explicit approval flag."""
 
 
+class RuntimeStateUnavailableError(RuntimeError):
+    """Raised when runtime progress cannot be read from DB reliably for recovery."""
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -795,6 +799,7 @@ def parse_args():
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
+    parser.add_argument("--progress-key")
     parser.add_argument(
         "--allow-recovery-worker-before-daily-status",
         action="store_true",
@@ -1441,6 +1446,94 @@ def resolve_daily_pending_cpc_progress_from_db(client, target_date):
     return candidates[0]
 
 
+def is_transient_runtime_state_error(exc):
+    text = sanitize_text(exc).lower()
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "handshake operation timed out",
+        "connecttimeout",
+        "readtimeout",
+        "readerror",
+        "connecterror",
+        "ssl",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def read_exact_cpc_progress_from_db(client, progress_key, *, target_date=None, max_attempts=3, sleep_fn=time.sleep):
+    if not progress_key:
+        raise RuntimeStateUnavailableError("progress_key is required for exact runtime state read")
+
+    db_state_key = build_db_state_key("cpc_progress", progress_key)
+    last_exc = None
+    for attempt, backoff_seconds in enumerate((0, 2, 5, 10), start=1):
+        if attempt > int(max_attempts or 3):
+            break
+        try:
+            result = (
+                supabase
+                .table(PIPELINE_RUNTIME_STATE_TABLE)
+                .select("state_key,state_type,account_signature,payload,updated_at")
+                .eq("account_signature", client.account_signature)
+                .eq("state_type", "cpc_progress")
+                .eq("state_key", db_state_key)
+                .limit(1)
+                .execute()
+            )
+            rows = result.data or []
+            if not rows:
+                return None, None
+
+            row = rows[0]
+            payload = row.get("payload") or {}
+            logical_key = parse_db_state_key("cpc_progress", row.get("state_key"))
+            progress = dict(payload)
+            progress["updated_at"] = progress.get("updated_at") or row.get("updated_at")
+            progress["pending_batch_indexes"] = normalize_batch_indexes(progress.get("pending_batch_indexes"))
+            progress["pending_batches"] = int(progress.get("pending_batches") or len(progress["pending_batch_indexes"]) or 0)
+            if target_date and (progress.get("date_from") != target_date or progress.get("date_to") != target_date):
+                raise RuntimeError(
+                    f"Progress key {progress_key} does not match target_date={target_date}"
+                )
+            if str(progress.get("account_signature") or client.account_signature) != str(client.account_signature):
+                raise RuntimeError(
+                    f"Progress key {progress_key} does not match account_signature={client.account_signature}"
+                )
+            return logical_key, progress
+        except Exception as exc:
+            last_exc = exc
+            if not is_transient_runtime_state_error(exc) or attempt >= int(max_attempts or 3):
+                break
+            if backoff_seconds > 0:
+                sleep_fn(backoff_seconds)
+
+    raise RuntimeStateUnavailableError(
+        "Unable to read exact cpc_progress from DB. "
+        f"progress_key={progress_key} error={sanitize_text(last_exc)}"
+    )
+
+
+def resolve_cpc_backfill_progress_by_key(client, progress_key, target_date, sleep_fn=time.sleep):
+    logical_key, progress = read_exact_cpc_progress_from_db(
+        client,
+        progress_key,
+        target_date=target_date,
+        sleep_fn=sleep_fn,
+    )
+    if not progress:
+        return None, None, None
+    if str(progress.get("selection_mode") or "").strip().lower() != "complete":
+        raise RuntimeError(
+            f"Progress key {progress_key} is not a complete-selection CPC progress"
+        )
+    if not can_resume_pending_progress_without_daily_status(progress):
+        raise RuntimeError(
+            f"Progress key {progress_key} has no pending CPC batches to resume"
+        )
+    return logical_key, progress, "exact_progress_key"
+
+
 def resolve_cpc_backfill_progress(client, target_date):
     progress_key, progress = resolve_existing_cpc_backfill_progress(client, target_date)
     if progress:
@@ -1633,11 +1726,12 @@ def classify_expense_type(row, campaign):
 
 
 class OzonPerformanceClient:
-    def __init__(self):
+    def __init__(self, skip_persistent_state_load=False):
         self.token = None
         self.token_expires_at = 0
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
         self.state_backend = self.resolve_state_backend()
+        self.skip_persistent_state_load = bool(skip_persistent_state_load)
         self.state = self.load_state()
         self.migrate_legacy_rate_limit_state()
 
@@ -1661,6 +1755,9 @@ class OzonPerformanceClient:
         if self.state_backend == "file":
             for section in PERSISTENT_STATE_SECTIONS:
                 state[section] = file_state.get(section, state[section])
+            return state
+
+        if self.skip_persistent_state_load:
             return state
 
         state.update(self.load_persistent_state_from_db())
@@ -4941,8 +5038,37 @@ def run():
     date_from, date_to = resolve_date_range(args)
     load_date = today_local().isoformat()
     target_date = date_to if date_from == date_to else None
-    client = OzonPerformanceClient()
+    skip_persistent_state_load = bool(args.mode == "cpc-backfill" and args.progress_key)
+    client = OzonPerformanceClient(skip_persistent_state_load=skip_persistent_state_load)
     requested_batch_size = max(1, int(args.campaign_batch_size or 5))
+    exact_backfill_progress_key = None
+    exact_backfill_progress = None
+    exact_backfill_progress_source_kind = None
+
+    if args.mode == "cpc-backfill" and args.progress_key:
+        try:
+            (
+                exact_backfill_progress_key,
+                exact_backfill_progress,
+                exact_backfill_progress_source_kind,
+            ) = resolve_cpc_backfill_progress_by_key(
+                client,
+                args.progress_key,
+                target_date,
+            )
+        except RuntimeStateUnavailableError as exc:
+            payload = {
+                "mode": args.mode,
+                "target_date": target_date,
+                "progress_key": args.progress_key,
+                "status": "runtime_state_unavailable",
+                "reason": sanitize_text(exc),
+                "db_writes": 0,
+                "ozon_api_calls": 0,
+            }
+            print("Ozon Performance cpc-backfill runtime state result:")
+            print(json.dumps(sanitize_value(payload), ensure_ascii=False, indent=2))
+            return
 
     if args.mode == "statistics-json-probe":
         if not args.campaign_id:
@@ -5155,10 +5281,17 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
-        existing_progress_key, existing_progress, source_progress_kind = resolve_cpc_backfill_progress(
-            client,
-            target_date,
-        )
+        if args.progress_key:
+            existing_progress_key, existing_progress, source_progress_kind = (
+                exact_backfill_progress_key,
+                exact_backfill_progress,
+                exact_backfill_progress_source_kind,
+            )
+        else:
+            existing_progress_key, existing_progress, source_progress_kind = resolve_cpc_backfill_progress(
+                client,
+                target_date,
+            )
         if not existing_progress:
             raise RuntimeError(
                 f"No pending CPC progress found for target_date={target_date}"
@@ -5371,10 +5504,21 @@ def run():
                 "cpc-backfill mode supports exactly one calendar day. "
                 f"Got {date_from}..{date_to}"
             )
-        existing_backfill_progress_key, existing_backfill_progress, existing_backfill_progress_source_kind = resolve_cpc_backfill_progress(
-            client,
-            target_date,
-        )
+        if args.progress_key:
+            (
+                existing_backfill_progress_key,
+                existing_backfill_progress,
+                existing_backfill_progress_source_kind,
+            ) = (
+                exact_backfill_progress_key,
+                exact_backfill_progress,
+                exact_backfill_progress_source_kind,
+            )
+        else:
+            existing_backfill_progress_key, existing_backfill_progress, existing_backfill_progress_source_kind = resolve_cpc_backfill_progress(
+                client,
+                target_date,
+            )
         if not existing_backfill_progress:
             raise RuntimeError(
                 f"No pending CPC progress found for target_date={target_date}"
@@ -5403,10 +5547,11 @@ def run():
         saved_ordered_campaign_ids = preserve_campaign_id_order(
             existing_backfill_progress.get("ordered_campaign_ids") or []
         )
+        saved_ordered_campaign_ids_set = set(saved_ordered_campaign_ids)
         cpc_campaigns = [
             campaign
             for campaign in campaigns
-            if str(campaign.get("id") or campaign.get("campaignId") or "") in set(saved_ordered_campaign_ids)
+            if str(campaign.get("id") or campaign.get("campaignId") or "") in saved_ordered_campaign_ids_set
         ]
         raw_cpc_count = len(saved_ordered_campaign_ids)
         date_overlap_cpc_count = len(saved_ordered_campaign_ids)

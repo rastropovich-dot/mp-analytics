@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 from types import SimpleNamespace
+import io
+from contextlib import redirect_stdout
 
 import loaders.ozon_performance_ads_loader as loader
 
@@ -19,6 +21,7 @@ class _FakeQuery:
         self._end = None
         self._order_field = None
         self._order_desc = False
+        self._limit = None
 
     def select(self, _fields):
         return self
@@ -41,6 +44,10 @@ class _FakeQuery:
         self._order_desc = desc
         return self
 
+    def limit(self, value):
+        self._limit = value
+        return self
+
     def execute(self):
         rows = list(self._rows)
         for field, value in self._eq.items():
@@ -53,6 +60,8 @@ class _FakeQuery:
             batch = rows[self._start :]
         else:
             batch = rows[self._start : self._end + 1]
+        if self._limit is not None:
+            batch = batch[: self._limit]
         return _FakeResult(batch)
 
 
@@ -62,6 +71,28 @@ class _FakeDbClient:
 
     def table(self, name):
         return _FakeQuery(self.tables.get(name, []))
+
+
+class _FlakyExactQuery(_FakeQuery):
+    def __init__(self, rows, failures):
+        super().__init__(rows)
+        self._failures = list(failures)
+        self.execute_calls = 0
+
+    def execute(self):
+        self.execute_calls += 1
+        if self._failures:
+            exc = self._failures.pop(0)
+            raise exc
+        return super().execute()
+
+
+class _FlakyDbClient:
+    def __init__(self, rows, failures):
+        self.query = _FlakyExactQuery(rows, failures)
+
+    def table(self, _name):
+        return self.query
 
 
 class _FakeClient:
@@ -267,6 +298,173 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         self.assertEqual(source_kind, "daily_yesterday_pending")
         self.assertEqual(progress["pending_batch_indexes"], [131, 132])
         self.assertIn(progress_key, client.state["cpc_progress"])
+
+    def test_resolve_cpc_backfill_progress_by_key_reads_exact_runtime_state(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-24T19:44:27.606610+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-23",
+                    "date_to": "2026-05-23",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 66,
+                    "pending_batch_indexes": list(range(67, 133)),
+                    "batch_size": 10,
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress, source_kind = loader.resolve_cpc_backfill_progress_by_key(
+                client,
+                "cpc_progress:pending-tail",
+                "2026-05-23",
+                sleep_fn=lambda _seconds: None,
+            )
+
+        self.assertEqual(progress_key, "cpc_progress:pending-tail")
+        self.assertEqual(source_kind, "exact_progress_key")
+        self.assertEqual(progress["pending_batch_indexes"][0], 67)
+
+    def test_exact_progress_read_retries_transient_timeout(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-24T19:44:27.606610+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-23",
+                    "date_to": "2026-05-23",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 66,
+                    "pending_batch_indexes": list(range(67, 133)),
+                },
+            }
+        ]
+        fake_supabase = _FlakyDbClient(
+            db_rows,
+            failures=[Exception("_ssl.c:1112: The handshake operation timed out"), Exception("ReadTimeout")],
+        )
+        sleeps = []
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress = loader.read_exact_cpc_progress_from_db(
+                client,
+                "cpc_progress:pending-tail",
+                target_date="2026-05-23",
+                sleep_fn=lambda seconds: sleeps.append(seconds),
+            )
+
+        self.assertEqual(progress_key, "cpc_progress:pending-tail")
+        self.assertEqual(progress["pending_batches"], 66)
+        self.assertEqual(fake_supabase.query.execute_calls, 3)
+        self.assertEqual(sleeps, [2])
+
+    def test_exact_progress_read_failure_after_retries_raises_runtime_state_unavailable(self):
+        client = _FakeClient(progress_map={})
+        fake_supabase = _FlakyDbClient(
+            [],
+            failures=[
+                Exception("_ssl.c:1112: The handshake operation timed out"),
+                Exception("ReadTimeout"),
+                Exception("ConnectTimeout"),
+            ],
+        )
+        sleeps = []
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            with self.assertRaises(loader.RuntimeStateUnavailableError):
+                loader.read_exact_cpc_progress_from_db(
+                    client,
+                    "cpc_progress:pending-tail",
+                    target_date="2026-05-23",
+                    sleep_fn=lambda seconds: sleeps.append(seconds),
+                )
+
+        self.assertEqual(fake_supabase.query.execute_calls, 3)
+        self.assertEqual(sleeps, [2])
+
+    def test_resolve_cpc_backfill_progress_by_key_rejects_completed_progress(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:done",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-24T19:44:27.606610+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-23",
+                    "date_to": "2026-05-23",
+                    "selection_mode": "complete",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 0,
+                    "pending_batch_indexes": [],
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            with self.assertRaises(RuntimeError):
+                loader.resolve_cpc_backfill_progress_by_key(
+                    client,
+                    "cpc_progress:done",
+                    "2026-05-23",
+                    sleep_fn=lambda _seconds: None,
+                )
+
+    def test_run_cpc_backfill_with_progress_key_runtime_state_unavailable_is_controlled_and_no_api_calls(self):
+        args = SimpleNamespace(
+            mode="cpc-backfill",
+            date="2026-05-23",
+            date_from=None,
+            date_to=None,
+            days_back=1,
+            campaign_batch_size=5,
+            campaign_scope="period",
+            group_by="DATE",
+            campaign_limit=None,
+            max_cpc_batches=1,
+            max_stats_campaigns=1800,
+            plan_only=False,
+            dry_run=True,
+            write=False,
+            no_write=True,
+            debug_sample=False,
+            campaign_id=[],
+            existing_report_uuid="",
+            cpo_report_type="orders",
+            search_promo_report_type="orders",
+            allow_recovery_worker_before_daily_status=True,
+            allow_recovery_worker_before_backfill_window=True,
+            progress_key="cpc_progress:pending-tail",
+        )
+        fake_client = mock.Mock()
+        fake_client.list_campaigns = mock.Mock(side_effect=AssertionError("should not list campaigns"))
+        fake_client.account_signature = "acct_d743d49318d3"
+        fake_client.state_backend = "db"
+        output = io.StringIO()
+
+        with mock.patch.object(loader, "parse_args", return_value=args), \
+             mock.patch.object(loader, "OzonPerformanceClient", return_value=fake_client), \
+             mock.patch.object(loader, "resolve_date_range", return_value=("2026-05-23", "2026-05-23")), \
+             mock.patch.object(loader, "resolve_cpc_backfill_progress_by_key", side_effect=loader.RuntimeStateUnavailableError("ReadTimeout")), \
+             redirect_stdout(output):
+            loader.run()
+
+        stdout = output.getvalue()
+        self.assertIn("runtime_state_unavailable", stdout)
+        self.assertIn("\"ozon_api_calls\": 0", stdout)
+        fake_client.list_campaigns.assert_not_called()
 
     def test_resolve_daily_pending_progress_requires_exactly_one_match(self):
         client = _FakeClient(progress_map={})

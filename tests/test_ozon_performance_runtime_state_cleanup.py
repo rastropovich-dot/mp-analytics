@@ -102,6 +102,10 @@ def _make_client(state=None):
 
 
 class OzonPerformanceRuntimeStateCleanupTests(unittest.TestCase):
+    def test_from_iso_accepts_short_fractional_seconds(self):
+        parsed = loader.from_iso("2026-05-24T19:44:27.60661+00:00")
+        self.assertEqual(parsed.isoformat(), "2026-05-24T19:44:27.606610+00:00")
+
     def test_cleanup_is_chunked_for_many_keys(self):
         client = _make_client()
         keys = [f"key-{idx}" for idx in range(60)]

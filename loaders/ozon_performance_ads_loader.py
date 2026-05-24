@@ -446,7 +446,21 @@ def to_iso(dt):
 def from_iso(value):
     if not value:
         return None
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    normalized = str(value).replace("Z", "+00:00")
+    if "." in normalized:
+        head, tail = normalized.split(".", 1)
+        tz_start = None
+        for marker in ("+", "-"):
+            idx = tail.find(marker)
+            if idx > 0:
+                tz_start = idx
+                break
+        if tz_start is not None:
+            fraction = tail[:tz_start]
+            tz_part = tail[tz_start:]
+            if fraction.isdigit() and len(fraction) != 6:
+                normalized = f"{head}.{fraction.ljust(6, '0')[:6]}{tz_part}"
+    return datetime.fromisoformat(normalized)
 
 
 def local_now():

@@ -21,6 +21,7 @@ CONTROLLED_FINAL_STATUSES = {
     "skipped_cooldown_active",
     "skipped_daily_budget_guard",
     "skipped_no_recovery_budget",
+    "deadline_already_passed",
     "deadline_before_cooldown",
     "deadline_after_429",
     "max_attempts_exhausted",
@@ -108,31 +109,62 @@ def parse_wait_deadline(wait_until, timezone):
     ).astimezone(ZoneInfo("UTC"))
 
 
-def build_wait_metadata(cooldown_until, deadline_utc, sleep_padding_seconds, now_utc=None):
+def parse_relative_wait_deadline(wait_for_minutes, now_utc=None):
+    if wait_for_minutes is None:
+        return None
+    now_utc = now_utc or loader.utcnow()
+    return now_utc + timedelta(minutes=int(wait_for_minutes))
+
+
+def format_time_pair(dt, timezone):
+    if not dt:
+        return None, None
+    tz = ZoneInfo(timezone)
+    return dt.astimezone(ZoneInfo("UTC")).isoformat(), dt.astimezone(tz).isoformat()
+
+
+def build_wait_metadata(cooldown_until, deadline_utc, sleep_padding_seconds, now_utc=None, timezone="Europe/Moscow"):
     now_utc = now_utc or loader.utcnow()
     cooldown_dt = loader.from_iso(cooldown_until) if cooldown_until else None
+    current_utc, current_local = format_time_pair(now_utc, timezone)
+    deadline_utc_text, deadline_local_text = format_time_pair(deadline_utc, timezone)
     if not cooldown_dt:
         return {
+            "current_time_utc": current_utc,
+            "current_time_local": current_local,
             "cooldown_until": None,
-            "deadline": loader.to_iso(deadline_utc) if deadline_utc else None,
+            "cooldown_until_utc": None,
+            "cooldown_until_local": None,
+            "deadline": deadline_utc_text,
+            "deadline_utc": deadline_utc_text,
+            "deadline_local": deadline_local_text,
             "wait_seconds": 0,
             "will_wait": False,
             "estimated_completion_possible": True,
             "ready_at": None,
+            "deadline_already_passed": bool(deadline_utc and now_utc >= deadline_utc),
         }
 
     ready_at = cooldown_dt + timedelta(seconds=int(sleep_padding_seconds or 0))
     wait_seconds = max(0, int((ready_at - now_utc).total_seconds() + 0.999999))
     estimated_completion_possible = deadline_utc is None or ready_at <= deadline_utc
     will_wait = wait_seconds > 0 and estimated_completion_possible
+    cooldown_utc_text, cooldown_local_text = format_time_pair(cooldown_dt, timezone)
 
     return {
-        "cooldown_until": loader.to_iso(cooldown_dt),
-        "deadline": loader.to_iso(deadline_utc) if deadline_utc else None,
+        "current_time_utc": current_utc,
+        "current_time_local": current_local,
+        "cooldown_until": cooldown_utc_text,
+        "cooldown_until_utc": cooldown_utc_text,
+        "cooldown_until_local": cooldown_local_text,
+        "deadline": deadline_utc_text,
+        "deadline_utc": deadline_utc_text,
+        "deadline_local": deadline_local_text,
         "wait_seconds": wait_seconds,
         "will_wait": will_wait,
         "estimated_completion_possible": estimated_completion_possible,
         "ready_at": loader.to_iso(ready_at),
+        "deadline_already_passed": bool(deadline_utc and now_utc >= deadline_utc),
     }
 
 
@@ -305,6 +337,7 @@ def build_recovery_plan(
     client=None,
     phase="pre",
     wait_until=None,
+    wait_for_minutes=None,
     timezone="Europe/Moscow",
     max_attempts=10,
     sleep_padding_seconds=10,
@@ -312,14 +345,21 @@ def build_recovery_plan(
     db_client = db_client or loader.supabase
     client = client or loader.OzonPerformanceClient()
     load_date = loader.today_local().isoformat()
+    now_utc = loader.utcnow()
     daily_budget_used_today = loader.read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
     budget_guard = build_budget_guard(daily_budget_used_today, phase=phase)
     cooldown = get_statistics_cooldown(client)
-    deadline_utc = parse_wait_deadline(wait_until, timezone)
+    deadline_utc = (
+        parse_relative_wait_deadline(wait_for_minutes, now_utc=now_utc)
+        if wait_for_minutes is not None
+        else parse_wait_deadline(wait_until, timezone)
+    )
     wait_meta = build_wait_metadata(
         cooldown["cooldown_until"],
         deadline_utc,
         sleep_padding_seconds,
+        now_utc=now_utc,
+        timezone=timezone,
     )
     candidates = get_partial_candidates(db_client, client.account_signature, target_date=target_date)
     latest_status_row = get_latest_status_row(db_client, client.account_signature, target_date=target_date)
@@ -328,6 +368,8 @@ def build_recovery_plan(
         "load_date": load_date,
         "requested_target_date": target_date,
         "phase": phase,
+        "current_time_utc": wait_meta["current_time_utc"],
+        "current_time_local": wait_meta["current_time_local"],
         "daily_budget_used_today": budget_guard["daily_budget_used_today"],
         "daily_limit": budget_guard["daily_limit"],
         "daily_reserve": budget_guard["daily_reserve"],
@@ -336,7 +378,12 @@ def build_recovery_plan(
         "budget_skip_reason": budget_guard["budget_skip_reason"],
         "cooldown_active": cooldown["cooldown_active"],
         "cooldown_until": wait_meta["cooldown_until"],
+        "cooldown_until_utc": wait_meta["cooldown_until_utc"],
+        "cooldown_until_local": wait_meta["cooldown_until_local"],
         "deadline": wait_meta["deadline"],
+        "deadline_utc": wait_meta["deadline_utc"],
+        "deadline_local": wait_meta["deadline_local"],
+        "deadline_already_passed": wait_meta["deadline_already_passed"],
         "wait_seconds": wait_meta["wait_seconds"],
         "will_wait": wait_meta["will_wait"],
         "sleep_padding_seconds": int(sleep_padding_seconds or 0),
@@ -345,6 +392,11 @@ def build_recovery_plan(
         "candidates": [],
         "latest_status_row": latest_status_row,
     }
+
+    if wait_meta["deadline_already_passed"]:
+        plan["status"] = "deadline_already_passed"
+        plan["planned_recovery_units"] = 0
+        return plan
 
     if not candidates:
         if latest_status_row and is_complete_status_row(latest_status_row):
@@ -372,6 +424,8 @@ def build_recovery_plan(
                         "deadline_before_cooldown" if deadline_utc else "skipped_cooldown_active"
                     ),
                     "next_attempt_at": wait_meta["cooldown_until"],
+                    "next_attempt_at_utc": wait_meta["cooldown_until_utc"],
+                    "next_attempt_at_local": wait_meta["cooldown_until_local"],
                     "wait_seconds": wait_meta["wait_seconds"],
                     "will_wait": wait_meta["will_wait"],
                     "estimated_completion_possible": wait_meta["estimated_completion_possible"],
@@ -469,6 +523,7 @@ def execute_recovery_session(
     phase="pre",
     max_batches_per_run=1,
     wait_until=None,
+    wait_for_minutes=None,
     timezone="Europe/Moscow",
     max_attempts=10,
     sleep_padding_seconds=10,
@@ -492,6 +547,7 @@ def execute_recovery_session(
             client=client,
             phase=phase,
             wait_until=wait_until,
+            wait_for_minutes=wait_for_minutes,
             timezone=timezone,
             max_attempts=max_attempts,
             sleep_padding_seconds=sleep_padding_seconds,
@@ -572,6 +628,7 @@ def execute_recovery_session(
                 client=client,
                 phase=phase,
                 wait_until=wait_until,
+                wait_for_minutes=wait_for_minutes,
                 timezone=timezone,
                 max_attempts=max_attempts,
                 sleep_padding_seconds=sleep_padding_seconds,
@@ -602,6 +659,7 @@ def execute_recovery_session(
             client=client,
             phase=phase,
             wait_until=wait_until,
+            wait_for_minutes=wait_for_minutes,
             timezone=timezone,
             max_attempts=max_attempts,
             sleep_padding_seconds=sleep_padding_seconds,
@@ -635,7 +693,9 @@ def make_parser():
     parser.add_argument("--date", help="Optional target_date to inspect/recover")
     parser.add_argument("--phase", choices=("pre", "post"), default="pre")
     parser.add_argument("--max-batches-per-run", type=int, default=1)
-    parser.add_argument("--wait-until", help="Local wall-clock deadline in HH:MM")
+    deadline_group = parser.add_mutually_exclusive_group()
+    deadline_group.add_argument("--wait-until", help="Local wall-clock deadline in HH:MM")
+    deadline_group.add_argument("--wait-for-minutes", type=int, help="Relative deadline from now, in minutes")
     parser.add_argument("--timezone", default="Europe/Moscow")
     parser.add_argument("--max-attempts", type=int, default=10)
     parser.add_argument("--sleep-padding-seconds", type=int, default=10)
@@ -659,6 +719,7 @@ def main():
         phase=args.phase,
         max_batches_per_run=max(1, int(args.max_batches_per_run or 1)),
         wait_until=args.wait_until,
+        wait_for_minutes=args.wait_for_minutes,
         timezone=args.timezone,
         max_attempts=max(1, int(args.max_attempts or 1)),
         sleep_padding_seconds=max(0, int(args.sleep_padding_seconds or 0)),

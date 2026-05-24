@@ -109,6 +109,55 @@ def _progress(pending_batch_indexes=None):
 
 
 class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
+    def test_wait_for_minutes_creates_future_deadline(self):
+        now_utc = loader.datetime(2026, 5, 25, 0, 10, 0, tzinfo=loader.ZoneInfo("UTC"))
+        with mock.patch.object(worker.loader, "utcnow", return_value=now_utc):
+            deadline = worker.parse_relative_wait_deadline(180, now_utc=now_utc)
+        self.assertEqual(worker.loader.to_iso(deadline), "2026-05-25T03:10:00+00:00")
+
+    def test_wait_until_past_time_returns_deadline_already_passed(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "today_local", return_value=loader.datetime(2026, 5, 25, tzinfo=loader.ZoneInfo("Europe/Moscow"))), \
+             mock.patch.object(worker.loader, "utcnow", return_value=loader.datetime(2026, 5, 25, 20, 59, 30, tzinfo=loader.ZoneInfo("UTC"))), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="23:59",
+                timezone="Europe/Moscow",
+                db_client=db,
+                client=client,
+            )
+        self.assertEqual(plan["status"], "deadline_already_passed")
+        self.assertTrue(plan["deadline_already_passed"])
+        self.assertFalse(plan["will_run"])
+
+    def test_cooldown_time_is_displayed_in_utc_and_local(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient(cooldown_until="2026-05-24T21:29:36+00:00")
+        with mock.patch.object(worker.loader, "today_local", return_value=loader.datetime(2026, 5, 25, tzinfo=loader.ZoneInfo("Europe/Moscow"))), \
+             mock.patch.object(worker.loader, "utcnow", return_value=loader.datetime(2026, 5, 24, 21, 0, 0, tzinfo=loader.ZoneInfo("UTC"))), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-21",
+                phase="post",
+                wait_for_minutes=180,
+                timezone="Europe/Moscow",
+                db_client=db,
+                client=client,
+            )
+        self.assertEqual(plan["cooldown_until_utc"], "2026-05-24T21:29:36+00:00")
+        self.assertEqual(plan["cooldown_until_local"], "2026-05-25T00:29:36+03:00")
+        self.assertEqual(plan["current_time_local"], "2026-05-25T00:00:00+03:00")
+
+    def test_wait_for_minutes_and_wait_until_together_fail(self):
+        parser = worker.make_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                ["--wait-until", "09:40", "--wait-for-minutes", "180"]
+            )
+
     def test_finds_partial_ads_candidate(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
         rows = worker.get_partial_candidates(db, "acct_test")
@@ -153,6 +202,7 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertTrue(plan["will_wait"])
         self.assertGreater(plan["wait_seconds"], 0)
         self.assertEqual(plan["planned_attempts"], 10)
+        self.assertEqual(plan["deadline_local"], "2026-05-24T09:40:00+03:00")
 
     def test_deadline_before_cooldown_returns_controlled_status(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})

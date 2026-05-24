@@ -263,6 +263,7 @@ def build_loader_command(target_date, max_batches_per_run, write=False):
         "--max-cpc-batches",
         str(max_batches_per_run),
         "--allow-recovery-worker-before-daily-status",
+        "--allow-recovery-worker-before-backfill-window",
     ]
     if write:
         command.extend(["--write", "--approve-cpc-recovery-write"])
@@ -513,8 +514,8 @@ def run_recovery_write(plan, approve_write=False):
     return result
 
 
-def should_continue_loop(wait_until, stop_when_complete):
-    return bool(wait_until or stop_when_complete)
+def should_continue_loop(wait_until, wait_for_minutes, stop_when_complete):
+    return bool(wait_until or wait_for_minutes is not None or stop_when_complete)
 
 
 def execute_recovery_session(
@@ -536,7 +537,7 @@ def execute_recovery_session(
 ):
     attempts = 0
     history = []
-    continue_loop = should_continue_loop(wait_until, stop_when_complete)
+    continue_loop = should_continue_loop(wait_until, wait_for_minutes, stop_when_complete)
     current_plan = None
 
     while True:

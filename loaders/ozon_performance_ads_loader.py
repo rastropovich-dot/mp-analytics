@@ -803,6 +803,14 @@ def parse_args():
             "daily-yesterday status row exists. Intended only for the recovery worker."
         ),
     )
+    parser.add_argument(
+        "--allow-recovery-worker-before-backfill-window",
+        action="store_true",
+        help=(
+            "Allow cpc-backfill to resume an existing pending progress before the normal "
+            f"{CPC_BACKFILL_START_HHMM} {APP_TIMEZONE} time window. Intended only for the recovery worker."
+        ),
+    )
     parser.add_argument("--existing-report-uuid")
     parser.add_argument("--debug-sample", action="store_true")
     return parser.parse_args()
@@ -1196,6 +1204,35 @@ def should_allow_cpc_backfill_before_daily_status(args, progress):
     return bool(
         getattr(args, "allow_recovery_worker_before_daily_status", False)
         and can_resume_pending_progress_without_daily_status(progress)
+    )
+
+
+def should_allow_cpc_backfill_before_backfill_window(args, progress, source_progress_kind=None):
+    progress = progress or {}
+    selection_mode = str(progress.get("selection_mode") or "").strip().lower()
+    max_cpc_batches = int(getattr(args, "max_cpc_batches", 0) or 0)
+    return bool(
+        getattr(args, "allow_recovery_worker_before_backfill_window", False)
+        and can_resume_pending_progress_without_daily_status(progress)
+        and selection_mode == "complete"
+        and source_progress_kind in {"existing_backfill_progress", "daily_yesterday_pending"}
+        and max_cpc_batches <= 1
+    )
+
+
+def log_recovery_worker_backfill_window_bypass(target_date, progress_key, pending_batch_indexes):
+    print(
+        json.dumps(
+            sanitize_value(
+                {
+                    "recovery_worker_backfill_window_bypass": True,
+                    "target_date": target_date,
+                    "progress_key": progress_key,
+                    "pending_batch_indexes": list(pending_batch_indexes or []),
+                }
+            ),
+            ensure_ascii=False,
+        )
     )
 
 
@@ -5113,7 +5150,6 @@ def run():
         return
 
     if args.mode == "cpc-backfill" and args.plan_only:
-        ensure_cpc_backfill_window_open()
         if date_from != date_to:
             raise RuntimeError(
                 "cpc-backfill mode supports exactly one calendar day. "
@@ -5130,6 +5166,19 @@ def run():
         daily_target = (today_local() - timedelta(days=1)).isoformat()
         daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
         allow_before_daily_status = should_allow_cpc_backfill_before_daily_status(args, existing_progress)
+        allow_before_backfill_window = should_allow_cpc_backfill_before_backfill_window(
+            args,
+            existing_progress,
+            source_progress_kind=source_progress_kind,
+        )
+        if allow_before_backfill_window:
+            log_recovery_worker_backfill_window_bypass(
+                target_date,
+                existing_progress_key,
+                existing_progress.get("pending_batch_indexes"),
+            )
+        else:
+            ensure_cpc_backfill_window_open()
         if not daily_status and not allow_before_daily_status:
             raise RuntimeError(
                 "cpc-backfill mode requires today's daily-yesterday run to be written first. "
@@ -5233,6 +5282,7 @@ def run():
             "pending_campaign_ids": pending_campaign_ids,
             "cpo_status": daily_status.get("cpo_status"),
             "allowed_before_daily_status": allow_before_daily_status,
+            "allowed_before_backfill_window": allow_before_backfill_window,
             "db_writes": 0,
             "create_new_progress_key": False,
             "warning": ordering_warning,
@@ -5316,7 +5366,6 @@ def run():
         print(json.dumps(cpc_activity_sample, ensure_ascii=False))
 
     if args.mode == "cpc-backfill":
-        ensure_cpc_backfill_window_open()
         if date_from != date_to:
             raise RuntimeError(
                 "cpc-backfill mode supports exactly one calendar day. "
@@ -5333,6 +5382,19 @@ def run():
         daily_target = (today_local() - timedelta(days=1)).isoformat()
         daily_status = get_daily_load_status(load_date, daily_target, client.account_signature)
         allow_before_daily_status = should_allow_cpc_backfill_before_daily_status(args, existing_backfill_progress)
+        allow_before_backfill_window = should_allow_cpc_backfill_before_backfill_window(
+            args,
+            existing_backfill_progress,
+            source_progress_kind=existing_backfill_progress_source_kind,
+        )
+        if allow_before_backfill_window:
+            log_recovery_worker_backfill_window_bypass(
+                target_date,
+                existing_backfill_progress_key,
+                existing_backfill_progress.get("pending_batch_indexes"),
+            )
+        else:
+            ensure_cpc_backfill_window_open()
         if not daily_status and not allow_before_daily_status:
             raise RuntimeError(
                 "cpc-backfill mode requires today's daily-yesterday run to be written first. "

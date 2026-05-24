@@ -257,6 +257,37 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(sleeps, [20])
         self.assertEqual(result["status"], "complete")
 
+    def test_wait_for_minutes_enables_sleep_loop(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        sleeps = []
+        with mock.patch.object(worker, "build_recovery_plan", side_effect=[
+            {
+                "status": "waiting_for_cooldown",
+                "cooldown_active": True,
+                "will_wait": True,
+                "wait_seconds": 12,
+                "deadline": "2026-05-24T09:40:00+00:00",
+            },
+            {
+                "status": "complete",
+                "cooldown_active": False,
+            },
+        ]):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_for_minutes=180,
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda seconds: sleeps.append(seconds),
+            )
+        self.assertEqual(sleeps, [12])
+        self.assertEqual(result["status"], "complete")
+
     def test_runs_only_pending_batch_when_budget_and_cooldown_allow(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
         client = _FakeClient()
@@ -403,6 +434,7 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertIn("--write", command)
         self.assertIn("--approve-cpc-recovery-write", command)
         self.assertIn("--allow-recovery-worker-before-daily-status", command)
+        self.assertIn("--allow-recovery-worker-before-backfill-window", command)
 
 
 if __name__ == "__main__":

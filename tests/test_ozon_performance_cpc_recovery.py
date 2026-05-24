@@ -111,6 +111,11 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_cpc_backfill_before_window_without_bypass_still_fails(self):
+        with mock.patch.object(loader, "local_now", return_value=loader.datetime(2026, 5, 25, 0, 29, 51, tzinfo=loader.ZoneInfo(loader.APP_TIMEZONE))):
+            with self.assertRaises(RuntimeError):
+                loader.ensure_cpc_backfill_window_open()
+
     def test_can_resume_pending_progress_without_daily_status(self):
         self.assertTrue(
             loader.can_resume_pending_progress_without_daily_status(
@@ -143,6 +148,69 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             loader.should_allow_cpc_backfill_before_daily_status(
                 args,
                 {"pending_batch_indexes": [], "pending_batches": 0},
+            )
+        )
+
+    def test_allow_before_backfill_window_requires_flag_and_valid_pending_progress(self):
+        args = SimpleNamespace(
+            allow_recovery_worker_before_backfill_window=False,
+            max_cpc_batches=1,
+        )
+        progress = {
+            "selection_mode": "complete",
+            "pending_batch_indexes": [131],
+            "pending_batches": 1,
+        }
+        self.assertFalse(
+            loader.should_allow_cpc_backfill_before_backfill_window(
+                args,
+                progress,
+                source_progress_kind="daily_yesterday_pending",
+            )
+        )
+
+        args.allow_recovery_worker_before_backfill_window = True
+        self.assertTrue(
+            loader.should_allow_cpc_backfill_before_backfill_window(
+                args,
+                progress,
+                source_progress_kind="daily_yesterday_pending",
+            )
+        )
+
+    def test_allow_before_backfill_window_refuses_completed_success_progress(self):
+        args = SimpleNamespace(
+            allow_recovery_worker_before_backfill_window=True,
+            max_cpc_batches=1,
+        )
+        progress = {
+            "selection_mode": "complete",
+            "pending_batch_indexes": [],
+            "pending_batches": 0,
+        }
+        self.assertFalse(
+            loader.should_allow_cpc_backfill_before_backfill_window(
+                args,
+                progress,
+                source_progress_kind="existing_backfill_progress",
+            )
+        )
+
+    def test_allow_before_backfill_window_refuses_unbounded_batches(self):
+        args = SimpleNamespace(
+            allow_recovery_worker_before_backfill_window=True,
+            max_cpc_batches=2,
+        )
+        progress = {
+            "selection_mode": "complete",
+            "pending_batch_indexes": [131],
+            "pending_batches": 1,
+        }
+        self.assertFalse(
+            loader.should_allow_cpc_backfill_before_backfill_window(
+                args,
+                progress,
+                source_progress_kind="existing_backfill_progress",
             )
         )
 

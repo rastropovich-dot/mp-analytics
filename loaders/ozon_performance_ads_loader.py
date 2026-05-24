@@ -148,6 +148,7 @@ PERFORMANCE_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "ozo
 PERFORMANCE_STATE_PATH = PERFORMANCE_CACHE_DIR / "state.json"
 PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
 PIPELINE_RUNTIME_STATE_TABLE = "pipeline_runtime_state"
+RUNTIME_STATE_STALE_DELETE_CHUNK_SIZE = 25
 DAILY_LOAD_STATUS_TABLE = "ozon_performance_daily_load_status"
 PERSISTENT_STATE_SECTIONS = (
     "jobs",
@@ -1625,6 +1626,56 @@ class OzonPerformanceClient:
             file_state[section] = self.state.get(section, file_state[section])
         save_file_state(file_state)
 
+    def cleanup_runtime_state_keys_nonfatal(self, keys, warning_label="runtime_state_stale_cleanup_warning"):
+        key_list = [str(key or "").strip() for key in (keys or []) if str(key or "").strip()]
+        if not key_list:
+            return {"deleted": 0, "failed": 0, "chunks": 0}
+
+        deleted = 0
+        failed = 0
+        chunks_total = 0
+        sample_errors = []
+
+        for chunk_start in range(0, len(key_list), RUNTIME_STATE_STALE_DELETE_CHUNK_SIZE):
+            chunk = key_list[chunk_start : chunk_start + RUNTIME_STATE_STALE_DELETE_CHUNK_SIZE]
+            chunks_total += 1
+            try:
+                (
+                    supabase
+                    .table(PIPELINE_RUNTIME_STATE_TABLE)
+                    .delete()
+                    .in_("state_key", chunk)
+                    .execute()
+                )
+                deleted += len(chunk)
+            except Exception as exc:
+                failed += len(chunk)
+                if len(sample_errors) < 3:
+                    sample_errors.append(
+                        {
+                            "error_class": exc.__class__.__name__,
+                            "message": sanitize_text(exc),
+                            "chunk_size": len(chunk),
+                        }
+                    )
+
+        if failed:
+            print(
+                json.dumps(
+                    {
+                        "warning": warning_label,
+                        "account_signature": self.account_signature,
+                        "deleted_count": deleted,
+                        "failed_count": failed,
+                        "chunk_count": chunks_total,
+                        "sample_errors": sample_errors,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        return {"deleted": deleted, "failed": failed, "chunks": chunks_total}
+
     def load_persistent_state_from_db(self):
         state = {section: {} for section in PERSISTENT_STATE_SECTIONS}
 
@@ -1665,10 +1716,10 @@ class OzonPerformanceClient:
             state[state_type][state_key] = payload
 
         if expired_keys:
-            try:
-                supabase.table(PIPELINE_RUNTIME_STATE_TABLE).delete().in_("state_key", expired_keys).execute()
-            except Exception as exc:
-                print(f"Не удалось очистить expired runtime state rows: {sanitize_text(exc)}")
+            self.cleanup_runtime_state_keys_nonfatal(
+                expired_keys,
+                warning_label="runtime_state_stale_cleanup_warning",
+            )
 
         return state
 
@@ -1727,13 +1778,10 @@ class OzonPerformanceClient:
                 ) from exc
 
         if keys_to_delete:
-            try:
-                supabase.table(PIPELINE_RUNTIME_STATE_TABLE).delete().in_("state_key", keys_to_delete).execute()
-            except Exception as exc:
-                raise RuntimeError(
-                    "Не удалось удалить stale runtime state rows из Supabase: "
-                    f"{sanitize_text(exc)}"
-                ) from exc
+            self.cleanup_runtime_state_keys_nonfatal(
+                keys_to_delete,
+                warning_label="runtime_state_stale_cleanup_warning",
+            )
 
     def snapshot_runtime_state(self):
         return {

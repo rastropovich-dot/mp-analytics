@@ -96,13 +96,13 @@ def _status_row(
     }
 
 
-def _progress():
+def _progress(pending_batch_indexes=None):
     return (
         "cpc_progress:pending-tail",
         {
             "ordered_campaign_ids": [f"{9834000 + i}" for i in range(1323)],
             "batch_size": 10,
-            "pending_batch_indexes": [131, 132],
+            "pending_batch_indexes": list(pending_batch_indexes or [131, 132]),
         },
         "daily_yesterday_pending",
     )
@@ -115,42 +115,97 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["target_date"], "2026-05-21")
 
-    def test_skips_when_cooldown_active(self):
-        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
-        client = _FakeClient(cooldown_until="2026-05-23T00:00:00+00:00")
-        with mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0):
-            plan = worker.build_recovery_plan(
-                target_date="2026-05-21",
-                db_client=db,
-                client=client,
-            )
-        self.assertFalse(plan["will_run"])
-        self.assertEqual(plan["candidates"][0]["status"], "skipped_cooldown_active")
-
-    def test_skips_when_daily_budget_used_today_above_1500(self):
-        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
-        client = _FakeClient()
-        with mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=1501):
-            plan = worker.build_recovery_plan(
-                target_date="2026-05-21",
-                db_client=db,
-                client=client,
-            )
-        self.assertFalse(plan["will_run"])
-        self.assertEqual(plan["budget_skip_reason"], "skipped_daily_budget_guard")
-
-    def test_computes_recovery_budget_available(self):
-        guard = worker.build_budget_guard(1400)
+    def test_pre_phase_caps_recovery_budget(self):
+        guard = worker.build_budget_guard(1400, phase="pre")
         self.assertEqual(guard["recovery_budget_available"], 200)
 
-        guard = worker.build_budget_guard(1700)
+    def test_post_phase_uses_remaining_minus_reserve_without_200_cap(self):
+        guard = worker.build_budget_guard(1400, phase="post")
+        self.assertEqual(guard["recovery_budget_available"], 400)
+        self.assertTrue(guard["will_run"])
+
+    def test_post_phase_skips_when_recovery_budget_non_positive(self):
+        guard = worker.build_budget_guard(1800, phase="post")
+        self.assertFalse(guard["will_run"])
+        self.assertEqual(guard["budget_skip_reason"], "skipped_no_recovery_budget")
+
+    def test_skips_when_pre_phase_budget_used_above_1500(self):
+        guard = worker.build_budget_guard(1501, phase="pre")
         self.assertFalse(guard["will_run"])
         self.assertEqual(guard["budget_skip_reason"], "skipped_daily_budget_guard")
 
-    def test_skips_when_recovery_budget_available_non_positive(self):
-        guard = worker.build_budget_guard(1800)
-        self.assertFalse(guard["will_run"])
-        self.assertEqual(guard["budget_skip_reason"], "skipped_daily_budget_guard")
+    def test_dry_run_wait_mode_reports_wait_and_does_not_sleep(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient(cooldown_until="2026-05-24T06:10:00+00:00")
+        with mock.patch.object(worker.loader, "today_local", return_value=loader.datetime(2026, 5, 24, tzinfo=loader.ZoneInfo("Europe/Moscow"))), \
+             mock.patch.object(worker.loader, "utcnow", return_value=loader.datetime(2026, 5, 24, 6, 0, 0, tzinfo=loader.ZoneInfo("UTC"))), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0):
+            plan = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="09:40",
+                timezone="Europe/Moscow",
+                dry_run=True,
+                db_client=db,
+                client=client,
+            )
+        self.assertTrue(plan["cooldown_active"])
+        self.assertTrue(plan["will_wait"])
+        self.assertGreater(plan["wait_seconds"], 0)
+        self.assertEqual(plan["planned_attempts"], 10)
+
+    def test_deadline_before_cooldown_returns_controlled_status(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient(cooldown_until="2026-05-24T09:00:00+00:00")
+        with mock.patch.object(worker.loader, "today_local", return_value=loader.datetime(2026, 5, 24, tzinfo=loader.ZoneInfo("Europe/Moscow"))), \
+             mock.patch.object(worker.loader, "utcnow", return_value=loader.datetime(2026, 5, 24, 6, 0, 0, tzinfo=loader.ZoneInfo("UTC"))), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="09:10",
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda _seconds: None,
+            )
+        self.assertEqual(result["status"], "deadline_before_cooldown")
+
+    def test_wait_mode_sleeps_until_cooldown_when_deadline_allows(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient(cooldown_until="2026-05-24T06:10:00+00:00")
+        sleeps = []
+        with mock.patch.object(worker.loader, "today_local", return_value=loader.datetime(2026, 5, 24, tzinfo=loader.ZoneInfo("Europe/Moscow"))), \
+             mock.patch.object(worker.loader, "utcnow", return_value=loader.datetime(2026, 5, 24, 6, 0, 0, tzinfo=loader.ZoneInfo("UTC"))), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker, "build_recovery_plan", side_effect=[
+                 {
+                     "status": "waiting_for_cooldown",
+                     "cooldown_active": True,
+                     "will_wait": True,
+                     "wait_seconds": 20,
+                     "deadline": "2026-05-24T06:40:00+00:00",
+                 },
+                 {
+                     "status": "complete",
+                     "cooldown_active": False,
+                 },
+             ]):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="09:40",
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda seconds: sleeps.append(seconds),
+            )
+        self.assertEqual(sleeps, [20])
+        self.assertEqual(result["status"], "complete")
 
     def test_runs_only_pending_batch_when_budget_and_cooldown_allow(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
@@ -161,6 +216,7 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
                 target_date="2026-05-21",
                 db_client=db,
                 client=client,
+                phase="post",
                 max_batches_per_run=1,
             )
         self.assertTrue(plan["will_run"])
@@ -168,37 +224,16 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(candidate["planned_batch_indexes"], [131])
         self.assertEqual(candidate["planned_recovery_units"], 10)
 
-    def test_caps_recovery_units_by_budget(self):
-        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
-        client = _FakeClient()
-        with mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=55), \
-             mock.patch.object(worker.loader, "STATS_DAILY_CAMPAIGN_LIMIT", 260), \
-             mock.patch.object(worker.loader, "STATS_DAILY_CAMPAIGN_RESERVE", 200), \
-             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress()):
-            plan = worker.build_recovery_plan(
-                target_date="2026-05-21",
-                db_client=db,
-                client=client,
-                max_batches_per_run=1,
-            )
-        self.assertFalse(plan["will_run"])
-        self.assertEqual(plan["candidates"][0]["status"], "skipped_no_recovery_budget")
-
-    def test_never_selects_completed_success_dates(self):
-        db = _FakeDbClient(
-            {loader.DAILY_LOAD_STATUS_TABLE: [_status_row(run_status="success", cpc_status="success", pending_campaigns=0, pending_units=0)]}
-        )
-        rows = worker.get_partial_candidates(db, "acct_test")
-        self.assertEqual(rows, [])
-
     def test_dry_run_writes_nothing(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
         client = _FakeClient()
         with mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
              mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress()), \
              mock.patch.object(worker.subprocess, "run") as run_mock:
-            plan = worker.build_recovery_plan(
+            plan = worker.execute_recovery_session(
                 target_date="2026-05-21",
+                phase="post",
+                dry_run=True,
                 db_client=db,
                 client=client,
             )
@@ -209,21 +244,107 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             worker.run_recovery_write({"will_run": True, "candidates": []}, approve_write=False)
 
-    def test_stops_on_429(self):
-        plan = {
+    def test_repeated_429_loops_until_deadline(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        plan_before = {
+            "status": "planned",
+            "cooldown_active": False,
             "will_run": True,
-            "candidates": [
-                {
-                    "will_run": True,
-                    "target_date": "2026-05-21",
-                    "planned_batch_indexes": [131],
-                }
-            ],
+            "candidates": [{"will_run": True}],
         }
-        completed = mock.Mock(returncode=0, stdout='{"status":"pending_429"}', stderr="")
-        with mock.patch.object(worker.subprocess, "run", return_value=completed):
-            result = worker.run_recovery_write(plan, approve_write=True)
-        self.assertEqual(result["status"], "pending_429")
+        plan_after = {
+            "status": "waiting_for_cooldown",
+            "cooldown_active": True,
+            "cooldown_until": "2026-05-24T06:05:00+00:00",
+            "will_wait": True,
+            "wait_seconds": 15,
+            "deadline": "2026-05-24T06:40:00+00:00",
+            "candidates": [{"status": "waiting_for_cooldown"}],
+        }
+        plan_deadline = {
+            "status": "deadline_before_cooldown",
+            "cooldown_active": True,
+            "cooldown_until": "2026-05-24T07:00:00+00:00",
+            "will_wait": False,
+            "wait_seconds": 0,
+            "deadline": "2026-05-24T06:40:00+00:00",
+            "candidates": [{"status": "deadline_before_cooldown"}],
+        }
+        sleeps = []
+        with mock.patch.object(worker, "build_recovery_plan", side_effect=[plan_before, plan_after, plan_before, plan_deadline]), \
+             mock.patch.object(worker, "run_recovery_write", return_value={"status": "pending_429"}):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="09:40",
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda seconds: sleeps.append(seconds),
+            )
+        self.assertEqual(sleeps, [15])
+        self.assertEqual(result["status"], "deadline_after_429")
+
+    def test_successful_batch_followed_by_pending_continues(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        first_plan = {
+            "status": "planned",
+            "cooldown_active": False,
+            "will_run": True,
+            "candidates": [{"will_run": True}],
+        }
+        second_plan = {
+            "status": "planned",
+            "cooldown_active": False,
+            "will_run": True,
+            "candidates": [{"will_run": True}],
+        }
+        complete_plan = {"status": "complete", "cooldown_active": False}
+        with mock.patch.object(worker, "build_recovery_plan", side_effect=[first_plan, second_plan, complete_plan]), \
+             mock.patch.object(worker, "run_recovery_write", return_value={"status": "success"}):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-21",
+                phase="post",
+                wait_until="23:59",
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda _seconds: None,
+            )
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["attempts"], 2)
+
+    def test_pending_zero_returns_complete(self):
+        db = _FakeDbClient(
+            {loader.DAILY_LOAD_STATUS_TABLE: [_status_row(run_status="success", cpc_status="success", pending_campaigns=0, pending_units=0)]}
+        )
+        client = _FakeClient()
+        plan = worker.build_recovery_plan(
+            target_date="2026-05-21",
+            db_client=db,
+            client=client,
+            phase="post",
+        )
+        self.assertEqual(plan["status"], "complete")
+
+    def test_budget_exhausted_stops_controlled(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=1999):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-21",
+                db_client=db,
+                client=client,
+                phase="post",
+            )
+        self.assertEqual(plan["status"], "skipped")
+        self.assertEqual(plan["budget_skip_reason"], "skipped_no_recovery_budget")
 
     def test_write_command_is_gated_and_bounded(self):
         command = worker.build_loader_command("2026-05-21", 1, write=True)

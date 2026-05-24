@@ -18,8 +18,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 STEPS = [
     (
-        "Ozon Performance: CPC recovery",
-        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write",
+        "Ozon Performance: CPC recovery before daily",
+        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase pre --max-batches-per-run 1",
     ),
     ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
     ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
@@ -31,6 +31,10 @@ STEPS = [
     ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
     ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
     ("Ozon: реклама Performance API", "python3 loaders/ozon_performance_ads_loader.py --mode daily-yesterday"),
+    (
+        "Ozon Performance: CPC recovery after daily",
+        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-until 09:40 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 1 --stop-when-complete",
+    ),
     ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
     ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),
     ("Ozon: загрузка остатков", "python3 loaders/ozon_stocks_loader.py"),
@@ -111,7 +115,10 @@ def prepare_command(command):
 
 
 def parse_recovery_worker_result(output_text):
-    marker = "Ozon Performance recovery worker result:"
+    return parse_json_after_marker(output_text, "Ozon Performance recovery worker result:")
+
+
+def parse_json_after_marker(output_text, marker):
     if marker not in output_text:
         return None
 
@@ -126,6 +133,48 @@ def parse_recovery_worker_result(output_text):
     except json.JSONDecodeError:
         return None
     return parsed
+
+
+def parse_ozon_performance_run_summary(output_text):
+    return parse_json_after_marker(output_text, "Ozon Performance run summary:")
+
+
+def is_recovery_step(title):
+    return title.startswith("Ozon Performance: CPC recovery")
+
+
+def is_downstream_ozon_step(title):
+    return title in {
+        "Ozon: расчет organic sales по SKU",
+        "KPI: расчет SKU",
+        "KPI: расчет маркетплейсов",
+    }
+
+
+def recovery_result_allows_ozon_downstream(recovery_result):
+    if not recovery_result:
+        return False
+    return recovery_result.get("status") == "complete"
+
+
+def ozon_run_summary_is_complete(run_summary):
+    if not run_summary:
+        return False
+    return run_summary.get("overall_status") == "success"
+
+
+def should_skip_pipeline_step(title, args, ozon_downstream_allowed):
+    if args.skip_recovery and is_recovery_step(title):
+        return True, f"⏭️ Пропускаем шаг: {title}"
+    if args.skip_excel and title.startswith("Excel:"):
+        return True, f"⏭️ Пропускаем шаг: {title}"
+    if args.skip_decision and title == "Decision: SKU daily input":
+        return True, f"⏭️ Пропускаем шаг: {title}"
+    if args.skip_telegram and title.startswith("Telegram:"):
+        return True, f"⏭️ Пропускаем шаг: {title}"
+    if ozon_downstream_allowed is False and is_downstream_ozon_step(title):
+        return True, f"⏭️ Пропускаем шаг: {title} (Ozon Performance still partial/incomplete)"
+    return False, None
 
 
 def run_step(title, command):
@@ -163,7 +212,8 @@ def run_step(title, command):
         send_failure_alert(title, returncode, list(tail_lines))
         sys.exit(returncode)
 
-    if title == "Ozon Performance: CPC recovery":
+    recovery_result = None
+    if is_recovery_step(title):
         recovery_result = parse_recovery_worker_result("".join(full_output_lines))
         if recovery_result and recovery_result.get("status") == "failed":
             print(f"❌ Ошибка на шаге: {title}")
@@ -172,6 +222,13 @@ def run_step(title, command):
             sys.exit(1)
 
     print(f"✅ Готово: {title}")
+    return {
+        "output_text": "".join(full_output_lines),
+        "recovery_result": recovery_result,
+        "ozon_run_summary": parse_ozon_performance_run_summary("".join(full_output_lines))
+        if title == "Ozon: реклама Performance API"
+        else None,
+    }
 
 
 def main():
@@ -179,20 +236,32 @@ def main():
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    ozon_downstream_allowed = None
+
     for title, command in STEPS:
-        if args.skip_recovery and title == "Ozon Performance: CPC recovery":
-            print(f"⏭️ Пропускаем шаг: {title}")
+        should_skip, skip_message = should_skip_pipeline_step(title, args, ozon_downstream_allowed)
+        if should_skip:
+            print(skip_message)
             continue
-        if args.skip_excel and title.startswith("Excel:"):
-            print(f"⏭️ Пропускаем шаг: {title}")
-            continue
-        if args.skip_decision and title == "Decision: SKU daily input":
-            print(f"⏭️ Пропускаем шаг: {title}")
-            continue
-        if args.skip_telegram and title.startswith("Telegram:"):
-            print(f"⏭️ Пропускаем шаг: {title}")
-            continue
-        run_step(title, command)
+        step_result = run_step(title, command)
+
+        if title == "Ozon: реклама Performance API":
+            ozon_downstream_allowed = ozon_run_summary_is_complete(step_result.get("ozon_run_summary"))
+            summary = step_result.get("ozon_run_summary") or {}
+            print(
+                "Ozon Performance daily status after main load: "
+                f"{summary.get('overall_status') or 'unknown'}"
+            )
+        elif title == "Ozon Performance: CPC recovery after daily":
+            recovery_result = step_result.get("recovery_result") or {}
+            if recovery_result_allows_ozon_downstream(recovery_result):
+                ozon_downstream_allowed = True
+            else:
+                ozon_downstream_allowed = False
+            print(
+                "Ozon Performance status after post-recovery: "
+                f"{recovery_result.get('status') or 'unknown'}"
+            )
 
     print("\n✅ Весь пайплайн успешно завершен")
     print(f"Финиш: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

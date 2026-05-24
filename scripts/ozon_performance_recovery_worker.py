@@ -2,13 +2,31 @@ import argparse
 import json
 import subprocess
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import loaders.ozon_performance_ads_loader as loader
+
+
+CONTROLLED_FINAL_STATUSES = {
+    "complete",
+    "no_partial_candidates",
+    "skipped",
+    "skipped_cooldown_active",
+    "skipped_daily_budget_guard",
+    "skipped_no_recovery_budget",
+    "deadline_before_cooldown",
+    "deadline_after_429",
+    "max_attempts_exhausted",
+    "partial_remaining",
+    "pending_429",
+}
 
 
 def is_partial_ads_candidate(row):
@@ -26,14 +44,34 @@ def is_partial_ads_candidate(row):
     )
 
 
-def build_budget_guard(daily_budget_used_today):
+def is_complete_status_row(row):
+    row = row or {}
+    run_status = str(row.get("run_status") or "").strip().lower()
+    cpc_status = str(row.get("cpc_status") or "").strip().lower()
+    pending_campaigns = int(float(row.get("cpc_pending_campaigns") or 0))
+    pending_units = int(float(row.get("cpc_campaign_units_pending_total") or 0))
+    return (
+        run_status == "success"
+        and cpc_status == "success"
+        and pending_campaigns <= 0
+        and pending_units <= 0
+    )
+
+
+def build_budget_guard(daily_budget_used_today, phase="pre"):
     daily_limit = loader.STATS_DAILY_CAMPAIGN_LIMIT
     daily_reserve = loader.STATS_DAILY_CAMPAIGN_RESERVE
-    remaining_daily_budget = max(0, daily_limit - int(daily_budget_used_today or 0))
-    recovery_budget_available = min(200, remaining_daily_budget - daily_reserve)
+    used = int(daily_budget_used_today or 0)
+    remaining_daily_budget = max(0, daily_limit - used)
+
+    if phase == "post":
+        recovery_budget_available = remaining_daily_budget - daily_reserve
+    else:
+        recovery_budget_available = min(200, remaining_daily_budget - daily_reserve)
 
     result = {
-        "daily_budget_used_today": int(daily_budget_used_today or 0),
+        "phase": phase,
+        "daily_budget_used_today": used,
         "daily_limit": daily_limit,
         "daily_reserve": daily_reserve,
         "remaining_daily_budget": remaining_daily_budget,
@@ -42,7 +80,7 @@ def build_budget_guard(daily_budget_used_today):
         "budget_skip_reason": None,
     }
 
-    if int(daily_budget_used_today or 0) > 1500:
+    if phase == "pre" and used > 1500:
         result["will_run"] = False
         result["budget_skip_reason"] = "skipped_daily_budget_guard"
         return result
@@ -53,6 +91,49 @@ def build_budget_guard(daily_budget_used_today):
         return result
 
     return result
+
+
+def parse_wait_deadline(wait_until, timezone):
+    if not wait_until:
+        return None
+
+    hour_text, minute_text = str(wait_until).split(":", 1)
+    tz = ZoneInfo(timezone)
+    now_local = loader.utcnow().astimezone(tz)
+    return now_local.replace(
+        hour=int(hour_text),
+        minute=int(minute_text),
+        second=0,
+        microsecond=0,
+    ).astimezone(ZoneInfo("UTC"))
+
+
+def build_wait_metadata(cooldown_until, deadline_utc, sleep_padding_seconds, now_utc=None):
+    now_utc = now_utc or loader.utcnow()
+    cooldown_dt = loader.from_iso(cooldown_until) if cooldown_until else None
+    if not cooldown_dt:
+        return {
+            "cooldown_until": None,
+            "deadline": loader.to_iso(deadline_utc) if deadline_utc else None,
+            "wait_seconds": 0,
+            "will_wait": False,
+            "estimated_completion_possible": True,
+            "ready_at": None,
+        }
+
+    ready_at = cooldown_dt + timedelta(seconds=int(sleep_padding_seconds or 0))
+    wait_seconds = max(0, int((ready_at - now_utc).total_seconds() + 0.999999))
+    estimated_completion_possible = deadline_utc is None or ready_at <= deadline_utc
+    will_wait = wait_seconds > 0 and estimated_completion_possible
+
+    return {
+        "cooldown_until": loader.to_iso(cooldown_dt),
+        "deadline": loader.to_iso(deadline_utc) if deadline_utc else None,
+        "wait_seconds": wait_seconds,
+        "will_wait": will_wait,
+        "estimated_completion_possible": estimated_completion_possible,
+        "ready_at": loader.to_iso(ready_at),
+    }
 
 
 def fetch_latest_status_rows(db_client, account_signature, target_date=None, limit=100):
@@ -68,13 +149,23 @@ def fetch_latest_status_rows(db_client, account_signature, target_date=None, lim
         query = query.eq("target_date", target_date)
     if hasattr(query, "limit"):
         query = query.limit(limit)
-    rows = (query.execute().data or [])
+    rows = query.execute().data or []
     latest_by_target = {}
     for row in rows:
         key = row.get("target_date")
         if key and key not in latest_by_target:
             latest_by_target[key] = row
     return list(latest_by_target.values())
+
+
+def get_latest_status_row(db_client, account_signature, target_date=None):
+    rows = fetch_latest_status_rows(db_client, account_signature, target_date=target_date, limit=10)
+    if target_date:
+        for row in rows:
+            if row.get("target_date") == target_date:
+                return row
+        return None
+    return rows[0] if rows else None
 
 
 def get_partial_candidates(db_client, account_signature, target_date=None):
@@ -207,18 +298,36 @@ def build_candidate_plan(client, status_row, budget_guard, max_batches_per_run):
     }
 
 
-def build_recovery_plan(target_date=None, max_batches_per_run=1, db_client=None, client=None):
+def build_recovery_plan(
+    target_date=None,
+    max_batches_per_run=1,
+    db_client=None,
+    client=None,
+    phase="pre",
+    wait_until=None,
+    timezone="Europe/Moscow",
+    max_attempts=10,
+    sleep_padding_seconds=10,
+):
     db_client = db_client or loader.supabase
     client = client or loader.OzonPerformanceClient()
     load_date = loader.today_local().isoformat()
     daily_budget_used_today = loader.read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
-    budget_guard = build_budget_guard(daily_budget_used_today)
+    budget_guard = build_budget_guard(daily_budget_used_today, phase=phase)
     cooldown = get_statistics_cooldown(client)
+    deadline_utc = parse_wait_deadline(wait_until, timezone)
+    wait_meta = build_wait_metadata(
+        cooldown["cooldown_until"],
+        deadline_utc,
+        sleep_padding_seconds,
+    )
     candidates = get_partial_candidates(db_client, client.account_signature, target_date=target_date)
+    latest_status_row = get_latest_status_row(db_client, client.account_signature, target_date=target_date)
 
     plan = {
         "load_date": load_date,
         "requested_target_date": target_date,
+        "phase": phase,
         "daily_budget_used_today": budget_guard["daily_budget_used_today"],
         "daily_limit": budget_guard["daily_limit"],
         "daily_reserve": budget_guard["daily_reserve"],
@@ -226,12 +335,23 @@ def build_recovery_plan(target_date=None, max_batches_per_run=1, db_client=None,
         "will_run": False,
         "budget_skip_reason": budget_guard["budget_skip_reason"],
         "cooldown_active": cooldown["cooldown_active"],
-        "cooldown_until": cooldown["cooldown_until"],
+        "cooldown_until": wait_meta["cooldown_until"],
+        "deadline": wait_meta["deadline"],
+        "wait_seconds": wait_meta["wait_seconds"],
+        "will_wait": wait_meta["will_wait"],
+        "sleep_padding_seconds": int(sleep_padding_seconds or 0),
+        "planned_attempts": max(1, int(max_attempts or 1)),
+        "estimated_completion_possible": wait_meta["estimated_completion_possible"],
         "candidates": [],
+        "latest_status_row": latest_status_row,
     }
 
     if not candidates:
-        plan["status"] = "no_partial_candidates"
+        if latest_status_row and is_complete_status_row(latest_status_row):
+            plan["status"] = "complete"
+        else:
+            plan["status"] = "no_partial_candidates"
+        plan["planned_recovery_units"] = 0
         return plan
 
     for row in candidates:
@@ -248,8 +368,13 @@ def build_recovery_plan(target_date=None, max_batches_per_run=1, db_client=None,
         if cooldown["cooldown_active"]:
             candidate_plan.update(
                 {
-                    "status": "skipped_cooldown_active",
-                    "next_attempt_at": cooldown["cooldown_until"],
+                    "status": "waiting_for_cooldown" if wait_meta["will_wait"] else (
+                        "deadline_before_cooldown" if deadline_utc else "skipped_cooldown_active"
+                    ),
+                    "next_attempt_at": wait_meta["cooldown_until"],
+                    "wait_seconds": wait_meta["wait_seconds"],
+                    "will_wait": wait_meta["will_wait"],
+                    "estimated_completion_possible": wait_meta["estimated_completion_possible"],
                     "will_run": False,
                 }
             )
@@ -278,7 +403,13 @@ def build_recovery_plan(target_date=None, max_batches_per_run=1, db_client=None,
         plan["selected_target_date"] = runnable[0].get("target_date")
         plan["selected_command"] = runnable[0].get("recovery_command")
     else:
-        plan["status"] = "skipped"
+        candidate_statuses = {candidate.get("status") for candidate in plan["candidates"]}
+        if "deadline_before_cooldown" in candidate_statuses:
+            plan["status"] = "deadline_before_cooldown"
+        elif "waiting_for_cooldown" in candidate_statuses:
+            plan["status"] = "waiting_for_cooldown"
+        else:
+            plan["status"] = "skipped"
         plan["planned_recovery_units"] = 0
 
     return plan
@@ -328,12 +459,187 @@ def run_recovery_write(plan, approve_write=False):
     return result
 
 
+def should_continue_loop(wait_until, stop_when_complete):
+    return bool(wait_until or stop_when_complete)
+
+
+def execute_recovery_session(
+    *,
+    target_date=None,
+    phase="pre",
+    max_batches_per_run=1,
+    wait_until=None,
+    timezone="Europe/Moscow",
+    max_attempts=10,
+    sleep_padding_seconds=10,
+    stop_when_complete=False,
+    dry_run=True,
+    approve_write=False,
+    db_client=None,
+    client=None,
+    sleep_fn=time.sleep,
+):
+    attempts = 0
+    history = []
+    continue_loop = should_continue_loop(wait_until, stop_when_complete)
+    current_plan = None
+
+    while True:
+        plan = current_plan or build_recovery_plan(
+            target_date=target_date,
+            max_batches_per_run=max_batches_per_run,
+            db_client=db_client,
+            client=client,
+            phase=phase,
+            wait_until=wait_until,
+            timezone=timezone,
+            max_attempts=max_attempts,
+            sleep_padding_seconds=sleep_padding_seconds,
+        )
+        current_plan = None
+
+        if dry_run:
+            plan["history"] = history
+            return plan
+
+        if plan["status"] == "complete":
+            return {
+                "status": "complete",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+            }
+
+        if plan["cooldown_active"]:
+            if continue_loop and plan["will_wait"] and attempts < int(max_attempts or 1):
+                history.append(
+                    {
+                        "status": "waiting_for_cooldown",
+                        "cooldown_until": plan.get("cooldown_until"),
+                        "wait_seconds": plan.get("wait_seconds", 0),
+                    }
+                )
+                sleep_fn(plan.get("wait_seconds", 0))
+                continue
+
+            return {
+                "status": "deadline_before_cooldown" if plan.get("deadline") else "skipped_cooldown_active",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+            }
+
+        if not plan.get("will_run"):
+            return {
+                "status": plan.get("status") or "skipped",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+            }
+
+        if attempts >= int(max_attempts or 1):
+            return {
+                "status": "max_attempts_exhausted",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+            }
+
+        result = run_recovery_write(plan, approve_write=approve_write)
+        attempts += 1
+        history.append(
+            {
+                "attempt": attempts,
+                "status": result.get("status"),
+                "returncode": result.get("returncode"),
+            }
+        )
+
+        if result.get("status") == "failed":
+            return {
+                "status": "failed",
+                "attempts": attempts,
+                "history": history,
+                "plan": plan,
+                "result": result,
+            }
+
+        if result.get("status") == "pending_429":
+            post_429_plan = build_recovery_plan(
+                target_date=target_date,
+                max_batches_per_run=max_batches_per_run,
+                db_client=db_client,
+                client=client,
+                phase=phase,
+                wait_until=wait_until,
+                timezone=timezone,
+                max_attempts=max_attempts,
+                sleep_padding_seconds=sleep_padding_seconds,
+            )
+            if continue_loop and post_429_plan["cooldown_active"] and post_429_plan["will_wait"] and attempts < int(max_attempts or 1):
+                history.append(
+                    {
+                        "status": "waiting_after_429",
+                        "cooldown_until": post_429_plan["cooldown_until"],
+                        "wait_seconds": post_429_plan["wait_seconds"],
+                    }
+                )
+                sleep_fn(post_429_plan["wait_seconds"])
+                continue
+
+            return {
+                "status": "deadline_after_429" if post_429_plan.get("deadline") else "pending_429",
+                "attempts": attempts,
+                "history": history,
+                "plan": post_429_plan,
+                "result": result,
+            }
+
+        next_plan = build_recovery_plan(
+            target_date=target_date,
+            max_batches_per_run=max_batches_per_run,
+            db_client=db_client,
+            client=client,
+            phase=phase,
+            wait_until=wait_until,
+            timezone=timezone,
+            max_attempts=max_attempts,
+            sleep_padding_seconds=sleep_padding_seconds,
+        )
+        if next_plan["status"] == "complete":
+            return {
+                "status": "complete",
+                "attempts": attempts,
+                "history": history,
+                "plan": next_plan,
+                "result": result,
+            }
+
+        if continue_loop and next_plan.get("will_run") and attempts < int(max_attempts or 1):
+            current_plan = next_plan
+            continue
+
+        return {
+            "status": "partial_remaining" if next_plan.get("candidates") else "success",
+            "attempts": attempts,
+            "history": history,
+            "plan": next_plan,
+            "result": result,
+        }
+
+
 def make_parser():
     parser = argparse.ArgumentParser(
         description="Safe self-healing recovery worker for Ozon Performance pending CPC tails."
     )
     parser.add_argument("--date", help="Optional target_date to inspect/recover")
+    parser.add_argument("--phase", choices=("pre", "post"), default="pre")
     parser.add_argument("--max-batches-per-run", type=int, default=1)
+    parser.add_argument("--wait-until", help="Local wall-clock deadline in HH:MM")
+    parser.add_argument("--timezone", default="Europe/Moscow")
+    parser.add_argument("--max-attempts", type=int, default=10)
+    parser.add_argument("--sleep-padding-seconds", type=int, default=10)
+    parser.add_argument("--stop-when-complete", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--approve-recovery-worker-write", action="store_true")
@@ -347,19 +653,30 @@ def main():
             "Recovery worker write requires explicit --write --approve-recovery-worker-write"
         )
 
-    plan = build_recovery_plan(
+    dry_run = bool(args.dry_run or not args.write)
+    payload = execute_recovery_session(
         target_date=args.date,
+        phase=args.phase,
         max_batches_per_run=max(1, int(args.max_batches_per_run or 1)),
+        wait_until=args.wait_until,
+        timezone=args.timezone,
+        max_attempts=max(1, int(args.max_attempts or 1)),
+        sleep_padding_seconds=max(0, int(args.sleep_padding_seconds or 0)),
+        stop_when_complete=bool(args.stop_when_complete),
+        dry_run=dry_run,
+        approve_write=bool(args.approve_recovery_worker_write),
     )
     print("Ozon Performance recovery worker plan:")
-    print(json.dumps(loader.sanitize_value(plan), ensure_ascii=False, indent=2))
+    print(json.dumps(loader.sanitize_value(payload if dry_run else payload.get("plan")), ensure_ascii=False, indent=2))
 
-    if not args.write:
+    if dry_run:
         return
 
-    result = run_recovery_write(plan, approve_write=bool(args.approve_recovery_worker_write))
     print("Ozon Performance recovery worker result:")
-    print(json.dumps(loader.sanitize_value(result), ensure_ascii=False, indent=2))
+    print(json.dumps(loader.sanitize_value(payload), ensure_ascii=False, indent=2))
+
+    if payload.get("status") == "failed":
+        raise RuntimeError("Ozon Performance recovery worker failed unexpectedly")
 
 
 if __name__ == "__main__":

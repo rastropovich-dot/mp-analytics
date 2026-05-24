@@ -1746,25 +1746,6 @@ class OzonPerformanceClient:
                 row["updated_at"] = now_iso
                 rows.append(row)
 
-        try:
-            existing = (
-                supabase
-                .table(PIPELINE_RUNTIME_STATE_TABLE)
-                .select("state_key")
-                .eq("account_signature", self.account_signature)
-                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
-                .execute()
-            )
-            existing_keys = {row.get("state_key") for row in (existing.data or []) if row.get("state_key")}
-        except Exception as exc:
-            raise RuntimeError(
-                "Не удалось прочитать existing runtime state rows из Supabase: "
-                f"{sanitize_text(exc)}"
-            ) from exc
-
-        current_keys = {row["state_key"] for row in rows}
-        keys_to_delete = sorted(existing_keys - current_keys)
-
         if rows:
             try:
                 supabase.table(PIPELINE_RUNTIME_STATE_TABLE).upsert(
@@ -1776,6 +1757,43 @@ class OzonPerformanceClient:
                     "Не удалось записать runtime state в Supabase: "
                     f"{sanitize_text(exc)}"
                 ) from exc
+
+        existing_keys = set()
+        stale_cleanup_read_failed = None
+        try:
+            existing = (
+                supabase
+                .table(PIPELINE_RUNTIME_STATE_TABLE)
+                .select("state_key")
+                .eq("account_signature", self.account_signature)
+                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
+                .execute()
+            )
+            existing_keys = {row.get("state_key") for row in (existing.data or []) if row.get("state_key")}
+        except Exception as exc:
+            stale_cleanup_read_failed = exc
+            print(
+                json.dumps(
+                    {
+                        "warning": "runtime_state_stale_cleanup_warning",
+                        "account_signature": self.account_signature,
+                        "deleted_count": 0,
+                        "failed_count": 0,
+                        "chunk_count": 0,
+                        "sample_errors": [
+                            {
+                                "error_class": exc.__class__.__name__,
+                                "message": sanitize_text(exc),
+                                "stage": "read_existing_keys",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        current_keys = {row["state_key"] for row in rows}
+        keys_to_delete = sorted(existing_keys - current_keys) if not stale_cleanup_read_failed else []
 
         if keys_to_delete:
             self.cleanup_runtime_state_keys_nonfatal(

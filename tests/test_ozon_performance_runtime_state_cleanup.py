@@ -10,10 +10,17 @@ class _FakeResult:
 
 
 class _PipelineRuntimeStateTable:
-    def __init__(self, existing_rows=None, fail_delete_for_chunk_sizes=None, fail_upsert=False):
+    def __init__(
+        self,
+        existing_rows=None,
+        fail_delete_for_chunk_sizes=None,
+        fail_upsert=False,
+        fail_select=False,
+    ):
         self.existing_rows = list(existing_rows or [])
         self.fail_delete_for_chunk_sizes = set(fail_delete_for_chunk_sizes or [])
         self.fail_upsert = fail_upsert
+        self.fail_select = fail_select
         self._action = "select"
         self._eq = {}
         self._in = {}
@@ -44,6 +51,8 @@ class _PipelineRuntimeStateTable:
 
     def execute(self):
         if self._action == "select":
+            if self.fail_select:
+                raise RuntimeError("_ssl.c:1112: The handshake operation timed out")
             rows = list(self.existing_rows)
             for field, value in self._eq.items():
                 rows = [row for row in rows if row.get(field) == value]
@@ -167,6 +176,33 @@ class OzonPerformanceRuntimeStateCleanupTests(unittest.TestCase):
             for idx in range(40)
         ]
         table = _PipelineRuntimeStateTable(existing_rows=existing_rows, fail_delete_for_chunk_sizes={25, 15})
+
+        with mock.patch.object(loader, "supabase", _FakeSupabase(table)):
+            client.record_request_event("GET", "/api/client/statistics/test")
+
+        self.assertEqual(client.state["request_history"][-1]["endpoint"], "/api/client/statistics/test")
+        self.assertEqual(len(table.upsert_calls), 1)
+
+    def test_save_persistent_state_existing_key_read_failure_is_non_fatal(self):
+        state = loader.default_state()
+        state["cooldowns"] = {"keep": "2026-05-24T00:00:00+00:00"}
+        client = _make_client(state=state)
+        table = _PipelineRuntimeStateTable(fail_select=True)
+
+        with mock.patch.object(loader, "supabase", _FakeSupabase(table)):
+            with mock.patch("builtins.print") as print_mock:
+                client.save_persistent_state_to_db()
+
+        self.assertEqual(len(table.upsert_calls), 1)
+        printed = "\n".join(str(args[0]) for args, _kwargs in print_mock.call_args_list if args)
+        self.assertIn("runtime_state_stale_cleanup_warning", printed)
+        self.assertIn("read_existing_keys", printed)
+
+    def test_record_request_event_does_not_crash_on_existing_key_read_failure(self):
+        state = loader.default_state()
+        state["cooldowns"] = {"keep": "2026-05-24T00:00:00+00:00"}
+        client = _make_client(state=state)
+        table = _PipelineRuntimeStateTable(fail_select=True)
 
         with mock.patch.object(loader, "supabase", _FakeSupabase(table)):
             client.record_request_event("GET", "/api/client/statistics/test")

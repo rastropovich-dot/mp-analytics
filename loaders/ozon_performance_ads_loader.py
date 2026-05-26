@@ -1348,11 +1348,68 @@ def compute_campaign_list_hash(campaign_ids):
     return payload_hash(list(campaign_ids or []))
 
 
+def protected_runtime_state_keys_from_state(state, account_signature):
+    runs = (state or {}).get("runs", {}) or {}
+    protected_keys = set()
+    pending_statuses = {"pending_429", "pending_backfill", "pending_quota"}
+
+    for summary in runs.values():
+        summary = summary or {}
+        cpc = summary.get("cpc") or {}
+        progress_key = str(summary.get("cpc_progress_key") or "").strip()
+        if not progress_key:
+            continue
+        run_status = str(summary.get("overall_status") or "").strip().lower()
+        cpc_status = str(cpc.get("status") or summary.get("cpc_status") or "").strip().lower()
+        pending_units = int(
+            float(
+                summary.get("cpc_campaign_units_pending_total")
+                or cpc.get("campaign_units_pending_total")
+                or 0
+            )
+        )
+        if (
+            run_status in {"partial_ads", "partial_quota"}
+            or cpc_status in pending_statuses
+            or pending_units > 0
+        ):
+            protected_keys.add(build_db_state_key("cpc_progress", progress_key))
+
+    return protected_keys
+
+
 def build_cpc_batches(campaign_ids, batch_size):
     if not campaign_ids:
         return []
     size = max(1, int(batch_size or 1))
     return [list(batch) for batch in chunks(list(campaign_ids), size)]
+
+
+def seed_existing_cpc_progress_for_resume(client, progress_key, progress):
+    if not progress_key or not progress:
+        return {}
+    progress_copy = copy.deepcopy(progress)
+    progress_copy["completed_batch_indexes"] = normalize_batch_indexes(
+        progress_copy.get("completed_batch_indexes")
+    )
+    progress_copy["pending_batch_indexes"] = normalize_batch_indexes(
+        progress_copy.get("pending_batch_indexes")
+    )
+    progress_copy["failed_429_batch_indexes"] = normalize_batch_indexes(
+        progress_copy.get("failed_429_batch_indexes")
+    )
+    progress_copy["completed_batches"] = len(progress_copy["completed_batch_indexes"])
+    progress_copy["pending_batches"] = len(progress_copy["pending_batch_indexes"])
+    progress_copy["failed_429_batches"] = len(progress_copy["failed_429_batch_indexes"])
+    progress_copy["next_batch_index"] = (
+        progress_copy["pending_batch_indexes"][0]
+        if progress_copy["pending_batch_indexes"]
+        else None
+    )
+    client.state.setdefault("cpc_progress", {})[progress_key] = progress_copy
+    if hasattr(client, "_progress_map") and isinstance(getattr(client, "_progress_map"), dict):
+        client._progress_map[progress_key] = copy.deepcopy(progress_copy)
+    return client.get_cpc_progress(progress_key)
 
 
 def cpc_progress_cache_identity(date_from, date_to, batch_size, campaign_ids, group_by):
@@ -1732,6 +1789,7 @@ class OzonPerformanceClient:
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
         self.state_backend = self.resolve_state_backend()
         self.skip_persistent_state_load = bool(skip_persistent_state_load)
+        self.persistent_state_loaded_from_db = False
         self.state = self.load_state()
         self.migrate_legacy_rate_limit_state()
 
@@ -1837,6 +1895,7 @@ class OzonPerformanceClient:
                 .execute()
             )
         except Exception as exc:
+            self.persistent_state_loaded_from_db = False
             print(
                 "Не удалось загрузить Ozon Performance runtime state из БД, "
                 f"используем file fallback: {sanitize_text(exc)}"
@@ -1845,6 +1904,8 @@ class OzonPerformanceClient:
             for section in PERSISTENT_STATE_SECTIONS:
                 state[section] = file_state.get(section, {})
             return state
+
+        self.persistent_state_loaded_from_db = True
 
         rows = result.data or []
         expired_keys = []
@@ -1906,6 +1967,9 @@ class OzonPerformanceClient:
                     f"{sanitize_text(exc)}"
                 ) from exc
 
+        if not getattr(self, "persistent_state_loaded_from_db", True):
+            return
+
         existing_keys = set()
         stale_cleanup_read_failed = None
         try:
@@ -1941,7 +2005,13 @@ class OzonPerformanceClient:
             )
 
         current_keys = {row["state_key"] for row in rows}
+        protected_keys = protected_runtime_state_keys_from_state(
+            self.state,
+            self.account_signature,
+        )
         keys_to_delete = sorted(existing_keys - current_keys) if not stale_cleanup_read_failed else []
+        if protected_keys:
+            keys_to_delete = [key for key in keys_to_delete if key not in protected_keys]
 
         if keys_to_delete:
             self.cleanup_runtime_state_keys_nonfatal(
@@ -5728,7 +5798,14 @@ def run():
         selection_mode=daily_selection_mode if args.mode in {"daily-yesterday", "cpc-backfill"} else None,
         campaign_scope=args.campaign_scope,
     )
-    cpc_progress = client.init_cpc_progress(progress_key, progress_context, cpc_batches)
+    if args.mode == "cpc-backfill" and existing_backfill_progress_key and existing_backfill_progress:
+        cpc_progress = seed_existing_cpc_progress_for_resume(
+            client,
+            progress_key,
+            existing_backfill_progress,
+        )
+    else:
+        cpc_progress = client.init_cpc_progress(progress_key, progress_context, cpc_batches)
 
     if args.mode == "cpc-backfill":
         if not cpc_progress.get("pending_batch_indexes"):

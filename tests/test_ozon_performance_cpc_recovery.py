@@ -466,6 +466,28 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         self.assertIn("\"ozon_api_calls\": 0", stdout)
         fake_client.list_campaigns.assert_not_called()
 
+    def test_seed_existing_cpc_progress_for_resume_preserves_pending_batches(self):
+        client = _FakeClient(progress_map={})
+        progress = {
+            "date_from": "2026-05-23",
+            "date_to": "2026-05-23",
+            "selection_mode": "complete",
+            "account_signature": "acct_d743d49318d3",
+            "total_batches": 133,
+            "batch_size": 10,
+            "completed_batch_indexes": list(range(67)),
+            "pending_batch_indexes": list(range(67, 133)),
+            "failed_429_batch_indexes": [67],
+        }
+        seeded = loader.seed_existing_cpc_progress_for_resume(
+            client,
+            "cpc_progress:pending-tail",
+            progress,
+        )
+        self.assertEqual(seeded["pending_batch_indexes"][0], 67)
+        self.assertEqual(seeded["completed_batches"], 67)
+        self.assertEqual(seeded["pending_batches"], 66)
+
     def test_resolve_daily_pending_progress_requires_exactly_one_match(self):
         client = _FakeClient(progress_map={})
         db_rows = [

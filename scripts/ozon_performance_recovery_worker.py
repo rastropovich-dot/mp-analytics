@@ -240,6 +240,62 @@ def build_pending_batches_plan(progress):
     }
 
 
+def resolve_worker_progress_candidate(db_client, client, target_date):
+    progress_key, progress, source_progress_kind = loader.resolve_cpc_backfill_progress(client, target_date)
+    if progress:
+        return progress_key, progress, source_progress_kind
+
+    try:
+        result = (
+            db_client
+            .table(loader.PIPELINE_RUNTIME_STATE_TABLE)
+            .select("state_key,payload,updated_at")
+            .eq("account_signature", client.account_signature)
+            .eq("state_type", "cpc_progress")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+    except Exception:
+        return None, None, None
+
+    candidates = []
+    for row in result.data or []:
+        payload = row.get("payload") or {}
+        if payload.get("date_from") != target_date or payload.get("date_to") != target_date:
+            continue
+        if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
+            continue
+        if str(payload.get("selection_mode") or "").strip().lower() != "complete":
+            continue
+        pending_batch_indexes = loader.normalize_batch_indexes(payload.get("pending_batch_indexes"))
+        pending_batches = int(payload.get("pending_batches") or len(pending_batch_indexes) or 0)
+        if not pending_batch_indexes and pending_batches <= 0:
+            continue
+        logical_key = loader.parse_db_state_key("cpc_progress", row.get("state_key"))
+        if not logical_key:
+            continue
+        progress = dict(payload)
+        progress["updated_at"] = progress.get("updated_at") or row.get("updated_at")
+        progress["pending_batch_indexes"] = pending_batch_indexes
+        progress["pending_batches"] = pending_batches
+        candidates.append((logical_key, progress))
+
+    if not candidates:
+        return None, None, None
+
+    candidates.sort(
+        key=lambda item: (
+            int(item[1].get("total_campaigns") or 0),
+            int(item[1].get("batch_size") or 0),
+            int(item[1].get("pending_batches") or 0),
+            str(item[1].get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    progress_key, progress = candidates[0]
+    return progress_key, progress, "daily_yesterday_pending_disambiguated"
+
+
 def pick_recovery_batches(cpc_batches, pending_batch_indexes, recovery_budget_available, max_batches_per_run):
     limited_batch_indexes, limited_units = loader.build_limited_batch_indexes(
         cpc_batches,
@@ -275,9 +331,13 @@ def build_loader_command(target_date, max_batches_per_run, write=False, progress
     return command
 
 
-def build_candidate_plan(client, status_row, budget_guard, max_batches_per_run):
+def build_candidate_plan(db_client, client, status_row, budget_guard, max_batches_per_run):
     target_date = status_row.get("target_date")
-    progress_key, progress, source_progress_kind = loader.resolve_cpc_backfill_progress(client, target_date)
+    progress_key, progress, source_progress_kind = resolve_worker_progress_candidate(
+        db_client,
+        client,
+        target_date,
+    )
     if not progress:
         return {
             "target_date": target_date,
@@ -451,7 +511,7 @@ def build_recovery_plan(
             plan["candidates"].append(candidate_plan)
             continue
 
-        candidate_plan.update(build_candidate_plan(client, row, budget_guard, max_batches_per_run))
+        candidate_plan.update(build_candidate_plan(db_client, client, row, budget_guard, max_batches_per_run))
         plan["candidates"].append(candidate_plan)
 
     runnable = [candidate for candidate in plan["candidates"] if candidate.get("will_run")]

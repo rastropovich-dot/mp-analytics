@@ -238,6 +238,44 @@ class OzonPerformanceRuntimeStateCleanupTests(unittest.TestCase):
         self.assertEqual(len(table.delete_calls), 1)
         self.assertEqual(table.delete_calls[0], [loader.build_db_state_key("cooldowns", "stale-a")])
 
+    def test_stale_cleanup_does_not_delete_active_pending_cpc_progress(self):
+        state = loader.default_state()
+        state["cooldowns"] = {"keep": "2026-05-24T00:00:00+00:00"}
+        state["runs"] = {
+            "2026-05-23:2026-05-23": {
+                "target_date": "2026-05-23",
+                "overall_status": "partial_ads",
+                "cpc_progress_key": "cpc_progress:pending-tail",
+                "cpc_campaign_units_pending_total": 653,
+                "cpc": {"status": "pending_429"},
+            }
+        }
+        client = _make_client(state=state)
+        existing_rows = [
+            {
+                "state_key": loader.build_db_state_key("cpc_progress", "cpc_progress:pending-tail"),
+                "state_type": "cpc_progress",
+                "account_signature": "acct_test",
+            },
+            {
+                "state_key": loader.build_db_state_key("cooldowns", "stale-a"),
+                "state_type": "cooldowns",
+                "account_signature": "acct_test",
+            },
+            {
+                "state_key": loader.build_db_state_key("cooldowns", "keep"),
+                "state_type": "cooldowns",
+                "account_signature": "acct_test",
+            },
+        ]
+        table = _PipelineRuntimeStateTable(existing_rows=existing_rows)
+
+        with mock.patch.object(loader, "supabase", _FakeSupabase(table)):
+            client.save_persistent_state_to_db()
+
+        self.assertEqual(len(table.delete_calls), 1)
+        self.assertEqual(table.delete_calls[0], [loader.build_db_state_key("cooldowns", "stale-a")])
+
 
 if __name__ == "__main__":
     unittest.main()

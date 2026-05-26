@@ -440,13 +440,61 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
 
     def test_build_candidate_plan_passes_progress_key_to_command(self):
         client = _FakeClient()
+        db = _FakeDbClient({})
         status_row = _status_row()
         budget_guard = worker.build_budget_guard(0, phase="post")
         with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress()):
-            candidate = worker.build_candidate_plan(client, status_row, budget_guard, 1)
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
         self.assertEqual(candidate["progress_key"], "cpc_progress:pending-tail")
         self.assertIn("--progress-key", candidate["recovery_command"])
         self.assertIn("cpc_progress:pending-tail", candidate["recovery_command"])
+
+    def test_worker_disambiguates_multiple_pending_progress_rows(self):
+        client = _FakeClient()
+        db = _FakeDbClient(
+            {
+                loader.PIPELINE_RUNTIME_STATE_TABLE: [
+                    {
+                        "state_key": "cpc_progress:cpc_progress:older",
+                        "state_type": "cpc_progress",
+                        "account_signature": "acct_test",
+                        "updated_at": "2026-05-24T20:00:00+00:00",
+                        "payload": {
+                            "date_from": "2026-05-21",
+                            "date_to": "2026-05-21",
+                            "selection_mode": "complete",
+                            "account_signature": "acct_test",
+                            "pending_batches": 10,
+                            "pending_batch_indexes": list(range(70, 80)),
+                            "batch_size": 10,
+                            "total_campaigns": 1200,
+                        },
+                    },
+                    {
+                        "state_key": "cpc_progress:cpc_progress:newer",
+                        "state_type": "cpc_progress",
+                        "account_signature": "acct_test",
+                        "updated_at": "2026-05-24T21:00:00+00:00",
+                        "payload": {
+                            "date_from": "2026-05-21",
+                            "date_to": "2026-05-21",
+                            "selection_mode": "complete",
+                            "account_signature": "acct_test",
+                            "pending_batches": 66,
+                            "pending_batch_indexes": list(range(67, 133)),
+                            "batch_size": 10,
+                            "total_campaigns": 1323,
+                        },
+                    },
+                ]
+            }
+        )
+        status_row = _status_row()
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=(None, None, None)):
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["progress_key"], "cpc_progress:newer")
+        self.assertEqual(candidate["source_progress_kind"], "daily_yesterday_pending_disambiguated")
 
     def test_runtime_state_unavailable_is_controlled_worker_result(self):
         plan = {

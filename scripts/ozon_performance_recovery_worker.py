@@ -308,7 +308,7 @@ def pick_recovery_batches(cpc_batches, pending_batch_indexes, recovery_budget_av
     return limited_batch_indexes, limited_units
 
 
-def build_loader_command(target_date, max_batches_per_run, write=False, progress_key=None):
+def build_loader_command(target_date, max_batches_per_run, write=False, progress_key=None, write_runtime_only=False):
     loader_script = Path(loader.__file__).resolve()
     command = [
         sys.executable,
@@ -326,6 +326,8 @@ def build_loader_command(target_date, max_batches_per_run, write=False, progress
         command.extend(["--progress-key", str(progress_key)])
     if write:
         command.extend(["--write", "--approve-cpc-recovery-write"])
+        if write_runtime_only:
+            command.append("--write-runtime-only")
     else:
         command.extend(["--dry-run", "--no-write"])
     return command
@@ -534,7 +536,21 @@ def build_recovery_plan(
     return plan
 
 
-def run_recovery_write(plan, approve_write=False):
+def _extract_batch_events(stdout):
+    marker = "Ozon Performance CPC batch event:"
+    events = []
+    for line in (stdout or "").splitlines():
+        if marker not in line:
+            continue
+        payload = line.split(marker, 1)[1].strip()
+        try:
+            events.append(json.loads(payload))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def run_recovery_write(plan, approve_write=False, write_runtime_only=False):
     if not approve_write:
         raise RuntimeError(
             "Recovery worker write requires explicit --write --approve-recovery-worker-write"
@@ -556,6 +572,7 @@ def run_recovery_write(plan, approve_write=False):
         max_batches_per_run=max(1, len(candidate.get("planned_batch_indexes") or [])),
         write=True,
         progress_key=candidate.get("progress_key"),
+        write_runtime_only=write_runtime_only,
     )
     completed = subprocess.run(
         write_command,
@@ -572,6 +589,7 @@ def run_recovery_write(plan, approve_write=False):
         "returncode": completed.returncode,
         "stdout": stdout,
         "stderr": stderr,
+        "batch_events": _extract_batch_events(stdout),
     }
 
     if "\"pending_429\"" in stdout or "\"status\": \"pending_429\"" in stdout:
@@ -598,6 +616,7 @@ def execute_recovery_session(
     stop_when_complete=False,
     dry_run=True,
     approve_write=False,
+    write_runtime_only=False,
     db_client=None,
     client=None,
     sleep_fn=time.sleep,
@@ -669,7 +688,11 @@ def execute_recovery_session(
                 "plan": plan,
             }
 
-        result = run_recovery_write(plan, approve_write=approve_write)
+        result = run_recovery_write(
+            plan,
+            approve_write=approve_write,
+            write_runtime_only=write_runtime_only,
+        )
         attempts += 1
         history.append(
             {
@@ -779,6 +802,7 @@ def make_parser():
     parser.add_argument("--stop-when-complete", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--write-runtime-only", action="store_true")
     parser.add_argument("--approve-recovery-worker-write", action="store_true")
     return parser
 
@@ -803,6 +827,7 @@ def main():
         stop_when_complete=bool(args.stop_when_complete),
         dry_run=dry_run,
         approve_write=bool(args.approve_recovery_worker_write),
+        write_runtime_only=bool(args.write_runtime_only),
     )
     print("Ozon Performance recovery worker plan:")
     print(json.dumps(loader.sanitize_value(payload if dry_run else payload.get("plan")), ensure_ascii=False, indent=2))

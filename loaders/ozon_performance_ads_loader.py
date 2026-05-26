@@ -797,6 +797,14 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--no-write", action="store_true")
+    parser.add_argument(
+        "--write-runtime-only",
+        action="store_true",
+        help=(
+            "Allow runtime/progress/status writes while skipping marketplace_expenses and "
+            "ozon_daily_sku_ad_attribution writes. Intended for throttling experiments."
+        ),
+    )
     parser.add_argument("--approve-cpc-recovery-write", action="store_true")
     parser.add_argument("--ignore-stale-progress-for-date-only", action="store_true")
     parser.add_argument("--progress-key")
@@ -5093,6 +5101,9 @@ def save_daily_load_status(summary):
 def run():
     args = parse_args()
 
+    if args.write_runtime_only and not args.write:
+        raise RuntimeError("--write-runtime-only requires --write")
+
     if not OZON_PERFORMANCE_CLIENT_ID or not OZON_PERFORMANCE_CLIENT_SECRET:
         print("Ozon Performance API не настроен: заполните OZON_PERFORMANCE_CLIENT_ID и OZON_PERFORMANCE_CLIENT_SECRET")
         return
@@ -5876,6 +5887,7 @@ def run():
 
     cpc_batches_total = len(cpc_batches)
     processed_batch_indexes = []
+    batch_events = []
     cpc_progress_snapshot = client.get_cpc_progress(progress_key)
     completed_batch_indexes_before_run = list(cpc_progress_snapshot.get("completed_batch_indexes") or [])
     failed_429_batch_indexes_before_run = list(cpc_progress_snapshot.get("failed_429_batch_indexes") or [])
@@ -5931,6 +5943,7 @@ def run():
                 continue
             campaign_batch = cpc_batches[batch_index]
             processed_batch_indexes.append(batch_index)
+            batch_started_at = utcnow()
             print(f"Запрашиваем Ozon Performance CPC statistics/json batch: {campaign_batch}")
             try:
                 uuid, _, report_data = client.fetch_statistics_json_report(
@@ -5941,6 +5954,7 @@ def run():
                     allow_recreate=(args.mode != "cpc-backfill"),
                 )
             except RateLimitPending as exc:
+                batch_finished_at = utcnow()
                 client.set_batch_recommendation(
                     client.scoped_state_key("statistics_json"),
                     1,
@@ -5977,10 +5991,37 @@ def run():
                         ),
                     ),
                 )
+                batch_event = {
+                    "batch_index": int(batch_index),
+                    "start_time": to_iso(batch_started_at),
+                    "end_time": to_iso(batch_finished_at),
+                    "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                    "http_status": 429,
+                    "pause_before_next_batch_seconds": int(exc.retry_after_seconds or 0),
+                }
+                batch_events.append(batch_event)
+                print(
+                    "Ozon Performance CPC batch event: "
+                    + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+                )
                 print("CPC statistics/json pending_429:")
                 print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
                 break
             except Exception as exc:
+                batch_finished_at = utcnow()
+                batch_event = {
+                    "batch_index": int(batch_index),
+                    "start_time": to_iso(batch_started_at),
+                    "end_time": to_iso(batch_finished_at),
+                    "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                    "http_status": "error",
+                    "pause_before_next_batch_seconds": 0,
+                }
+                batch_events.append(batch_event)
+                print(
+                    "Ozon Performance CPC batch event: "
+                    + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+                )
                 run_summary["cpc"] = empty_stage_status(
                     "failed",
                     batch_size=batch_size,
@@ -5994,6 +6035,20 @@ def run():
                 save_daily_load_status(run_summary)
                 raise
             print(f"CPC UUID: {uuid}")
+            batch_finished_at = utcnow()
+            batch_event = {
+                "batch_index": int(batch_index),
+                "start_time": to_iso(batch_started_at),
+                "end_time": to_iso(batch_finished_at),
+                "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                "http_status": 200,
+                "pause_before_next_batch_seconds": 2,
+            }
+            batch_events.append(batch_event)
+            print(
+                "Ozon Performance CPC batch event: "
+                + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+            )
             cpc_progress_snapshot = client.mark_cpc_batch_completed(progress_key, batch_index)
 
             if args.debug_sample:
@@ -6275,6 +6330,7 @@ def run():
         key: round(value, 2)
         for key, value in sorted(by_type.items())
     }
+    run_summary["batch_events"] = batch_events
 
     if args.mode == "daily-yesterday":
         run_summary["selected_cpo"] = client.load_ozon_selected_cpo_for_date(
@@ -6298,8 +6354,14 @@ def run():
         print("Dry run: данные не записывались")
         return
 
-    save_rows(rows)
-    save_ad_attribution_rows(ad_attribution_rows)
+    if args.write_runtime_only:
+        print(
+            "Runtime-only write mode: пропускаем marketplace_expenses и "
+            "ozon_daily_sku_ad_attribution"
+        )
+    else:
+        save_rows(rows)
+        save_ad_attribution_rows(ad_attribution_rows)
     client.write_run_status(run_summary)
     save_daily_load_status(run_summary)
 

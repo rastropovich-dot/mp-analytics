@@ -1182,10 +1182,18 @@ def build_daily_cpc_selection(
     dormant_candidates = []
     newly_changed_count = 0
     recent_active_count = 0
+    activity_reason_counts = {
+        "running_now": 0,
+        "active_during_target_date": 0,
+        "recent_db_activity": 0,
+        "newly_created_or_updated": 0,
+    }
 
     if selection_mode == "smart_recent_active":
         for campaign in sorted(date_overlap_cpc_campaigns, key=daily_cpc_priority_key):
             campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "")
+            overlaps_target_date = bool(campaign_intersects_period(campaign, date_from, date_to))
+            is_running = bool(campaign.get("_running"))
             created_recently = campaign_created_in_period(
                 campaign,
                 (parse_iso_date(date_to) - timedelta(days=max(1, SMART_NEW_CAMPAIGN_LOOKBACK_DAYS) - 1)).isoformat() if parse_iso_date(date_to) else date_from,
@@ -1198,7 +1206,7 @@ def build_daily_cpc_selection(
             )
             recently_active = campaign_id in recent_activity_campaign_ids
             include = (
-                bool(campaign.get("_running"))
+                is_running
                 or created_recently
                 or updated_recently
                 or recently_active
@@ -1207,19 +1215,39 @@ def build_daily_cpc_selection(
                 enriched = dict(campaign)
                 enriched["_recent_db_activity"] = recently_active
                 enriched["_newly_changed"] = bool(created_recently or updated_recently)
+                enriched["_include_reasons"] = [
+                    reason
+                    for reason, condition in (
+                        ("running_now", is_running),
+                        ("active_during_target_date", overlaps_target_date),
+                        ("recent_db_activity", recently_active),
+                        ("newly_created_or_updated", bool(created_recently or updated_recently)),
+                    )
+                    if condition
+                ]
                 smart_selected_campaigns.append(enriched)
-                if created_recently or updated_recently:
+                if bool(created_recently or updated_recently):
                     newly_changed_count += 1
+                    activity_reason_counts["newly_created_or_updated"] += 1
                 if recently_active:
                     recent_active_count += 1
-            elif bool(campaign.get("_running")) or campaign_intersects_period(campaign, date_from, date_to):
-                dormant_candidates.append(campaign)
+                    activity_reason_counts["recent_db_activity"] += 1
+                if is_running:
+                    activity_reason_counts["running_now"] += 1
+                if overlaps_target_date:
+                    activity_reason_counts["active_during_target_date"] += 1
+            elif is_running or overlaps_target_date:
+                dormant = dict(campaign)
+                dormant["_exclude_reasons"] = ["dormant_active_without_recent_signals"]
+                dormant_candidates.append(dormant)
 
         dormant_candidates = sorted(
             dormant_candidates,
             key=lambda campaign: dormant_probe_order_key(campaign, date_to),
         )
         dormant_probe_campaigns = dormant_candidates[: max(0, int(dormant_probe_size or 0))]
+        for campaign in dormant_probe_campaigns:
+            campaign.setdefault("_include_reasons", []).append("dormant_probe")
         selected_campaigns = list(smart_selected_campaigns) + list(dormant_probe_campaigns)
     else:
         dormant_probe_campaigns = []
@@ -1248,6 +1276,8 @@ def build_daily_cpc_selection(
         "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
         "newly_changed_count": newly_changed_count,
         "recent_active_count": recent_active_count,
+        "active_during_target_date_count": len(date_overlap_cpc_campaigns),
+        "activity_reason_counts": activity_reason_counts,
         "excluded_dormant_count": max(0, len(date_overlap_cpc_campaigns) - len(selected_campaigns)),
         "selection_mode": selection_mode,
     }
@@ -6122,8 +6152,23 @@ def run():
             if daily_selection
             else None
         ),
+        "recent_activity_campaign_count": (
+            len(daily_selection.get("recent_activity_campaign_ids") or [])
+            if daily_selection
+            else None
+        ),
         "newly_changed_count": (
             int(daily_selection.get("newly_changed_count") or 0)
+            if daily_selection
+            else None
+        ),
+        "newly_created_or_updated_count": (
+            int(daily_selection.get("newly_changed_count") or 0)
+            if daily_selection
+            else None
+        ),
+        "active_during_target_date_count": (
+            int(daily_selection.get("active_during_target_date_count") or 0)
             if daily_selection
             else None
         ),
@@ -6157,6 +6202,7 @@ def run():
         "sample_included_campaigns": [
             {
                 "campaign_id": str(campaign.get("id") or campaign.get("campaignId") or ""),
+                "reasons": list(campaign.get("_include_reasons") or []),
                 "markers": list(campaign.get("_cpc_activity_markers") or []),
                 "recent_db_activity": bool(campaign.get("_recent_db_activity")),
             }
@@ -6165,6 +6211,7 @@ def run():
         "sample_excluded_campaigns": [
             {
                 "campaign_id": str(campaign.get("id") or campaign.get("campaignId") or ""),
+                "reasons": list(campaign.get("_exclude_reasons") or []),
                 "markers": list(campaign.get("_cpc_activity_markers") or []),
             }
             for campaign in [
@@ -6227,14 +6274,22 @@ def run():
             cpc_batches,
             (existing_backfill_progress or {}).get("pending_batch_indexes") or [],
         ) if existing_backfill_progress else len(ordered_campaign_ids),
-        "warnings": (
-            ["smart_recent_active may miss dormant spend despite probe"]
-            if daily_selection_mode == "smart_recent_active"
-            else []
-        ),
+        "warnings": [],
         "create_new_progress_key": not bool(existing_backfill_progress),
         "warning": ordering_warning,
     }
+    if daily_selection_mode == "smart_recent_active":
+        planning_summary["warnings"].append("campaign_status_history_missing")
+        planning_summary["warnings"].append("dormant_spend_risk")
+        if planning_summary.get("campaign_units", 0) > 1100:
+            planning_summary["warnings"].append("smart_units_too_high")
+        if (
+            planning_summary.get("recent_activity_campaign_count") is not None
+            and planning_summary.get("recent_active_count") is not None
+            and planning_summary.get("recent_active_count", 0)
+            < planning_summary.get("recent_activity_campaign_count", 0)
+        ):
+            planning_summary["warnings"].append("recent_activity_coverage_low")
     print("Ozon Performance planning summary:")
     print(json.dumps(sanitize_value(planning_summary), ensure_ascii=False, indent=2))
 

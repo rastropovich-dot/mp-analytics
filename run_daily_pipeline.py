@@ -16,36 +16,60 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-STEPS = [
-    (
-        "Ozon Performance: CPC recovery before daily",
-        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase pre --max-batches-per-run 1",
-    ),
-    ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
-    ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
-    ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
-    ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
+def build_ozon_performance_daily_command(args=None):
+    command_parts = [
+        "python3",
+        "loaders/ozon_performance_ads_loader.py",
+        "--mode",
+        "daily-yesterday",
+    ]
 
-    ("Ozon: загрузка FBS заказов", "python3 loaders/ozon_fbs_orders_loader.py"),
-    ("Ozon: загрузка FBO заказов", "python3 loaders/ozon_fbo_orders_loader.py"),
-    ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
-    ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
-    ("Ozon: реклама Performance API", "python3 loaders/ozon_performance_ads_loader.py --mode daily-yesterday"),
-    (
-        "Ozon Performance: CPC recovery after daily",
-        "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-for-minutes 240 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 1 --stop-when-complete",
-    ),
-    ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
-    ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),
-    ("Ozon: загрузка остатков", "python3 loaders/ozon_stocks_loader.py"),
+    if args:
+        if getattr(args, "ozon_campaign_selection", None):
+            command_parts.extend(["--campaign-selection", args.ozon_campaign_selection])
+        if getattr(args, "ozon_recent_activity_days", None) is not None:
+            command_parts.extend(["--recent-activity-days", str(args.ozon_recent_activity_days)])
+        if getattr(args, "ozon_dormant_probe_size", None) is not None:
+            command_parts.extend(["--dormant-probe-size", str(args.ozon_dormant_probe_size)])
+        if getattr(args, "ozon_max_daily_cpc_units", None) is not None:
+            command_parts.extend(["--max-daily-cpc-units", str(args.ozon_max_daily_cpc_units)])
+        if getattr(args, "ozon_allow_staged_cpc_partial", False):
+            command_parts.append("--allow-staged-cpc-partial")
 
-    ("KPI: расчет SKU", "python3 reports_daily_sku_kpi.py"),
-    ("KPI: расчет маркетплейсов", "python3 reports_daily_marketplace_kpi.py"),
-    ("Decision: SKU daily input", "python3 reports_sku_decision_daily_input.py --mode daily-yesterday"),
+    return " ".join(command_parts)
 
-    ("Excel: выгрузка управленческого отчета", "python3 export_management_excel.py"),
-    ("Telegram: отправка сигналов", "python3 alerts_telegram.py"),
-]
+
+def build_steps(args=None):
+    return [
+        (
+            "Ozon Performance: CPC recovery before daily",
+            "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase pre --max-batches-per-run 1",
+        ),
+        ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
+        ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
+        ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
+        ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
+        ("Ozon: загрузка FBS заказов", "python3 loaders/ozon_fbs_orders_loader.py"),
+        ("Ozon: загрузка FBO заказов", "python3 loaders/ozon_fbo_orders_loader.py"),
+        ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
+        ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
+        ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
+        (
+            "Ozon Performance: CPC recovery after daily",
+            "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-for-minutes 240 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 1 --stop-when-complete",
+        ),
+        ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
+        ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),
+        ("Ozon: загрузка остатков", "python3 loaders/ozon_stocks_loader.py"),
+        ("KPI: расчет SKU", "python3 reports_daily_sku_kpi.py"),
+        ("KPI: расчет маркетплейсов", "python3 reports_daily_marketplace_kpi.py"),
+        ("Decision: SKU daily input", "python3 reports_sku_decision_daily_input.py --mode daily-yesterday"),
+        ("Excel: выгрузка управленческого отчета", "python3 export_management_excel.py"),
+        ("Telegram: отправка сигналов", "python3 alerts_telegram.py"),
+    ]
+
+
+STEPS = build_steps()
 
 
 def parse_args():
@@ -69,6 +93,35 @@ def parse_args():
         "--skip-recovery",
         action="store_true",
         help="Skip Ozon Performance CPC recovery step. Useful as an emergency mitigation if recovery should be temporarily disabled.",
+    )
+    parser.add_argument(
+        "--ozon-campaign-selection",
+        choices=("complete", "smart_recent_active"),
+        default=None,
+        help="Pass Ozon Performance daily campaign selection mode to the daily-yesterday loader only.",
+    )
+    parser.add_argument(
+        "--ozon-recent-activity-days",
+        type=int,
+        default=None,
+        help="Recent activity window for smart Ozon campaign selection.",
+    )
+    parser.add_argument(
+        "--ozon-dormant-probe-size",
+        type=int,
+        default=None,
+        help="Deterministic dormant probe size for smart Ozon campaign selection.",
+    )
+    parser.add_argument(
+        "--ozon-max-daily-cpc-units",
+        type=int,
+        default=None,
+        help="Optional cap for the initial Ozon daily CPC campaign units before post-recovery continues the tail.",
+    )
+    parser.add_argument(
+        "--ozon-allow-staged-cpc-partial",
+        action="store_true",
+        help="Allow Ozon daily-yesterday CPC stage to stop intentionally before full completion and leave pending_backfill for post-recovery.",
     )
     return parser.parse_args()
 
@@ -229,12 +282,13 @@ def run_step(title, command):
 
 def main():
     args = parse_args()
+    steps = build_steps(args)
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     ozon_downstream_allowed = None
 
-    for title, command in STEPS:
+    for title, command in steps:
         should_skip, skip_message = should_skip_pipeline_step(title, args, ozon_downstream_allowed)
         if should_skip:
             print(skip_message)

@@ -24,6 +24,28 @@ class RunDailyPipelineTests(unittest.TestCase):
         self.assertIn("--wait-for-minutes 240", post_recovery_command)
         self.assertNotIn("--wait-until 09:40", post_recovery_command)
 
+    def test_daily_ozon_command_receives_smart_flags(self):
+        args = types.SimpleNamespace(
+            ozon_campaign_selection="smart_recent_active",
+            ozon_recent_activity_days=7,
+            ozon_dormant_probe_size=100,
+            ozon_max_daily_cpc_units=1000,
+            ozon_allow_staged_cpc_partial=True,
+        )
+        steps = pipeline.build_steps(args)
+        daily_command = dict(steps)["Ozon: реклама Performance API"]
+        self.assertIn("--campaign-selection smart_recent_active", daily_command)
+        self.assertIn("--recent-activity-days 7", daily_command)
+        self.assertIn("--dormant-probe-size 100", daily_command)
+        self.assertIn("--max-daily-cpc-units 1000", daily_command)
+        self.assertIn("--allow-staged-cpc-partial", daily_command)
+
+        recovery_before = dict(steps)["Ozon Performance: CPC recovery before daily"]
+        recovery_after = dict(steps)["Ozon Performance: CPC recovery after daily"]
+        self.assertNotIn("--campaign-selection", recovery_before)
+        self.assertNotIn("--campaign-selection", recovery_after)
+        self.assertNotIn("--max-daily-cpc-units", recovery_after)
+
     def test_skip_recovery_skips_both_recovery_steps(self):
         args = types.SimpleNamespace(
             skip_recovery=True,
@@ -84,6 +106,29 @@ class RunDailyPipelineTests(unittest.TestCase):
         )
         self.assertFalse(
             pipeline.ozon_run_summary_is_complete({"overall_status": "partial_ads"})
+        )
+
+    def test_non_recovery_skip_flags_unchanged(self):
+        args = types.SimpleNamespace(
+            skip_recovery=False,
+            skip_excel=True,
+            skip_decision=True,
+            skip_telegram=True,
+        )
+        self.assertTrue(
+            pipeline.should_skip_pipeline_step(
+                "Excel: выгрузка управленческого отчета", args, ozon_downstream_allowed=None
+            )[0]
+        )
+        self.assertTrue(
+            pipeline.should_skip_pipeline_step(
+                "Decision: SKU daily input", args, ozon_downstream_allowed=None
+            )[0]
+        )
+        self.assertTrue(
+            pipeline.should_skip_pipeline_step(
+                "Telegram: отправка сигналов", args, ozon_downstream_allowed=None
+            )[0]
         )
 
 

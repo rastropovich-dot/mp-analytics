@@ -53,23 +53,30 @@ class RunDailyPipelineTests(unittest.TestCase):
             pipeline.recovery_result_allows_ozon_downstream({"status": "complete"})
         )
 
-    def test_partial_ozon_status_skips_organic_and_kpi(self):
+    def test_partial_ozon_status_skips_only_ozon_organic(self):
         args = types.SimpleNamespace(
             skip_recovery=False,
             skip_excel=False,
             skip_decision=False,
             skip_telegram=False,
         )
-        for title in (
-            "Ozon: расчет organic sales по SKU",
-            "KPI: расчет SKU",
-            "KPI: расчет маркетплейсов",
-        ):
-            should_skip, message = pipeline.should_skip_pipeline_step(
-                title, args, ozon_downstream_allowed=False
-            )
-            self.assertTrue(should_skip)
-            self.assertIn("partial/incomplete", message)
+        should_skip, message = pipeline.should_skip_pipeline_step(
+            "Ozon: расчет organic sales по SKU", args, ozon_downstream_allowed=False
+        )
+        self.assertTrue(should_skip)
+        self.assertIn("partial/incomplete", message)
+
+        should_skip, message = pipeline.should_skip_pipeline_step(
+            "KPI: расчет SKU", args, ozon_downstream_allowed=False
+        )
+        self.assertFalse(should_skip)
+        self.assertIsNone(message)
+
+        should_skip, message = pipeline.should_skip_pipeline_step(
+            "KPI: расчет маркетплейсов", args, ozon_downstream_allowed=False
+        )
+        self.assertFalse(should_skip)
+        self.assertIsNone(message)
 
     def test_ozon_run_summary_success_marks_complete(self):
         self.assertTrue(

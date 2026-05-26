@@ -143,12 +143,8 @@ def is_recovery_step(title):
     return title.startswith("Ozon Performance: CPC recovery")
 
 
-def is_downstream_ozon_step(title):
-    return title in {
-        "Ozon: расчет organic sales по SKU",
-        "KPI: расчет SKU",
-        "KPI: расчет маркетплейсов",
-    }
+def is_ozon_organic_step(title):
+    return title == "Ozon: расчет organic sales по SKU"
 
 
 def recovery_result_allows_ozon_downstream(recovery_result):
@@ -172,7 +168,7 @@ def should_skip_pipeline_step(title, args, ozon_downstream_allowed):
         return True, f"⏭️ Пропускаем шаг: {title}"
     if args.skip_telegram and title.startswith("Telegram:"):
         return True, f"⏭️ Пропускаем шаг: {title}"
-    if ozon_downstream_allowed is False and is_downstream_ozon_step(title):
+    if ozon_downstream_allowed is False and is_ozon_organic_step(title):
         return True, f"⏭️ Пропускаем шаг: {title} (Ozon Performance still partial/incomplete)"
     return False, None
 

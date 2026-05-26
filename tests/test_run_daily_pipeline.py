@@ -19,6 +19,11 @@ class RunDailyPipelineTests(unittest.TestCase):
             "Ozon Performance: CPC recovery after daily",
         )
 
+    def test_post_recovery_uses_relative_deadline(self):
+        post_recovery_command = dict(pipeline.STEPS)["Ozon Performance: CPC recovery after daily"]
+        self.assertIn("--wait-for-minutes 240", post_recovery_command)
+        self.assertNotIn("--wait-until 09:40", post_recovery_command)
+
     def test_skip_recovery_skips_both_recovery_steps(self):
         args = types.SimpleNamespace(
             skip_recovery=True,

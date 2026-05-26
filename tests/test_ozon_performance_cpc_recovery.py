@@ -30,6 +30,14 @@ class _FakeQuery:
         self._eq[field] = value
         return self
 
+    def gte(self, field, value):
+        self._eq[(field, "gte")] = value
+        return self
+
+    def lte(self, field, value):
+        self._eq[(field, "lte")] = value
+        return self
+
     def in_(self, field, values):
         self._in[field] = set(values)
         return self
@@ -51,7 +59,14 @@ class _FakeQuery:
     def execute(self):
         rows = list(self._rows)
         for field, value in self._eq.items():
-            rows = [row for row in rows if row.get(field) == value]
+            if isinstance(field, tuple):
+                field_name, op = field
+                if op == "gte":
+                    rows = [row for row in rows if str(row.get(field_name) or "") >= str(value)]
+                elif op == "lte":
+                    rows = [row for row in rows if str(row.get(field_name) or "") <= str(value)]
+            else:
+                rows = [row for row in rows if row.get(field) == value]
         for field, values in self._in.items():
             rows = [row for row in rows if row.get(field) in values]
         if self._order_field:
@@ -149,6 +164,143 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_smart_selection_includes_recent_spend_even_if_old_updated_at(self):
+        campaigns = [
+            {
+                "id": "1",
+                "paymentType": "CPC",
+                "state": "CAMPAIGN_STATE_STOPPED",
+                "fromDate": "2026-05-01",
+                "toDate": "2026-05-31",
+                "updatedAt": "2026-05-01T00:00:00Z",
+            }
+        ]
+        db = _FakeDbClient(
+            {
+                "ozon_daily_sku_ad_attribution": [
+                    {
+                        "marketplace_code": "ozon",
+                        "ad_source": "cpc",
+                        "sale_date": "2026-05-24",
+                        "campaign_id": "1",
+                    }
+                ]
+            }
+        )
+        selection = loader.build_daily_cpc_selection(
+            campaigns,
+            "2026-05-25",
+            "2026-05-25",
+            "smart_recent_active",
+            recent_activity_days=7,
+            dormant_probe_size=0,
+            db_client=db,
+        )
+        selected_ids = {
+            str(c.get("id") or c.get("campaignId"))
+            for c in selection["selected_campaigns"]
+        }
+        self.assertIn("1", selected_ids)
+
+    def test_smart_selection_includes_newly_updated_campaign(self):
+        campaigns = [
+            {
+                "id": "2",
+                "paymentType": "CPC",
+                "state": "CAMPAIGN_STATE_STOPPED",
+                "fromDate": "2026-05-20",
+                "toDate": "2026-05-31",
+                "updatedAt": "2026-05-24T00:00:00Z",
+            }
+        ]
+        selection = loader.build_daily_cpc_selection(
+            campaigns,
+            "2026-05-25",
+            "2026-05-25",
+            "smart_recent_active",
+            recent_activity_days=7,
+            dormant_probe_size=0,
+            db_client=_FakeDbClient({"ozon_daily_sku_ad_attribution": []}),
+        )
+        selected_ids = {
+            str(c.get("id") or c.get("campaignId"))
+            for c in selection["selected_campaigns"]
+        }
+        self.assertIn("2", selected_ids)
+
+    def test_smart_selection_excludes_ended_campaign(self):
+        campaigns = [
+            {
+                "id": "3",
+                "paymentType": "CPC",
+                "state": "CAMPAIGN_STATE_STOPPED",
+                "fromDate": "2026-05-01",
+                "toDate": "2026-05-10",
+                "updatedAt": "2026-05-10T00:00:00Z",
+            }
+        ]
+        selection = loader.build_daily_cpc_selection(
+            campaigns,
+            "2026-05-25",
+            "2026-05-25",
+            "smart_recent_active",
+            recent_activity_days=7,
+            dormant_probe_size=0,
+            db_client=_FakeDbClient({"ozon_daily_sku_ad_attribution": []}),
+        )
+        self.assertEqual(selection["selected_campaigns"], [])
+
+    def test_smart_selection_dormant_probe_includes_dormant_running_campaign(self):
+        campaigns = [
+            {
+                "id": "4",
+                "paymentType": "CPC",
+                "state": "CAMPAIGN_STATE_RUNNING",
+                "fromDate": "2026-05-01",
+                "toDate": "2026-05-31",
+                "updatedAt": "2026-05-01T00:00:00Z",
+            }
+        ]
+        selection = loader.build_daily_cpc_selection(
+            campaigns,
+            "2026-05-25",
+            "2026-05-25",
+            "smart_recent_active",
+            recent_activity_days=1,
+            dormant_probe_size=1,
+            db_client=_FakeDbClient({"ozon_daily_sku_ad_attribution": []}),
+        )
+        self.assertEqual(len(selection["dormant_probe_campaigns"]), 0 if selection["smart_recent_active_campaigns"] else 1)
+        self.assertEqual(len(selection["selected_campaigns"]), 1)
+
+    def test_complete_mode_unchanged_vs_smart_reduces_fixture(self):
+        campaigns = [
+            {"id": "10", "paymentType": "CPC", "state": "CAMPAIGN_STATE_RUNNING", "fromDate": "2026-05-01", "toDate": "2026-05-31", "updatedAt": "2026-05-01T00:00:00Z"},
+            {"id": "11", "paymentType": "CPC", "state": "CAMPAIGN_STATE_STOPPED", "fromDate": "2026-05-01", "toDate": "2026-05-31", "updatedAt": "2026-05-01T00:00:00Z"},
+            {"id": "12", "paymentType": "CPC", "state": "CAMPAIGN_STATE_STOPPED", "fromDate": "2026-05-01", "toDate": "2026-05-31", "updatedAt": "2026-05-01T00:00:00Z"},
+        ]
+        db = _FakeDbClient(
+            {
+                "ozon_daily_sku_ad_attribution": [
+                    {"marketplace_code": "ozon", "ad_source": "cpc", "sale_date": "2026-05-24", "campaign_id": "10"}
+                ]
+            }
+        )
+        complete_selection = loader.build_daily_cpc_selection(
+            campaigns, "2026-05-25", "2026-05-25", "complete", db_client=db
+        )
+        smart_selection = loader.build_daily_cpc_selection(
+            campaigns,
+            "2026-05-25",
+            "2026-05-25",
+            "smart_recent_active",
+            recent_activity_days=7,
+            dormant_probe_size=0,
+            db_client=db,
+        )
+        self.assertEqual(len(complete_selection["selected_campaigns"]), 3)
+        self.assertLess(len(smart_selection["selected_campaigns"]), len(complete_selection["selected_campaigns"]))
+
     def test_classify_statistics_json_429_daily_quota_exhausted(self):
         preview = "Превышен дневной лимит запросов (максимум 2000)"
         self.assertEqual(
@@ -229,6 +381,17 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         with mock.patch.object(loader, "utcnow", return_value=loader.datetime(2026, 5, 26, 12, 0, 0, tzinfo=loader.ZoneInfo("UTC"))):
             pruned = loader.prune_statistics_json_usage_events([old_event, fresh_event])
         self.assertEqual(pruned, [fresh_event])
+
+    def test_staged_daily_pending_status_is_pending_backfill_not_success(self):
+        self.assertEqual(
+            loader.determine_pending_cpc_status(
+                "daily-yesterday",
+                staged_pending=True,
+                quota_limited=False,
+                has_pending_batches=True,
+            ),
+            "pending_backfill",
+        )
 
     def test_cpc_backfill_before_window_without_bypass_still_fails(self):
         with mock.patch.object(loader, "local_now", return_value=loader.datetime(2026, 5, 25, 0, 29, 51, tzinfo=loader.ZoneInfo(loader.APP_TIMEZONE))):

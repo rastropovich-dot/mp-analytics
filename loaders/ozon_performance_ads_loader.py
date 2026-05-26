@@ -64,6 +64,9 @@ DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN = int(
 OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE = (
     os.getenv("OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE", "complete") or "complete"
 ).strip().lower()
+DEFAULT_RECENT_ACTIVITY_DAYS = int(os.getenv("OZON_PERFORMANCE_RECENT_ACTIVITY_DAYS", "7"))
+DEFAULT_DORMANT_PROBE_SIZE = int(os.getenv("OZON_PERFORMANCE_DORMANT_PROBE_SIZE", "100"))
+SMART_NEW_CAMPAIGN_LOOKBACK_DAYS = int(os.getenv("OZON_PERFORMANCE_SMART_NEW_CAMPAIGN_LOOKBACK_DAYS", "3"))
 REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
 REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
 CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
@@ -829,13 +832,46 @@ def parse_args():
         help="recent = active or recently updated campaigns in the period; all = all campaigns",
     )
     parser.add_argument(
+        "--campaign-selection",
+        choices=("complete", "smart_recent_active"),
+        help="Daily CPC selection mode for daily-yesterday planning and runs.",
+    )
+    parser.add_argument(
         "--daily-cpc-selection-mode",
-        choices=("complete", "recent"),
+        choices=("complete", "recent", "smart_recent_active"),
         default=OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE,
         help=(
             "Daily D-1 CPC selection mode: complete = all CPC campaigns overlapping target_date; "
-            "recent = only running or updated-in-period campaigns."
+            "smart_recent_active = running/newly-changed/recently-active campaigns plus dormant probe. "
+            "recent is kept as a backward-compatible alias."
         ),
+    )
+    parser.add_argument(
+        "--recent-activity-days",
+        type=int,
+        default=DEFAULT_RECENT_ACTIVITY_DAYS,
+        help="Recent activity lookback window for smart_recent_active campaign selection.",
+    )
+    parser.add_argument(
+        "--dormant-probe-size",
+        type=int,
+        default=DEFAULT_DORMANT_PROBE_SIZE,
+        help="How many dormant active CPC campaign units to include as a deterministic probe in smart_recent_active mode.",
+    )
+    parser.add_argument(
+        "--full-sweep",
+        action="store_true",
+        help="Force full CPC sweep planning even if smart selection is configured.",
+    )
+    parser.add_argument(
+        "--max-daily-cpc-units",
+        type=int,
+        help="Optional staged cap for initial daily-yesterday CPC campaign units before leaving pending tail for post-recovery.",
+    )
+    parser.add_argument(
+        "--allow-staged-cpc-partial",
+        action="store_true",
+        help="Allow intentional staged partial CPC load in daily-yesterday when max-daily-cpc-units is reached.",
     )
     parser.add_argument(
         "--plan-only",
@@ -1065,7 +1101,69 @@ def daily_cpc_priority_key(campaign):
     return (priority, -updated_ts, campaign_id)
 
 
-def build_daily_cpc_selection(campaigns, date_from, date_to, selection_mode):
+def normalize_daily_cpc_selection_mode(selection_mode, full_sweep=False):
+    mode = str(selection_mode or "complete").strip().lower()
+    if full_sweep:
+        return "complete"
+    if mode == "recent":
+        return "smart_recent_active"
+    if mode in {"complete", "smart_recent_active"}:
+        return mode
+    return "complete"
+
+
+def load_recent_cpc_activity_campaign_ids(target_date, recent_activity_days=7, db_client=None):
+    db_client = db_client or supabase
+    end_date = parse_iso_date(target_date)
+    if not end_date:
+        return set()
+    lookback_days = max(1, int(recent_activity_days or 1))
+    start_date = (end_date - timedelta(days=lookback_days - 1)).isoformat()
+    end_date_text = end_date.isoformat()
+
+    try:
+        result = (
+            db_client
+            .table("ozon_daily_sku_ad_attribution")
+            .select("campaign_id")
+            .eq("marketplace_code", "ozon")
+            .eq("ad_source", "cpc")
+            .gte("sale_date", start_date)
+            .lte("sale_date", end_date_text)
+            .execute()
+        )
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось прочитать recent CPC activity из ozon_daily_sku_ad_attribution. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return set()
+
+    campaign_ids = set()
+    for row in result.data or []:
+        campaign_id = str(row.get("campaign_id") or "").strip()
+        if campaign_id:
+            campaign_ids.add(campaign_id)
+    return campaign_ids
+
+
+def dormant_probe_order_key(campaign, target_date):
+    campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "")
+    return payload_hash({"target_date": target_date, "campaign_id": campaign_id})
+
+
+def build_daily_cpc_selection(
+    campaigns,
+    date_from,
+    date_to,
+    selection_mode,
+    *,
+    recent_activity_days=7,
+    dormant_probe_size=100,
+    db_client=None,
+    full_sweep=False,
+):
+    selection_mode = normalize_daily_cpc_selection_mode(selection_mode, full_sweep=full_sweep)
     raw_cpc_campaigns = [
         prepare_cpc_campaign(campaign, date_from, date_to)
         for campaign in campaigns
@@ -1075,10 +1173,56 @@ def build_daily_cpc_selection(campaigns, date_from, date_to, selection_mode):
         campaign for campaign in raw_cpc_campaigns if campaign.get("_overlaps_period")
     ]
     recent_cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, "recent")
+    recent_activity_campaign_ids = load_recent_cpc_activity_campaign_ids(
+        date_to,
+        recent_activity_days=recent_activity_days,
+        db_client=db_client,
+    )
+    smart_selected_campaigns = []
+    dormant_candidates = []
+    newly_changed_count = 0
+    recent_active_count = 0
 
-    if selection_mode == "recent":
-        selected_campaigns = list(recent_cpc_campaigns)
+    if selection_mode == "smart_recent_active":
+        for campaign in sorted(date_overlap_cpc_campaigns, key=daily_cpc_priority_key):
+            campaign_id = str(campaign.get("id") or campaign.get("campaignId") or "")
+            created_recently = campaign_created_in_period(
+                campaign,
+                (parse_iso_date(date_to) - timedelta(days=max(1, SMART_NEW_CAMPAIGN_LOOKBACK_DAYS) - 1)).isoformat() if parse_iso_date(date_to) else date_from,
+                date_to,
+            )
+            updated_recently = campaign_updated_in_period(
+                campaign,
+                (parse_iso_date(date_to) - timedelta(days=max(1, SMART_NEW_CAMPAIGN_LOOKBACK_DAYS) - 1)).isoformat() if parse_iso_date(date_to) else date_from,
+                date_to,
+            )
+            recently_active = campaign_id in recent_activity_campaign_ids
+            include = (
+                bool(campaign.get("_running"))
+                or created_recently
+                or updated_recently
+                or recently_active
+            )
+            if include:
+                enriched = dict(campaign)
+                enriched["_recent_db_activity"] = recently_active
+                enriched["_newly_changed"] = bool(created_recently or updated_recently)
+                smart_selected_campaigns.append(enriched)
+                if created_recently or updated_recently:
+                    newly_changed_count += 1
+                if recently_active:
+                    recent_active_count += 1
+            elif bool(campaign.get("_running")) or campaign_intersects_period(campaign, date_from, date_to):
+                dormant_candidates.append(campaign)
+
+        dormant_candidates = sorted(
+            dormant_candidates,
+            key=lambda campaign: dormant_probe_order_key(campaign, date_to),
+        )
+        dormant_probe_campaigns = dormant_candidates[: max(0, int(dormant_probe_size or 0))]
+        selected_campaigns = list(smart_selected_campaigns) + list(dormant_probe_campaigns)
     else:
+        dormant_probe_campaigns = []
         selected_campaigns = sorted(date_overlap_cpc_campaigns, key=daily_cpc_priority_key)
 
     recent_ids = {
@@ -1097,8 +1241,15 @@ def build_daily_cpc_selection(campaigns, date_from, date_to, selection_mode):
         "raw_cpc_campaigns": raw_cpc_campaigns,
         "date_overlap_cpc_campaigns": date_overlap_cpc_campaigns,
         "recent_cpc_campaigns": recent_cpc_campaigns,
+        "recent_activity_campaign_ids": sorted(recent_activity_campaign_ids),
+        "smart_recent_active_campaigns": smart_selected_campaigns if selection_mode == "smart_recent_active" else [],
+        "dormant_probe_campaigns": dormant_probe_campaigns if selection_mode == "smart_recent_active" else [],
         "selected_campaigns": selected_campaigns,
         "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
+        "newly_changed_count": newly_changed_count,
+        "recent_active_count": recent_active_count,
+        "excluded_dormant_count": max(0, len(date_overlap_cpc_campaigns) - len(selected_campaigns)),
+        "selection_mode": selection_mode,
     }
 
 
@@ -1267,6 +1418,18 @@ def build_limited_batch_indexes(cpc_batches, pending_batch_indexes, max_campaign
         consumed_units += batch_units
 
     return selected, consumed_units
+
+
+def determine_pending_cpc_status(mode, *, staged_pending=False, quota_limited=False, has_pending_batches=False):
+    if not has_pending_batches:
+        return "success"
+    if mode == "daily-yesterday" and staged_pending:
+        return "pending_backfill"
+    if mode == "daily-yesterday" and quota_limited:
+        return "pending_quota"
+    if mode in {"daily-yesterday", "cpc-backfill"}:
+        return "pending_quota"
+    return "pending_backfill"
 
 
 def can_resume_pending_progress_without_daily_status(progress):
@@ -5743,7 +5906,10 @@ def run():
         f"{len(period_campaigns)}"
     )
 
-    daily_selection_mode = (args.daily_cpc_selection_mode or "complete").strip().lower()
+    daily_selection_mode = normalize_daily_cpc_selection_mode(
+        args.campaign_selection or args.daily_cpc_selection_mode or "complete",
+        full_sweep=bool(args.full_sweep),
+    )
     daily_selection = None
     raw_cpc_count = None
     date_overlap_cpc_count = None
@@ -5759,6 +5925,10 @@ def run():
             date_from,
             date_to,
             daily_selection_mode,
+            recent_activity_days=int(args.recent_activity_days or DEFAULT_RECENT_ACTIVITY_DAYS),
+            dormant_probe_size=int(args.dormant_probe_size or 0),
+            db_client=supabase,
+            full_sweep=bool(args.full_sweep),
         )
         raw_cpc_count = len(daily_selection["raw_cpc_campaigns"])
         date_overlap_cpc_count = len(daily_selection["date_overlap_cpc_campaigns"])
@@ -5771,9 +5941,10 @@ def run():
             f"date_overlap_cpc={date_overlap_cpc_count} recent_cpc={recent_cpc_count} "
             f"selected_cpc={len(cpc_campaigns)}"
         )
-        if daily_selection_mode == "recent":
+        if daily_selection_mode == "smart_recent_active":
             print(
-                "WARNING: recent mode may miss D-1 spend; use complete mode for management decisions."
+                "WARNING: smart_recent_active may miss dormant D-1 spend; "
+                "probe reduces risk, but complete/full_sweep remains the safety mode."
             )
     elif args.mode == "cpc-backfill":
         daily_selection_mode = "complete"
@@ -5932,6 +6103,7 @@ def run():
         "date_to": date_to,
         "campaign_scope": args.campaign_scope,
         "daily_cpc_selection_mode": daily_selection_mode if args.mode == "daily-yesterday" else None,
+        "campaign_selection_mode": daily_selection_mode if args.mode == "daily-yesterday" else ("complete_resume" if args.mode == "cpc-backfill" else None),
         "raw_campaign_count": len(campaigns),
         "raw_cpc_count": raw_cpc_count if raw_cpc_count is not None else len(
             [campaign for campaign in campaigns if is_cpc_campaign(campaign)]
@@ -5939,17 +6111,72 @@ def run():
         "filtered_recent_count": recent_cpc_count if recent_cpc_count is not None else len(current_cpc_campaign_ids),
         "date_overlap_cpc_count": date_overlap_cpc_count if date_overlap_cpc_count is not None else len(current_cpc_campaign_ids),
         "selected_cpc_count": len(ordered_campaign_ids),
+        "complete_cpc_candidate_count": date_overlap_cpc_count if date_overlap_cpc_count is not None else len(current_cpc_campaign_ids),
+        "smart_recent_active_candidate_count": (
+            len(daily_selection.get("selected_campaigns") or [])
+            if daily_selection_mode == "smart_recent_active" and daily_selection
+            else None
+        ),
+        "recent_active_count": (
+            int(daily_selection.get("recent_active_count") or 0)
+            if daily_selection
+            else None
+        ),
+        "newly_changed_count": (
+            int(daily_selection.get("newly_changed_count") or 0)
+            if daily_selection
+            else None
+        ),
+        "dormant_probe_count": (
+            len(daily_selection.get("dormant_probe_campaigns") or [])
+            if daily_selection
+            else None
+        ),
+        "excluded_dormant_count": (
+            int(daily_selection.get("excluded_dormant_count") or 0)
+            if daily_selection
+            else None
+        ),
         "cpc_campaign_count": len(ordered_campaign_ids),
         "excluded_by_recent_filter_count": excluded_by_recent_filter_count,
         "excluded_by_quota_count": excluded_by_quota_count,
         "batch_size": batch_size,
         "total_batches": len(cpc_batches),
         "campaign_units": len(ordered_campaign_ids),
+        "estimated_statistics_json_submits": len(cpc_batches),
+        "expected_reduction_vs_complete": max(
+            0,
+            (date_overlap_cpc_count if date_overlap_cpc_count is not None else len(current_cpc_campaign_ids))
+            - len(ordered_campaign_ids),
+        ),
         "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
         "reserve": STATS_DAILY_CAMPAIGN_RESERVE,
         "usable_limit": usable_daily_limit,
         "would_fit_daily_limit": len(ordered_campaign_ids) <= usable_daily_limit,
         "head_campaign_ids": ordered_campaign_ids[:10],
+        "sample_included_campaigns": [
+            {
+                "campaign_id": str(campaign.get("id") or campaign.get("campaignId") or ""),
+                "markers": list(campaign.get("_cpc_activity_markers") or []),
+                "recent_db_activity": bool(campaign.get("_recent_db_activity")),
+            }
+            for campaign in list(daily_selection.get("selected_campaigns") or [])[:5]
+        ] if daily_selection else [],
+        "sample_excluded_campaigns": [
+            {
+                "campaign_id": str(campaign.get("id") or campaign.get("campaignId") or ""),
+                "markers": list(campaign.get("_cpc_activity_markers") or []),
+            }
+            for campaign in [
+                campaign
+                for campaign in list(daily_selection.get("date_overlap_cpc_campaigns") or [])
+                if str(campaign.get("id") or campaign.get("campaignId") or "")
+                not in {
+                    str(item.get("id") or item.get("campaignId") or "")
+                    for item in list(daily_selection.get("selected_campaigns") or [])
+                }
+            ][:5]
+        ] if daily_selection else [],
         "ordering_source": ordering_source,
         "campaign_list_hash": compute_campaign_list_hash(ordered_campaign_ids),
         "saved_campaign_count": saved_campaign_count,
@@ -6000,6 +6227,11 @@ def run():
             cpc_batches,
             (existing_backfill_progress or {}).get("pending_batch_indexes") or [],
         ) if existing_backfill_progress else len(ordered_campaign_ids),
+        "warnings": (
+            ["smart_recent_active may miss dormant spend despite probe"]
+            if daily_selection_mode == "smart_recent_active"
+            else []
+        ),
         "create_new_progress_key": not bool(existing_backfill_progress),
         "warning": ordering_warning,
     }
@@ -6021,6 +6253,11 @@ def run():
             usable_daily_limit,
         ),
     )
+    if args.mode == "daily-yesterday" and args.max_daily_cpc_units:
+        daily_campaign_budget = min(
+            daily_campaign_budget,
+            max(0, int(args.max_daily_cpc_units or 0)),
+        )
     attempted_units_before_run = int(budget_diagnostics.get("daily_budget_used_today") or 0)
     remaining_campaign_budget = max(0, daily_campaign_budget - attempted_units_before_run)
     max_cpc_batches = args.max_cpc_batches
@@ -6086,6 +6323,10 @@ def run():
         "attempted_campaign_units_before_run": attempted_units_before_run,
         "remaining_campaign_budget": remaining_campaign_budget,
         "max_stats_campaigns_per_run": int(args.max_stats_campaigns or DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN),
+        "max_daily_cpc_units": int(args.max_daily_cpc_units or 0),
+        "allow_staged_cpc_partial": bool(args.allow_staged_cpc_partial),
+        "budget_source": budget_diagnostics.get("budget_source"),
+        "budget_confidence": budget_diagnostics.get("budget_confidence"),
         "state_backend": client.state_backend,
         "cpc_progress_key": progress_key,
         "cpc": empty_stage_status("not_started"),
@@ -6162,6 +6403,12 @@ def run():
         run_summary["cpc_campaign_units_planned"] = planned_campaign_units
         run_summary["cpc_pending_campaigns_before_run"] = max(0, len(ordered_campaign_ids) - planned_campaign_units)
         run_summary["quota_limited"] = planned_campaign_units < len(ordered_campaign_ids)
+        run_summary["staged_pending"] = (
+            args.mode == "daily-yesterday"
+            and bool(args.allow_staged_cpc_partial)
+            and bool(args.max_daily_cpc_units)
+            and planned_campaign_units < len(ordered_campaign_ids)
+        )
 
         print(
             "Ozon Performance CPC batch plan: "
@@ -6338,14 +6585,12 @@ def run():
 
         if run_summary["cpc"]["status"] == "not_started":
             cpc_progress_snapshot = client.get_cpc_progress(progress_key)
-            cpc_status = "success"
-            if target_batch_indexes == [] and cpc_progress_snapshot.get("pending_batches"):
-                cpc_status = "pending_quota" if args.mode in {"daily-yesterday", "cpc-backfill"} else "pending_backfill"
-            elif cpc_progress_snapshot.get("pending_batches"):
-                if args.mode == "daily-yesterday" and run_summary.get("quota_limited"):
-                    cpc_status = "pending_quota"
-                else:
-                    cpc_status = "pending_backfill"
+            cpc_status = determine_pending_cpc_status(
+                args.mode,
+                staged_pending=bool(run_summary.get("staged_pending")),
+                quota_limited=bool(run_summary.get("quota_limited")),
+                has_pending_batches=bool(cpc_progress_snapshot.get("pending_batches")),
+            )
             completed_campaign_units = sum_campaign_units_for_batches(
                 cpc_batches,
                 cpc_progress_snapshot.get("completed_batch_indexes"),

@@ -29,6 +29,7 @@ CONTROLLED_FINAL_STATUSES = {
     "pending_429",
     "pending_quota",
     "skipped_daily_quota_exhausted",
+    "missing_progress_reconstruction_required",
     "runtime_state_unavailable",
 }
 
@@ -375,12 +376,34 @@ def build_candidate_plan(db_client, client, status_row, budget_guard, max_batche
         target_date,
     )
     if not progress:
+        completed_total = int(float(status_row.get("cpc_campaign_units_completed_total") or 0))
+        pending_total = int(float(status_row.get("cpc_campaign_units_pending_total") or 0))
+        status = "skipped_no_pending_progress"
+        if completed_total > 0 or pending_total > 0:
+            status = "missing_progress_reconstruction_required"
         return {
             "target_date": target_date,
-            "status": "skipped_no_pending_progress",
+            "status": status,
             "source_progress_kind": None,
             "progress_key": None,
             "pending_batch_indexes": [],
+            "pending_campaign_units": 0,
+            "pending_campaign_ids": [],
+            "planned_batch_indexes": [],
+            "planned_recovery_units": 0,
+            "will_run": False,
+            "cpo_status": status_row.get("cpo_status"),
+        }
+
+    status_completed_total = int(float(status_row.get("cpc_campaign_units_completed_total") or 0))
+    progress_pending = list(progress.get("pending_batch_indexes") or [])
+    if status_completed_total > 0 and progress_pending and int(progress_pending[0]) == 0:
+        return {
+            "target_date": target_date,
+            "status": "missing_progress_reconstruction_required",
+            "source_progress_kind": source_progress_kind,
+            "progress_key": progress_key,
+            "pending_batch_indexes": progress_pending,
             "pending_campaign_units": 0,
             "pending_campaign_ids": [],
             "planned_batch_indexes": [],

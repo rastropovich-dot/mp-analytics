@@ -517,6 +517,37 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(candidate["progress_key"], "cpc_progress:newer")
         self.assertEqual(candidate["source_progress_kind"], "daily_yesterday_pending_disambiguated")
 
+    def test_missing_progress_requires_reconstruction_when_status_has_completed_units(self):
+        client = _FakeClient()
+        db = _FakeDbClient({})
+        status_row = _status_row(pending_units=285)
+        status_row["cpc_campaign_units_completed_total"] = 1390
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=(None, None, None)):
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["status"], "missing_progress_reconstruction_required")
+        self.assertFalse(candidate["will_run"])
+
+    def test_progress_reset_to_batch_zero_requires_reconstruction(self):
+        client = _FakeClient()
+        db = _FakeDbClient({})
+        status_row = _status_row(pending_units=285)
+        status_row["cpc_campaign_units_completed_total"] = 1390
+        progress = (
+            "cpc_progress:reset",
+            {
+                "ordered_campaign_ids": [f"{9834000 + i}" for i in range(1323)],
+                "batch_size": 10,
+                "pending_batch_indexes": [0, 1, 2],
+            },
+            "existing_backfill_progress",
+        )
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=progress):
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["status"], "missing_progress_reconstruction_required")
+        self.assertFalse(candidate["will_run"])
+
     def test_runtime_state_unavailable_is_controlled_worker_result(self):
         plan = {
             "will_run": True,

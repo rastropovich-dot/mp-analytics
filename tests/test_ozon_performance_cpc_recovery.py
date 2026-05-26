@@ -104,6 +104,13 @@ class _FakeClient:
     def get_cpc_progress(self, key):
         return self._progress_map.get(key)
 
+    def scoped_state_key(self, key):
+        return f"{key}:{self.account_signature}"
+
+    def get_statistics_json_usage_events(self):
+        ledger = (self.state.get("statistics_json_usage", {}) or {}).get(self.scoped_state_key("statistics_json_usage")) or {}
+        return list(ledger.get("events") or [])
+
     def ensure_token(self):
         return "token"
 
@@ -142,6 +149,87 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_classify_statistics_json_429_daily_quota_exhausted(self):
+        preview = "Превышен дневной лимит запросов (максимум 2000)"
+        self.assertEqual(
+            loader.classify_statistics_json_429_preview(preview),
+            "daily_quota_exhausted",
+        )
+
+    def test_classify_statistics_json_429_retryable_throttle(self):
+        preview = "Too many requests, please retry later"
+        self.assertEqual(
+            loader.classify_statistics_json_429_preview(preview),
+            "retryable_throttle",
+        )
+
+    def test_budget_uses_runtime_usage_ledger_when_available(self):
+        client = _FakeClient()
+        client.state["statistics_json_usage"] = {
+            client.scoped_state_key("statistics_json_usage"): {
+                "events": [
+                    {
+                        "event_at": "2026-05-26T10:00:00+00:00",
+                        "load_date": "2026-05-26",
+                        "account_signature": client.account_signature,
+                        "campaign_units": 10,
+                        "response_kind": "success",
+                    },
+                    {
+                        "event_at": "2026-05-26T11:00:00+00:00",
+                        "load_date": "2026-05-26",
+                        "account_signature": client.account_signature,
+                        "campaign_units": 10,
+                        "response_kind": "daily_quota_exhausted",
+                    },
+                ]
+            }
+        }
+        diagnostics = loader.get_statistics_json_budget_diagnostics(
+            "2026-05-26",
+            client.account_signature,
+            client=client,
+        )
+        self.assertEqual(diagnostics["daily_budget_used_today"], 20)
+        self.assertEqual(diagnostics["budget_source"], "runtime_usage_ledger")
+        self.assertEqual(diagnostics["budget_confidence"], "high")
+
+    def test_budget_confidence_low_when_ledger_unavailable(self):
+        fake_supabase = _FakeDbClient(
+            {
+                loader.DAILY_LOAD_STATUS_TABLE: [
+                    {
+                        "cpc_campaign_units_attempted": 30,
+                        "load_date": "2026-05-26",
+                        "account_signature": "acct_d743d49318d3",
+                        "marketplace_code": "ozon",
+                    }
+                ]
+            }
+        )
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            diagnostics = loader.get_statistics_json_budget_diagnostics(
+                "2026-05-26",
+                "acct_d743d49318d3",
+                client=None,
+            )
+        self.assertEqual(diagnostics["daily_budget_used_today"], 30)
+        self.assertEqual(diagnostics["budget_source"], "status_snapshot")
+        self.assertEqual(diagnostics["budget_confidence"], "low")
+
+    def test_statistics_json_usage_ledger_is_ttl_pruned(self):
+        old_event = {
+            "event_at": "2026-05-01T00:00:00+00:00",
+            "campaign_units": 10,
+        }
+        fresh_event = {
+            "event_at": "2026-05-26T10:00:00+00:00",
+            "campaign_units": 10,
+        }
+        with mock.patch.object(loader, "utcnow", return_value=loader.datetime(2026, 5, 26, 12, 0, 0, tzinfo=loader.ZoneInfo("UTC"))):
+            pruned = loader.prune_statistics_json_usage_events([old_event, fresh_event])
+        self.assertEqual(pruned, [fresh_event])
+
     def test_cpc_backfill_before_window_without_bypass_still_fails(self):
         with mock.patch.object(loader, "local_now", return_value=loader.datetime(2026, 5, 25, 0, 29, 51, tzinfo=loader.ZoneInfo(loader.APP_TIMEZONE))):
             with self.assertRaises(RuntimeError):
@@ -438,7 +526,9 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             plan_only=False,
             dry_run=True,
             write=False,
+            write_runtime_only=False,
             no_write=True,
+            inter_batch_pause=2,
             debug_sample=False,
             campaign_id=[],
             existing_report_uuid="",
@@ -623,6 +713,19 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         fetcher.assert_called_once()
         save_rows_mock.assert_not_called()
         save_attr_mock.assert_not_called()
+
+    def test_rate_limit_pending_carries_daily_quota_kind(self):
+        exc = loader.RateLimitPending(
+            endpoint="/api/client/statistics/json",
+            retry_after_seconds=355,
+            cooldown_until="2026-05-26T14:05:48+00:00",
+            attempt=1,
+            response_kind="daily_quota_exhausted",
+            next_attempt_at="2026-05-27T00:05:00+00:00",
+            raw_error_preview="Превышен дневной лимит запросов (максимум 2000)",
+        )
+        self.assertEqual(exc.response_kind, "daily_quota_exhausted")
+        self.assertEqual(exc.next_attempt_at, "2026-05-27T00:05:00+00:00")
 
     def test_stale_progress_is_ignored_only_for_target_date(self):
         client = _FakeClient(

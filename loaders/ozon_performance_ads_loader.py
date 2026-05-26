@@ -155,6 +155,7 @@ PERSISTENT_STATE_SECTIONS = (
     "cooldowns",
     "batch_recommendations",
     "cpc_progress",
+    "statistics_json_usage",
 )
 VOLATILE_STATE_SECTIONS = (
     "runs",
@@ -329,16 +330,30 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 class RateLimitPending(RuntimeError):
-    def __init__(self, endpoint, retry_after_seconds, cooldown_until, attempt, message=None):
+    def __init__(
+        self,
+        endpoint,
+        retry_after_seconds,
+        cooldown_until,
+        attempt,
+        message=None,
+        response_kind="retryable_429",
+        next_attempt_at=None,
+        raw_error_preview=None,
+    ):
         self.endpoint = endpoint
         self.retry_after_seconds = retry_after_seconds
         self.cooldown_until = cooldown_until
         self.attempt = attempt
+        self.response_kind = response_kind
+        self.next_attempt_at = next_attempt_at
+        self.raw_error_preview = raw_error_preview
         super().__init__(
             message
             or (
                 f"429 pending for {endpoint}: retry_after={retry_after_seconds}, "
-                f"cooldown_until={cooldown_until}, attempt={attempt}"
+                f"cooldown_until={cooldown_until}, attempt={attempt}, "
+                f"response_kind={response_kind}"
             )
         )
 
@@ -382,6 +397,7 @@ def default_state():
         "cooldowns": {},
         "batch_recommendations": {},
         "cpc_progress": {},
+        "statistics_json_usage": {},
         "runs": {},
         "request_history": [],
     }
@@ -482,6 +498,27 @@ def prune_request_history(history):
         if not isinstance(item, dict):
             continue
         timestamp = from_iso(item.get("timestamp"))
+        if timestamp and timestamp < cutoff:
+            continue
+        pruned.append(item)
+
+    if len(pruned) > REQUEST_AUDIT_LIMIT:
+        pruned = pruned[-REQUEST_AUDIT_LIMIT:]
+
+    return pruned
+
+
+def prune_statistics_json_usage_events(events):
+    if not isinstance(events, list):
+        return []
+
+    cutoff = utcnow() - timedelta(days=7)
+    pruned = []
+
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        timestamp = from_iso(item.get("event_at") or item.get("timestamp"))
         if timestamp and timestamp < cutoff:
             continue
         pruned.append(item)
@@ -651,6 +688,24 @@ def response_body_preview(response, limit=1000):
     return sanitize_text(text[:limit])
 
 
+def classify_statistics_json_429_preview(preview):
+    text = str(preview or "").lower()
+    markers = (
+        "превышен дневной лимит",
+        "максимум 2000",
+        "daily limit",
+    )
+    if any(marker in text for marker in markers):
+        return "daily_quota_exhausted"
+    return "retryable_throttle"
+
+
+def estimate_statistics_json_quota_reset(now=None):
+    now = (now or utcnow()).astimezone(ZoneInfo("UTC"))
+    next_day = now.date() + timedelta(days=1)
+    return datetime.combine(next_day, datetime.min.time(), tzinfo=ZoneInfo("UTC")) + timedelta(minutes=5)
+
+
 def log_http_response(endpoint, attempt, response, extra=None):
     payload = {
         "endpoint": endpoint,
@@ -670,6 +725,7 @@ def send_telegram_partial_ads_alert(summary):
         return
 
     cpc = summary.get("cpc") or {}
+    reason = "daily_quota_exhausted" if cpc.get("status") == "pending_quota" else "429"
     message = (
         "⚠️ Ozon Performance partial_ads\n"
         f"Период: {summary.get('date_from')}..{summary.get('date_to')}\n"
@@ -682,9 +738,10 @@ def send_telegram_partial_ads_alert(summary):
         f"this run completed: {summary.get('cpc_campaign_units_completed_this_run')}\n"
         f"this run failed_429: {summary.get('cpc_campaign_units_failed_429_this_run')}\n"
         f"stop batch: {cpc.get('failed_batch_index')}\n"
-        f"reason: 429\n"
+        f"reason: {reason}\n"
         f"Retry-After: {cpc.get('retry_after_seconds')}\n"
         f"cooldown_until: {cpc.get('cooldown_until')}\n"
+        f"next_attempt_at: {cpc.get('next_attempt_at')}\n"
         f"CPO status: {(summary.get('cpo') or {}).get('status')}"
     )
 
@@ -749,6 +806,12 @@ def parse_args():
         "--max-cpc-batches",
         type=int,
         help="Optional hard cap on CPC batches for one run. Mainly useful for cpc-backfill/manual probes.",
+    )
+    parser.add_argument(
+        "--inter-batch-pause",
+        type=int,
+        default=2,
+        help="Seconds to sleep between successful CPC statistics/json batches.",
     )
     parser.add_argument(
         "--max-stats-campaigns",
@@ -2356,6 +2419,32 @@ class OzonPerformanceClient:
         self.state["request_history"] = prune_request_history(history)
         self.save_state()
 
+    def statistics_json_usage_key(self):
+        return self.scoped_state_key("statistics_json_usage")
+
+    def get_statistics_json_usage_events(self):
+        ledger = (self.state.get("statistics_json_usage", {}) or {}).get(self.statistics_json_usage_key()) or {}
+        events = prune_statistics_json_usage_events(ledger.get("events") or [])
+        if events != list(ledger.get("events") or []):
+            self.state.setdefault("statistics_json_usage", {})[self.statistics_json_usage_key()] = {
+                "events": events,
+                "updated_at": to_iso(utcnow()),
+            }
+            self.save_state()
+        return events
+
+    def record_statistics_json_usage_event(self, event):
+        ledger_key = self.statistics_json_usage_key()
+        ledger = (self.state.get("statistics_json_usage", {}) or {}).get(ledger_key) or {}
+        events = list(ledger.get("events") or [])
+        events.append(sanitize_value(event))
+        events = prune_statistics_json_usage_events(events)
+        self.state.setdefault("statistics_json_usage", {})[ledger_key] = {
+            "events": events,
+            "updated_at": to_iso(utcnow()),
+        }
+        self.save_state()
+
     def ensure_token(self):
         if self.token and time.time() < self.token_expires_at - 60:
             return self.token
@@ -2387,6 +2476,7 @@ class OzonPerformanceClient:
 
     def request(self, method, path, retry_profile="default", cooldown_key=None, **kwargs):
         endpoint = path
+        usage_event = kwargs.pop("usage_event", None)
         if str(path).startswith("http://") or str(path).startswith("https://"):
             url = str(path)
         else:
@@ -2407,6 +2497,8 @@ class OzonPerformanceClient:
                     retry_after_seconds=retry_after_seconds,
                     cooldown_until=to_iso(cooldown_until),
                     attempt=0,
+                    response_kind="retryable_throttle",
+                    next_attempt_at=to_iso(cooldown_until),
                     message=(
                         f"Circuit breaker active for {endpoint}: "
                         f"retry_after={retry_after_seconds}, cooldown_until={to_iso(cooldown_until)}"
@@ -2438,10 +2530,24 @@ class OzonPerformanceClient:
                         attempt,
                     )
 
-                cooldown_until = utcnow() + timedelta(
-                    seconds=max(retry_after_seconds, int(profile.get("cooldown_seconds") or 0))
-                )
-                cooldown_until_iso = to_iso(cooldown_until)
+                raw_preview = response_body_preview(response)
+                response_kind = "retryable_throttle"
+                next_attempt_at = None
+                quota_reset_warning = None
+                if endpoint == "/api/client/statistics/json" and str(method).upper() == "POST":
+                    response_kind = classify_statistics_json_429_preview(raw_preview)
+                if response_kind == "daily_quota_exhausted":
+                    quota_reset_at = estimate_statistics_json_quota_reset()
+                    next_attempt_at = to_iso(quota_reset_at)
+                    cooldown_until = quota_reset_at
+                    cooldown_until_iso = next_attempt_at
+                    quota_reset_warning = "assumed_utc_statistics_json_quota_reset"
+                else:
+                    cooldown_until = utcnow() + timedelta(
+                        seconds=max(retry_after_seconds, int(profile.get("cooldown_seconds") or 0))
+                    )
+                    cooldown_until_iso = to_iso(cooldown_until)
+                    next_attempt_at = cooldown_until_iso
                 log_http_response(
                     endpoint,
                     attempt,
@@ -2450,6 +2556,9 @@ class OzonPerformanceClient:
                         "retry_after": retry_after_header,
                         "retry_after_seconds": retry_after_seconds,
                         "cooldown_until": cooldown_until_iso,
+                        "next_attempt_at": next_attempt_at,
+                        "response_kind": response_kind,
+                        "quota_reset_warning": quota_reset_warning,
                         "retry_profile": retry_profile,
                     },
                 )
@@ -2462,8 +2571,31 @@ class OzonPerformanceClient:
                         "retry_profile": retry_profile,
                         "retry_after_seconds": retry_after_seconds,
                         "cooldown_until": cooldown_until_iso,
+                        "next_attempt_at": next_attempt_at,
+                        "response_kind": response_kind,
+                        "raw_error_preview": raw_preview[:280],
                     },
                 )
+                if endpoint == "/api/client/statistics/json" and str(method).upper() == "POST":
+                    usage_payload = dict(usage_event or {})
+                    usage_payload.update(
+                        {
+                            "event_at": to_iso(utcnow()),
+                            "load_date": usage_payload.get("load_date") or today_local().isoformat(),
+                            "account_signature": self.account_signature,
+                            "http_status": 429,
+                            "response_kind": (
+                                "daily_quota_exhausted"
+                                if response_kind == "daily_quota_exhausted"
+                                else "retryable_429"
+                            ),
+                            "retry_after_seconds": retry_after_seconds,
+                            "raw_error_preview": raw_preview[:280],
+                            "next_attempt_at": next_attempt_at,
+                            "campaign_units": int(usage_payload.get("campaign_units") or 0),
+                        }
+                    )
+                    self.record_statistics_json_usage_event(usage_payload)
 
                 if cooldown_key:
                     self.set_cooldown(cooldown_key, cooldown_until_iso)
@@ -2474,6 +2606,9 @@ class OzonPerformanceClient:
                         retry_after_seconds=retry_after_seconds,
                         cooldown_until=cooldown_until_iso,
                         attempt=attempt,
+                        response_kind=response_kind,
+                        next_attempt_at=next_attempt_at,
+                        raw_error_preview=raw_preview[:280],
                     )
 
                 if attempt >= int(profile["max_attempts"]):
@@ -2482,6 +2617,9 @@ class OzonPerformanceClient:
                         retry_after_seconds=retry_after_seconds,
                         cooldown_until=cooldown_until_iso,
                         attempt=attempt,
+                        response_kind=response_kind,
+                        next_attempt_at=next_attempt_at,
+                        raw_error_preview=raw_preview[:280],
                     )
 
                 print(
@@ -2502,6 +2640,22 @@ class OzonPerformanceClient:
                     "retry_profile": retry_profile,
                 },
             )
+            if endpoint == "/api/client/statistics/json" and str(method).upper() == "POST":
+                usage_payload = dict(usage_event or {})
+                usage_payload.update(
+                    {
+                        "event_at": to_iso(utcnow()),
+                        "load_date": usage_payload.get("load_date") or today_local().isoformat(),
+                        "account_signature": self.account_signature,
+                        "http_status": int(response.status_code),
+                        "response_kind": "success",
+                        "retry_after_seconds": None,
+                        "raw_error_preview": None,
+                        "next_attempt_at": None,
+                        "campaign_units": int(usage_payload.get("campaign_units") or 0),
+                    }
+                )
+                self.record_statistics_json_usage_event(usage_payload)
             response.raise_for_status()
             return response
 
@@ -2531,7 +2685,7 @@ class OzonPerformanceClient:
 
         return campaigns
 
-    def request_statistics(self, campaign_ids, date_from, date_to, group_by, force_new=False):
+    def request_statistics(self, campaign_ids, date_from, date_to, group_by, force_new=False, usage_context=None):
         payload = {
             "campaigns": [str(campaign_id) for campaign_id in campaign_ids],
             "dateFrom": date_from,
@@ -2554,6 +2708,14 @@ class OzonPerformanceClient:
             cooldown_key=self.scoped_state_key("statistics_json"),
             json=payload,
             headers={"Content-Type": "application/json"},
+            usage_event={
+                "target_date": usage_context.get("target_date") if usage_context else date_to,
+                "load_date": usage_context.get("load_date") if usage_context else today_local().isoformat(),
+                "mode": usage_context.get("mode") if usage_context else None,
+                "batch_index": usage_context.get("batch_index") if usage_context else None,
+                "campaign_units": len(payload["campaigns"]),
+                "campaign_ids_hash": payload_hash(payload["campaigns"]),
+            },
         )
         data = response.json()
         uuid = data.get("UUID") or data.get("uuid")
@@ -2733,6 +2895,7 @@ class OzonPerformanceClient:
         group_by,
         allow_recreate=True,
         return_meta=False,
+        usage_context=None,
     ):
         endpoint = "/api/client/statistics/json"
         last_exc = None
@@ -2744,6 +2907,7 @@ class OzonPerformanceClient:
                 date_to,
                 group_by,
                 force_new=(attempt == 2),
+                usage_context=usage_context,
             )
             status = self.wait_statistics(uuid, poll_profile="statistics_json")
 
@@ -5004,7 +5168,46 @@ def save_ad_attribution_rows(rows):
     )
 
 
-def read_attempted_campaign_units_for_load_date(load_date, account_signature):
+def summarize_statistics_json_usage_budget_from_events(events, load_date, account_signature):
+    total = 0
+    usable_events = []
+    for event in events or []:
+        if str(event.get("account_signature") or "") != str(account_signature or ""):
+            continue
+        if str(event.get("load_date") or "") != str(load_date or ""):
+            continue
+        response_kind = str(event.get("response_kind") or "")
+        if response_kind not in {"success", "retryable_429", "daily_quota_exhausted", "error"}:
+            continue
+        units = int(float(event.get("campaign_units") or 0))
+        if units <= 0:
+            continue
+        total += units
+        usable_events.append(event)
+    return {
+        "daily_budget_used_today": total,
+        "budget_source": "runtime_usage_ledger" if usable_events else "status_snapshot",
+        "budget_confidence": "high" if usable_events else "low",
+        "usage_event_count": len(usable_events),
+    }
+
+
+def get_statistics_json_budget_diagnostics(load_date, account_signature, client=None):
+    events = []
+    if client is not None:
+        try:
+            events = client.get_statistics_json_usage_events()
+        except Exception as exc:
+            print(
+                "WARNING: Не удалось прочитать statistics/json runtime usage ledger. "
+                f"Ошибка: {sanitize_text(exc)}"
+            )
+            events = []
+
+    usage_summary = summarize_statistics_json_usage_budget_from_events(events, load_date, account_signature)
+    if usage_summary["budget_confidence"] == "high":
+        return usage_summary
+
     try:
         result = (
             supabase
@@ -5020,12 +5223,32 @@ def read_attempted_campaign_units_for_load_date(load_date, account_signature):
             "WARNING: Не удалось прочитать ozon_performance_daily_load_status для quota budget. "
             f"Ошибка: {sanitize_text(exc)}"
         )
-        return 0
+        return {
+            "daily_budget_used_today": 0,
+            "budget_source": "status_snapshot",
+            "budget_confidence": "low",
+            "usage_event_count": 0,
+        }
 
     total = 0
     for row in result.data or []:
         total += int(float(row.get("cpc_campaign_units_attempted") or 0))
-    return total
+    return {
+        "daily_budget_used_today": total,
+        "budget_source": "status_snapshot",
+        "budget_confidence": "low",
+        "usage_event_count": 0,
+    }
+
+
+def read_attempted_campaign_units_for_load_date(load_date, account_signature, client=None):
+    return int(
+        get_statistics_json_budget_diagnostics(
+            load_date,
+            account_signature,
+            client=client,
+        ).get("daily_budget_used_today") or 0
+    )
 
 
 def get_daily_load_status(load_date, target_date, account_signature):
@@ -5182,6 +5405,12 @@ def run():
                     args.group_by,
                     allow_recreate=False,
                     return_meta=True,
+                    usage_context={
+                        "target_date": target_date,
+                        "load_date": today_local().isoformat(),
+                        "mode": "statistics-json-probe",
+                        "batch_index": 0,
+                    },
                 )
             except RateLimitPending as exc:
                 print("Ozon Performance statistics/json probe result:")
@@ -5780,6 +6009,11 @@ def run():
     if args.plan_only:
         return
 
+    budget_diagnostics = get_statistics_json_budget_diagnostics(
+        load_date,
+        client.account_signature,
+        client=client,
+    )
     daily_campaign_budget = max(
         0,
         min(
@@ -5787,7 +6021,7 @@ def run():
             usable_daily_limit,
         ),
     )
-    attempted_units_before_run = read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
+    attempted_units_before_run = int(budget_diagnostics.get("daily_budget_used_today") or 0)
     remaining_campaign_budget = max(0, daily_campaign_budget - attempted_units_before_run)
     max_cpc_batches = args.max_cpc_batches
     if max_cpc_batches in (None, 0):
@@ -5952,6 +6186,12 @@ def run():
                     date_to,
                     args.group_by,
                     allow_recreate=(args.mode != "cpc-backfill"),
+                    usage_context={
+                        "target_date": target_date,
+                        "load_date": load_date,
+                        "mode": args.mode,
+                        "batch_index": batch_index,
+                    },
                 )
             except RateLimitPending as exc:
                 batch_finished_at = utcnow()
@@ -5961,13 +6201,21 @@ def run():
                     ttl_seconds=BATCH_SIZE_RECOVERY_TTL_SECONDS,
                 )
                 cpc_progress_snapshot = client.mark_cpc_batch_pending_429(progress_key, batch_index)
+                cpc_pending_status = (
+                    "pending_quota"
+                    if exc.response_kind == "daily_quota_exhausted"
+                    else "pending_429"
+                )
                 run_summary["cpc"] = empty_stage_status(
-                    "pending_429",
+                    cpc_pending_status,
                     endpoint=exc.endpoint,
                     batch_size=batch_size,
                     retry_after_seconds=exc.retry_after_seconds,
                     cooldown_until=exc.cooldown_until,
+                    next_attempt_at=exc.next_attempt_at,
                     attempt=exc.attempt,
+                    response_kind=exc.response_kind,
+                    raw_error_preview=exc.raw_error_preview,
                     failed_batch_index=batch_index,
                     failed_batch=campaign_batch,
                     campaign_count=len(ordered_campaign_ids),
@@ -6004,7 +6252,7 @@ def run():
                     "Ozon Performance CPC batch event: "
                     + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
                 )
-                print("CPC statistics/json pending_429:")
+                print(f"CPC statistics/json {cpc_pending_status}:")
                 print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
                 break
             except Exception as exc:
@@ -6036,13 +6284,14 @@ def run():
                 raise
             print(f"CPC UUID: {uuid}")
             batch_finished_at = utcnow()
+            pause_before_next_batch_seconds = max(0, int(args.inter_batch_pause or 0))
             batch_event = {
                 "batch_index": int(batch_index),
                 "start_time": to_iso(batch_started_at),
                 "end_time": to_iso(batch_finished_at),
                 "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
                 "http_status": 200,
-                "pause_before_next_batch_seconds": 2,
+                "pause_before_next_batch_seconds": pause_before_next_batch_seconds,
             }
             batch_events.append(batch_event)
             print(
@@ -6084,7 +6333,8 @@ def run():
             for key, value in attribution_counters.items():
                 total_counters[f"cpc_attribution_{key}"] += value
 
-            time.sleep(2)
+            if pause_before_next_batch_seconds > 0:
+                time.sleep(pause_before_next_batch_seconds)
 
         if run_summary["cpc"]["status"] == "not_started":
             cpc_progress_snapshot = client.get_cpc_progress(progress_key)
@@ -6291,7 +6541,13 @@ def run():
     run_summary["cpc_campaign_units_completed_this_run"] = completed_campaign_units_this_run
     run_summary["cpc_campaign_units_failed_429_this_run"] = failed_429_campaign_units_this_run
     run_summary["cpc_stop_batch_index"] = (run_summary.get("cpc") or {}).get("failed_batch_index")
-    run_summary["cpc_stop_reason"] = "429" if (run_summary.get("cpc") or {}).get("status") == "pending_429" else None
+    cpc_stage_status = (run_summary.get("cpc") or {}).get("status")
+    if cpc_stage_status == "pending_quota":
+        run_summary["cpc_stop_reason"] = "daily_quota_exhausted"
+    elif cpc_stage_status == "pending_429":
+        run_summary["cpc_stop_reason"] = "429"
+    else:
+        run_summary["cpc_stop_reason"] = None
     if run_summary.get("cpc"):
         run_summary["cpc"]["campaign_units_attempted"] = attempted_campaign_units_this_run
         run_summary["cpc"]["campaign_units_completed"] = completed_campaign_units_this_run

@@ -218,7 +218,10 @@ def get_ozon_report_completeness(target_date):
             blockers.append("ozon_performance_partial_ads")
         if cpc_status == "pending_429":
             blockers.append("ozon_cpc_pending_429")
-        elif cpc_status in {"pending_backfill", "pending_quota"}:
+        elif cpc_status in {"pending_quota", "daily_quota_exhausted"}:
+            blockers.append("ozon_statistics_json_daily_quota_exhausted")
+            blockers.append("ozon_performance_cpc_incomplete")
+        elif cpc_status in {"pending_backfill"}:
             blockers.append("ozon_performance_cpc_incomplete")
         if cpc_pending_campaigns > 0 or cpc_units_pending_total > 0:
             blockers.append("ozon_performance_cpc_incomplete")

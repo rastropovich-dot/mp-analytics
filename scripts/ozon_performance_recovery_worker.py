@@ -27,6 +27,8 @@ CONTROLLED_FINAL_STATUSES = {
     "max_attempts_exhausted",
     "partial_remaining",
     "pending_429",
+    "pending_quota",
+    "skipped_daily_quota_exhausted",
     "runtime_state_unavailable",
 }
 
@@ -93,6 +95,29 @@ def build_budget_guard(daily_budget_used_today, phase="pre"):
         return result
 
     return result
+
+
+def get_recent_daily_quota_event(client, target_date=None, load_date=None):
+    try:
+        events = client.get_statistics_json_usage_events()
+    except Exception:
+        return None
+
+    candidates = []
+    for event in events or []:
+        if str(event.get("response_kind") or "") != "daily_quota_exhausted":
+            continue
+        if target_date and str(event.get("target_date") or "") != str(target_date):
+            continue
+        if load_date and str(event.get("load_date") or "") != str(load_date):
+            continue
+        candidates.append(event)
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: str(item.get("event_at") or ""), reverse=True)
+    return candidates[0]
 
 
 def parse_wait_deadline(wait_until, timezone):
@@ -308,7 +333,14 @@ def pick_recovery_batches(cpc_batches, pending_batch_indexes, recovery_budget_av
     return limited_batch_indexes, limited_units
 
 
-def build_loader_command(target_date, max_batches_per_run, write=False, progress_key=None, write_runtime_only=False):
+def build_loader_command(
+    target_date,
+    max_batches_per_run,
+    write=False,
+    progress_key=None,
+    write_runtime_only=False,
+    inter_batch_pause=None,
+):
     loader_script = Path(loader.__file__).resolve()
     command = [
         sys.executable,
@@ -324,6 +356,8 @@ def build_loader_command(target_date, max_batches_per_run, write=False, progress
     ]
     if progress_key:
         command.extend(["--progress-key", str(progress_key)])
+    if inter_batch_pause is not None:
+        command.extend(["--inter-batch-pause", str(int(inter_batch_pause))])
     if write:
         command.extend(["--write", "--approve-cpc-recovery-write"])
         if write_runtime_only:
@@ -413,7 +447,23 @@ def build_recovery_plan(
     client = client or loader.OzonPerformanceClient()
     load_date = loader.today_local().isoformat()
     now_utc = loader.utcnow()
-    daily_budget_used_today = loader.read_attempted_campaign_units_for_load_date(load_date, client.account_signature)
+    if hasattr(client, "get_statistics_json_usage_events"):
+        budget_diagnostics = loader.get_statistics_json_budget_diagnostics(
+            load_date,
+            client.account_signature,
+            client=client,
+        )
+    else:
+        budget_diagnostics = {
+            "daily_budget_used_today": loader.read_attempted_campaign_units_for_load_date(
+                load_date,
+                client.account_signature,
+            ),
+            "budget_source": "status_snapshot",
+            "budget_confidence": "low",
+            "usage_event_count": 0,
+        }
+    daily_budget_used_today = int(budget_diagnostics.get("daily_budget_used_today") or 0)
     budget_guard = build_budget_guard(daily_budget_used_today, phase=phase)
     cooldown = get_statistics_cooldown(client)
     deadline_utc = (
@@ -430,6 +480,7 @@ def build_recovery_plan(
     )
     candidates = get_partial_candidates(db_client, client.account_signature, target_date=target_date)
     latest_status_row = get_latest_status_row(db_client, client.account_signature, target_date=target_date)
+    latest_quota_event = get_recent_daily_quota_event(client, target_date=target_date, load_date=load_date)
 
     plan = {
         "load_date": load_date,
@@ -438,6 +489,9 @@ def build_recovery_plan(
         "current_time_utc": wait_meta["current_time_utc"],
         "current_time_local": wait_meta["current_time_local"],
         "daily_budget_used_today": budget_guard["daily_budget_used_today"],
+        "budget_source": budget_diagnostics.get("budget_source"),
+        "budget_confidence": budget_diagnostics.get("budget_confidence"),
+        "usage_event_count": budget_diagnostics.get("usage_event_count"),
         "daily_limit": budget_guard["daily_limit"],
         "daily_reserve": budget_guard["daily_reserve"],
         "recovery_budget_available": budget_guard["recovery_budget_available"],
@@ -458,6 +512,7 @@ def build_recovery_plan(
         "estimated_completion_possible": wait_meta["estimated_completion_possible"],
         "candidates": [],
         "latest_status_row": latest_status_row,
+        "latest_quota_event": latest_quota_event,
     }
 
     if wait_meta["deadline_already_passed"]:
@@ -474,6 +529,11 @@ def build_recovery_plan(
         return plan
 
     for row in candidates:
+        candidate_quota_event = get_recent_daily_quota_event(
+            client,
+            target_date=row.get("target_date"),
+            load_date=load_date,
+        )
         candidate_plan = {
             "target_date": row.get("target_date"),
             "run_status": row.get("run_status"),
@@ -483,6 +543,22 @@ def build_recovery_plan(
             "cpc_campaign_units_pending_total": int(float(row.get("cpc_campaign_units_pending_total") or 0)),
             "cpc_campaign_units_completed_total": int(float(row.get("cpc_campaign_units_completed_total") or 0)),
         }
+
+        if (
+            str(row.get("cpc_status") or "").strip().lower() in {"pending_quota", "daily_quota_exhausted"}
+            or candidate_quota_event
+        ):
+            next_attempt_at = (candidate_quota_event or {}).get("next_attempt_at") or (candidate_quota_event or {}).get("cooldown_until")
+            candidate_plan.update(
+                {
+                    "status": "skipped_daily_quota_exhausted",
+                    "reason": "ozon_statistics_json_daily_quota_exhausted",
+                    "next_attempt_at": next_attempt_at,
+                    "will_run": False,
+                }
+            )
+            plan["candidates"].append(candidate_plan)
+            continue
 
         if cooldown["cooldown_active"]:
             candidate_plan.update(
@@ -529,6 +605,8 @@ def build_recovery_plan(
             plan["status"] = "deadline_before_cooldown"
         elif "waiting_for_cooldown" in candidate_statuses:
             plan["status"] = "waiting_for_cooldown"
+        elif "skipped_daily_quota_exhausted" in candidate_statuses:
+            plan["status"] = "skipped_daily_quota_exhausted"
         else:
             plan["status"] = "skipped"
         plan["planned_recovery_units"] = 0
@@ -550,7 +628,7 @@ def _extract_batch_events(stdout):
     return events
 
 
-def run_recovery_write(plan, approve_write=False, write_runtime_only=False):
+def run_recovery_write(plan, approve_write=False, write_runtime_only=False, inter_batch_pause=None):
     if not approve_write:
         raise RuntimeError(
             "Recovery worker write requires explicit --write --approve-recovery-worker-write"
@@ -573,6 +651,7 @@ def run_recovery_write(plan, approve_write=False, write_runtime_only=False):
         write=True,
         progress_key=candidate.get("progress_key"),
         write_runtime_only=write_runtime_only,
+        inter_batch_pause=inter_batch_pause,
     )
     completed = subprocess.run(
         write_command,
@@ -594,6 +673,8 @@ def run_recovery_write(plan, approve_write=False, write_runtime_only=False):
 
     if "\"pending_429\"" in stdout or "\"status\": \"pending_429\"" in stdout:
         result["status"] = "pending_429"
+    elif "\"pending_quota\"" in stdout or "\"status\": \"pending_quota\"" in stdout or "\"daily_quota_exhausted\"" in stdout:
+        result["status"] = "pending_quota"
     elif "\"runtime_state_unavailable\"" in stdout or "\"status\": \"runtime_state_unavailable\"" in stdout:
         result["status"] = "runtime_state_unavailable"
     return result
@@ -617,6 +698,7 @@ def execute_recovery_session(
     dry_run=True,
     approve_write=False,
     write_runtime_only=False,
+    inter_batch_pause=None,
     db_client=None,
     client=None,
     sleep_fn=time.sleep,
@@ -692,6 +774,7 @@ def execute_recovery_session(
             plan,
             approve_write=approve_write,
             write_runtime_only=write_runtime_only,
+            inter_batch_pause=inter_batch_pause,
         )
         attempts += 1
         history.append(
@@ -717,6 +800,27 @@ def execute_recovery_session(
                 "attempts": attempts,
                 "history": history,
                 "plan": plan,
+                "result": result,
+            }
+
+        if result.get("status") == "pending_quota":
+            post_quota_plan = build_recovery_plan(
+                target_date=target_date,
+                max_batches_per_run=max_batches_per_run,
+                db_client=db_client,
+                client=client,
+                phase=phase,
+                wait_until=wait_until,
+                wait_for_minutes=wait_for_minutes,
+                timezone=timezone,
+                max_attempts=max_attempts,
+                sleep_padding_seconds=sleep_padding_seconds,
+            )
+            return {
+                "status": "skipped_daily_quota_exhausted",
+                "attempts": attempts,
+                "history": history,
+                "plan": post_quota_plan,
                 "result": result,
             }
 
@@ -799,6 +903,7 @@ def make_parser():
     parser.add_argument("--timezone", default="Europe/Moscow")
     parser.add_argument("--max-attempts", type=int, default=10)
     parser.add_argument("--sleep-padding-seconds", type=int, default=10)
+    parser.add_argument("--inter-batch-pause", type=int, default=2)
     parser.add_argument("--stop-when-complete", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--write", action="store_true")
@@ -824,6 +929,7 @@ def main():
         timezone=args.timezone,
         max_attempts=max(1, int(args.max_attempts or 1)),
         sleep_padding_seconds=max(0, int(args.sleep_padding_seconds or 0)),
+        inter_batch_pause=max(0, int(args.inter_batch_pause or 0)),
         stop_when_complete=bool(args.stop_when_complete),
         dry_run=dry_run,
         approve_write=bool(args.approve_recovery_worker_write),

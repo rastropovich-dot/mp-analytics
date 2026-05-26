@@ -173,6 +173,27 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(guard["recovery_budget_available"], 400)
         self.assertTrue(guard["will_run"])
 
+    def test_plan_exposes_budget_source_and_confidence(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
+        client = _FakeClient()
+        client.get_statistics_json_usage_events = mock.Mock(return_value=[])
+        with mock.patch.object(worker.loader, "get_statistics_json_budget_diagnostics", return_value={
+            "daily_budget_used_today": 40,
+            "budget_source": "runtime_usage_ledger",
+            "budget_confidence": "high",
+            "usage_event_count": 4,
+        }), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress()):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-21",
+                db_client=db,
+                client=client,
+                phase="post",
+            )
+        self.assertEqual(plan["budget_source"], "runtime_usage_ledger")
+        self.assertEqual(plan["budget_confidence"], "high")
+        self.assertEqual(plan["usage_event_count"], 4)
+
     def test_post_phase_skips_when_recovery_budget_non_positive(self):
         guard = worker.build_budget_guard(1800, phase="post")
         self.assertFalse(guard["will_run"])
@@ -512,6 +533,55 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         with mock.patch.object(worker.subprocess, "run", return_value=completed):
             result = worker.run_recovery_write(plan, approve_write=True)
         self.assertEqual(result["status"], "runtime_state_unavailable")
+
+    def test_pending_quota_is_controlled_worker_result(self):
+        plan = {
+            "will_run": True,
+            "candidates": [
+                {
+                    "will_run": True,
+                    "target_date": "2026-05-25",
+                    "planned_batch_indexes": [139],
+                    "progress_key": "cpc_progress:pending-tail",
+                }
+            ],
+        }
+        completed = mock.Mock(returncode=0, stdout='{"status": "pending_quota"}', stderr="")
+        with mock.patch.object(worker.subprocess, "run", return_value=completed):
+            result = worker.run_recovery_write(plan, approve_write=True)
+        self.assertEqual(result["status"], "pending_quota")
+
+    def test_daily_quota_exhausted_stops_without_wait_loop(self):
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row(target_date="2026-05-25")]})
+        client = _FakeClient()
+        first_plan = {
+            "status": "planned",
+            "cooldown_active": False,
+            "will_run": True,
+            "candidates": [{"will_run": True}],
+        }
+        quota_plan = {
+            "status": "skipped_daily_quota_exhausted",
+            "cooldown_active": False,
+            "will_run": False,
+            "candidates": [{"status": "skipped_daily_quota_exhausted", "next_attempt_at": "2026-05-27T00:05:00+00:00"}],
+        }
+        sleeps = []
+        with mock.patch.object(worker, "build_recovery_plan", side_effect=[first_plan, quota_plan]), \
+             mock.patch.object(worker, "run_recovery_write", return_value={"status": "pending_quota"}):
+            result = worker.execute_recovery_session(
+                target_date="2026-05-25",
+                phase="post",
+                wait_for_minutes=240,
+                timezone="Europe/Moscow",
+                dry_run=False,
+                approve_write=True,
+                db_client=db,
+                client=client,
+                sleep_fn=lambda seconds: sleeps.append(seconds),
+            )
+        self.assertEqual(result["status"], "skipped_daily_quota_exhausted")
+        self.assertEqual(sleeps, [])
 
 
 if __name__ == "__main__":

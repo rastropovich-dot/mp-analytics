@@ -143,6 +143,21 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertIn("ozon_performance_cpc_incomplete", result["blockers"])
 
+    def test_pending_quota_marks_ozon_incomplete_with_quota_blocker(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={
+                "run_status": "partial_quota",
+                "cpc_status": "pending_quota",
+                "cpo_status": "success",
+                "cpc_pending_campaigns": 285,
+                "cpc_campaign_units_pending_total": 285,
+            }):
+            table_has_rows.side_effect = [True, True, True, True, True]
+            result = alerts.get_ozon_report_completeness("2026-05-25")
+        self.assertFalse(result["complete"])
+        self.assertIn("ozon_statistics_json_daily_quota_exhausted", result["blockers"])
+        self.assertIn("ozon_performance_cpc_incomplete", result["blockers"])
+
     def test_all_layers_present_with_performance_success_marks_complete(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value={

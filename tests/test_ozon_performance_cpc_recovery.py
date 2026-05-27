@@ -164,6 +164,73 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_partial_failure_status_before_any_progress_stays_failed_with_error_info(self):
+        run_summary = {
+            "cpo": loader.empty_stage_status("not_started"),
+            "overall_status": "running",
+        }
+        progress = {
+            "total_campaigns": 1235,
+            "batch_size": 10,
+            "completed_batches": 0,
+            "pending_batches": 124,
+            "next_batch_index": 0,
+            "completed_batch_indexes": [],
+            "failed_429_batches": 0,
+            "total_batches": 124,
+        }
+        exc = RuntimeError("boom before progress")
+        status = loader.build_partial_failure_status(
+            run_summary=run_summary,
+            cpc_progress_snapshot=progress,
+            cpc_batches=[list(range(10)) for _ in range(123)] + [[0, 1, 2, 3, 4]],
+            ordered_campaign_ids=[str(i) for i in range(1235)],
+            progress_key="cpc_progress:test",
+            exc=exc,
+        )
+        self.assertEqual(status, "failed")
+        self.assertEqual(run_summary["overall_status"], "failed")
+        self.assertEqual(run_summary["cpc"]["status"], "failed")
+        self.assertEqual(run_summary["error_class"], "RuntimeError")
+        self.assertIn("boom before progress", run_summary["error_message"])
+        self.assertTrue(run_summary["traceback_summary"])
+
+    def test_partial_failure_status_after_progress_preserves_counters(self):
+        run_summary = {
+            "cpo": loader.empty_stage_status("not_started"),
+            "overall_status": "running",
+        }
+        progress = {
+            "total_campaigns": 1235,
+            "batch_size": 10,
+            "completed_batches": 15,
+            "pending_batches": 109,
+            "next_batch_index": 15,
+            "completed_batch_indexes": list(range(15)),
+            "failed_429_batches": 0,
+            "total_batches": 124,
+        }
+        exc = RuntimeError("boom after progress")
+        status = loader.build_partial_failure_status(
+            run_summary=run_summary,
+            cpc_progress_snapshot=progress,
+            cpc_batches=[list(range(10)) for _ in range(123)] + [[0, 1, 2, 3, 4]],
+            ordered_campaign_ids=[str(i) for i in range(1235)],
+            progress_key="cpc_progress:test",
+            exc=exc,
+        )
+        self.assertEqual(status, "partial_ads")
+        self.assertEqual(run_summary["overall_status"], "partial_ads")
+        self.assertEqual(run_summary["cpc"]["status"], "pending_backfill")
+        self.assertEqual(run_summary["cpc_campaign_units_completed_total"], 150)
+        self.assertEqual(run_summary["cpc_campaign_units_pending_total"], 1085)
+        self.assertEqual(run_summary["cpc_stop_batch_index"], 15)
+        self.assertEqual(run_summary["cpc_stop_reason"], "exception_after_partial_progress")
+        self.assertEqual(run_summary["cpc"]["status_detail"], "failed_after_partial")
+        self.assertEqual(run_summary["cpc"]["progress_key"], "cpc_progress:test")
+        self.assertEqual(run_summary["error_class"], "RuntimeError")
+        self.assertTrue(run_summary["traceback_summary"])
+
     def test_smart_selection_includes_recent_spend_even_if_old_updated_at(self):
         campaigns = [
             {
@@ -392,6 +459,13 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             ),
             "pending_backfill",
         )
+
+    def test_traceback_summary_is_truncated(self):
+        summary = {}
+        exc = RuntimeError("x" * 5000)
+        payload = loader.annotate_run_summary_error(summary, exc, traceback_summary="y" * 5000)
+        self.assertEqual(payload["error_class"], "RuntimeError")
+        self.assertLessEqual(len(payload["traceback_summary"]), 4000)
 
     def test_cpc_backfill_before_window_without_bypass_still_fails(self):
         with mock.patch.object(loader, "local_now", return_value=loader.datetime(2026, 5, 25, 0, 29, 51, tzinfo=loader.ZoneInfo(loader.APP_TIMEZONE))):

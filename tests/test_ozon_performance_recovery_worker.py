@@ -97,12 +97,17 @@ def _status_row(
 
 
 def _progress(pending_batch_indexes=None):
+    pending = list(pending_batch_indexes or [131, 132])
     return (
         "cpc_progress:pending-tail",
         {
             "ordered_campaign_ids": [f"{9834000 + i}" for i in range(1323)],
             "batch_size": 10,
-            "pending_batch_indexes": list(pending_batch_indexes or [131, 132]),
+            "total_campaigns": 1323,
+            "completed_batches": max(0, 133 - len(pending)),
+            "pending_batches": len(pending),
+            "next_batch_index": pending[0] if pending else None,
+            "pending_batch_indexes": pending,
         },
         "daily_yesterday_pending",
     )
@@ -547,6 +552,60 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
             candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
         self.assertEqual(candidate["status"], "missing_progress_reconstruction_required")
         self.assertFalse(candidate["will_run"])
+
+    def test_failed_status_with_live_progress_is_recoverable_partial_crash(self):
+        client = _FakeClient()
+        db = _FakeDbClient({})
+        status_row = _status_row(run_status="failed", cpc_status="failed", pending_units=1085, pending_campaigns=1085)
+        status_row["cpc_campaign_units_completed_total"] = 150
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([15, 16])):
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["status"], "recoverable_partial_crash")
+        self.assertTrue(candidate["will_run"])
+        self.assertEqual(candidate["next_batch_index"], 15)
+        self.assertEqual(candidate["planned_batch_indexes"], [15])
+        self.assertEqual(candidate["total_campaigns"], 1323)
+
+    def test_failed_status_with_no_progress_is_failed_no_progress(self):
+        client = _FakeClient()
+        db = _FakeDbClient({})
+        status_row = _status_row(run_status="failed", cpc_status="failed", pending_units=0, pending_campaigns=0)
+        status_row["cpc_campaign_units_completed_total"] = 0
+        budget_guard = worker.build_budget_guard(0, phase="post")
+        with mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=(None, None, None)):
+            candidate = worker.build_candidate_plan(db, client, status_row, budget_guard, 1)
+        self.assertEqual(candidate["status"], "failed_no_progress")
+        self.assertFalse(candidate["will_run"])
+
+    def test_usage_ledger_does_not_override_progress_next_batch_index(self):
+        client = _FakeClient()
+        client.get_statistics_json_usage_events = mock.Mock(return_value=[
+            {
+                "target_date": "2026-05-21",
+                "load_date": "2026-05-22",
+                "batch_index": 99,
+                "response_kind": "success",
+                "campaign_units": 10,
+            }
+        ])
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row(run_status="failed", cpc_status="failed", pending_units=1085, pending_campaigns=1085)]})
+        with mock.patch.object(worker.loader, "get_statistics_json_budget_diagnostics", return_value={
+            "daily_budget_used_today": 40,
+            "budget_source": "runtime_usage_ledger",
+            "budget_confidence": "high",
+            "usage_event_count": 1,
+        }), mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([15, 16])):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-21",
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        candidate = plan["candidates"][0]
+        self.assertEqual(candidate["next_batch_index"], 15)
+        self.assertEqual(candidate["planned_batch_indexes"], [15])
 
     def test_runtime_state_unavailable_is_controlled_worker_result(self):
         plan = {

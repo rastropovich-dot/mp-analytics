@@ -30,6 +30,8 @@ CONTROLLED_FINAL_STATUSES = {
     "pending_quota",
     "skipped_daily_quota_exhausted",
     "missing_progress_reconstruction_required",
+    "failed_no_progress",
+    "recoverable_partial_crash",
     "runtime_state_unavailable",
 }
 
@@ -43,6 +45,8 @@ def is_partial_ads_candidate(row):
 
     return (
         run_status == "partial_ads"
+        or run_status == "failed"
+        or cpc_status == "failed"
         or cpc_status in {"pending_429", "pending_backfill", "pending_quota"}
         or pending_campaigns > 0
         or pending_units > 0
@@ -381,6 +385,8 @@ def build_candidate_plan(db_client, client, status_row, budget_guard, max_batche
         status = "skipped_no_pending_progress"
         if completed_total > 0 or pending_total > 0:
             status = "missing_progress_reconstruction_required"
+        elif str(status_row.get("run_status") or "").strip().lower() == "failed" or str(status_row.get("cpc_status") or "").strip().lower() == "failed":
+            status = "failed_no_progress"
         return {
             "target_date": target_date,
             "status": status,
@@ -433,7 +439,13 @@ def build_candidate_plan(db_client, client, status_row, budget_guard, max_batche
     )
 
     will_run = bool(planned_batch_indexes) and budget_guard["will_run"]
-    status = "planned_resume" if will_run else "skipped_budget_cap"
+    is_failed_status = (
+        str(status_row.get("run_status") or "").strip().lower() == "failed"
+        or str(status_row.get("cpc_status") or "").strip().lower() == "failed"
+    )
+    status = "recoverable_partial_crash" if is_failed_status else ("planned_resume" if will_run else "skipped_budget_cap")
+    if will_run and not is_failed_status:
+        status = "planned_resume"
     if not planned_batch_indexes and budget_guard["will_run"]:
         status = "skipped_no_recovery_budget"
 
@@ -449,6 +461,10 @@ def build_candidate_plan(db_client, client, status_row, budget_guard, max_batche
         "planned_recovery_units": planned_recovery_units,
         "planned_campaign_ids": planned_campaign_ids,
         "will_run": will_run,
+        "completed_batches": int(progress.get("completed_batches") or 0),
+        "pending_batches": int(progress.get("pending_batches") or 0),
+        "next_batch_index": progress.get("next_batch_index"),
+        "total_campaigns": int(progress.get("total_campaigns") or 0),
         "cpo_status": status_row.get("cpo_status"),
         "recovery_command": command,
     }

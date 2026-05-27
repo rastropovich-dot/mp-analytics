@@ -9,6 +9,7 @@ import random
 import re
 import tempfile
 import time
+import traceback
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -5514,6 +5515,95 @@ def save_daily_load_status(summary):
         )
 
 
+def build_traceback_summary(exc=None, limit=12):
+    if exc is not None and getattr(exc, "__traceback__", None) is not None:
+        lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    else:
+        lines = traceback.format_exc().splitlines()
+    text = "\n".join("".join(lines).splitlines()[-max(1, int(limit or 1)):])
+    return sanitize_text(text)[:4000]
+
+
+def annotate_run_summary_error(summary, exc, traceback_summary=None):
+    payload = {
+        "error_class": exc.__class__.__name__,
+        "error_message": sanitize_text(str(exc)),
+        "traceback_summary": sanitize_text(traceback_summary or build_traceback_summary(exc))[:4000],
+    }
+    summary.update(payload)
+    return payload
+
+
+def build_partial_failure_status(
+    *,
+    run_summary,
+    cpc_progress_snapshot,
+    cpc_batches,
+    ordered_campaign_ids,
+    progress_key,
+    exc,
+    cpo_status=None,
+):
+    progress = cpc_progress_snapshot or {}
+    total_campaigns = int(progress.get("total_campaigns") or len(ordered_campaign_ids) or 0)
+    completed_batches = int(progress.get("completed_batches") or 0)
+    pending_batches = int(progress.get("pending_batches") or 0)
+    next_batch_index = progress.get("next_batch_index")
+    completed_units = sum_campaign_units_for_batches(
+        cpc_batches,
+        progress.get("completed_batch_indexes") or [],
+    )
+    pending_units = max(0, total_campaigns - completed_units)
+    has_partial_progress = bool(
+        total_campaigns > 0
+        and pending_batches > 0
+        and (completed_batches > 0 or next_batch_index not in {None, 0})
+    )
+    error_payload = annotate_run_summary_error(run_summary, exc)
+    run_summary["cpc_progress_key"] = progress_key
+
+    if has_partial_progress:
+        run_summary["campaign_count"] = total_campaigns
+        run_summary["cpc"] = empty_stage_status(
+            "pending_backfill",
+            batch_size=int(progress.get("batch_size") or 0),
+            campaign_count=total_campaigns,
+            campaign_units_completed=completed_units,
+            campaign_units_completed_total=completed_units,
+            campaign_units_pending_total=pending_units,
+            pending_campaigns=pending_units,
+            total_batches=int(progress.get("total_batches") or 0),
+            completed_batches=completed_batches,
+            pending_batches=pending_batches,
+            failed_429_batches=int(progress.get("failed_429_batches") or 0),
+            next_batch_index=next_batch_index,
+            progress_key=progress_key,
+            status_detail="failed_after_partial",
+            **error_payload,
+        )
+        if cpo_status:
+            run_summary["cpo"] = empty_stage_status(cpo_status, **error_payload)
+        run_summary["cpc_campaign_count"] = total_campaigns
+        run_summary["cpc_pending_campaigns"] = pending_units
+        run_summary["cpc_campaign_units_planned_total"] = total_campaigns
+        run_summary["cpc_campaign_units_completed_total"] = completed_units
+        run_summary["cpc_campaign_units_pending_total"] = pending_units
+        run_summary["cpc_stop_batch_index"] = next_batch_index
+        run_summary["cpc_stop_reason"] = "exception_after_partial_progress"
+        run_summary["overall_status"] = "partial_ads"
+        return "partial_ads"
+
+    run_summary["cpc"] = empty_stage_status(
+        "failed",
+        progress_key=progress_key,
+        **error_payload,
+    )
+    if cpo_status:
+        run_summary["cpo"] = empty_stage_status(cpo_status, **error_payload)
+    run_summary["overall_status"] = "failed"
+    return "failed"
+
+
 def run():
     args = parse_args()
 
@@ -6572,14 +6662,17 @@ def run():
                     "Ozon Performance CPC batch event: "
                     + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
                 )
-                run_summary["cpc"] = empty_stage_status(
-                    "failed",
-                    batch_size=batch_size,
-                    failed_batch_index=batch_index,
-                    failed_batch=campaign_batch,
-                    error=str(exc),
+                cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+                build_partial_failure_status(
+                    run_summary=run_summary,
+                    cpc_progress_snapshot=cpc_progress_snapshot,
+                    cpc_batches=cpc_batches,
+                    ordered_campaign_ids=ordered_campaign_ids,
+                    progress_key=progress_key,
+                    exc=exc,
                 )
-                run_summary["overall_status"] = "failed"
+                run_summary["cpc"]["failed_batch_index"] = batch_index
+                run_summary["cpc"]["failed_batch"] = campaign_batch
                 run_summary["updated_at"] = to_iso(utcnow())
                 client.write_run_status(run_summary)
                 save_daily_load_status(run_summary)
@@ -6720,8 +6813,16 @@ def run():
             cpo_rows, cpo_counters, cpo_summary = build_cpo_rows(cpo_csv)
             cpo_attribution_rows, cpo_attribution_counters = build_cpo_attribution_rows(cpo_csv)
         except Exception as exc:
-            run_summary["cpo"] = empty_stage_status("failed", error=str(exc))
-            run_summary["overall_status"] = "failed"
+            cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+            build_partial_failure_status(
+                run_summary=run_summary,
+                cpc_progress_snapshot=cpc_progress_snapshot,
+                cpc_batches=cpc_batches,
+                ordered_campaign_ids=ordered_campaign_ids,
+                progress_key=progress_key,
+                exc=exc,
+                cpo_status="not_started",
+            )
             run_summary["updated_at"] = to_iso(utcnow())
             client.write_run_status(run_summary)
             save_daily_load_status(run_summary)
@@ -6756,13 +6857,18 @@ def run():
                 f"{json.dumps(cpo_context, ensure_ascii=False)}"
             )
             print(f"ERROR: {message}")
-            run_summary["cpo"] = empty_stage_status(
-                "failed",
-                uuid=cpo_uuid,
-                reconciliation=cpo_summary,
-                error=message,
+            cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+            build_partial_failure_status(
+                run_summary=run_summary,
+                cpc_progress_snapshot=cpc_progress_snapshot,
+                cpc_batches=cpc_batches,
+                ordered_campaign_ids=ordered_campaign_ids,
+                progress_key=progress_key,
+                exc=RuntimeError(message),
+                cpo_status="failed",
             )
-            run_summary["overall_status"] = "failed"
+            run_summary["cpo"]["uuid"] = cpo_uuid
+            run_summary["cpo"]["reconciliation"] = cpo_summary
             run_summary["updated_at"] = to_iso(utcnow())
             client.write_run_status(run_summary)
             save_daily_load_status(run_summary)
@@ -6916,8 +7022,24 @@ def run():
             "ozon_daily_sku_ad_attribution"
         )
     else:
-        save_rows(rows)
-        save_ad_attribution_rows(ad_attribution_rows)
+        try:
+            save_rows(rows)
+            save_ad_attribution_rows(ad_attribution_rows)
+        except Exception as exc:
+            cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+            build_partial_failure_status(
+                run_summary=run_summary,
+                cpc_progress_snapshot=cpc_progress_snapshot,
+                cpc_batches=cpc_batches,
+                ordered_campaign_ids=ordered_campaign_ids,
+                progress_key=progress_key,
+                exc=exc,
+                cpo_status=(run_summary.get("cpo") or {}).get("status"),
+            )
+            run_summary["updated_at"] = to_iso(utcnow())
+            client.write_run_status(run_summary)
+            save_daily_load_status(run_summary)
+            raise
     client.write_run_status(run_summary)
     save_daily_load_status(run_summary)
 

@@ -530,7 +530,7 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             loader.should_allow_cpc_backfill_before_backfill_window(
                 args,
                 progress,
-                source_progress_kind="daily_yesterday_pending",
+                source_progress_kind="exact_progress_key",
             )
         )
 
@@ -639,7 +639,10 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
                     "account_signature": "acct_d743d49318d3",
                     "pending_batches": 66,
                     "pending_batch_indexes": list(range(67, 133)),
+                    "next_batch_index": 67,
                     "batch_size": 10,
+                    "total_campaigns": 1323,
+                    "ordered_campaign_ids": [str(9834000 + i) for i in range(1323)],
                 },
             }
         ]
@@ -656,6 +659,114 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
         self.assertEqual(progress_key, "cpc_progress:pending-tail")
         self.assertEqual(source_kind, "exact_progress_key")
         self.assertEqual(progress["pending_batch_indexes"][0], 67)
+
+    def test_resolve_cpc_backfill_progress_by_key_allows_smart_recent_active(self):
+        client = _FakeClient(progress_map={})
+        ordered_campaign_ids = [str(9000000 + i) for i in range(20)]
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-27T04:00:18+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-26",
+                    "date_to": "2026-05-26",
+                    "selection_mode": "smart_recent_active",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 1,
+                    "pending_batch_indexes": [15],
+                    "next_batch_index": 15,
+                    "batch_size": 10,
+                    "total_campaigns": 20,
+                    "ordered_campaign_ids": ordered_campaign_ids,
+                    "total_batches": 20,
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            progress_key, progress, source_kind = loader.resolve_cpc_backfill_progress_by_key(
+                client,
+                "cpc_progress:pending-tail",
+                "2026-05-26",
+                sleep_fn=lambda _seconds: None,
+            )
+
+        self.assertEqual(progress_key, "cpc_progress:pending-tail")
+        self.assertEqual(source_kind, "exact_progress_key")
+        self.assertEqual(progress["selection_mode"], "smart_recent_active")
+        self.assertEqual(progress["next_batch_index"], 15)
+        self.assertEqual(progress["pending_batch_indexes"], [15])
+
+    def test_resolve_cpc_backfill_progress_by_key_rejects_unknown_selection_mode(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-27T04:00:18+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-26",
+                    "date_to": "2026-05-26",
+                    "selection_mode": "mystery_mode",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 1,
+                    "pending_batch_indexes": [15],
+                    "next_batch_index": 15,
+                    "batch_size": 10,
+                    "total_campaigns": 20,
+                    "ordered_campaign_ids": [str(9000000 + i) for i in range(20)],
+                    "total_batches": 20,
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            with self.assertRaisesRegex(RuntimeError, "unsupported CPC progress selection_mode=mystery_mode for recovery"):
+                loader.resolve_cpc_backfill_progress_by_key(
+                    client,
+                    "cpc_progress:pending-tail",
+                    "2026-05-26",
+                    sleep_fn=lambda _seconds: None,
+                )
+
+    def test_resolve_cpc_backfill_progress_by_key_rejects_missing_ordered_campaign_ids(self):
+        client = _FakeClient(progress_map={})
+        db_rows = [
+            {
+                "state_key": "cpc_progress:cpc_progress:pending-tail",
+                "state_type": "cpc_progress",
+                "updated_at": "2026-05-27T04:00:18+00:00",
+                "account_signature": "acct_d743d49318d3",
+                "payload": {
+                    "date_from": "2026-05-26",
+                    "date_to": "2026-05-26",
+                    "selection_mode": "smart_recent_active",
+                    "account_signature": "acct_d743d49318d3",
+                    "pending_batches": 1,
+                    "pending_batch_indexes": [15],
+                    "next_batch_index": 15,
+                    "batch_size": 10,
+                    "total_campaigns": 20,
+                    "ordered_campaign_ids": [],
+                    "total_batches": 20,
+                },
+            }
+        ]
+        fake_supabase = _FakeDbClient({"pipeline_runtime_state": db_rows})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            with self.assertRaisesRegex(RuntimeError, "has no stored ordered_campaign_ids for recovery"):
+                loader.resolve_cpc_backfill_progress_by_key(
+                    client,
+                    "cpc_progress:pending-tail",
+                    "2026-05-26",
+                    sleep_fn=lambda _seconds: None,
+                )
 
     def test_exact_progress_read_retries_transient_timeout(self):
         client = _FakeClient(progress_map={})

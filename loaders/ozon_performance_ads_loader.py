@@ -1113,6 +1113,96 @@ def normalize_daily_cpc_selection_mode(selection_mode, full_sweep=False):
     return "complete"
 
 
+ALLOWED_CPC_RESUME_SELECTION_MODES = {
+    "complete",
+    "smart_recent_active",
+    "dormant_probe",
+    "full_sweep",
+}
+
+
+def normalize_cpc_resume_selection_mode(selection_mode):
+    return str(selection_mode or "").strip().lower()
+
+
+def is_supported_cpc_resume_selection_mode(selection_mode):
+    return normalize_cpc_resume_selection_mode(selection_mode) in ALLOWED_CPC_RESUME_SELECTION_MODES
+
+
+def validate_cpc_resume_progress(progress, progress_key, *, target_date=None, client=None):
+    progress = progress or {}
+    selection_mode = normalize_cpc_resume_selection_mode(progress.get("selection_mode"))
+    if not is_supported_cpc_resume_selection_mode(selection_mode):
+        raise RuntimeError(
+            f"unsupported CPC progress selection_mode={selection_mode or 'unknown'} for recovery"
+        )
+    if target_date and (progress.get("date_from") != target_date or progress.get("date_to") != target_date):
+        raise RuntimeError(
+            f"Progress key {progress_key} does not match target_date={target_date}"
+        )
+    if client and str(progress.get("account_signature") or client.account_signature) != str(client.account_signature):
+        raise RuntimeError(
+            f"Progress key {progress_key} does not match account_signature={client.account_signature}"
+        )
+    pending_batch_indexes = normalize_batch_indexes(progress.get("pending_batch_indexes"))
+    pending_batches = int(progress.get("pending_batches") or len(pending_batch_indexes) or 0)
+    next_batch_index = progress.get("next_batch_index")
+    total_campaigns = int(progress.get("total_campaigns") or 0)
+    batch_size = int(progress.get("batch_size") or 0)
+    ordered_campaign_ids = preserve_campaign_id_order(progress.get("ordered_campaign_ids") or [])
+    total_batches = int(progress.get("total_batches") or 0)
+
+    if pending_batches <= 0 or not pending_batch_indexes:
+        raise RuntimeError(
+            f"Progress key {progress_key} has no pending CPC batches to resume"
+        )
+    if next_batch_index is None and pending_batch_indexes:
+        next_batch_index = pending_batch_indexes[0]
+    if next_batch_index is None:
+        raise RuntimeError(
+            f"Progress key {progress_key} has no next_batch_index for recovery"
+        )
+    try:
+        next_batch_index = int(next_batch_index)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"Progress key {progress_key} has invalid next_batch_index={next_batch_index}"
+        ) from None
+    if next_batch_index < 0 or next_batch_index not in pending_batch_indexes:
+        raise RuntimeError(
+            f"Progress key {progress_key} has inconsistent next_batch_index={next_batch_index}"
+        )
+    if total_campaigns <= 0:
+        raise RuntimeError(
+            f"Progress key {progress_key} has no total_campaigns for recovery"
+        )
+    if batch_size <= 0:
+        raise RuntimeError(
+            f"Progress key {progress_key} has invalid batch_size={batch_size}"
+        )
+    if not ordered_campaign_ids:
+        raise RuntimeError(
+            f"Progress key {progress_key} has no stored ordered_campaign_ids for recovery"
+        )
+    if len(ordered_campaign_ids) != total_campaigns:
+        raise RuntimeError(
+            f"Progress key {progress_key} campaign list length does not match total_campaigns"
+        )
+    if total_batches > 0 and next_batch_index >= total_batches:
+        raise RuntimeError(
+            f"Progress key {progress_key} next_batch_index={next_batch_index} exceeds total_batches={total_batches}"
+        )
+
+    progress["selection_mode"] = selection_mode
+    progress["pending_batch_indexes"] = pending_batch_indexes
+    progress["pending_batches"] = pending_batches
+    progress["next_batch_index"] = next_batch_index
+    progress["total_campaigns"] = total_campaigns
+    progress["batch_size"] = batch_size
+    progress["ordered_campaign_ids"] = ordered_campaign_ids
+    return progress
+
+
 def load_recent_cpc_activity_campaign_ids(target_date, recent_activity_days=7, db_client=None):
     db_client = db_client or supabase
     end_date = parse_iso_date(target_date)
@@ -1484,8 +1574,8 @@ def should_allow_cpc_backfill_before_backfill_window(args, progress, source_prog
     return bool(
         getattr(args, "allow_recovery_worker_before_backfill_window", False)
         and can_resume_pending_progress_without_daily_status(progress)
-        and selection_mode == "complete"
-        and source_progress_kind in {"existing_backfill_progress", "daily_yesterday_pending"}
+        and is_supported_cpc_resume_selection_mode(selection_mode)
+        and source_progress_kind in {"existing_backfill_progress", "daily_yesterday_pending", "exact_progress_key"}
         and max_cpc_batches <= 1
     )
 
@@ -1747,7 +1837,7 @@ def resolve_daily_pending_cpc_progress_from_db(client, target_date):
             continue
         if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
             continue
-        if str(payload.get("selection_mode") or "") != "complete":
+        if not is_supported_cpc_resume_selection_mode(payload.get("selection_mode")):
             continue
         pending_batch_indexes = normalize_batch_indexes(payload.get("pending_batch_indexes"))
         pending_batches = int(payload.get("pending_batches") or len(pending_batch_indexes) or 0)
@@ -1845,14 +1935,12 @@ def resolve_cpc_backfill_progress_by_key(client, progress_key, target_date, slee
     )
     if not progress:
         return None, None, None
-    if str(progress.get("selection_mode") or "").strip().lower() != "complete":
-        raise RuntimeError(
-            f"Progress key {progress_key} is not a complete-selection CPC progress"
-        )
-    if not can_resume_pending_progress_without_daily_status(progress):
-        raise RuntimeError(
-            f"Progress key {progress_key} has no pending CPC batches to resume"
-        )
+    progress = validate_cpc_resume_progress(
+        progress,
+        progress_key,
+        target_date=target_date,
+        client=client,
+    )
     return logical_key, progress, "exact_progress_key"
 
 
@@ -5966,8 +6054,10 @@ def run():
             "target_date": target_date,
             "date_from": date_from,
             "date_to": date_to,
-            "campaign_scope": "complete_resume",
-            "daily_cpc_selection_mode": "complete",
+            "campaign_scope": "stored_pending_resume",
+            "daily_cpc_selection_mode": existing_progress.get("selection_mode"),
+            "campaign_selection_mode": existing_progress.get("selection_mode"),
+            "cpc_backfill_resume_selection_mode": existing_progress.get("selection_mode"),
             "planned_operation": "cpc_pending_resume_only",
             "source_progress_kind": source_progress_kind,
             "raw_campaign_count": None,
@@ -6000,11 +6090,14 @@ def run():
             "existing_progress_completed_batches": existing_progress.get("completed_batches"),
             "existing_progress_pending_batches": existing_progress.get("pending_batches"),
             "existing_progress_next_batch_index": existing_progress.get("next_batch_index"),
+            "progress_key": existing_progress_key,
             "pending_batch_indexes": pending_batch_indexes,
+            "planned_batch_indexes": pending_batch_indexes[: max(1, int(args.max_cpc_batches or 1))],
             "first_pending_batch_index": first_pending_batch_index,
             "first_pending_batch_campaign_ids": first_pending_batch_campaign_ids,
             "estimated_campaign_units_to_run": pending_campaign_units,
             "pending_campaign_units": pending_campaign_units,
+            "pending_units": pending_campaign_units,
             "pending_campaign_ids": pending_campaign_ids,
             "cpo_status": daily_status.get("cpo_status"),
             "allowed_before_daily_status": allow_before_daily_status,

@@ -178,6 +178,11 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(guard["recovery_budget_available"], 400)
         self.assertTrue(guard["will_run"])
 
+    def test_budget_guard_uses_dynamic_daily_limit(self):
+        guard = worker.build_budget_guard(500, phase="post", daily_limit=960)
+        self.assertEqual(guard["daily_limit"], 960)
+        self.assertEqual(guard["recovery_budget_available"], 260)
+
     def test_plan_exposes_budget_source_and_confidence(self):
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [_status_row()]})
         client = _FakeClient()
@@ -566,6 +571,73 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertEqual(candidate["next_batch_index"], 15)
         self.assertEqual(candidate["planned_batch_indexes"], [15])
         self.assertEqual(candidate["total_campaigns"], 1323)
+
+    def test_missing_status_with_live_progress_is_recoverable_progress_without_status(self):
+        client = _FakeClient()
+        db = _FakeDbClient(
+            {
+                loader.PIPELINE_RUNTIME_STATE_TABLE: [
+                    {
+                        "state_key": "cpc_progress:cpc_progress:smart-tail",
+                        "state_type": "cpc_progress",
+                        "account_signature": "acct_test",
+                        "updated_at": "2026-05-28T06:58:17+00:00",
+                        "payload": {
+                            "date_from": "2026-05-27",
+                            "date_to": "2026-05-27",
+                            "selection_mode": "smart_recent_active",
+                            "account_signature": "acct_test",
+                            "total_campaigns": 1316,
+                            "batch_size": 10,
+                            "completed_batches": 68,
+                            "pending_batches": 64,
+                            "next_batch_index": 68,
+                            "pending_batch_indexes": list(range(68, 132)),
+                            "ordered_campaign_ids": [f"{9834000 + i}" for i in range(1316)],
+                        },
+                    }
+                ]
+            }
+        )
+        with mock.patch.object(worker.loader, "get_statistics_json_budget_diagnostics", return_value={
+            "daily_budget_used_today": 0,
+            "budget_source": "runtime_usage_ledger",
+            "budget_confidence": "high",
+            "usage_event_count": 0,
+            "daily_limit": 2000,
+        }), mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=(None, None, None)):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-27",
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        self.assertEqual(plan["status"], "planned")
+        candidate = plan["candidates"][0]
+        self.assertEqual(candidate["status"], "recoverable_progress_without_status")
+        self.assertEqual(candidate["selection_mode"], "smart_recent_active")
+        self.assertEqual(candidate["next_batch_index"], 68)
+        self.assertEqual(candidate["planned_batch_indexes"], [68])
+
+    def test_missing_status_with_no_progress_is_not_recoverable(self):
+        client = _FakeClient()
+        db = _FakeDbClient({})
+        with mock.patch.object(worker.loader, "get_statistics_json_budget_diagnostics", return_value={
+            "daily_budget_used_today": 0,
+            "budget_source": "runtime_usage_ledger",
+            "budget_confidence": "high",
+            "usage_event_count": 0,
+            "daily_limit": 2000,
+        }), mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=(None, None, None)):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-27",
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        self.assertEqual(plan["status"], "no_partial_candidates")
 
     def test_failed_status_with_no_progress_is_failed_no_progress(self):
         client = _FakeClient()

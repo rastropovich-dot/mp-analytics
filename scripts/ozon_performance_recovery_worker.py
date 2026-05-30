@@ -32,6 +32,7 @@ CONTROLLED_FINAL_STATUSES = {
     "missing_progress_reconstruction_required",
     "failed_no_progress",
     "recoverable_partial_crash",
+    "recoverable_progress_without_status",
     "runtime_state_unavailable",
 }
 
@@ -67,8 +68,8 @@ def is_complete_status_row(row):
     )
 
 
-def build_budget_guard(daily_budget_used_today, phase="pre"):
-    daily_limit = loader.STATS_DAILY_CAMPAIGN_LIMIT
+def build_budget_guard(daily_budget_used_today, phase="pre", daily_limit=None):
+    daily_limit = int(daily_limit or loader.STATS_DAILY_CAMPAIGN_LIMIT)
     daily_reserve = loader.STATS_DAILY_CAMPAIGN_RESERVE
     used = int(daily_budget_used_today or 0)
     remaining_daily_budget = max(0, daily_limit - used)
@@ -295,7 +296,7 @@ def resolve_worker_progress_candidate(db_client, client, target_date):
             continue
         if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
             continue
-        if str(payload.get("selection_mode") or "").strip().lower() != "complete":
+        if not loader.is_supported_cpc_resume_selection_mode(payload.get("selection_mode")):
             continue
         pending_batch_indexes = loader.normalize_batch_indexes(payload.get("pending_batch_indexes"))
         pending_batches = int(payload.get("pending_batches") or len(pending_batch_indexes) or 0)
@@ -470,6 +471,64 @@ def build_candidate_plan(db_client, client, status_row, budget_guard, max_batche
     }
 
 
+def build_progress_only_candidate_plan(db_client, client, target_date, budget_guard, max_batches_per_run):
+    progress_key, progress, source_progress_kind = resolve_worker_progress_candidate(
+        db_client,
+        client,
+        target_date,
+    )
+    if not progress:
+        return None
+
+    progress = loader.validate_cpc_resume_progress(
+        dict(progress),
+        progress_key,
+        target_date=target_date,
+        client=client,
+    )
+    pending_plan = build_pending_batches_plan(progress)
+    planned_batch_indexes, planned_recovery_units = pick_recovery_batches(
+        pending_plan["cpc_batches"],
+        pending_plan["pending_batch_indexes"],
+        budget_guard["recovery_budget_available"],
+        max_batches_per_run,
+    )
+    planned_campaign_ids = [
+        campaign_id
+        for batch_index in planned_batch_indexes
+        for campaign_id in pending_plan["cpc_batches"][int(batch_index)]
+    ]
+    will_run = bool(planned_batch_indexes) and budget_guard["will_run"]
+    command = build_loader_command(
+        target_date=target_date,
+        max_batches_per_run=max(1, len(planned_batch_indexes) or int(max_batches_per_run or 1)),
+        write=False,
+        progress_key=progress_key,
+    )
+    return {
+        "target_date": target_date,
+        "run_status": None,
+        "cpc_status": None,
+        "cpo_status": None,
+        "status": "recoverable_progress_without_status" if will_run else "skipped_no_recovery_budget",
+        "source_progress_kind": source_progress_kind,
+        "progress_key": progress_key,
+        "selection_mode": progress.get("selection_mode"),
+        "pending_batch_indexes": pending_plan["pending_batch_indexes"],
+        "pending_campaign_units": pending_plan["pending_campaign_units"],
+        "pending_campaign_ids": pending_plan["pending_campaign_ids"],
+        "planned_batch_indexes": planned_batch_indexes,
+        "planned_recovery_units": planned_recovery_units,
+        "planned_campaign_ids": planned_campaign_ids,
+        "will_run": will_run,
+        "completed_batches": int(progress.get("completed_batches") or 0),
+        "pending_batches": int(progress.get("pending_batches") or 0),
+        "next_batch_index": progress.get("next_batch_index"),
+        "total_campaigns": int(progress.get("total_campaigns") or 0),
+        "recovery_command": command,
+    }
+
+
 def build_recovery_plan(
     target_date=None,
     max_batches_per_run=1,
@@ -503,7 +562,11 @@ def build_recovery_plan(
             "usage_event_count": 0,
         }
     daily_budget_used_today = int(budget_diagnostics.get("daily_budget_used_today") or 0)
-    budget_guard = build_budget_guard(daily_budget_used_today, phase=phase)
+    budget_guard = build_budget_guard(
+        daily_budget_used_today,
+        phase=phase,
+        daily_limit=budget_diagnostics.get("daily_limit"),
+    )
     cooldown = get_statistics_cooldown(client)
     deadline_utc = (
         parse_relative_wait_deadline(wait_for_minutes, now_utc=now_utc)
@@ -560,6 +623,54 @@ def build_recovery_plan(
         return plan
 
     if not candidates:
+        progress_only_candidate = None
+        if target_date and not latest_status_row:
+            progress_only_candidate = build_progress_only_candidate_plan(
+                db_client,
+                client,
+                target_date,
+                budget_guard,
+                max_batches_per_run,
+            )
+        if progress_only_candidate:
+            if cooldown["cooldown_active"]:
+                progress_only_candidate.update(
+                    {
+                        "status": "waiting_for_cooldown" if wait_meta["will_wait"] else (
+                            "deadline_before_cooldown" if deadline_utc else "skipped_cooldown_active"
+                        ),
+                        "next_attempt_at": wait_meta["cooldown_until"],
+                        "next_attempt_at_utc": wait_meta["cooldown_until_utc"],
+                        "next_attempt_at_local": wait_meta["cooldown_until_local"],
+                        "wait_seconds": wait_meta["wait_seconds"],
+                        "will_wait": wait_meta["will_wait"],
+                        "estimated_completion_possible": wait_meta["estimated_completion_possible"],
+                        "will_run": False,
+                    }
+                )
+                plan["candidates"] = [progress_only_candidate]
+                plan["status"] = progress_only_candidate["status"]
+                plan["planned_recovery_units"] = 0
+                return plan
+            if not budget_guard["will_run"]:
+                progress_only_candidate.update(
+                    {
+                        "status": budget_guard["budget_skip_reason"],
+                        "will_run": False,
+                        "planned_recovery_units": 0,
+                    }
+                )
+            plan["candidates"] = [progress_only_candidate]
+            if progress_only_candidate.get("will_run"):
+                plan["status"] = "planned"
+                plan["will_run"] = True
+                plan["planned_recovery_units"] = int(progress_only_candidate.get("planned_recovery_units") or 0)
+                plan["selected_target_date"] = progress_only_candidate.get("target_date")
+                plan["selected_command"] = progress_only_candidate.get("recovery_command")
+            else:
+                plan["status"] = progress_only_candidate.get("status") or "skipped"
+                plan["planned_recovery_units"] = 0
+            return plan
         if latest_status_row and is_complete_status_row(latest_status_row):
             plan["status"] = "complete"
         else:

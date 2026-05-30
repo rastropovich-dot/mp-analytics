@@ -694,8 +694,13 @@ def build_recovery_plan(
             "cpc_campaign_units_completed_total": int(float(row.get("cpc_campaign_units_completed_total") or 0)),
         }
 
+        status_row_load_date = str(row.get("load_date") or "")
+        quota_from_prior_window = bool(status_row_load_date and status_row_load_date < load_date)
         if (
-            str(row.get("cpc_status") or "").strip().lower() in {"pending_quota", "daily_quota_exhausted"}
+            (
+                str(row.get("cpc_status") or "").strip().lower() in {"pending_quota", "daily_quota_exhausted"}
+                and not quota_from_prior_window
+            )
             or candidate_quota_event
         ):
             next_attempt_at = (candidate_quota_event or {}).get("next_attempt_at") or (candidate_quota_event or {}).get("cooldown_until")

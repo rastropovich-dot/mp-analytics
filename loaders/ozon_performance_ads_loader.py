@@ -59,6 +59,9 @@ DEFAULT_CAMPAIGN_BATCH_SIZE = int(os.getenv("OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZ
 DEFAULT_MAX_CPC_BATCHES_PER_RUN = int(os.getenv("OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN", "5"))
 STATS_DAILY_CAMPAIGN_LIMIT = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT", "2000"))
 STATS_DAILY_CAMPAIGN_RESERVE = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE", "200"))
+STATS_DAILY_LIMIT_PER_ACTIVE_CAMPAIGN = int(
+    os.getenv("OZON_PERFORMANCE_STATS_DAILY_LIMIT_PER_ACTIVE_CAMPAIGN", "240")
+)
 DEFAULT_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN = int(
     os.getenv("OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN", "1800")
 )
@@ -70,6 +73,8 @@ DEFAULT_DORMANT_PROBE_SIZE = int(os.getenv("OZON_PERFORMANCE_DORMANT_PROBE_SIZE"
 SMART_NEW_CAMPAIGN_LOOKBACK_DAYS = int(os.getenv("OZON_PERFORMANCE_SMART_NEW_CAMPAIGN_LOOKBACK_DAYS", "3"))
 REQUEST_AUDIT_LIMIT = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_LIMIT", "1000"))
 REQUEST_AUDIT_TTL_DAYS = int(os.getenv("OZON_PERFORMANCE_REQUEST_AUDIT_TTL_DAYS", "7"))
+STATS_EXTERNALLIST_POLL_SECONDS = int(os.getenv("OZON_PERFORMANCE_STATS_EXTERNALLIST_POLL_SECONDS", "5"))
+STATS_EXTERNALLIST_MAX_POLLS = int(os.getenv("OZON_PERFORMANCE_STATS_EXTERNALLIST_MAX_POLLS", "60"))
 CPC_BACKFILL_START_HHMM = os.getenv("OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM", "03:05")
 STATE_BACKEND = (os.getenv("OZON_PERFORMANCE_STATE_BACKEND", "db") or "db").strip().lower()
 ADV_OBJECT_TYPES = [
@@ -948,6 +953,32 @@ def parse_iso_date(value):
 
 def is_running_campaign(campaign):
     return str(campaign.get("state") or "") == "CAMPAIGN_STATE_RUNNING"
+
+
+def is_active_statistics_campaign(campaign, reference_date=None):
+    if not is_cpc_campaign(campaign):
+        return False
+    reference_date = reference_date or today_local().isoformat()
+    return is_running_campaign(campaign) and campaign_intersects_period(
+        campaign,
+        reference_date,
+        reference_date,
+    )
+
+
+def count_active_statistics_campaigns(campaigns, reference_date=None):
+    return sum(
+        1
+        for campaign in campaigns or []
+        if is_active_statistics_campaign(campaign, reference_date=reference_date)
+    )
+
+
+def compute_statistics_json_daily_limit(active_campaigns_count):
+    active_count = max(0, int(active_campaigns_count or 0))
+    if active_count <= 0:
+        return STATS_DAILY_CAMPAIGN_LIMIT
+    return min(active_count * STATS_DAILY_LIMIT_PER_ACTIVE_CAMPAIGN, STATS_DAILY_CAMPAIGN_LIMIT)
 
 
 def campaign_intersects_period(campaign, date_from, date_to):
@@ -2967,6 +2998,60 @@ class OzonPerformanceClient:
 
         return campaigns
 
+    def list_statistics_external_jobs(self):
+        response = self.request(
+            "GET",
+            "/api/client/statistics/externallist",
+        )
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        return data.get("list") or data.get("items") or data.get("jobs") or []
+
+    def get_active_statistics_external_jobs(self):
+        active_states = {"IN_PROGRESS", "NOT_STARTED"}
+        active_jobs = []
+        for job in self.list_statistics_external_jobs():
+            state = str(job.get("state") or job.get("status") or "").strip().upper()
+            if state in active_states:
+                active_jobs.append(job)
+        return active_jobs
+
+    def wait_for_statistics_job_slot(self, poll_interval_seconds=None, max_polls=None, sleep_fn=time.sleep):
+        poll_interval_seconds = max(1, int(poll_interval_seconds or STATS_EXTERNALLIST_POLL_SECONDS))
+        max_polls = max(1, int(max_polls or STATS_EXTERNALLIST_MAX_POLLS))
+        last_active_jobs = []
+
+        for attempt in range(1, max_polls + 1):
+            active_jobs = self.get_active_statistics_external_jobs()
+            if not active_jobs:
+                return {
+                    "waited": bool(last_active_jobs),
+                    "polls": attempt,
+                    "active_jobs_before_submit": 0,
+                }
+
+            last_active_jobs = active_jobs
+            active_states = sorted(
+                {
+                    str(job.get("state") or job.get("status") or "").strip().upper()
+                    for job in active_jobs
+                }
+            )
+            print(
+                "Ozon Performance statistics/json slot busy: "
+                f"active_jobs={len(active_jobs)} states={active_states} "
+                f"poll={attempt}/{max_polls} sleep={poll_interval_seconds}"
+            )
+            if attempt >= max_polls:
+                break
+            sleep_fn(poll_interval_seconds)
+
+        raise RuntimeError(
+            "Ozon Performance statistics/json submit blocked by active external jobs. "
+            f"active_jobs={len(last_active_jobs)}"
+        )
+
     def request_statistics(self, campaign_ids, date_from, date_to, group_by, force_new=False, usage_context=None):
         payload = {
             "campaigns": [str(campaign_id) for campaign_id in campaign_ids],
@@ -2982,6 +3067,13 @@ class OzonPerformanceClient:
                 f"UUID={cached_job['uuid']} payload_hash={cached_job.get('payload_hash')}"
             )
             return cached_job["uuid"], True, payload
+
+        slot_wait = self.wait_for_statistics_job_slot()
+        if slot_wait.get("waited"):
+            print(
+                "Ozon Performance statistics/json slot became available: "
+                f"polls={slot_wait.get('polls')}"
+            )
 
         response = self.request(
             "POST",
@@ -5474,7 +5566,40 @@ def summarize_statistics_json_usage_budget_from_events(events, load_date, accoun
     }
 
 
+def get_statistics_json_daily_limit_diagnostics(client=None, campaigns=None, reference_date=None):
+    if campaigns is None and client is not None:
+        try:
+            campaigns = client.list_campaigns()
+        except Exception as exc:
+            print(
+                "WARNING: Не удалось получить campaigns для statistics/json daily limit. "
+                f"Ошибка: {sanitize_text(exc)}"
+            )
+            campaigns = None
+
+    if campaigns is None:
+        return {
+            "active_campaigns_count": None,
+            "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+            "daily_limit_source": "fixed_fallback",
+        }
+
+    active_campaigns_count = count_active_statistics_campaigns(
+        campaigns,
+        reference_date=reference_date or today_local().isoformat(),
+    )
+    return {
+        "active_campaigns_count": active_campaigns_count,
+        "daily_limit": compute_statistics_json_daily_limit(active_campaigns_count),
+        "daily_limit_source": "active_campaigns_x240",
+    }
+
+
 def get_statistics_json_budget_diagnostics(load_date, account_signature, client=None):
+    limit_diagnostics = get_statistics_json_daily_limit_diagnostics(
+        client=client,
+        reference_date=load_date,
+    )
     events = []
     if client is not None:
         try:
@@ -5488,7 +5613,7 @@ def get_statistics_json_budget_diagnostics(load_date, account_signature, client=
 
     usage_summary = summarize_statistics_json_usage_budget_from_events(events, load_date, account_signature)
     if usage_summary["budget_confidence"] == "high":
-        return usage_summary
+        return {**usage_summary, **limit_diagnostics}
 
     try:
         result = (
@@ -5510,6 +5635,7 @@ def get_statistics_json_budget_diagnostics(load_date, account_signature, client=
             "budget_source": "status_snapshot",
             "budget_confidence": "low",
             "usage_event_count": 0,
+            **limit_diagnostics,
         }
 
     total = 0
@@ -5520,6 +5646,7 @@ def get_statistics_json_budget_diagnostics(load_date, account_signature, client=
         "budget_source": "status_snapshot",
         "budget_confidence": "low",
         "usage_event_count": 0,
+        **limit_diagnostics,
     }
 
 
@@ -6297,7 +6424,12 @@ def run():
             ),
         )
     cpc_batches = build_cpc_batches(ordered_campaign_ids, batch_size)
-    usable_daily_limit = max(0, STATS_DAILY_CAMPAIGN_LIMIT - STATS_DAILY_CAMPAIGN_RESERVE)
+    dynamic_daily_limit_diagnostics = get_statistics_json_daily_limit_diagnostics(
+        campaigns=campaigns,
+        reference_date=load_date,
+    )
+    current_daily_limit = int(dynamic_daily_limit_diagnostics.get("daily_limit") or STATS_DAILY_CAMPAIGN_LIMIT)
+    usable_daily_limit = max(0, current_daily_limit - STATS_DAILY_CAMPAIGN_RESERVE)
     excluded_by_quota_count = max(0, len(ordered_campaign_ids) - usable_daily_limit)
     first_pending_batch_index = (
         ((existing_backfill_progress or {}).get("pending_batch_indexes") or [None])[0]
@@ -6377,7 +6509,9 @@ def run():
             (date_overlap_cpc_count if date_overlap_cpc_count is not None else len(current_cpc_campaign_ids))
             - len(ordered_campaign_ids),
         ),
-        "daily_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+        "daily_limit": current_daily_limit,
+        "daily_limit_source": dynamic_daily_limit_diagnostics.get("daily_limit_source"),
+        "active_campaigns_count": dynamic_daily_limit_diagnostics.get("active_campaigns_count"),
         "reserve": STATS_DAILY_CAMPAIGN_RESERVE,
         "usable_limit": usable_daily_limit,
         "would_fit_daily_limit": len(ordered_campaign_ids) <= usable_daily_limit,
@@ -6484,6 +6618,8 @@ def run():
         client.account_signature,
         client=client,
     )
+    current_daily_limit = int(budget_diagnostics.get("daily_limit") or current_daily_limit)
+    usable_daily_limit = max(0, current_daily_limit - STATS_DAILY_CAMPAIGN_RESERVE)
     daily_campaign_budget = max(
         0,
         min(
@@ -6555,8 +6691,10 @@ def run():
         "ordering_source": ordering_source,
         "campaign_list_hash": planning_summary.get("campaign_list_hash"),
         "max_batches_per_run": max_cpc_batches,
-        "daily_stats_campaign_limit": STATS_DAILY_CAMPAIGN_LIMIT,
+        "daily_stats_campaign_limit": current_daily_limit,
         "daily_stats_campaign_reserve": STATS_DAILY_CAMPAIGN_RESERVE,
+        "active_campaigns_count": budget_diagnostics.get("active_campaigns_count"),
+        "daily_limit_source": budget_diagnostics.get("daily_limit_source"),
         "daily_campaign_budget": daily_campaign_budget,
         "attempted_campaign_units_before_run": attempted_units_before_run,
         "remaining_campaign_budget": remaining_campaign_budget,
@@ -6590,6 +6728,7 @@ def run():
     print("Ozon Performance run context:")
     print(json.dumps(sanitize_value(run_summary), ensure_ascii=False))
     client.write_run_status(run_summary)
+    save_daily_load_status(run_summary)
 
     catalog = load_catalog()
     rows_by_key = {}

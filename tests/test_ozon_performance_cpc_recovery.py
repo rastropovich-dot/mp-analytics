@@ -129,6 +129,9 @@ class _FakeClient:
     def ensure_token(self):
         return "token"
 
+    def list_campaigns(self):
+        return []
+
 
 def _sample_campaign(campaign_id="24375352"):
     return {
@@ -164,6 +167,101 @@ def _sample_report(campaign_id="24375352", sku="1300079194", spend=1412.30, orde
 
 
 class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
+    def test_wait_for_statistics_job_slot_waits_until_no_active_jobs(self):
+        client = loader.OzonPerformanceClient.__new__(loader.OzonPerformanceClient)
+        client.get_active_statistics_external_jobs = mock.Mock(
+            side_effect=[
+                [{"state": "IN_PROGRESS"}],
+                [],
+            ]
+        )
+        sleeps = []
+
+        result = loader.OzonPerformanceClient.wait_for_statistics_job_slot(
+            client,
+            poll_interval_seconds=7,
+            max_polls=3,
+            sleep_fn=lambda seconds: sleeps.append(seconds),
+        )
+
+        self.assertTrue(result["waited"])
+        self.assertEqual(result["active_jobs_before_submit"], 0)
+        self.assertEqual(sleeps, [7])
+
+    def test_request_statistics_waits_for_free_slot_before_submit(self):
+        class _Response:
+            def json(self):
+                return {"UUID": "uuid-1"}
+
+        client = loader.OzonPerformanceClient.__new__(loader.OzonPerformanceClient)
+        client.account_signature = "acct_d743d49318d3"
+        client.get_cached_job = mock.Mock(return_value=(None, None))
+        client.wait_for_statistics_job_slot = mock.Mock(return_value={"waited": True, "polls": 2})
+        client.request = mock.Mock(return_value=_Response())
+        client.remember_job = mock.Mock()
+
+        uuid, cached, payload = loader.OzonPerformanceClient.request_statistics(
+            client,
+            ["24375352"],
+            "2026-05-27",
+            "2026-05-27",
+            "DATE",
+            usage_context={"target_date": "2026-05-27", "load_date": "2026-05-28", "mode": "cpc-backfill", "batch_index": 68},
+        )
+
+        self.assertEqual(uuid, "uuid-1")
+        self.assertFalse(cached)
+        self.assertEqual(payload["campaigns"], ["24375352"])
+        client.wait_for_statistics_job_slot.assert_called_once()
+        client.request.assert_called_once()
+
+    def test_budget_diagnostics_uses_dynamic_active_campaign_limit(self):
+        campaigns = [
+            {
+                "id": "1",
+                "paymentModel": "CPC",
+                "state": "CAMPAIGN_STATE_RUNNING",
+                "fromDate": "2026-05-28",
+                "toDate": "2026-05-28",
+            },
+            {
+                "id": "2",
+                "paymentModel": "CPC",
+                "state": "CAMPAIGN_STATE_RUNNING",
+                "fromDate": "2026-05-28",
+                "toDate": "2026-05-28",
+            },
+            {
+                "id": "3",
+                "paymentModel": "CPC",
+                "state": "CAMPAIGN_STATE_RUNNING",
+                "fromDate": "2026-05-28",
+                "toDate": "2026-05-28",
+            },
+            {
+                "id": "4",
+                "paymentModel": "CPC",
+                "state": "CAMPAIGN_STATE_PAUSED",
+                "fromDate": "2026-05-28",
+                "toDate": "2026-05-28",
+            },
+        ]
+        client = mock.Mock()
+        client.list_campaigns.return_value = campaigns
+        client.get_statistics_json_usage_events.return_value = []
+        fake_supabase = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: []})
+
+        with mock.patch.object(loader, "supabase", fake_supabase):
+            diagnostics = loader.get_statistics_json_budget_diagnostics(
+                "2026-05-28",
+                "acct_d743d49318d3",
+                client=client,
+            )
+
+        self.assertEqual(diagnostics["active_campaigns_count"], 3)
+        self.assertEqual(diagnostics["daily_limit"], 720)
+        self.assertEqual(diagnostics["daily_limit_source"], "active_campaigns_x240")
+
     def test_partial_failure_status_before_any_progress_stays_failed_with_error_info(self):
         run_summary = {
             "cpo": loader.empty_stage_status("not_started"),

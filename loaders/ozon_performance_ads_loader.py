@@ -5720,14 +5720,15 @@ def save_daily_load_status(summary):
     try:
         supabase.table(DAILY_LOAD_STATUS_TABLE).upsert(
             payload,
-            on_conflict="load_date,target_date,marketplace_code",
+            on_conflict="load_date,target_date,marketplace_code,mode",
         ).execute()
     except Exception as exc:
         print(
-            "WARNING: Не удалось записать ozon_performance_daily_load_status. "
+            "ERROR: Не удалось записать ozon_performance_daily_load_status. "
             "Проверьте миграцию таблицы daily load status. "
             f"Ошибка: {sanitize_text(exc)}"
         )
+        summary["failed_status_writes"] = int(summary.get("failed_status_writes") or 0) + 1
 
 
 def build_traceback_summary(exc=None, limit=12):
@@ -6722,6 +6723,7 @@ def run():
             "db_writes": 0,
         },
         "overall_status": "running",
+        "failed_status_writes": 0,
         "created_at": to_iso(utcnow()),
         "updated_at": to_iso(utcnow()),
     }

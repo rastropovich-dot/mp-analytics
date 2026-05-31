@@ -115,7 +115,7 @@ def parse_args():
     parser.add_argument(
         "--ozon-max-daily-cpc-units",
         type=int,
-        default=None,
+        default=1200,
         help="Optional cap for the initial Ozon daily CPC campaign units before post-recovery continues the tail.",
     )
     parser.add_argument(

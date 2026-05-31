@@ -581,6 +581,9 @@ def build_recovery_plan(
         timezone=timezone,
     )
     candidates = get_partial_candidates(db_client, client.account_signature, target_date=target_date)
+    if phase == "pre" and not target_date and candidates:
+        yesterday = (loader.today_local() - loader.timedelta(days=1)).isoformat()
+        candidates.sort(key=lambda row: 0 if str(row.get("target_date") or "") == yesterday else 1)
     latest_status_row = get_latest_status_row(db_client, client.account_signature, target_date=target_date)
     latest_quota_event = get_recent_daily_quota_event(client, target_date=target_date, load_date=load_date)
 

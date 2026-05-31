@@ -22,12 +22,12 @@
 
 ### Render расписание
 ```
-03:10 UTC — daily pipeline
+00:15 UTC — daily pipeline
 python3 run_daily_pipeline.py --skip-telegram --skip-excel --skip-decision \
   --ozon-campaign-selection smart_recent_active \
   --ozon-recent-activity-days 7 \
   --ozon-dormant-probe-size 100 \
-  --ozon-max-daily-cpc-units 1000 \
+  --ozon-max-daily-cpc-units 1200 \
   --ozon-allow-staged-cpc-partial
 
 07:30 UTC — Telegram

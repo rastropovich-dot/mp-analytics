@@ -809,6 +809,77 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         candidate = plan["candidates"][0]
         self.assertEqual(candidate.get("status"), "skipped_daily_quota_exhausted")
 
+    def test_pre_phase_prioritizes_yesterday_over_older_date(self):
+        today = loader.date(2026, 5, 31)
+        yesterday_row = {
+            "load_date": "2026-05-31",
+            "target_date": "2026-05-30",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 260,
+            "cpc_campaign_units_pending_total": 260,
+            "cpc_campaign_units_completed_total": 990,
+            "updated_at": "2026-05-31T03:18:00+00:00",
+        }
+        older_row = {
+            "load_date": "2026-05-31",
+            "target_date": "2026-05-27",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 486,
+            "cpc_campaign_units_pending_total": 486,
+            "cpc_campaign_units_completed_total": 830,
+            "updated_at": "2026-05-31T10:00:00+00:00",
+        }
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [yesterday_row, older_row]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([99])):
+            plan = worker.build_recovery_plan(
+                db_client=db,
+                client=client,
+                phase="pre",
+                max_batches_per_run=1,
+            )
+        self.assertTrue(plan["will_run"])
+        self.assertEqual(plan["selected_target_date"], "2026-05-30")
+
+    def test_pre_phase_falls_back_to_older_date_when_no_yesterday(self):
+        today = loader.date(2026, 5, 31)
+        older_row = {
+            "load_date": "2026-05-30",
+            "target_date": "2026-05-27",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 486,
+            "cpc_campaign_units_pending_total": 486,
+            "cpc_campaign_units_completed_total": 830,
+            "updated_at": "2026-05-31T03:18:00+00:00",
+        }
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [older_row]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([83])):
+            plan = worker.build_recovery_plan(
+                db_client=db,
+                client=client,
+                phase="pre",
+                max_batches_per_run=1,
+            )
+        self.assertTrue(plan["will_run"])
+        self.assertEqual(plan["selected_target_date"], "2026-05-27")
+
 
 if __name__ == "__main__":
     unittest.main()

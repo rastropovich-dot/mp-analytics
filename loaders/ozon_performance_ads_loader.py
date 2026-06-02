@@ -159,6 +159,7 @@ PERFORMANCE_STATE_LOCK_PATH = PERFORMANCE_CACHE_DIR / "state.lock"
 PIPELINE_RUNTIME_STATE_TABLE = "pipeline_runtime_state"
 RUNTIME_STATE_STALE_DELETE_CHUNK_SIZE = 25
 DAILY_LOAD_STATUS_TABLE = "ozon_performance_daily_load_status"
+STATISTICS_JSON_USAGE_TABLE = "ozon_performance_statistics_json_usage"
 PERSISTENT_STATE_SECTIONS = (
     "jobs",
     "cooldowns",
@@ -2765,6 +2766,7 @@ class OzonPerformanceClient:
             "updated_at": to_iso(utcnow()),
         }
         self.save_state()
+        write_statistics_json_usage_to_db(event)
 
     def ensure_token(self):
         if self.token and time.time() < self.token_expires_at - 60:
@@ -5568,6 +5570,53 @@ def save_ad_attribution_rows(rows):
     )
 
 
+def write_statistics_json_usage_to_db(event):
+    try:
+        row = {
+            "event_at": event.get("event_at"),
+            "target_date": event.get("target_date"),
+            "load_date": event.get("load_date"),
+            "mode": event.get("mode"),
+            "batch_index": event.get("batch_index"),
+            "campaign_units": int(float(event.get("campaign_units") or 0)),
+            "http_status": event.get("http_status"),
+            "response_kind": event.get("response_kind"),
+            "retry_after_seconds": event.get("retry_after_seconds"),
+            "account_signature": event.get("account_signature"),
+            "report_uuid": event.get("report_uuid"),
+            "raw_error_preview": event.get("raw_error_preview"),
+        }
+        supabase.table(STATISTICS_JSON_USAGE_TABLE).insert(sanitize_value(row)).execute()
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось записать statistics/json usage в DB. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+
+
+def read_statistics_json_usage_from_db(load_date, account_signature):
+    try:
+        result = (
+            supabase
+            .table(STATISTICS_JSON_USAGE_TABLE)
+            .select(
+                "event_at,target_date,load_date,mode,batch_index,campaign_units,"
+                "http_status,response_kind,retry_after_seconds,account_signature,"
+                "report_uuid,raw_error_preview"
+            )
+            .eq("load_date", load_date)
+            .eq("account_signature", account_signature)
+            .execute()
+        )
+        return result.data or []
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось прочитать statistics/json usage из DB. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return []
+
+
 def summarize_statistics_json_usage_budget_from_events(events, load_date, account_signature):
     total = 0
     usable_events = []
@@ -5626,6 +5675,8 @@ def get_statistics_json_budget_diagnostics(load_date, account_signature, client=
         client=client,
         reference_date=load_date,
     )
+
+    # Tier 1: in-memory runtime ledger (highest fidelity, same process)
     events = []
     if client is not None:
         try:
@@ -5641,6 +5692,18 @@ def get_statistics_json_budget_diagnostics(load_date, account_signature, client=
     if usage_summary["budget_confidence"] == "high":
         return {**usage_summary, **limit_diagnostics}
 
+    # Tier 2: persistent DB usage ledger (cross-process, high confidence)
+    db_events = read_statistics_json_usage_from_db(load_date, account_signature)
+    if db_events:
+        db_summary = summarize_statistics_json_usage_budget_from_events(db_events, load_date, account_signature)
+        if db_summary["budget_confidence"] == "high":
+            return {
+                **db_summary,
+                "budget_source": "db_usage_ledger",
+                **limit_diagnostics,
+            }
+
+    # Tier 3: status snapshot fallback (low confidence)
     try:
         result = (
             supabase

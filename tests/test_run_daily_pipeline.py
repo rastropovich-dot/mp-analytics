@@ -1,5 +1,7 @@
+import subprocess
 import types
 import unittest
+from unittest import mock
 
 import run_daily_pipeline as pipeline
 
@@ -130,6 +132,69 @@ class RunDailyPipelineTests(unittest.TestCase):
                 "Telegram: отправка сигналов", args, ozon_downstream_allowed=None
             )[0]
         )
+
+
+class RunStepNonFatalTests(unittest.TestCase):
+    def _make_process(self, returncode, output=""):
+        proc = mock.Mock()
+        stdout_mock = mock.MagicMock()
+        stdout_mock.__iter__ = mock.Mock(return_value=iter([output] if output else []))
+        proc.stdout = stdout_mock
+        proc.wait = mock.Mock(return_value=returncode)
+        return proc
+
+    def test_fatal_true_exits_on_nonzero(self):
+        proc = self._make_process(1, "error\n")
+        with mock.patch("subprocess.Popen", return_value=proc), \
+             mock.patch.object(pipeline, "send_failure_alert"), \
+             self.assertRaises(SystemExit):
+            pipeline.run_step("Some step", "false", fatal=True)
+
+    def test_fatal_false_returns_failed_dict_on_nonzero(self):
+        proc = self._make_process(1, "error\n")
+        with mock.patch("subprocess.Popen", return_value=proc), \
+             mock.patch.object(pipeline, "send_failure_alert"):
+            result = pipeline.run_step("Some step", "false", fatal=False)
+        self.assertTrue(result.get("failed"))
+        self.assertEqual(result.get("returncode"), 1)
+
+    def test_fatal_false_does_not_exit_on_success(self):
+        proc = self._make_process(0, "ok\n")
+        with mock.patch("subprocess.Popen", return_value=proc):
+            result = pipeline.run_step("Some step", "true", fatal=False)
+        self.assertFalse(result.get("failed"))
+
+    def test_ozon_performance_step_uses_non_fatal(self):
+        """Ozon Performance step sets ozon_downstream_allowed=False on failure."""
+        args = types.SimpleNamespace(
+            skip_recovery=False,
+            skip_excel=False,
+            skip_decision=False,
+            skip_telegram=False,
+        )
+        titles_run = []
+        step_results = {}
+
+        def fake_run_step(title, command, fatal=True):
+            titles_run.append(title)
+            if title == "Ozon: реклама Performance API":
+                self.assertFalse(fatal, "Ozon Performance step must be non-fatal")
+                return {"failed": True, "returncode": 1, "output_text": "", "recovery_result": None, "ozon_run_summary": None}
+            return {"output_text": "", "recovery_result": None, "ozon_run_summary": None}
+
+        steps = [
+            ("Ozon: реклама Performance API", "ozon_cmd"),
+            ("Ozon: расчет organic sales по SKU", "organic_cmd"),
+            ("KPI: расчет SKU", "kpi_cmd"),
+        ]
+        with mock.patch.object(pipeline, "run_step", side_effect=fake_run_step), \
+             mock.patch.object(pipeline, "build_steps", return_value=steps), \
+             mock.patch.object(pipeline, "parse_args", return_value=args), \
+             mock.patch.object(pipeline, "send_failure_alert"):
+            pipeline.main()
+
+        self.assertIn("KPI: расчет SKU", titles_run)
+        self.assertNotIn("Ozon: расчет organic sales по SKU", titles_run)
 
 
 if __name__ == "__main__":

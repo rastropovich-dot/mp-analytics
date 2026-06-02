@@ -226,7 +226,7 @@ def should_skip_pipeline_step(title, args, ozon_downstream_allowed):
     return False, None
 
 
-def run_step(title, command):
+def run_step(title, command, fatal=True):
     prepared_command = prepare_command(command)
 
     print("\n" + "=" * 80)
@@ -259,7 +259,17 @@ def run_step(title, command):
         print(f"❌ Ошибка на шаге: {title}")
         print(f"Код ошибки: {returncode}")
         send_failure_alert(title, returncode, list(tail_lines))
-        sys.exit(returncode)
+        if fatal:
+            sys.exit(returncode)
+        return {
+            "failed": True,
+            "returncode": returncode,
+            "output_text": "".join(full_output_lines),
+            "recovery_result": None,
+            "ozon_run_summary": parse_ozon_performance_run_summary("".join(full_output_lines))
+            if title == "Ozon: реклама Performance API"
+            else None,
+        }
 
     recovery_result = None
     if is_recovery_step(title):
@@ -293,15 +303,22 @@ def main():
         if should_skip:
             print(skip_message)
             continue
-        step_result = run_step(title, command)
+        step_result = run_step(title, command, fatal=(title != "Ozon: реклама Performance API"))
 
         if title == "Ozon: реклама Performance API":
-            ozon_downstream_allowed = ozon_run_summary_is_complete(step_result.get("ozon_run_summary"))
-            summary = step_result.get("ozon_run_summary") or {}
-            print(
-                "Ozon Performance daily status after main load: "
-                f"{summary.get('overall_status') or 'unknown'}"
-            )
+            if step_result.get("failed"):
+                ozon_downstream_allowed = False
+                print(
+                    "Ozon Performance step failed — continuing pipeline "
+                    "(WB/KPI/Telegram not blocked)"
+                )
+            else:
+                ozon_downstream_allowed = ozon_run_summary_is_complete(step_result.get("ozon_run_summary"))
+                summary = step_result.get("ozon_run_summary") or {}
+                print(
+                    "Ozon Performance daily status after main load: "
+                    f"{summary.get('overall_status') or 'unknown'}"
+                )
         elif title == "Ozon Performance: CPC recovery after daily":
             recovery_result = step_result.get("recovery_result") or {}
             if recovery_result_allows_ozon_downstream(recovery_result):

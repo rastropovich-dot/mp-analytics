@@ -391,6 +391,14 @@ class RuntimeStateUnavailableError(RuntimeError):
     """Raised when runtime progress cannot be read from DB reliably for recovery."""
 
 
+class OzonServer500Error(RuntimeError):
+    """Raised when Ozon Performance status endpoint returns HTTP 500 after retries."""
+
+    def __init__(self, uuid):
+        super().__init__(f"Ozon Performance status endpoint HTTP 500 after retries: uuid={uuid}")
+        self.uuid = uuid
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -3196,7 +3204,25 @@ class OzonPerformanceClient:
         profile = POLL_PROFILES[poll_profile]
 
         for attempt in range(1, int(profile["max_attempts"]) + 1):
-            response = self.request("GET", f"/api/client/statistics/{uuid}")
+            _exc_500 = None
+            for _retry in range(3):
+                try:
+                    response = self.request("GET", f"/api/client/statistics/{uuid}")
+                    _exc_500 = None
+                    break
+                except requests.HTTPError as http_exc:
+                    if getattr(http_exc.response, "status_code", None) != 500:
+                        raise
+                    _exc_500 = http_exc
+                    if _retry < 2:
+                        print(
+                            f"Ozon Performance polling UUID={uuid} HTTP 500 "
+                            f"(retry {_retry + 1}/2), sleeping 30s"
+                        )
+                        time.sleep(30)
+            if _exc_500:
+                raise OzonServer500Error(uuid) from _exc_500
+
             data = response.json()
             state = str(data.get("state") or data.get("status") or "").upper()
 
@@ -6798,6 +6824,8 @@ def run():
             f"target_batches={target_batch_indexes}"
         )
 
+        consecutive_500_batches = 0
+
         for batch_index in target_batch_indexes:
             if batch_index >= len(cpc_batches):
                 continue
@@ -6881,6 +6909,50 @@ def run():
                 print(f"CPC statistics/json {cpc_pending_status}:")
                 print(json.dumps(sanitize_value(run_summary["cpc"]), ensure_ascii=False))
                 break
+            except OzonServer500Error as exc:
+                batch_finished_at = utcnow()
+                consecutive_500_batches += 1
+                batch_event = {
+                    "batch_index": int(batch_index),
+                    "start_time": to_iso(batch_started_at),
+                    "end_time": to_iso(batch_finished_at),
+                    "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                    "http_status": 500,
+                    "pause_before_next_batch_seconds": 0,
+                }
+                batch_events.append(batch_event)
+                print(
+                    "Ozon Performance CPC batch event: "
+                    + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+                )
+                if consecutive_500_batches >= 3:
+                    print(
+                        f"Ozon Performance CPC: 3 consecutive HTTP 500 batches, "
+                        f"stopping gracefully at batch_index={batch_index}"
+                    )
+                    cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+                    build_partial_failure_status(
+                        run_summary=run_summary,
+                        cpc_progress_snapshot=cpc_progress_snapshot,
+                        cpc_batches=cpc_batches,
+                        ordered_campaign_ids=ordered_campaign_ids,
+                        progress_key=progress_key,
+                        exc=exc,
+                    )
+                    run_summary["cpc"]["failed_batch_index"] = batch_index
+                    run_summary["cpc"]["failed_batch"] = campaign_batch
+                    run_summary["cpc_stop_reason"] = "server_500_graceful_stop"
+                    run_summary["updated_at"] = to_iso(utcnow())
+                    client.write_run_status(run_summary)
+                    save_daily_load_status(run_summary)
+                    break
+                else:
+                    print(
+                        f"Ozon Performance CPC: HTTP 500 on batch_index={batch_index} "
+                        f"(consecutive={consecutive_500_batches}), waiting 15 min before next batch"
+                    )
+                    time.sleep(900)
+                    continue
             except Exception as exc:
                 batch_finished_at = utcnow()
                 batch_event = {
@@ -6927,6 +6999,7 @@ def run():
                 "Ozon Performance CPC batch event: "
                 + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
             )
+            consecutive_500_batches = 0
             cpc_progress_snapshot = client.mark_cpc_batch_completed(progress_key, batch_index)
 
             if args.debug_sample:

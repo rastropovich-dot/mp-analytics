@@ -880,6 +880,90 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertTrue(plan["will_run"])
         self.assertEqual(plan["selected_target_date"], "2026-05-27")
 
+    def test_post_phase_prioritizes_yesterday_over_older_date(self):
+        today = loader.date(2026, 6, 1)
+        yesterday_row = {
+            "load_date": "2026-06-01",
+            "target_date": "2026-05-31",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 260,
+            "cpc_campaign_units_pending_total": 260,
+            "cpc_campaign_units_completed_total": 990,
+            "updated_at": "2026-06-01T00:30:00+00:00",
+        }
+        older_row = {
+            "load_date": "2026-06-01",
+            "target_date": "2026-05-27",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 476,
+            "cpc_campaign_units_pending_total": 476,
+            "cpc_campaign_units_completed_total": 840,
+            "updated_at": "2026-06-01T07:58:20+00:00",  # more recently updated
+        }
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [yesterday_row, older_row]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([99])):
+            plan = worker.build_recovery_plan(
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        self.assertTrue(plan["will_run"])
+        self.assertEqual(plan["selected_target_date"], "2026-05-31")
+
+    def test_post_phase_sorts_by_minimum_pending_when_no_yesterday(self):
+        today = loader.date(2026, 6, 1)
+        high_pending_row = {
+            "load_date": "2026-06-01",
+            "target_date": "2026-05-27",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 476,
+            "cpc_campaign_units_pending_total": 476,
+            "cpc_campaign_units_completed_total": 840,
+            "updated_at": "2026-06-01T07:58:20+00:00",  # more recently updated → comes first from DB
+        }
+        low_pending_row = {
+            "load_date": "2026-06-01",
+            "target_date": "2026-05-30",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_ads",
+            "cpc_status": "pending_backfill",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 250,
+            "cpc_campaign_units_pending_total": 250,
+            "cpc_campaign_units_completed_total": 1000,
+            "updated_at": "2026-06-01T00:28:06+00:00",
+        }
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [high_pending_row, low_pending_row]})
+        client = _FakeClient()
+        with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([99])):
+            plan = worker.build_recovery_plan(
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        self.assertTrue(plan["will_run"])
+        self.assertEqual(plan["selected_target_date"], "2026-05-30")  # 250 pending < 476
+
 
 if __name__ == "__main__":
     unittest.main()

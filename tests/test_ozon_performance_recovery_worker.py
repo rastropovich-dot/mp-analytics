@@ -778,7 +778,7 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertNotEqual(candidate.get("status"), "skipped_daily_quota_exhausted")
         self.assertTrue(candidate.get("will_run"))
 
-    def test_quota_exhausted_same_window_stays_blocked(self):
+    def test_quota_exhausted_stays_blocked_while_cooldown_active(self):
         same_day_status_row = {
             "load_date": "2026-05-30",
             "target_date": "2026-05-29",
@@ -793,9 +793,12 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
             "updated_at": "2026-05-30T04:00:00+00:00",
         }
         db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [same_day_status_row]})
-        client = _FakeClient()
+        # cooldown still active — quota window not yet expired
+        client = _FakeClient(cooldown_until="2026-05-31T00:00:00+00:00")
         today = loader.date(2026, 5, 30)
+        now_utc = loader.datetime(2026, 5, 30, 4, 0, 0, tzinfo=loader.ZoneInfo("UTC"))
         with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "utcnow", return_value=now_utc), \
              mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
              mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([90])):
             plan = worker.build_recovery_plan(
@@ -808,6 +811,40 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         self.assertFalse(plan["will_run"])
         candidate = plan["candidates"][0]
         self.assertEqual(candidate.get("status"), "skipped_daily_quota_exhausted")
+
+    def test_quota_exhausted_unblocks_after_cooldown_expires(self):
+        same_day_status_row = {
+            "load_date": "2026-05-30",
+            "target_date": "2026-05-29",
+            "marketplace_code": "ozon",
+            "account_signature": "acct_test",
+            "run_status": "partial_quota",
+            "cpc_status": "pending_quota",
+            "cpo_status": "success",
+            "cpc_pending_campaigns": 100,
+            "cpc_campaign_units_pending_total": 100,
+            "cpc_campaign_units_completed_total": 900,
+            "updated_at": "2026-05-30T00:25:00+00:00",
+        }
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: [same_day_status_row]})
+        # cooldown expired — quota window has passed
+        client = _FakeClient()
+        today = loader.date(2026, 5, 30)
+        now_utc = loader.datetime(2026, 5, 30, 4, 41, 0, tzinfo=loader.ZoneInfo("UTC"))
+        with mock.patch.object(worker.loader, "today_local", return_value=today), \
+             mock.patch.object(worker.loader, "utcnow", return_value=now_utc), \
+             mock.patch.object(worker.loader, "read_attempted_campaign_units_for_load_date", return_value=0), \
+             mock.patch.object(worker.loader, "resolve_cpc_backfill_progress", return_value=_progress([90])):
+            plan = worker.build_recovery_plan(
+                target_date="2026-05-29",
+                db_client=db,
+                client=client,
+                phase="post",
+                max_batches_per_run=1,
+            )
+        self.assertTrue(plan["will_run"])
+        candidate = plan["candidates"][0]
+        self.assertNotEqual(candidate.get("status"), "skipped_daily_quota_exhausted")
 
     def test_pre_phase_prioritizes_yesterday_over_older_date(self):
         today = loader.date(2026, 5, 31)

@@ -704,14 +704,19 @@ def build_recovery_plan(
 
         status_row_load_date = str(row.get("load_date") or "")
         quota_from_prior_window = bool(status_row_load_date and status_row_load_date < load_date)
+        next_attempt_at = (candidate_quota_event or {}).get("next_attempt_at") or (candidate_quota_event or {}).get("cooldown_until")
+        quota_window_still_active = (
+            cooldown["cooldown_active"]
+            or bool(next_attempt_at and loader.to_iso(now_utc) < next_attempt_at)
+        )
         if (
             (
                 str(row.get("cpc_status") or "").strip().lower() in {"pending_quota", "daily_quota_exhausted"}
                 and not quota_from_prior_window
+                and quota_window_still_active
             )
-            or candidate_quota_event
+            or (candidate_quota_event and quota_window_still_active)
         ):
-            next_attempt_at = (candidate_quota_event or {}).get("next_attempt_at") or (candidate_quota_event or {}).get("cooldown_until")
             candidate_plan.update(
                 {
                     "status": "skipped_daily_quota_exhausted",

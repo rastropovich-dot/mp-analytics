@@ -400,6 +400,15 @@ class OzonServer500Error(RuntimeError):
         self.uuid = uuid
 
 
+class OzonReportErrorStateError(RuntimeError):
+    """Raised when Ozon Performance report reaches terminal ERROR/FAILED state."""
+
+    def __init__(self, uuid, data):
+        super().__init__(f"Ozon Performance report state=ERROR: uuid={uuid}")
+        self.uuid = uuid
+        self.data = data
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -3233,7 +3242,7 @@ class OzonPerformanceClient:
 
             if state in {"ERROR", "FAILED", "FAIL"}:
                 self.forget_jobs_by_uuid(uuid)
-                raise RuntimeError(f"Ozon Performance report failed: {data}")
+                raise OzonReportErrorStateError(uuid, data)
 
             sleep_seconds = min(
                 int(profile["cap_sleep_seconds"]),
@@ -6888,6 +6897,7 @@ def run():
         )
 
         consecutive_500_batches = 0
+        consecutive_error_state_batches = 0
 
         for batch_index in target_batch_indexes:
             if batch_index >= len(cpc_batches):
@@ -6975,6 +6985,7 @@ def run():
             except OzonServer500Error as exc:
                 batch_finished_at = utcnow()
                 consecutive_500_batches += 1
+                consecutive_error_state_batches = 0
                 batch_event = {
                     "batch_index": int(batch_index),
                     "start_time": to_iso(batch_started_at),
@@ -7015,6 +7026,51 @@ def run():
                         f"(consecutive={consecutive_500_batches}), waiting 15 min before next batch"
                     )
                     time.sleep(900)
+                    continue
+            except OzonReportErrorStateError as exc:
+                batch_finished_at = utcnow()
+                consecutive_error_state_batches += 1
+                consecutive_500_batches = 0
+                batch_event = {
+                    "batch_index": int(batch_index),
+                    "start_time": to_iso(batch_started_at),
+                    "end_time": to_iso(batch_finished_at),
+                    "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                    "http_status": "report_error",
+                    "error_state": "ERROR",
+                    "pause_before_next_batch_seconds": 0,
+                }
+                batch_events.append(batch_event)
+                print(
+                    "Ozon Performance CPC batch event: "
+                    + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+                )
+                print(
+                    f"Ozon report state=ERROR, skipping batch {batch_index} "
+                    f"(consecutive_error_state={consecutive_error_state_batches})"
+                )
+                if consecutive_error_state_batches >= 3:
+                    print(
+                        f"Ozon Performance CPC: 3 consecutive report ERROR batches, "
+                        f"stopping gracefully at batch_index={batch_index}"
+                    )
+                    cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+                    build_partial_failure_status(
+                        run_summary=run_summary,
+                        cpc_progress_snapshot=cpc_progress_snapshot,
+                        cpc_batches=cpc_batches,
+                        ordered_campaign_ids=ordered_campaign_ids,
+                        progress_key=progress_key,
+                        exc=exc,
+                    )
+                    run_summary["cpc"]["failed_batch_index"] = batch_index
+                    run_summary["cpc"]["failed_batch"] = campaign_batch
+                    run_summary["cpc_stop_reason"] = "report_error_graceful_stop"
+                    run_summary["updated_at"] = to_iso(utcnow())
+                    client.write_run_status(run_summary)
+                    save_daily_load_status(run_summary)
+                    break
+                else:
                     continue
             except Exception as exc:
                 batch_finished_at = utcnow()
@@ -7063,6 +7119,7 @@ def run():
                 + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
             )
             consecutive_500_batches = 0
+            consecutive_error_state_batches = 0
             cpc_progress_snapshot = client.mark_cpc_batch_completed(progress_key, batch_index)
 
             if args.debug_sample:

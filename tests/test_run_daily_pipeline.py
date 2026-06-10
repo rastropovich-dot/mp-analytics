@@ -110,6 +110,57 @@ class RunDailyPipelineTests(unittest.TestCase):
             pipeline.ozon_run_summary_is_complete({"overall_status": "partial_ads"})
         )
 
+    def test_yesterday_cpc_not_complete_skips_pre_phase(self):
+        args = types.SimpleNamespace(
+            skip_recovery=False,
+            skip_excel=False,
+            skip_decision=False,
+            skip_telegram=False,
+        )
+        skip, message = pipeline.should_skip_pipeline_step(
+            "Ozon Performance: CPC recovery before daily",
+            args,
+            ozon_downstream_allowed=None,
+            yesterday_cpc_complete=False,
+        )
+        self.assertTrue(skip)
+        self.assertIn("quota", message)
+
+    def test_yesterday_cpc_not_complete_does_not_skip_post_phase(self):
+        args = types.SimpleNamespace(
+            skip_recovery=False,
+            skip_excel=False,
+            skip_decision=False,
+            skip_telegram=False,
+        )
+        skip, _msg = pipeline.should_skip_pipeline_step(
+            "Ozon Performance: CPC recovery after daily",
+            args,
+            ozon_downstream_allowed=None,
+            yesterday_cpc_complete=False,
+        )
+        self.assertFalse(skip)
+
+    def test_yesterday_cpc_complete_allows_pre_phase(self):
+        args = types.SimpleNamespace(
+            skip_recovery=False,
+            skip_excel=False,
+            skip_decision=False,
+            skip_telegram=False,
+        )
+        skip, _msg = pipeline.should_skip_pipeline_step(
+            "Ozon Performance: CPC recovery before daily",
+            args,
+            ozon_downstream_allowed=None,
+            yesterday_cpc_complete=True,
+        )
+        self.assertFalse(skip)
+
+    def test_is_yesterday_cpc_loaded_returns_false_on_exception(self):
+        with mock.patch.dict("sys.modules", {"loaders.ozon_performance_ads_loader": None}):
+            result = pipeline.is_yesterday_cpc_loaded()
+        self.assertFalse(result)
+
     def test_non_recovery_skip_flags_unchanged(self):
         args = types.SimpleNamespace(
             skip_recovery=False,

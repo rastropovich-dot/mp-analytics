@@ -16,6 +16,28 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+def is_yesterday_cpc_loaded():
+    try:
+        from loaders.ozon_performance_ads_loader import supabase, today_local, timedelta
+        yesterday = (today_local() - timedelta(days=1)).isoformat()
+        result = (
+            supabase.table("ozon_performance_daily_load_status")
+            .select("run_status")
+            .eq("target_date", yesterday)
+            .eq("run_status", "success")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            print(f"Yesterday ({yesterday}) CPC: success — pre-phase recovery allowed")
+            return True
+        print(f"Yesterday ({yesterday}) CPC: not complete — skipping pre-phase to preserve quota")
+        return False
+    except Exception as exc:
+        print(f"Warning: cannot check yesterday CPC status ({exc}) — skipping pre-phase to be safe")
+        return False
+
+
 def build_ozon_performance_daily_command(args=None):
     command_parts = [
         "python3",
@@ -212,9 +234,14 @@ def ozon_run_summary_is_complete(run_summary):
     return run_summary.get("overall_status") == "success"
 
 
-def should_skip_pipeline_step(title, args, ozon_downstream_allowed):
+def should_skip_pipeline_step(title, args, ozon_downstream_allowed, yesterday_cpc_complete=True):
     if args.skip_recovery and is_recovery_step(title):
         return True, f"⏭️ Пропускаем шаг: {title}"
+    if not yesterday_cpc_complete and title == "Ozon Performance: CPC recovery before daily":
+        return True, (
+            f"⏭️ Пропускаем шаг: {title} "
+            "(вчерашний день не загружен — quota отдаём дневному pipeline)"
+        )
     if args.skip_excel and title.startswith("Excel:"):
         return True, f"⏭️ Пропускаем шаг: {title}"
     if args.skip_decision and title == "Decision: SKU daily input":
@@ -296,10 +323,13 @@ def main():
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    yesterday_cpc_complete = is_yesterday_cpc_loaded()
     ozon_downstream_allowed = None
 
     for title, command in steps:
-        should_skip, skip_message = should_skip_pipeline_step(title, args, ozon_downstream_allowed)
+        should_skip, skip_message = should_skip_pipeline_step(
+            title, args, ozon_downstream_allowed, yesterday_cpc_complete
+        )
         if should_skip:
             print(skip_message)
             continue

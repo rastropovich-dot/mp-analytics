@@ -566,6 +566,20 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             pruned = loader.prune_statistics_json_usage_events([old_event, fresh_event])
         self.assertEqual(pruned, [fresh_event])
 
+    def test_expired_job_cache_entries_are_pruned(self):
+        now = loader.datetime(2026, 8, 30, 18, 0, tzinfo=loader.ZoneInfo("UTC"))
+        jobs = {
+            "fresh": {"uuid": "u-fresh", "updated_at": "2026-08-29T00:00:00+00:00"},
+            "stale": {"uuid": "u-stale", "updated_at": "2026-06-11T00:00:00+00:00"},
+            "no_timestamp": {"uuid": "u-unknown"},
+        }
+
+        pruned = loader.prune_job_cache_entries(jobs, now=now)
+
+        self.assertIn("fresh", pruned)
+        self.assertIn("no_timestamp", pruned)
+        self.assertNotIn("stale", pruned)
+
     def test_persistent_state_load_survives_oversized_jobs_section(self):
         rows = [
             {

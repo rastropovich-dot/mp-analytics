@@ -181,6 +181,9 @@ PERSISTENT_STATE_MAX_ROWS_PER_SECTION = int(
 PERSISTENT_STATE_SECTION_ROW_CAPS = {
     "jobs": int(os.getenv("OZON_RUNTIME_STATE_JOBS_MAX_ROWS", "1000")),
 }
+# Кэш заданий полезен, только пока отчёт жив на стороне Ozon — это дни, не месяцы.
+# Просроченные записи не переиспользуются, но переписываются при каждом save_state.
+JOB_CACHE_TTL_DAYS = int(os.getenv("OZON_RUNTIME_STATE_JOBS_TTL_DAYS", "7"))
 
 VOLATILE_STATE_SECTIONS = (
     "runs",
@@ -546,6 +549,29 @@ def prune_request_history(history):
 
     if len(pruned) > REQUEST_AUDIT_LIMIT:
         pruned = pruned[-REQUEST_AUDIT_LIMIT:]
+
+    return pruned
+
+
+def prune_job_cache_entries(jobs, now=None):
+    """Чистит просроченный кэш statistics/json заданий. Записи без разбираемой
+    метки времени сохраняем: лучше лишняя строка, чем потерянный свежий uuid."""
+    if not isinstance(jobs, dict):
+        return {}
+
+    cutoff = (now or utcnow()) - timedelta(days=JOB_CACHE_TTL_DAYS)
+    pruned = {}
+
+    for key, value in jobs.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            timestamp = from_iso(value.get("updated_at"))
+        except Exception:
+            timestamp = None
+        if timestamp and timestamp < cutoff:
+            continue
+        pruned[key] = value
 
     return pruned
 
@@ -2330,6 +2356,38 @@ class OzonPerformanceClient:
                     break
         return rows
 
+    def build_persistent_state_key_query(self):
+        return (
+            supabase
+            .table(PIPELINE_RUNTIME_STATE_TABLE)
+            .select("state_key")
+            .eq("account_signature", self.account_signature)
+            .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
+        )
+
+    def fetch_persistent_state_key_rows(self):
+        """Одним запросом PostgREST отдаёт максимум 1000 ключей, и уборка видела бы
+        лишь часть таблицы. Пагинация — только если клиент её поддерживает."""
+        query = self.build_persistent_state_key_query()
+        if not hasattr(query, "range"):
+            return query.execute().data or []
+
+        rows = []
+        offset = 0
+        while True:
+            page = (
+                self.build_persistent_state_key_query()
+                .range(offset, offset + PERSISTENT_STATE_PAGE_SIZE - 1)
+                .execute()
+            ).data or []
+            rows.extend(page)
+            if len(page) < PERSISTENT_STATE_PAGE_SIZE:
+                break
+            offset += PERSISTENT_STATE_PAGE_SIZE
+            if offset >= PERSISTENT_STATE_MAX_ROWS_PER_SECTION:
+                break
+        return rows
+
     def load_persistent_state_from_db(self):
         state = {section: {} for section in PERSISTENT_STATE_SECTIONS}
 
@@ -2370,6 +2428,10 @@ class OzonPerformanceClient:
                 expired_keys,
                 warning_label="runtime_state_stale_cleanup_warning",
             )
+
+        # Просроченные ключи выпадают из state, поэтому обратно уже не пишутся,
+        # а stale-cleanup в save_persistent_state_to_db удалит их строки из БД.
+        state["jobs"] = prune_job_cache_entries(state.get("jobs"))
 
         return state
 
@@ -2414,15 +2476,8 @@ class OzonPerformanceClient:
         existing_keys = set()
         stale_cleanup_read_failed = None
         try:
-            existing = (
-                supabase
-                .table(PIPELINE_RUNTIME_STATE_TABLE)
-                .select("state_key")
-                .eq("account_signature", self.account_signature)
-                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
-                .execute()
-            )
-            existing_keys = {row.get("state_key") for row in (existing.data or []) if row.get("state_key")}
+            existing_rows = self.fetch_persistent_state_key_rows()
+            existing_keys = {row.get("state_key") for row in existing_rows if row.get("state_key")}
         except Exception as exc:
             stale_cleanup_read_failed = exc
             print(

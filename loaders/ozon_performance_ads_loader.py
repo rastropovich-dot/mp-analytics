@@ -167,6 +167,14 @@ PERSISTENT_STATE_SECTIONS = (
     "cpc_progress",
     "statistics_json_usage",
 )
+# PostgREST отдаёт максимум 1000 строк на запрос. Секции грузились одним запросом,
+# и разросшийся jobs (8k+ строк) вытеснял cooldowns / cpc_progress / ledger — они
+# молча приезжали пустыми, из-за чего circuit breaker не переживал рестарт процесса.
+PERSISTENT_STATE_PAGE_SIZE = 1000
+PERSISTENT_STATE_MAX_ROWS_PER_SECTION = int(
+    os.getenv("OZON_RUNTIME_STATE_MAX_ROWS_PER_SECTION", "20000")
+)
+
 VOLATILE_STATE_SECTIONS = (
     "runs",
     "request_history",
@@ -1595,9 +1603,7 @@ def determine_pending_cpc_status(mode, *, staged_pending=False, quota_limited=Fa
         return "success"
     if mode == "daily-yesterday" and staged_pending:
         return "pending_backfill"
-    if mode == "daily-yesterday" and quota_limited:
-        return "pending_quota"
-    if mode in {"daily-yesterday", "cpc-backfill"}:
+    if quota_limited:
         return "pending_quota"
     return "pending_backfill"
 
@@ -2191,6 +2197,10 @@ class OzonPerformanceClient:
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
         self.state_backend = self.resolve_state_backend()
         self.skip_persistent_state_load = bool(skip_persistent_state_load)
+        # Ozon считает дневной лимит в ЗАПРОСАХ ("максимум 2000"), а ledger пишет
+        # одну строку на submit. Считаем реальные HTTP-вызовы по видам, чтобы знать
+        # свой настоящий расход: остальное в лимите выбирают другие сервисы кабинета.
+        self.request_counts = defaultdict(int)
         self.persistent_state_loaded_from_db = False
         self.state = self.load_state()
         self.migrate_legacy_rate_limit_state()
@@ -2284,18 +2294,41 @@ class OzonPerformanceClient:
 
         return {"deleted": deleted, "failed": failed, "chunks": chunks_total}
 
+    def fetch_persistent_state_rows(self):
+        """Каждая секция тянется отдельно и постранично: общий запрос упирался в
+        лимит PostgREST и возвращал только jobs."""
+        rows = []
+        for state_type in PERSISTENT_STATE_SECTIONS:
+            offset = 0
+            while True:
+                page = (
+                    supabase
+                    .table(PIPELINE_RUNTIME_STATE_TABLE)
+                    .select("state_key,state_type,payload,expires_at")
+                    .eq("account_signature", self.account_signature)
+                    .eq("state_type", state_type)
+                    .order("updated_at", desc=True)
+                    .range(offset, offset + PERSISTENT_STATE_PAGE_SIZE - 1)
+                    .execute()
+                ).data or []
+                rows.extend(page)
+                if len(page) < PERSISTENT_STATE_PAGE_SIZE:
+                    break
+                offset += PERSISTENT_STATE_PAGE_SIZE
+                if offset >= PERSISTENT_STATE_MAX_ROWS_PER_SECTION:
+                    print(
+                        "Ozon Performance runtime state WARNING: секция "
+                        f"{state_type} превысила {PERSISTENT_STATE_MAX_ROWS_PER_SECTION} строк, "
+                        "загружены только самые свежие"
+                    )
+                    break
+        return rows
+
     def load_persistent_state_from_db(self):
         state = {section: {} for section in PERSISTENT_STATE_SECTIONS}
 
         try:
-            result = (
-                supabase
-                .table(PIPELINE_RUNTIME_STATE_TABLE)
-                .select("state_key,state_type,payload,expires_at")
-                .eq("account_signature", self.account_signature)
-                .in_("state_type", list(PERSISTENT_STATE_SECTIONS))
-                .execute()
-            )
+            result = self.fetch_persistent_state_rows()
         except Exception as exc:
             self.persistent_state_loaded_from_db = False
             print(
@@ -2309,7 +2342,7 @@ class OzonPerformanceClient:
 
         self.persistent_state_loaded_from_db = True
 
-        rows = result.data or []
+        rows = result
         expired_keys = []
         now = utcnow()
 
@@ -2838,6 +2871,7 @@ class OzonPerformanceClient:
                 )
 
         for attempt in range(1, int(profile["max_attempts"]) + 1):
+            self.request_counts[infer_request_kind(method, endpoint)] += 1
             response = requests.request(
                 method,
                 url,
@@ -6863,23 +6897,24 @@ def run():
         else:
             target_batch_indexes = list(cpc_progress_snapshot.get("pending_batch_indexes") or [])
 
+        planned_batch_indexes = target_batch_indexes
         if args.mode in {"daily-yesterday", "cpc-backfill"}:
-            target_batch_indexes, planned_campaign_units = build_limited_batch_indexes(
+            planned_batch_indexes, _ = build_limited_batch_indexes(
                 cpc_batches,
                 target_batch_indexes,
                 remaining_campaign_budget,
             )
-            if max_cpc_batches:
-                target_batch_indexes = target_batch_indexes[:max_cpc_batches]
-                planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
-        else:
-            if max_cpc_batches:
-                target_batch_indexes = target_batch_indexes[:max_cpc_batches]
-            planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
+        budget_limited = len(planned_batch_indexes) < len(target_batch_indexes)
+        batch_cap_limited = bool(max_cpc_batches) and len(planned_batch_indexes) > int(max_cpc_batches)
+        if max_cpc_batches:
+            planned_batch_indexes = planned_batch_indexes[:max_cpc_batches]
+        target_batch_indexes = planned_batch_indexes
+        planned_campaign_units = sum_campaign_units_for_batches(cpc_batches, target_batch_indexes)
 
         run_summary["cpc_campaign_units_planned"] = planned_campaign_units
         run_summary["cpc_pending_campaigns_before_run"] = max(0, len(ordered_campaign_ids) - planned_campaign_units)
-        run_summary["quota_limited"] = planned_campaign_units < len(ordered_campaign_ids)
+        run_summary["quota_limited"] = budget_limited
+        run_summary["batch_cap_limited"] = batch_cap_limited
         run_summary["staged_pending"] = (
             args.mode == "daily-yesterday"
             and bool(args.allow_staged_cpc_partial)
@@ -7379,8 +7414,30 @@ def run():
         run_summary["cpc_stop_reason"] = "daily_quota_exhausted"
     elif cpc_stage_status == "pending_429":
         run_summary["cpc_stop_reason"] = "429"
+    elif cpc_stage_status == "pending_backfill" and run_summary.get("batch_cap_limited"):
+        run_summary["cpc_stop_reason"] = "batch_cap_reached"
     else:
         run_summary["cpc_stop_reason"] = None
+
+    statistics_requests = dict(getattr(client, "request_counts", {}) or {})
+    submit_requests = int(statistics_requests.get("statistics_job_create", 0))
+    poll_requests = int(statistics_requests.get("statistics_job_status", 0))
+    run_summary["statistics_json_http_requests"] = {
+        "submit": submit_requests,
+        "poll": poll_requests,
+        "statistics_family_total": submit_requests + poll_requests,
+        "all_endpoints_total": sum(int(value) for value in statistics_requests.values()),
+        "by_kind": {key: int(value) for key, value in sorted(statistics_requests.items())},
+    }
+    print(
+        "Ozon Performance statistics/json request cost: "
+        f"submit={submit_requests} poll={poll_requests} "
+        f"statistics_family_total={submit_requests + poll_requests} "
+        f"campaign_units_attempted={attempted_campaign_units_this_run} "
+        "(лимит Ozon считается в запросах, ledger — в units; "
+        "разницу и чужих потребителей кабинета отсюда не видно)"
+    )
+
     if run_summary.get("cpc"):
         run_summary["cpc"]["campaign_units_attempted"] = attempted_campaign_units_this_run
         run_summary["cpc"]["campaign_units_completed"] = completed_campaign_units_this_run

@@ -60,6 +60,18 @@ class _FakeDbClient:
         return _FakeQuery(self.tables.get(name, []))
 
 
+class _FakeUsageLedgerClient:
+    """Отдельный стаб: у _FakeClient метода нет намеренно — его наличие
+    переключает ветку budget_diagnostics в execute_recovery_session."""
+
+    def __init__(self, usage_events=None, account_signature="acct_test"):
+        self.account_signature = account_signature
+        self._usage_events = list(usage_events or [])
+
+    def get_statistics_json_usage_events(self):
+        return list(self._usage_events)
+
+
 class _FakeClient:
     def __init__(self, cooldown_until=None, account_signature="acct_test"):
         self.account_signature = account_signature
@@ -168,6 +180,105 @@ class OzonPerformanceRecoveryWorkerTests(unittest.TestCase):
         rows = worker.get_partial_candidates(db, "acct_test")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["target_date"], "2026-05-21")
+
+    def test_old_pending_tail_survives_recent_status_rows(self):
+        # Старый хвост вытеснялся из выборки по updated_at: дедупликация по
+        # target_date шла уже после усечения, поэтому дата пропадала совсем.
+        fresh = [
+            _status_row(
+                target_date=f"2026-07-{1 + index // 3:02d}",
+                updated_at=f"2026-08-01T{index // 60:02d}:{index % 60:02d}:00Z",
+                run_status="success",
+                cpc_status="success",
+                pending_campaigns=0,
+                pending_units=0,
+            )
+            for index in range(150)
+        ]
+        old_tail = _status_row(
+            target_date="2026-05-24",
+            updated_at="2026-05-25T00:00:00Z",
+            run_status="partial_quota",
+            cpc_status="pending_quota",
+            pending_campaigns=1303,
+            pending_units=1303,
+        )
+        db = _FakeDbClient({loader.DAILY_LOAD_STATUS_TABLE: fresh + [old_tail]})
+
+        rows = worker.get_partial_candidates(db, "acct_test")
+
+        self.assertEqual([row["target_date"] for row in rows], ["2026-05-24"])
+
+    def test_candidate_scan_limit_covers_full_history(self):
+        self.assertGreaterEqual(worker.CANDIDATE_SCAN_LIMIT, 1000)
+
+    def test_quota_event_is_account_wide_across_target_dates(self):
+        # Квота общая на аккаунт: 429 по одной дате закрывает окно для всех.
+        client = _FakeUsageLedgerClient(
+            usage_events=[
+                {
+                    "event_at": "2026-08-30 17:54:01.611422+00",
+                    "response_kind": "daily_quota_exhausted",
+                    "target_date": "2026-07-13",
+                    "load_date": "2026-08-30",
+                }
+            ]
+        )
+        now = loader.datetime(2026, 8, 30, 18, 0, 0, tzinfo=loader.ZoneInfo("UTC"))
+
+        event = worker.get_recent_daily_quota_event(client, now_utc=now)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["target_date"], "2026-07-13")
+
+    def test_quota_event_from_previous_window_is_ignored(self):
+        client = _FakeUsageLedgerClient(
+            usage_events=[
+                {
+                    "event_at": "2026-08-29 23:10:00.000000+00",
+                    "response_kind": "daily_quota_exhausted",
+                    "target_date": "2026-07-13",
+                    "load_date": "2026-08-29",
+                }
+            ]
+        )
+        now = loader.datetime(2026, 8, 30, 18, 0, 0, tzinfo=loader.ZoneInfo("UTC"))
+
+        self.assertIsNone(worker.get_recent_daily_quota_event(client, now_utc=now))
+
+    def test_postgres_timestamp_format_is_parsed(self):
+        parsed = worker.parse_event_timestamp("2026-08-30 17:54:01.611422+00")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.year, 2026)
+        self.assertEqual(parsed.hour, 17)
+
+    def test_quota_label_without_429_event_is_flagged(self):
+        rows = [
+            {
+                "load_date": "2026-08-30",
+                "target_date": "2026-07-13",
+                "cpc_status": "pending_quota",
+                "cpc_stop_reason": "daily_quota_exhausted",
+            }
+        ]
+
+        flagged = worker.detect_quota_label_discrepancies(rows, None, "2026-08-30")
+
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged[0]["target_date"], "2026-07-13")
+
+    def test_quota_label_with_real_429_event_is_not_flagged(self):
+        rows = [
+            {
+                "load_date": "2026-08-30",
+                "target_date": "2026-07-13",
+                "cpc_status": "pending_quota",
+                "cpc_stop_reason": "daily_quota_exhausted",
+            }
+        ]
+        event = {"event_at": "2026-08-30 17:54:01.611422+00"}
+
+        self.assertEqual(worker.detect_quota_label_discrepancies(rows, event, "2026-08-30"), [])
 
     def test_pre_phase_caps_recovery_budget(self):
         guard = worker.build_budget_guard(1400, phase="pre")

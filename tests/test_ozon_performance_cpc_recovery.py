@@ -600,7 +600,9 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             state["cooldowns"].get("statistics_json:acct_test"),
             "2026-08-31T00:05:00+00:00",
         )
-        self.assertEqual(len(state["jobs"]), 1200)
+        # jobs ограничен собственным потолком: save_persistent_state_to_db
+        # переписывает каждую загруженную строку при каждом save_state.
+        self.assertEqual(len(state["jobs"]), loader.PERSISTENT_STATE_SECTION_ROW_CAPS["jobs"])
 
     def test_staged_daily_pending_status_is_pending_backfill_not_success(self):
         self.assertEqual(

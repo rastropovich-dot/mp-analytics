@@ -174,6 +174,13 @@ PERSISTENT_STATE_PAGE_SIZE = 1000
 PERSISTENT_STATE_MAX_ROWS_PER_SECTION = int(
     os.getenv("OZON_RUNTIME_STATE_MAX_ROWS_PER_SECTION", "20000")
 )
+# save_persistent_state_to_db апсертит КАЖДЫЙ ключ всех секций при каждом save_state,
+# а save_state зовётся десятки раз за прогон. Раньше jobs де-факто обрезался общим
+# лимитом PostgREST до 1000; грузить все 8k+ означало бы кратно раздуть запись.
+# Секции с собственным потолком грузим по самым свежим.
+PERSISTENT_STATE_SECTION_ROW_CAPS = {
+    "jobs": int(os.getenv("OZON_RUNTIME_STATE_JOBS_MAX_ROWS", "1000")),
+}
 
 VOLATILE_STATE_SECTIONS = (
     "runs",
@@ -2299,6 +2306,10 @@ class OzonPerformanceClient:
         лимит PostgREST и возвращал только jobs."""
         rows = []
         for state_type in PERSISTENT_STATE_SECTIONS:
+            section_cap = PERSISTENT_STATE_SECTION_ROW_CAPS.get(
+                state_type,
+                PERSISTENT_STATE_MAX_ROWS_PER_SECTION,
+            )
             offset = 0
             while True:
                 page = (
@@ -2308,19 +2319,14 @@ class OzonPerformanceClient:
                     .eq("account_signature", self.account_signature)
                     .eq("state_type", state_type)
                     .order("updated_at", desc=True)
-                    .range(offset, offset + PERSISTENT_STATE_PAGE_SIZE - 1)
+                    .range(offset, min(offset + PERSISTENT_STATE_PAGE_SIZE, section_cap) - 1)
                     .execute()
                 ).data or []
                 rows.extend(page)
                 if len(page) < PERSISTENT_STATE_PAGE_SIZE:
                     break
                 offset += PERSISTENT_STATE_PAGE_SIZE
-                if offset >= PERSISTENT_STATE_MAX_ROWS_PER_SECTION:
-                    print(
-                        "Ozon Performance runtime state WARNING: секция "
-                        f"{state_type} превысила {PERSISTENT_STATE_MAX_ROWS_PER_SECTION} строк, "
-                        "загружены только самые свежие"
-                    )
+                if offset >= section_cap:
                     break
         return rows
 

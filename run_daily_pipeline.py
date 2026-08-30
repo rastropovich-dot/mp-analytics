@@ -78,7 +78,7 @@ def build_steps(args=None):
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
         (
             "Ozon Performance: CPC recovery after daily",
-            "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-for-minutes 240 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 1 --stop-when-complete",
+            "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-for-minutes 240 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 26 --stop-when-complete",
         ),
         ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
         ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),

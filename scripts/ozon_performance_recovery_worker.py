@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -13,6 +14,10 @@ if str(REPO_ROOT) not in sys.path:
 
 import loaders.ozon_performance_ads_loader as loader
 
+
+# Кандидаты дедуплицируются по target_date уже после выборки, поэтому лимит должен
+# покрывать всю историю: усечение прячет старые pending-хвосты, а не просто урезает выдачу.
+CANDIDATE_SCAN_LIMIT = int(os.getenv("OZON_RECOVERY_CANDIDATE_SCAN_LIMIT", "5000"))
 
 CONTROLLED_FINAL_STATUSES = {
     "complete",
@@ -103,19 +108,47 @@ def build_budget_guard(daily_budget_used_today, phase="pre", daily_limit=None):
     return result
 
 
-def get_recent_daily_quota_event(client, target_date=None, load_date=None):
+def parse_event_timestamp(value):
+    """Ledger отдаёт event_at в формате Postgres ('2026-08-30 17:54:01.611422+00'),
+    который datetime.fromisoformat на 3.9 не разбирает."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace(" ", "T", 1)
+    if len(normalized) >= 3 and normalized[-3] in "+-":
+        normalized = f"{normalized}:00"
+    try:
+        return loader.from_iso(normalized)
+    except Exception:
+        return None
+
+
+def statistics_json_quota_window_start(now_utc=None):
+    """Окно дневной квоты statistics/json — UTC-сутки, сброс в 00:00 UTC."""
+    now_utc = (now_utc or loader.utcnow()).astimezone(ZoneInfo("UTC"))
+    return loader.datetime.combine(
+        now_utc.date(),
+        loader.datetime.min.time(),
+        tzinfo=ZoneInfo("UTC"),
+    )
+
+
+def get_recent_daily_quota_event(client, now_utc=None):
+    """Дневная квота statistics/json общая на аккаунт, поэтому событие ищется по
+    всему текущему UTC-окну без привязки к target_date: 429, пойманный на одной
+    дате, закрывает окно и для всех остальных."""
     try:
         events = client.get_statistics_json_usage_events()
     except Exception:
         return None
 
+    window_start = statistics_json_quota_window_start(now_utc)
     candidates = []
     for event in events or []:
         if str(event.get("response_kind") or "") != "daily_quota_exhausted":
             continue
-        if target_date and str(event.get("target_date") or "") != str(target_date):
-            continue
-        if load_date and str(event.get("load_date") or "") != str(load_date):
+        event_at = parse_event_timestamp(event.get("event_at"))
+        if event_at and event_at < window_start:
             continue
         candidates.append(event)
 
@@ -124,6 +157,31 @@ def get_recent_daily_quota_event(client, target_date=None, load_date=None):
 
     candidates.sort(key=lambda item: str(item.get("event_at") or ""), reverse=True)
     return candidates[0]
+
+
+def detect_quota_label_discrepancies(candidates, quota_event, load_date):
+    """Строка статуса заявляет исчерпание квоты, а 429-события в текущем окне нет —
+    значит метку проставил не ответ Ozon. Ровно так выглядел баг
+    determine_pending_cpc_status, месяцами клеивший daily_quota_exhausted на
+    штатный выход по лимиту батчей."""
+    if quota_event:
+        return []
+
+    flagged = []
+    for row in candidates or []:
+        if str(row.get("load_date") or "") != str(load_date):
+            continue
+        stop_reason = str(row.get("cpc_stop_reason") or "").strip().lower()
+        cpc_status = str(row.get("cpc_status") or "").strip().lower()
+        if stop_reason == "daily_quota_exhausted" or cpc_status == "pending_quota":
+            flagged.append(
+                {
+                    "target_date": row.get("target_date"),
+                    "cpc_status": row.get("cpc_status"),
+                    "cpc_stop_reason": row.get("cpc_stop_reason"),
+                }
+            )
+    return flagged
 
 
 def parse_wait_deadline(wait_until, timezone):
@@ -200,7 +258,7 @@ def build_wait_metadata(cooldown_until, deadline_utc, sleep_padding_seconds, now
     }
 
 
-def fetch_latest_status_rows(db_client, account_signature, target_date=None, limit=100):
+def fetch_latest_status_rows(db_client, account_signature, target_date=None, limit=100, warn_on_truncation=False):
     query = (
         db_client
         .table(loader.DAILY_LOAD_STATUS_TABLE)
@@ -214,6 +272,11 @@ def fetch_latest_status_rows(db_client, account_signature, target_date=None, lim
     if hasattr(query, "limit"):
         query = query.limit(limit)
     rows = query.execute().data or []
+    if warn_on_truncation and len(rows) >= limit:
+        print(
+            "Ozon Performance recovery worker WARNING: "
+            f"status scan hit limit={limit}, старые pending-хвосты могут быть не видны"
+        )
     latest_by_target = {}
     for row in rows:
         key = row.get("target_date")
@@ -233,7 +296,13 @@ def get_latest_status_row(db_client, account_signature, target_date=None):
 
 
 def get_partial_candidates(db_client, account_signature, target_date=None):
-    rows = fetch_latest_status_rows(db_client, account_signature, target_date=target_date)
+    rows = fetch_latest_status_rows(
+        db_client,
+        account_signature,
+        target_date=target_date,
+        limit=CANDIDATE_SCAN_LIMIT,
+        warn_on_truncation=True,
+    )
     return [row for row in rows if is_partial_ads_candidate(row)]
 
 
@@ -590,12 +659,25 @@ def build_recovery_plan(
             )
         )
     latest_status_row = get_latest_status_row(db_client, client.account_signature, target_date=target_date)
-    latest_quota_event = get_recent_daily_quota_event(client, target_date=target_date, load_date=load_date)
+    latest_quota_event = get_recent_daily_quota_event(client, now_utc=now_utc)
+    quota_label_discrepancies = detect_quota_label_discrepancies(
+        candidates,
+        latest_quota_event,
+        load_date,
+    )
+    if quota_label_discrepancies:
+        print(
+            "Ozon Performance recovery worker WARNING: "
+            f"{len(quota_label_discrepancies)} строк статуса помечены как исчерпание квоты, "
+            "но 429-события в текущем окне нет — метка проставлена не ответом Ozon: "
+            f"{json.dumps(quota_label_discrepancies, ensure_ascii=False)}"
+        )
 
     plan = {
         "load_date": load_date,
         "requested_target_date": target_date,
         "phase": phase,
+        "quota_label_discrepancies": quota_label_discrepancies,
         "current_time_utc": wait_meta["current_time_utc"],
         "current_time_local": wait_meta["current_time_local"],
         "daily_budget_used_today": budget_guard["daily_budget_used_today"],
@@ -687,11 +769,8 @@ def build_recovery_plan(
         return plan
 
     for row in candidates:
-        candidate_quota_event = get_recent_daily_quota_event(
-            client,
-            target_date=row.get("target_date"),
-            load_date=load_date,
-        )
+        # Квота аккаунтная: одно и то же событие окна действует на все даты.
+        candidate_quota_event = latest_quota_event
         candidate_plan = {
             "target_date": row.get("target_date"),
             "run_status": row.get("run_status"),

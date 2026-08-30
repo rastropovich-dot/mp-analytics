@@ -88,6 +88,25 @@ class _FakeDbClient:
         return _FakeQuery(self.tables.get(name, []))
 
 
+class _PostgrestCappedQuery(_FakeQuery):
+    """PostgREST жёстко режет ответ на 1000 строк — именно из-за этого
+    разросшийся jobs вытеснял cooldowns/cpc_progress из общей выборки."""
+
+    HARD_ROW_CAP = 1000
+
+    def execute(self):
+        result = super().execute()
+        return _FakeResult(list(result.data)[: self.HARD_ROW_CAP])
+
+
+class _PostgrestCappedDbClient:
+    def __init__(self, tables):
+        self.tables = tables
+
+    def table(self, name):
+        return _PostgrestCappedQuery(self.tables.get(name, []))
+
+
 class _FlakyExactQuery(_FakeQuery):
     def __init__(self, rows, failures):
         super().__init__(rows)
@@ -547,6 +566,42 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
             pruned = loader.prune_statistics_json_usage_events([old_event, fresh_event])
         self.assertEqual(pruned, [fresh_event])
 
+    def test_persistent_state_load_survives_oversized_jobs_section(self):
+        rows = [
+            {
+                "state_key": f"jobs:job-{index}",
+                "state_type": "jobs",
+                "payload": {"uuid": f"job-{index}"},
+                "expires_at": None,
+                "updated_at": f"2026-08-30T00:00:{index % 60:02d}Z",
+                "account_signature": "acct_test",
+            }
+            for index in range(1200)
+        ]
+        rows.append(
+            {
+                "state_key": "cooldowns:statistics_json:acct_test",
+                "state_type": "cooldowns",
+                "payload": "2026-08-31T00:05:00+00:00",
+                "expires_at": "2026-08-31T00:05:00+00:00",
+                "updated_at": "2026-08-30T17:54:03Z",
+                "account_signature": "acct_test",
+            }
+        )
+        fake_supabase = _PostgrestCappedDbClient({loader.PIPELINE_RUNTIME_STATE_TABLE: rows})
+
+        client = loader.OzonPerformanceClient(skip_persistent_state_load=True)
+        client.account_signature = "acct_test"
+        with mock.patch.object(loader, "supabase", fake_supabase), \
+             mock.patch.object(loader, "utcnow", return_value=loader.datetime(2026, 8, 30, 18, 0, tzinfo=loader.ZoneInfo("UTC"))):
+            state = client.load_persistent_state_from_db()
+
+        self.assertEqual(
+            state["cooldowns"].get("statistics_json:acct_test"),
+            "2026-08-31T00:05:00+00:00",
+        )
+        self.assertEqual(len(state["jobs"]), 1200)
+
     def test_staged_daily_pending_status_is_pending_backfill_not_success(self):
         self.assertEqual(
             loader.determine_pending_cpc_status(
@@ -556,6 +611,36 @@ class OzonPerformanceCpcRecoveryTests(unittest.TestCase):
                 has_pending_batches=True,
             ),
             "pending_backfill",
+        )
+
+    def test_backfill_batch_cap_exit_is_not_reported_as_quota(self):
+        self.assertEqual(
+            loader.determine_pending_cpc_status(
+                "cpc-backfill",
+                quota_limited=False,
+                has_pending_batches=True,
+            ),
+            "pending_backfill",
+        )
+
+    def test_backfill_real_quota_limit_is_reported_as_pending_quota(self):
+        self.assertEqual(
+            loader.determine_pending_cpc_status(
+                "cpc-backfill",
+                quota_limited=True,
+                has_pending_batches=True,
+            ),
+            "pending_quota",
+        )
+
+    def test_daily_quota_limit_is_reported_as_pending_quota(self):
+        self.assertEqual(
+            loader.determine_pending_cpc_status(
+                "daily-yesterday",
+                quota_limited=True,
+                has_pending_batches=True,
+            ),
+            "pending_quota",
         )
 
     def test_traceback_summary_is_truncated(self):

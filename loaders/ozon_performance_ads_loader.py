@@ -788,12 +788,37 @@ def log_http_response(endpoint, attempt, response, extra=None):
     print(json.dumps(sanitize_value(payload), ensure_ascii=False))
 
 
+KNOWN_CPC_STOP_REASONS = frozenset(
+    {
+        "daily_quota_exhausted",
+        "429",
+        "batch_cap_reached",
+        "server_500_graceful_stop",
+        "report_error_graceful_stop",
+        "exception_after_partial_progress",
+    }
+)
+
+
+def resolve_cpc_stop_reason(summary):
+    """Причина остановки CPC берётся из run_summary, а не выводится из статуса.
+
+    Развилка по статусу знала только два состояния и клеила "429" на всё
+    остальное. Незнакомое или пустое значение честнее показать как unknown,
+    чем подставить конкретную причину по умолчанию.
+    """
+    reason = str((summary or {}).get("cpc_stop_reason") or "").strip()
+    if reason in KNOWN_CPC_STOP_REASONS:
+        return reason
+    return "unknown"
+
+
 def send_telegram_partial_ads_alert(summary):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
     cpc = summary.get("cpc") or {}
-    reason = "daily_quota_exhausted" if cpc.get("status") == "pending_quota" else "429"
+    reason = resolve_cpc_stop_reason(summary)
     message = (
         "⚠️ Ozon Performance partial_ads\n"
         f"Период: {summary.get('date_from')}..{summary.get('date_to')}\n"

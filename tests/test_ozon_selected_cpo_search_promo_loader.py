@@ -82,7 +82,7 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         self.assertEqual(parsed["data_rows"][0]["SKU"], "1300079194")
         self.assertEqual(parsed["total_rows"][0]["Дата"], "Всего")
 
-    def test_dry_run_uses_submit_status_download_contract_and_never_general_statistics(self):
+    def test_fetch_uses_submit_status_download_contract_and_never_general_statistics(self):
         client = self.make_client()
         client.request = mock.Mock(return_value=FakeResponse({"UUID": "u1"}))
         client.wait_statistics = mock.Mock(return_value={"state": "OK", "kind": "SEARCH_PROMO_ORGANISATION_ORDERS"})
@@ -91,7 +91,6 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         summary = loader.OzonPerformanceClient.fetch_search_promo_orders_csv(
             client,
             date="2026-05-06",
-            dry_run=True,
             write=False,
         )
 
@@ -142,13 +141,12 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         self.assertIn("promotion_type", " ".join(summary["would_write"]["source_table"]["idempotency_key"]))
         self.assertNotIn("source_uuid", " ".join(summary["would_write"]["source_table"]["idempotency_key"]))
 
-    def test_write_true_is_not_implemented(self):
+    def test_write_true_requires_applied_schema(self):
         client = self.make_client()
         with self.assertRaises(loader.SelectedCpoSchemaNotAppliedError):
             loader.OzonPerformanceClient.fetch_search_promo_orders_csv(
                 client,
                 date="2026-05-06",
-                dry_run=True,
                 write=True,
             )
 
@@ -167,7 +165,6 @@ class SearchPromoOrganisationLoaderTests(unittest.TestCase):
         summary = loader.OzonPerformanceClient.fetch_search_promo_orders_csv(
             client,
             date="2026-05-06",
-            dry_run=True,
             write=True,
             schema_applied=True,
             db_client=db_client,

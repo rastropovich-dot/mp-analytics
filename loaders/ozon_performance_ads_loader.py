@@ -3910,13 +3910,24 @@ class OzonPerformanceClient:
         self,
         date,
         plan_only=False,
-        dry_run=True,
         write=False,
         max_polls=12,
         poll_interval_sec=10,
         schema_applied=False,
         db_client=None,
     ):
+        """Забирает отчёт Selected CPO из Ozon и, при write=True, пишет source-таблицу.
+
+        ВАЖНО: кроме plan_only этот метод ВСЕГДА ходит в живой Ozon —
+        submit, опросы, скачивание. Здесь нет режима "посчитать, не обращаясь к API";
+        читать уже наполненную таблицу умеет load_ozon_selected_cpo_for_date.
+
+        Раньше был параметр dry_run, на котором висели три RuntimeError вида
+        "live execution is not allowed in this task". Вызывающий код всегда передавал
+        dry_run=True вместе с write=True, поэтому ни один из них не мог сработать:
+        они выглядели защитой, не будучи ею. Параметр убран вместе с ними, остались
+        два условия, которые действительно что-то проверяют.
+        """
         del max_polls
         del poll_interval_sec
 
@@ -3968,17 +3979,6 @@ class OzonPerformanceClient:
                 raise SelectedCpoDbMappingError(
                     "write=True requires an explicit DB client in this guarded path to avoid accidental live writes."
                 )
-            if not dry_run:
-                raise RuntimeError("write=True without dry_run is not allowed in this task")
-
-        if not dry_run and not write:
-            raise RuntimeError("fetch_search_promo_orders_csv currently supports only plan_only, dry_run, or guarded write")
-
-        if not dry_run and write:
-            raise RuntimeError("write=True live execution is not allowed in this task")
-
-        if not dry_run:
-            raise RuntimeError("fetch_search_promo_orders_csv currently supports only plan_only or dry_run mode")
 
         response = self.request(
             "POST",
@@ -4144,11 +4144,12 @@ class OzonPerformanceClient:
                 "used_general_statistics_submit": False,
             }
         else:
+            # Эта ветка ходит в живой Ozon. schema_applied раньше был bool(write),
+            # то есть проверка подтверждала сама себя; теперь это запрос к таблице.
             source_summary = self.fetch_search_promo_orders_csv(
                 date=date,
-                dry_run=True,
                 write=write,
-                schema_applied=bool(write),
+                schema_applied=selected_cpo_source_schema_applied(client) if write else False,
                 db_client=client if write else None,
             )
         downstream_summary = self.selected_cpo_downstream_dry_run(
@@ -4947,6 +4948,25 @@ def build_selected_cpo_ad_attribution_rows(source_rows):
         rows.append(row)
     rows.sort(key=lambda item: (item["sale_date"], item["marketplace_sku"], item["ad_source"]))
     return rows
+
+
+def selected_cpo_source_schema_applied(db_client=None):
+    """Настоящая проверка того, что миграция source-таблицы применена.
+
+    Раньше в fetch_search_promo_orders_csv передавали schema_applied=bool(write):
+    значение было True ровно потому, что write=True, то есть проверка подтверждала
+    сама себя и сработать не могла. Здесь — запрос к таблице.
+    """
+    client = db_client or supabase
+    try:
+        client.table(SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE).select("sale_date").limit(1).execute()
+        return True
+    except Exception as exc:
+        print(
+            f"WARNING: {SEARCH_PROMO_SELECTED_CPO_SOURCE_TABLE} недоступна, "
+            f"миграция не применена? Ошибка: {sanitize_text(exc)}"
+        )
+        return False
 
 
 def load_selected_cpo_source_rows(date, db_client=None):
@@ -6470,6 +6490,51 @@ def annotate_run_summary_error(summary, exc, traceback_summary=None):
     }
     summary.update(payload)
     return payload
+
+
+def run_selected_cpo_step(client, args, target_date, run_summary):
+    """Selected CPO не должен уметь помешать записи CPC и CPO.
+
+    Шаг ходит в Ozon и пишет в БД. Раньше он стоял до save_rows и не был обёрнут:
+    любое исключение — 429, таймаут опроса до 13.8 минут, сбой парсинга CSV, ошибка
+    БД — обрывало run() до записи уже добытых за ночь строк рекламы. Теперь это
+    довесок: результат кладём в summary, наружу не пускаем ничего.
+    """
+    if args.mode != "daily-yesterday":
+        return None
+
+    write = not args.dry_run
+    try:
+        result = client.load_ozon_selected_cpo_for_date(
+            target_date,
+            write=write,
+            dry_run=True,
+            approve_write=APPROVE_OZON_SELECTED_CPO_DAILY_WRITE,
+            enabled=ENABLE_OZON_SELECTED_CPO_DAILY,
+            db_client=supabase if write else None,
+            skip_write_if_not_approved=True,
+        )
+    except Exception as exc:
+        result = {
+            "selected_cpo_enabled": bool(ENABLE_OZON_SELECTED_CPO_DAILY),
+            "write_approved": bool(APPROVE_OZON_SELECTED_CPO_DAILY_WRITE),
+            "date": target_date,
+            "status": "failed",
+            "reason": "selected_cpo_step_failed",
+            "db_writes": 0,
+            "error_type": type(exc).__name__,
+            "error": sanitize_text(exc)[:500],
+            "traceback": build_traceback_summary(exc),
+        }
+        print(
+            "WARNING: Selected CPO шаг упал. На записанные CPC/CPO это не влияет. "
+            f"Ошибка: {type(exc).__name__}: {sanitize_text(exc)}"
+        )
+
+    run_summary["selected_cpo"] = result
+    print("Ozon Selected CPO step:")
+    print(json.dumps(sanitize_value(result), ensure_ascii=False))
+    return result
 
 
 def build_partial_failure_status(
@@ -8068,16 +8133,10 @@ def run():
     }
     run_summary["batch_events"] = batch_events
 
-    if args.mode == "daily-yesterday":
-        run_summary["selected_cpo"] = client.load_ozon_selected_cpo_for_date(
-            target_date,
-            write=not args.dry_run,
-            dry_run=True,
-            approve_write=APPROVE_OZON_SELECTED_CPO_DAILY_WRITE,
-            enabled=ENABLE_OZON_SELECTED_CPO_DAILY,
-            db_client=supabase if not args.dry_run else None,
-            skip_write_if_not_approved=True,
-        )
+    if args.dry_run:
+        # В dry-run шаг только читает source-таблицу и в Ozon не ходит,
+        # поэтому его результат попадает в печатаемый ниже summary.
+        run_selected_cpo_step(client, args, target_date, run_summary)
 
     run_summary["updated_at"] = to_iso(utcnow())
     print("Ozon Performance run summary:")
@@ -8114,6 +8173,12 @@ def run():
             client.write_run_status(run_summary)
             save_daily_load_status(run_summary)
             raise
+
+    # Живой Selected CPO — строго после save_rows: сначала сохраняем то, что уже
+    # добыто за ночь, и только потом идём за дополнительными данными.
+    run_selected_cpo_step(client, args, target_date, run_summary)
+
+    run_summary["updated_at"] = to_iso(utcnow())
     client.write_run_status(run_summary)
     save_daily_load_status(run_summary)
 

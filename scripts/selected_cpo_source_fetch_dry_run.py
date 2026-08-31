@@ -261,7 +261,6 @@ def run_live_dry(date: str, sku: str) -> Dict[str, object]:
     try:
         summary = client.fetch_search_promo_orders_csv(
             date=date,
-            dry_run=True,
             write=False,
         )
         http_after = len(client.state.get("request_history", []) or [])

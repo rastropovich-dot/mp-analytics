@@ -862,16 +862,30 @@ def compute_backoff_seconds(base_sleep_seconds, cap_sleep_seconds, attempt):
 
 
 def infer_request_kind(method, endpoint):
+    """ВНИМАНИЕ: statistics_job_status здесь завышен, это не достоверный счётчик.
+
+    Ветка ниже ловит всё по префиксу /api/client/statistics/, поэтому CPO-вызовы
+    all_sku_promo/{orders,media}/generate тоже считаются как poll, хотя они в лимит
+    Ozon не входят. Побочный эффект: ветка all_sku_promo_job_create недостижима.
+
+    Отсюда кормится только run_summary["statistics_json_http_requests"] —
+    диагностическая печать за прогон. Достоверный учёт расхода живёт в ledger
+    ozon_performance_statistics_json_usage: там классифицирует
+    classify_statistics_usage_request, которая требует ровно один сегмент после
+    префикса и CPO не засчитывает. Считать расход надо оттуда, а не отсюда.
+    """
     endpoint_text = str(endpoint or "")
     method_text = str(method or "").upper()
 
     if endpoint_text == "/api/client/statistics/json" and method_text == "POST":
         return "statistics_job_create"
     if endpoint_text.startswith("/api/client/statistics/") and endpoint_text != "/api/client/statistics/report":
+        # Сюда же проваливаются all_sku_promo/* — см. предупреждение в docstring.
         return "statistics_job_status"
     if endpoint_text == "/api/client/statistics/report":
         return "statistics_report_download"
     if endpoint_text.startswith("/api/client/statistics/all_sku_promo/"):
+        # Недостижимо: перехватывается веткой statistics_job_status выше.
         return "all_sku_promo_job_create"
     if endpoint_text == "/api/client/campaign":
         return "campaign_list"
@@ -7900,8 +7914,8 @@ def run():
         f"submit={submit_requests} poll={poll_requests} "
         f"statistics_family_total={submit_requests + poll_requests} "
         f"campaign_units_attempted={attempted_campaign_units_this_run} "
-        "(лимит Ozon считается в запросах, ledger — в units; "
-        "разницу и чужих потребителей кабинета отсюда не видно)"
+        "(poll завышен: infer_request_kind считает CPO-вызовы как poll; "
+        "достоверный расход — в ledger ozon_performance_statistics_json_usage)"
     )
 
     if run_summary.get("cpc"):

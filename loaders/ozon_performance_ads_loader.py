@@ -576,6 +576,139 @@ def prune_job_cache_entries(jobs, now=None):
     return pruned
 
 
+STATISTICS_POLL_ENDPOINT_PREFIX = "/api/client/statistics/"
+STATISTICS_REPORT_ENDPOINT = "/api/client/statistics/report"
+STATISTICS_SUBMIT_ENDPOINT = "/api/client/statistics/json"
+
+
+def classify_statistics_usage_request(method, endpoint):
+    """submit | poll | download для семейства statistics, иначе None.
+
+    Лимит Ozon расходуют все три вида, но ledger писал только submit.
+    """
+    endpoint_text = str(endpoint or "")
+    method_text = str(method or "").upper()
+
+    if endpoint_text == STATISTICS_SUBMIT_ENDPOINT and method_text == "POST":
+        return "submit"
+    if endpoint_text == STATISTICS_REPORT_ENDPOINT:
+        return "download"
+    # Опрос — это ровно /api/client/statistics/{uuid}, один сегмент после префикса.
+    # Вложенные пути (all_sku_promo/orders/generate) — это CPO, он в лимит не входит.
+    if endpoint_text.startswith(STATISTICS_POLL_ENDPOINT_PREFIX) and endpoint_text not in {
+        STATISTICS_SUBMIT_ENDPOINT,
+        STATISTICS_REPORT_ENDPOINT,
+    }:
+        tail = endpoint_text[len(STATISTICS_POLL_ENDPOINT_PREFIX):].strip("/")
+        if tail and "/" not in tail:
+            return "poll"
+    return None
+
+
+def resolve_poll_response_kind(tally, outcome):
+    """Причина завершения ожидания, с явной отметкой 429 именно на опросе.
+
+    До этого 429 на GET /api/client/statistics/{uuid} был полностью невидим:
+    usage-строку писал только POST-путь.
+    """
+    tally = tally or {}
+    outcome = outcome or {}
+
+    if int(tally.get("daily_quota_exhausted") or 0) > 0:
+        return "poll_daily_quota_exhausted"
+
+    terminal = str(outcome.get("response_kind") or "poll_success")
+    if int(tally.get("http_429") or 0) > 0:
+        # 429 был, но ожидание всё же дошло до конца — фиксируем оба факта.
+        return "poll_429" if terminal == "poll_success" else terminal
+    return terminal
+
+
+def build_statistics_usage_event(
+    account_signature,
+    request_kind,
+    request_count,
+    response_kind,
+    uuid=None,
+    http_status=None,
+    retry_after_seconds=None,
+    raw_error_preview=None,
+    usage_context=None,
+):
+    context = dict(usage_context or {})
+    return {
+        "event_at": to_iso(utcnow()),
+        "load_date": context.get("load_date") or today_local().isoformat(),
+        "target_date": context.get("target_date"),
+        "mode": context.get("mode"),
+        "batch_index": context.get("batch_index"),
+        "account_signature": account_signature,
+        "request_kind": request_kind,
+        "request_count": max(0, int(request_count or 0)),
+        # Опросы и скачивания расходуют лимит запросов, но не кампанийный бюджет.
+        # units здесь обязаны быть нулём, иначе поедет daily_budget_used_today.
+        "campaign_units": 0,
+        "http_status": http_status,
+        "response_kind": response_kind,
+        "retry_after_seconds": retry_after_seconds,
+        "report_uuid": str(uuid) if uuid else None,
+        "raw_error_preview": raw_error_preview,
+    }
+
+
+def record_stateless_statistics_usage(
+    client,
+    request_kind,
+    response_kind,
+    http_status=None,
+    retry_after_seconds=None,
+    raw_error_preview=None,
+    usage_context=None,
+):
+    """Одна строка ledger на stateless submit/download recovery-воркера.
+
+    campaign_units здесь остаётся нулём: этот путь никогда не попадал в
+    daily_budget_used_today, и учёт запросов не должен менять бюджет в units.
+    """
+    try:
+        client.record_statistics_json_usage_event(
+            build_statistics_usage_event(
+                account_signature=getattr(client, "account_signature", None),
+                request_kind=request_kind,
+                request_count=1,
+                response_kind=response_kind,
+                uuid=(usage_context or {}).get("report_uuid"),
+                http_status=http_status,
+                retry_after_seconds=retry_after_seconds,
+                raw_error_preview=raw_error_preview,
+                usage_context=usage_context,
+            )
+        )
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось записать stateless statistics usage в ledger. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+
+
+def record_statistics_poll_usage_event(client, uuid, tally, outcome=None, usage_context=None):
+    outcome = outcome or {}
+    response_kind = resolve_poll_response_kind(tally, outcome)
+    event = build_statistics_usage_event(
+        account_signature=getattr(client, "account_signature", None),
+        request_kind="poll",
+        request_count=int((tally or {}).get("requests") or 0),
+        response_kind=response_kind,
+        uuid=uuid,
+        http_status=outcome.get("http_status"),
+        retry_after_seconds=outcome.get("retry_after_seconds"),
+        raw_error_preview=outcome.get("raw_error_preview"),
+        usage_context=usage_context,
+    )
+    client.record_statistics_json_usage_event(event)
+    return event
+
+
 def prune_statistics_json_usage_events(events):
     if not isinstance(events, list):
         return []
@@ -2259,6 +2392,10 @@ class OzonPerformanceClient:
         # одну строку на submit. Считаем реальные HTTP-вызовы по видам, чтобы знать
         # свой настоящий расход: остальное в лимите выбирают другие сервисы кабинета.
         self.request_counts = defaultdict(int)
+        # Счётчик опросов по каждому uuid, копится в памяти и сбрасывается одной
+        # строкой на выходе из wait_statistics. Писать на каждый опрос нельзя:
+        # это 300+ синхронных обращений к БД внутри цикла ожидания.
+        self.statistics_poll_tally = {}
         self.persistent_state_loaded_from_db = False
         self.state = self.load_state()
         self.migrate_legacy_rate_limit_state()
@@ -2869,6 +3006,43 @@ class OzonPerformanceClient:
         self.state["request_history"] = prune_request_history(history)
         self.save_state()
 
+    def poll_tally_store(self):
+        # Чистый in-memory кэш: инициализируем лениво, чтобы учёт запросов не зависел
+        # от того, прошёл ли клиент через __init__.
+        store = getattr(self, "statistics_poll_tally", None)
+        if store is None:
+            store = {}
+            self.statistics_poll_tally = store
+        return store
+
+    def begin_statistics_poll_tally(self, uuid):
+        self.poll_tally_store()[str(uuid)] = {
+            "requests": 0,
+            "http_429": 0,
+            "daily_quota_exhausted": 0,
+            "http_500": 0,
+        }
+
+    def tally_statistics_poll_request(self, uuid, field="requests"):
+        tally = self.poll_tally_store().get(str(uuid))
+        if tally is None:
+            return
+        tally[field] = int(tally.get(field) or 0) + 1
+
+    def flush_statistics_poll_tally(self, uuid, outcome=None, usage_context=None):
+        tally = self.poll_tally_store().pop(str(uuid), None)
+        if not tally or int(tally.get("requests") or 0) <= 0:
+            return None
+        if not getattr(self, "account_signature", None):
+            return None
+        return record_statistics_poll_usage_event(
+            self,
+            uuid,
+            tally,
+            outcome=outcome,
+            usage_context=usage_context,
+        )
+
     def statistics_json_usage_key(self):
         return self.scoped_state_key("statistics_json_usage")
 
@@ -2958,6 +3132,10 @@ class OzonPerformanceClient:
 
         for attempt in range(1, int(profile["max_attempts"]) + 1):
             self.request_counts[infer_request_kind(method, endpoint)] += 1
+            # Считаем здесь, а не в цикле wait_statistics: внутренние retry по 429/500
+            # живут внутри request() и снаружи не видны, а лимит они расходуют.
+            if classify_statistics_usage_request(method, endpoint) == "poll":
+                self.tally_statistics_poll_request(endpoint.rsplit("/", 1)[-1])
             response = requests.request(
                 method,
                 url,
@@ -3028,6 +3206,12 @@ class OzonPerformanceClient:
                         "raw_error_preview": raw_preview[:280],
                     },
                 )
+                if classify_statistics_usage_request(method, endpoint) == "poll":
+                    polled_uuid = endpoint.rsplit("/", 1)[-1]
+                    self.tally_statistics_poll_request(polled_uuid, "http_429")
+                    if response_kind == "daily_quota_exhausted":
+                        self.tally_statistics_poll_request(polled_uuid, "daily_quota_exhausted")
+
                 if endpoint == "/api/client/statistics/json" and str(method).upper() == "POST":
                     usage_payload = dict(usage_event or {})
                     usage_payload.update(
@@ -3045,6 +3229,8 @@ class OzonPerformanceClient:
                             "raw_error_preview": raw_preview[:280],
                             "next_attempt_at": next_attempt_at,
                             "campaign_units": int(usage_payload.get("campaign_units") or 0),
+                            "request_kind": "submit",
+                            "request_count": 1,
                         }
                     )
                     self.record_statistics_json_usage_event(usage_payload)
@@ -3092,6 +3278,19 @@ class OzonPerformanceClient:
                     "retry_profile": retry_profile,
                 },
             )
+            if classify_statistics_usage_request(method, endpoint) == "download":
+                self.record_statistics_json_usage_event(
+                    build_statistics_usage_event(
+                        account_signature=self.account_signature,
+                        request_kind="download",
+                        request_count=1,
+                        response_kind="download_success",
+                        uuid=(kwargs.get("params") or {}).get("UUID"),
+                        http_status=int(response.status_code),
+                        usage_context=usage_event,
+                    )
+                )
+
             if endpoint == "/api/client/statistics/json" and str(method).upper() == "POST":
                 usage_payload = dict(usage_event or {})
                 usage_payload.update(
@@ -3105,6 +3304,8 @@ class OzonPerformanceClient:
                         "raw_error_preview": None,
                         "next_attempt_at": None,
                         "campaign_units": int(usage_payload.get("campaign_units") or 0),
+                        "request_kind": "submit",
+                        "request_count": 1,
                     }
                 )
                 self.record_statistics_json_usage_event(usage_payload)
@@ -3331,51 +3532,89 @@ class OzonPerformanceClient:
 
         return uuid, False, payload, endpoint
 
-    def wait_statistics(self, uuid, poll_profile="default"):
+    def wait_statistics(self, uuid, poll_profile="default", usage_context=None):
         profile = POLL_PROFILES[poll_profile]
+        # Опросы копятся в памяти и уходят в ledger одной строкой в finally,
+        # чтобы счёт сохранился и при исключении, и при 429, и при таймауте.
+        self.begin_statistics_poll_tally(uuid)
+        outcome = {"response_kind": "poll_success", "http_status": 200}
 
-        for attempt in range(1, int(profile["max_attempts"]) + 1):
-            _exc_500 = None
-            for _retry in range(3):
-                try:
-                    response = self.request("GET", f"/api/client/statistics/{uuid}")
-                    _exc_500 = None
-                    break
-                except requests.HTTPError as http_exc:
-                    if getattr(http_exc.response, "status_code", None) != 500:
-                        raise
-                    _exc_500 = http_exc
-                    if _retry < 2:
-                        print(
-                            f"Ozon Performance polling UUID={uuid} HTTP 500 "
-                            f"(retry {_retry + 1}/2), sleeping 30s"
-                        )
-                        time.sleep(30)
-            if _exc_500:
-                raise OzonServer500Error(uuid) from _exc_500
+        try:
+            for attempt in range(1, int(profile["max_attempts"]) + 1):
+                _exc_500 = None
+                for _retry in range(3):
+                    try:
+                        response = self.request("GET", f"/api/client/statistics/{uuid}")
+                        _exc_500 = None
+                        break
+                    except requests.HTTPError as http_exc:
+                        if getattr(http_exc.response, "status_code", None) != 500:
+                            raise
+                        _exc_500 = http_exc
+                        self.tally_statistics_poll_request(uuid, "http_500")
+                        if _retry < 2:
+                            print(
+                                f"Ozon Performance polling UUID={uuid} HTTP 500 "
+                                f"(retry {_retry + 1}/2), sleeping 30s"
+                            )
+                            time.sleep(30)
+                if _exc_500:
+                    outcome = {"response_kind": "poll_server_500", "http_status": 500}
+                    raise OzonServer500Error(uuid) from _exc_500
 
-            data = response.json()
-            state = str(data.get("state") or data.get("status") or "").upper()
+                data = response.json()
+                state = str(data.get("state") or data.get("status") or "").upper()
 
-            if state in {"OK", "SUCCESS", "DONE", "COMPLETED", "READY"}:
-                return data
+                if state in {"OK", "SUCCESS", "DONE", "COMPLETED", "READY"}:
+                    return data
 
-            if state in {"ERROR", "FAILED", "FAIL"}:
-                self.forget_jobs_by_uuid(uuid)
-                raise OzonReportErrorStateError(uuid, data)
+                if state in {"ERROR", "FAILED", "FAIL"}:
+                    outcome = {"response_kind": "poll_report_error", "http_status": 200}
+                    self.forget_jobs_by_uuid(uuid)
+                    raise OzonReportErrorStateError(uuid, data)
 
-            sleep_seconds = min(
-                int(profile["cap_sleep_seconds"]),
-                int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
-            )
-            print(
-                f"Ozon Performance polling UUID={uuid} state={state or 'PENDING'} "
-                f"attempt={attempt} sleep={sleep_seconds} profile={poll_profile}"
-            )
-            time.sleep(sleep_seconds)
+                sleep_seconds = min(
+                    int(profile["cap_sleep_seconds"]),
+                    int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
+                )
+                print(
+                    f"Ozon Performance polling UUID={uuid} state={state or 'PENDING'} "
+                    f"attempt={attempt} sleep={sleep_seconds} profile={poll_profile}"
+                )
+                time.sleep(sleep_seconds)
 
-        self.forget_jobs_by_uuid(uuid)
-        raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
+            outcome = {"response_kind": "poll_timeout", "http_status": None}
+            self.forget_jobs_by_uuid(uuid)
+            raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
+        except RateLimitPending as exc:
+            outcome = {
+                "response_kind": (
+                    "poll_daily_quota_exhausted"
+                    if str(getattr(exc, "response_kind", "")) == "daily_quota_exhausted"
+                    else "poll_429"
+                ),
+                "http_status": 429,
+                "retry_after_seconds": getattr(exc, "retry_after_seconds", None),
+                "raw_error_preview": str(getattr(exc, "raw_error_preview", "") or "")[:280],
+            }
+            raise
+        except (OzonServer500Error, OzonReportErrorStateError, TimeoutError):
+            raise
+        except Exception as exc:
+            outcome = {
+                "response_kind": "poll_error",
+                "http_status": None,
+                "raw_error_preview": sanitize_text(exc)[:280],
+            }
+            raise
+        finally:
+            try:
+                self.flush_statistics_poll_tally(uuid, outcome, usage_context)
+            except Exception as exc:
+                print(
+                    "WARNING: Не удалось записать poll usage в ledger. "
+                    f"Ошибка: {sanitize_text(exc)}"
+                )
 
     def download_report(self, uuid, return_meta=False):
         response = self.request(
@@ -3440,7 +3679,11 @@ class OzonPerformanceClient:
                 force_new=(attempt == 2),
                 usage_context=usage_context,
             )
-            status = self.wait_statistics(uuid, poll_profile="statistics_json")
+            status = self.wait_statistics(
+                uuid,
+                poll_profile="statistics_json",
+                usage_context=usage_context,
+            )
 
             try:
                 if return_meta:
@@ -4897,7 +5140,15 @@ def find_cpc_progress_for_date(client, target_date):
     return candidates[0]
 
 
-def stateless_ozon_request(method, path, token, retry_profile="default", **kwargs):
+def stateless_ozon_request(
+    method,
+    path,
+    token,
+    retry_profile="default",
+    usage_client=None,
+    usage_context=None,
+    **kwargs,
+):
     del retry_profile
 
     endpoint = path
@@ -4911,6 +5162,12 @@ def stateless_ozon_request(method, path, token, retry_profile="default", **kwarg
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     })
+
+    # Recovery worker ходит в Ozon мимо клиента, поэтому весь его трафик — и submit,
+    # и опросы, и скачивания — до сих пор не попадал в ledger вообще.
+    usage_kind = classify_statistics_usage_request(method, endpoint)
+    if usage_client is not None and usage_kind == "poll":
+        usage_client.tally_statistics_poll_request(endpoint.rsplit("/", 1)[-1])
 
     response = requests.request(
         method,
@@ -4929,11 +5186,43 @@ def stateless_ozon_request(method, path, token, retry_profile="default", **kwarg
                 1,
             )
         cooldown_until = to_iso(utcnow() + timedelta(seconds=max(0, int(retry_after_seconds or 0))))
+        raw_preview = response_body_preview(response)
+        response_kind = classify_statistics_json_429_preview(raw_preview)
+        if usage_client is not None and usage_kind == "poll":
+            polled_uuid = endpoint.rsplit("/", 1)[-1]
+            usage_client.tally_statistics_poll_request(polled_uuid, "http_429")
+            if response_kind == "daily_quota_exhausted":
+                usage_client.tally_statistics_poll_request(polled_uuid, "daily_quota_exhausted")
+        if usage_client is not None and usage_kind in {"submit", "download"}:
+            record_stateless_statistics_usage(
+                usage_client,
+                usage_kind,
+                response_kind=(
+                    f"{usage_kind}_daily_quota_exhausted"
+                    if response_kind == "daily_quota_exhausted"
+                    else f"{usage_kind}_429"
+                ),
+                http_status=429,
+                retry_after_seconds=retry_after_seconds,
+                raw_error_preview=raw_preview[:280],
+                usage_context=usage_context,
+            )
         raise RateLimitPending(
             endpoint=endpoint,
             retry_after_seconds=retry_after_seconds,
             cooldown_until=cooldown_until,
             attempt=1,
+            response_kind=response_kind,
+            raw_error_preview=raw_preview[:280],
+        )
+
+    if usage_client is not None and usage_kind in {"submit", "download"}:
+        record_stateless_statistics_usage(
+            usage_client,
+            usage_kind,
+            response_kind=f"{usage_kind}_success" if usage_kind == "download" else "success",
+            http_status=int(response.status_code),
+            usage_context=usage_context,
         )
 
     response.raise_for_status()
@@ -4964,7 +5253,15 @@ def list_campaigns_stateless(token):
     return campaigns
 
 
-def request_statistics_stateless(token, campaign_ids, date_from, date_to, group_by):
+def request_statistics_stateless(
+    token,
+    campaign_ids,
+    date_from,
+    date_to,
+    group_by,
+    usage_client=None,
+    usage_context=None,
+):
     payload = {
         "campaigns": [str(campaign_id) for campaign_id in campaign_ids],
         "dateFrom": date_from,
@@ -4976,6 +5273,8 @@ def request_statistics_stateless(token, campaign_ids, date_from, date_to, group_
         "/api/client/statistics/json",
         token,
         retry_profile="statistics_json",
+        usage_client=usage_client,
+        usage_context=usage_context,
         json=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -4986,38 +5285,79 @@ def request_statistics_stateless(token, campaign_ids, date_from, date_to, group_
     return uuid
 
 
-def wait_statistics_stateless(token, uuid, poll_profile="statistics_json"):
+def wait_statistics_stateless(
+    token,
+    uuid,
+    poll_profile="statistics_json",
+    usage_client=None,
+    usage_context=None,
+):
     profile = POLL_PROFILES[poll_profile]
+    if usage_client is not None:
+        usage_client.begin_statistics_poll_tally(uuid)
+    outcome = {"response_kind": "poll_success", "http_status": 200}
 
-    for attempt in range(1, int(profile["max_attempts"]) + 1):
-        response = stateless_ozon_request("GET", f"/api/client/statistics/{uuid}", token)
-        data = response.json()
-        state = str(data.get("state") or data.get("status") or "").upper()
+    try:
+        for attempt in range(1, int(profile["max_attempts"]) + 1):
+            response = stateless_ozon_request(
+                "GET",
+                f"/api/client/statistics/{uuid}",
+                token,
+                usage_client=usage_client,
+                usage_context=usage_context,
+            )
+            data = response.json()
+            state = str(data.get("state") or data.get("status") or "").upper()
 
-        if state in {"OK", "SUCCESS", "DONE", "COMPLETED", "READY"}:
-            return data
+            if state in {"OK", "SUCCESS", "DONE", "COMPLETED", "READY"}:
+                return data
 
-        if state in {"ERROR", "FAILED", "FAIL"}:
-            raise RuntimeError(f"Ozon Performance report failed during CPC recovery: {data}")
+            if state in {"ERROR", "FAILED", "FAIL"}:
+                outcome = {"response_kind": "poll_report_error", "http_status": 200}
+                raise RuntimeError(f"Ozon Performance report failed during CPC recovery: {data}")
 
-        sleep_seconds = min(
-            int(profile["cap_sleep_seconds"]),
-            int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
-        )
-        print(
-            f"Ozon Performance CPC recovery polling UUID={uuid} state={state or 'PENDING'} "
-            f"attempt={attempt} sleep={sleep_seconds}"
-        )
-        time.sleep(sleep_seconds)
+            sleep_seconds = min(
+                int(profile["cap_sleep_seconds"]),
+                int(profile["base_sleep_seconds"]) * (2 ** max(attempt - 1, 0)),
+            )
+            print(
+                f"Ozon Performance CPC recovery polling UUID={uuid} state={state or 'PENDING'} "
+                f"attempt={attempt} sleep={sleep_seconds}"
+            )
+            time.sleep(sleep_seconds)
 
-    raise TimeoutError(f"Ozon Performance CPC recovery report timeout: {uuid}")
+        outcome = {"response_kind": "poll_timeout", "http_status": None}
+        raise TimeoutError(f"Ozon Performance CPC recovery report timeout: {uuid}")
+    except RateLimitPending as exc:
+        outcome = {
+            "response_kind": (
+                "poll_daily_quota_exhausted"
+                if str(getattr(exc, "response_kind", "")) == "daily_quota_exhausted"
+                else "poll_429"
+            ),
+            "http_status": 429,
+            "retry_after_seconds": getattr(exc, "retry_after_seconds", None),
+            "raw_error_preview": str(getattr(exc, "raw_error_preview", "") or "")[:280],
+        }
+        raise
+    finally:
+        if usage_client is not None:
+            try:
+                usage_client.flush_statistics_poll_tally(uuid, outcome, usage_context)
+            except Exception as exc:
+                print(
+                    "WARNING: Не удалось записать poll usage recovery-воркера в ledger. "
+                    f"Ошибка: {sanitize_text(exc)}"
+                )
 
 
-def download_statistics_report_stateless(token, uuid):
+def download_statistics_report_stateless(token, uuid, usage_client=None, usage_context=None):
     response = stateless_ozon_request(
         "GET",
         "/api/client/statistics/report",
         token,
+        usage_client=usage_client,
+        usage_context={**(usage_context or {}), "report_uuid": uuid},
         params={"UUID": uuid},
     )
     text = response.text.strip()
@@ -5029,10 +5369,21 @@ def download_statistics_report_stateless(token, uuid):
         return json.loads(text)
 
 
-def fetch_cpc_recovery_existing_report_stateless(client, uuid):
+def fetch_cpc_recovery_existing_report_stateless(client, uuid, usage_context=None):
     token = client.ensure_token()
-    wait_statistics_stateless(token, uuid, poll_profile="statistics_json")
-    report_data = download_statistics_report_stateless(token, uuid)
+    wait_statistics_stateless(
+        token,
+        uuid,
+        poll_profile="statistics_json",
+        usage_client=client,
+        usage_context=usage_context,
+    )
+    report_data = download_statistics_report_stateless(
+        token,
+        uuid,
+        usage_client=client,
+        usage_context=usage_context,
+    )
     return {"uuid": uuid, "report_data": report_data}
 
 
@@ -5324,16 +5675,36 @@ def run_cpc_recovery_mode(
     return summary
 
 
-def fetch_cpc_recovery_batch_stateless(client, campaign_batch, date_from, date_to, group_by):
+def fetch_cpc_recovery_batch_stateless(
+    client,
+    campaign_batch,
+    date_from,
+    date_to,
+    group_by,
+    usage_context=None,
+):
     uuid = request_statistics_stateless(
         client.ensure_token(),
         campaign_batch,
         date_from,
         date_to,
         group_by,
+        usage_client=client,
+        usage_context=usage_context,
     )
-    wait_statistics_stateless(client.ensure_token(), uuid, poll_profile="statistics_json")
-    report_data = download_statistics_report_stateless(client.ensure_token(), uuid)
+    wait_statistics_stateless(
+        client.ensure_token(),
+        uuid,
+        poll_profile="statistics_json",
+        usage_client=client,
+        usage_context=usage_context,
+    )
+    report_data = download_statistics_report_stateless(
+        client.ensure_token(),
+        uuid,
+        usage_client=client,
+        usage_context=usage_context,
+    )
     return {
         "uuid": uuid,
         "report_data": report_data,
@@ -5708,6 +6079,8 @@ def write_statistics_json_usage_to_db(event):
             "mode": event.get("mode"),
             "batch_index": event.get("batch_index"),
             "campaign_units": int(float(event.get("campaign_units") or 0)),
+            "request_kind": event.get("request_kind") or "submit",
+            "request_count": max(0, int(float(event.get("request_count") or 1))),
             "http_status": event.get("http_status"),
             "response_kind": event.get("response_kind"),
             "retry_after_seconds": event.get("retry_after_seconds"),
@@ -5730,6 +6103,7 @@ def read_statistics_json_usage_from_db(load_date, account_signature):
             .table(STATISTICS_JSON_USAGE_TABLE)
             .select(
                 "event_at,target_date,load_date,mode,batch_index,campaign_units,"
+                "request_kind,request_count,"
                 "http_status,response_kind,retry_after_seconds,account_signature,"
                 "report_uuid,raw_error_preview"
             )
@@ -5753,6 +6127,12 @@ def summarize_statistics_json_usage_budget_from_events(events, load_date, accoun
         if str(event.get("account_signature") or "") != str(account_signature or ""):
             continue
         if str(event.get("load_date") or "") != str(load_date or ""):
+            continue
+        # campaign_units — это бюджет в кампанийных единицах, а не в запросах.
+        # Строки опросов/скачиваний несут units=0 и сюда попадать не должны: иначе
+        # daily_budget_used_today раздуется и guard "used > 1500" молча выключит
+        # recovery worker. Legacy-строки без request_kind — это submit.
+        if str(event.get("request_kind") or "submit") != "submit":
             continue
         response_kind = str(event.get("response_kind") or "")
         if response_kind not in {"success", "retryable_429", "daily_quota_exhausted", "error"}:

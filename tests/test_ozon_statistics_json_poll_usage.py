@@ -200,3 +200,151 @@ class StatelessRecoveryPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuotaWindowSnapshotTest(unittest.TestCase):
+    def _client(self):
+        client = _Recorder()
+        client.quota_snapshot_days = set()
+        return client
+
+    def _windows(self):
+        return {
+            "rolling_24h": 1987,
+            "since_utc_midnight": 640,
+            "utc_day_started_at": "2026-08-31T00:00:00+00:00",
+            "next_utc_reset_at": "2026-09-01T00:00:00+00:00",
+        }
+
+    def test_both_windows_are_captured_in_one_row(self):
+        client = self._client()
+        with mock.patch.object(loader, "read_statistics_json_quota_windows", return_value=self._windows()):
+            loader.capture_statistics_json_quota_snapshot(client)
+
+        self.assertEqual(len(client.events), 1)
+        event = client.events[0]
+        self.assertEqual(event["request_kind"], "quota_snapshot")
+        self.assertEqual(event["response_kind"], "daily_quota_exhausted_snapshot")
+        self.assertEqual(event["quota_window_rolling_24h"], 1987)
+        self.assertEqual(event["quota_window_since_utc_midnight"], 640)
+
+    def test_snapshot_row_does_not_count_as_spend(self):
+        client = self._client()
+        with mock.patch.object(loader, "read_statistics_json_quota_windows", return_value=self._windows()):
+            loader.capture_statistics_json_quota_snapshot(client)
+        self.assertEqual(client.events[0]["request_count"], 0)
+        self.assertEqual(client.events[0]["campaign_units"], 0)
+
+    def test_snapshot_row_is_written_with_request_count_zero(self):
+        # "or 1" превратил бы ноль в единицу и снимок стал бы расходом.
+        captured = {}
+        with mock.patch.object(loader.supabase, "table") as table:
+            table.return_value.insert.return_value.execute.return_value = None
+            table.return_value.insert.side_effect = lambda row: captured.setdefault("row", row) or mock.Mock()
+            loader.write_statistics_json_usage_to_db(
+                {"request_kind": "quota_snapshot", "request_count": 0, "campaign_units": 0}
+            )
+        self.assertEqual(captured["row"]["request_count"], 0)
+
+    def test_submit_rows_keep_default_request_count_of_one(self):
+        captured = {}
+        with mock.patch.object(loader.supabase, "table") as table:
+            table.return_value.insert.side_effect = lambda row: captured.setdefault("row", row) or mock.Mock()
+            loader.write_statistics_json_usage_to_db({"campaign_units": 10})
+        self.assertEqual(captured["row"]["request_count"], 1)
+
+    def test_only_one_snapshot_per_utc_day(self):
+        client = self._client()
+        with mock.patch.object(loader, "read_statistics_json_quota_windows", return_value=self._windows()) as read:
+            for _ in range(5):
+                loader.capture_statistics_json_quota_snapshot(client)
+        self.assertEqual(read.call_count, 1, "Supabase не должен дёргаться на каждый повторный 429")
+        self.assertEqual(len(client.events), 1)
+
+    def test_read_failure_never_propagates(self):
+        client = self._client()
+        with mock.patch.object(loader, "read_statistics_json_quota_windows", side_effect=RuntimeError("supabase down")):
+            self.assertIsNone(loader.capture_statistics_json_quota_snapshot(client))
+        self.assertEqual(client.events, [])
+
+    def test_write_failure_never_propagates(self):
+        client = self._client()
+        client.record_statistics_json_usage_event = mock.Mock(side_effect=RuntimeError("insert failed"))
+        with mock.patch.object(loader, "read_statistics_json_quota_windows", return_value=self._windows()):
+            result = loader.capture_statistics_json_quota_snapshot(client)
+        self.assertEqual(result["rolling_24h"], 1987, "чтение удалось, значит окна возвращаем")
+
+    def test_missing_client_is_tolerated(self):
+        self.assertIsNone(loader.capture_statistics_json_quota_snapshot(None))
+
+
+class QuotaSnapshotWiringTest(unittest.TestCase):
+    def test_stateless_429_quota_body_triggers_the_snapshot(self):
+        client = _Recorder()
+        client.quota_snapshot_days = set()
+        response = mock.Mock(
+            status_code=429,
+            headers={},
+            text="Превышен дневной лимит запросов, максимум 2000",
+        )
+        windows = {"rolling_24h": 1987, "since_utc_midnight": 640,
+                   "utc_day_started_at": None, "next_utc_reset_at": None}
+
+        with mock.patch.object(loader.requests, "request", return_value=response), \
+                mock.patch.object(loader, "read_statistics_json_quota_windows", return_value=windows), \
+                self.assertRaises(loader.RateLimitPending):
+            loader.stateless_ozon_request(
+                "POST", "/api/client/statistics/json", "token", usage_client=client
+            )
+
+        snapshots = [e for e in client.events if e["request_kind"] == "quota_snapshot"]
+        self.assertEqual(len(snapshots), 1, "429 по дневной квоте должен снимать окна")
+        self.assertEqual(snapshots[0]["quota_window_rolling_24h"], 1987)
+        self.assertEqual(snapshots[0]["quota_window_since_utc_midnight"], 640)
+
+    def test_retryable_429_does_not_trigger_the_snapshot(self):
+        client = _Recorder()
+        client.quota_snapshot_days = set()
+        response = mock.Mock(status_code=429, headers={}, text="slow down")
+
+        with mock.patch.object(loader.requests, "request", return_value=response), \
+                mock.patch.object(loader, "read_statistics_json_quota_windows") as read, \
+                self.assertRaises(loader.RateLimitPending):
+            loader.stateless_ozon_request(
+                "POST", "/api/client/statistics/json", "token", usage_client=client
+            )
+
+        read.assert_not_called()
+        self.assertEqual([e for e in client.events if e["request_kind"] == "quota_snapshot"], [])
+
+    def test_snapshot_failure_does_not_break_the_429_path(self):
+        client = _Recorder()
+        client.quota_snapshot_days = set()
+        response = mock.Mock(status_code=429, headers={},
+                             text="Превышен дневной лимит запросов, максимум 2000")
+
+        with mock.patch.object(loader.requests, "request", return_value=response), \
+                mock.patch.object(loader, "read_statistics_json_quota_windows",
+                                  side_effect=RuntimeError("supabase down")):
+            # 429 обязан долететь как обычно, снимок — диагностика поверх
+            with self.assertRaises(loader.RateLimitPending) as ctx:
+                loader.stateless_ozon_request(
+                    "POST", "/api/client/statistics/json", "token", usage_client=client
+                )
+        self.assertEqual(ctx.exception.response_kind, "daily_quota_exhausted")
+
+
+class QuotaSnapshotRetryTest(unittest.TestCase):
+    def test_a_failed_read_does_not_consume_the_day_slot(self):
+        client = _Recorder()
+        client.quota_snapshot_days = set()
+        windows = {"rolling_24h": 1987, "since_utc_midnight": 640,
+                   "utc_day_started_at": None, "next_utc_reset_at": None}
+
+        with mock.patch.object(loader, "read_statistics_json_quota_windows",
+                               side_effect=[RuntimeError("blip"), windows]):
+            self.assertIsNone(loader.capture_statistics_json_quota_snapshot(client))
+            loader.capture_statistics_json_quota_snapshot(client)
+
+        self.assertEqual(len(client.events), 1, "после сбоя замер должен быть ещё возможен")
+        self.assertEqual(client.events[0]["quota_window_rolling_24h"], 1987)

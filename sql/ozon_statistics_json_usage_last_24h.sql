@@ -89,6 +89,24 @@ select
         at time zone 'utc'                                              as next_utc_reset_at;
 
 
+-- ── Утреннее чтение: чем всё кончилось в момент 429 ───────────────────────────
+-- Снимок снимается автоматически при 429 daily_quota_exhausted, руками к 05:50
+-- UTC успевать не нужно. Обе суммы в строке сняты в одну секунду.
+--
+--   rolling_24h у 2000, since_utc_midnight заметно меньше  -> окно скользящее
+--   since_utc_midnight у 2000, rolling_24h больше          -> окно календарное
+--   оба заметно ниже 2000                                  -> посторонний потребитель
+--
+-- select event_at,
+--        quota_window_rolling_24h        as rolling_24h,
+--        quota_window_since_utc_midnight as since_utc_midnight,
+--        mode, load_date, account_signature
+-- from ozon_performance_statistics_json_usage
+-- where request_kind = 'quota_snapshot'
+-- order by event_at desc
+-- limit 20;
+
+
 -- 429, прилетевшие именно на опросе (раньше были полностью невидимы):
 --
 -- select date_trunc('hour', event_at) as hour, response_kind,

@@ -656,6 +656,97 @@ def build_statistics_usage_event(
     }
 
 
+STATISTICS_QUOTA_WINDOWS_RPC = "ozon_statistics_json_usage_quota_windows"
+
+
+def read_statistics_json_quota_windows(account_signature=None):
+    """Обе суммы расхода одним round-trip: скользящие 24ч и от полуночи UTC.
+
+    Считается в Postgres, а не выборкой строк: PostgREST режет ответ на 1000 строк,
+    и расход молча занизился бы — ровно тот дефект, который мы и чиним.
+    """
+    result = supabase.rpc(
+        STATISTICS_QUOTA_WINDOWS_RPC,
+        {"p_account_signature": account_signature},
+    ).execute()
+    rows = result.data or []
+    row = rows[0] if isinstance(rows, list) and rows else (rows if isinstance(rows, dict) else {})
+    return {
+        "rolling_24h": int(row.get("rolling_24h") or 0),
+        "since_utc_midnight": int(row.get("since_utc_midnight") or 0),
+        "utc_day_started_at": row.get("utc_day_started_at"),
+        "next_utc_reset_at": row.get("next_utc_reset_at"),
+    }
+
+
+def capture_statistics_json_quota_snapshot(client, usage_context=None, raw_error_preview=None):
+    """Снимок обоих окон квоты в секунду прихода 429 daily_quota_exhausted.
+
+    Эксперимент "календарное окно или скользящее" работает только если обе суммы
+    сняты одновременно, а 429 приходит около 05:50 UTC — руками туда не успеть.
+
+    Это обращение к Supabase в момент, когда всё уже упёрлось в лимит Ozon.
+    На квоту Ozon оно не влияет, но упасть не должно ничего: и чтение, и запись
+    целиком обёрнуты, снимок — диагностика, а не часть загрузки.
+    """
+    if client is None:
+        return None
+
+    account_signature = getattr(client, "account_signature", None)
+    # Один снимок на процесс и календарный день UTC: повторные 429 внутри того же
+    # окна ничего нового не покажут, а Supabase дёргать в цикле незачем.
+    taken = getattr(client, "quota_snapshot_days", None)
+    if taken is None:
+        taken = set()
+        client.quota_snapshot_days = taken
+    day_key = utcnow().date().isoformat()
+    if day_key in taken:
+        return None
+
+    try:
+        windows = read_statistics_json_quota_windows(account_signature)
+    except Exception as exc:
+        # Слот дня не занимаем: разовый сбой Supabase не должен стоить всего замера,
+        # а число попыток и так ограничено — на daily_quota_exhausted идёт fail-fast.
+        print(
+            "WARNING: Не удалось снять окна квоты statistics/json при 429. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return None
+
+    taken.add(day_key)
+
+    print(
+        "Ozon statistics/json daily_quota_exhausted, окна расхода на этот момент: "
+        f"rolling_24h={windows['rolling_24h']} "
+        f"since_utc_midnight={windows['since_utc_midnight']} "
+        f"next_utc_reset_at={windows['next_utc_reset_at']} "
+        "(если оба заметно ниже 2000 — лимит выбирает посторонний потребитель кабинета)"
+    )
+
+    try:
+        event = build_statistics_usage_event(
+            account_signature=account_signature,
+            request_kind="quota_snapshot",
+            request_count=0,
+            response_kind="daily_quota_exhausted_snapshot",
+            uuid=(usage_context or {}).get("report_uuid"),
+            http_status=429,
+            raw_error_preview=(raw_error_preview or None),
+            usage_context=usage_context,
+        )
+        event["quota_window_rolling_24h"] = windows["rolling_24h"]
+        event["quota_window_since_utc_midnight"] = windows["since_utc_midnight"]
+        client.record_statistics_json_usage_event(event)
+    except Exception as exc:
+        print(
+            "WARNING: Не удалось записать снимок окон квоты в ledger. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+
+    return windows
+
+
 def record_stateless_statistics_usage(
     client,
     request_kind,
@@ -3186,6 +3277,13 @@ class OzonPerformanceClient:
                     cooldown_until = quota_reset_at
                     cooldown_until_iso = next_attempt_at
                     quota_reset_warning = "assumed_utc_statistics_json_quota_reset"
+                    # Снимаем оба окна расхода прямо сейчас: утром уже не восстановить,
+                    # какая из сумм стояла у 2000 в эту секунду.
+                    capture_statistics_json_quota_snapshot(
+                        self,
+                        usage_context=usage_event,
+                        raw_error_preview=raw_preview[:280],
+                    )
                 else:
                     cooldown_until = utcnow() + timedelta(
                         seconds=max(retry_after_seconds, int(profile.get("cooldown_seconds") or 0))
@@ -5202,6 +5300,12 @@ def stateless_ozon_request(
         cooldown_until = to_iso(utcnow() + timedelta(seconds=max(0, int(retry_after_seconds or 0))))
         raw_preview = response_body_preview(response)
         response_kind = classify_statistics_json_429_preview(raw_preview)
+        if response_kind == "daily_quota_exhausted":
+            capture_statistics_json_quota_snapshot(
+                usage_client,
+                usage_context=usage_context,
+                raw_error_preview=raw_preview[:280],
+            )
         if usage_client is not None and usage_kind == "poll":
             polled_uuid = endpoint.rsplit("/", 1)[-1]
             usage_client.tally_statistics_poll_request(polled_uuid, "http_429")
@@ -6094,7 +6198,13 @@ def write_statistics_json_usage_to_db(event):
             "batch_index": event.get("batch_index"),
             "campaign_units": int(float(event.get("campaign_units") or 0)),
             "request_kind": event.get("request_kind") or "submit",
-            "request_count": max(0, int(float(event.get("request_count") or 1))),
+            # ноль — валидное значение (строка-снимок), поэтому не "or 1"
+            "request_count": max(
+                0,
+                int(float(1 if event.get("request_count") is None else event.get("request_count"))),
+            ),
+            "quota_window_rolling_24h": event.get("quota_window_rolling_24h"),
+            "quota_window_since_utc_midnight": event.get("quota_window_since_utc_midnight"),
             "http_status": event.get("http_status"),
             "response_kind": event.get("response_kind"),
             "retry_after_seconds": event.get("retry_after_seconds"),

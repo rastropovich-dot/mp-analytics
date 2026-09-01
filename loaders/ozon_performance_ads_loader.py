@@ -2493,9 +2493,16 @@ class OzonPerformanceClient:
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
         self.state_backend = self.resolve_state_backend()
         self.skip_persistent_state_load = bool(skip_persistent_state_load)
-        # Ozon считает дневной лимит в ЗАПРОСАХ ("максимум 2000"), а ledger пишет
-        # одну строку на submit. Считаем реальные HTTP-вызовы по видам, чтобы знать
-        # свой настоящий расход: остальное в лимите выбирают другие сервисы кабинета.
+        # ЕДИНИЦА ЛИМИТА — ВЫГРУЗКИ-КАМПАНИИ, НЕ ЗАПРОСЫ. Одна кампания в запросе =
+        # одна выгрузка, лимит 2000 проверяется только при submit; опросы и
+        # скачивания квоту не тратят. Расход против лимита = sum(campaign_units)
+        # по submit-строкам ledger. Проверено на 19 реальных 429: HTTP-запросы
+        # составляли 3-9% от 2000, то есть прежняя трактовка "лимит в запросах"
+        # (стояла здесь же) неверна — см. docs/ozon_performance_limits.md.
+        #
+        # request_counts и request_count в ledger — ВСПОМОГАТЕЛЬНАЯ метрика
+        # видимости трафика, а не мера расхода квоты. Резать частоту опроса
+        # ради экономии лимита бессмысленно.
         self.request_counts = defaultdict(int)
         # Счётчик опросов по каждому uuid, копится в памяти и сбрасывается одной
         # строкой на выходе из wait_statistics. Писать на каждый опрос нельзя:

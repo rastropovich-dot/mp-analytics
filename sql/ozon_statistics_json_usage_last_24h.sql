@@ -1,7 +1,19 @@
--- Расход запросов к Ozon statistics против лимита 2000.
+-- Трафик к Ozon statistics: видимость запросов, НЕ расход квоты.
 --
--- Строка ledger больше не равна одному запросу: опросы агрегируются одной строкой
--- на wait_statistics. Поэтому расход считается через sum(request_count),
+-- ВАЖНО про единицу измерения. Лимит 2000 меряется в ВЫГРУЗКАХ-КАМПАНИЯХ
+-- (одна кампания в запросе = одна выгрузка) и проверяется только при submit.
+-- Опросы и скачивания квоту не тратят. Поэтому:
+--
+--   расход против лимита  -> sum(campaign_units) по request_kind='submit'
+--   этот файл             -> sum(request_count), вспомогательная метрика видимости
+--
+-- Проверено на 19 реальных 429: HTTP-запросы составляли 3–9% от 2000, то есть
+-- трактовка «лимит в запросах» опровергнута. Подробности и три неразобранных
+-- кандидата на недостающую половину расхода — в docs/ozon_performance_limits.md,
+-- раздел «Quota model».
+--
+-- Строка ledger не равна одному запросу: опросы агрегируются одной строкой
+-- на wait_statistics. Поэтому счёт запросов идёт через sum(request_count),
 -- а count(*) показан отдельно как число записей.
 --
 -- Фильтр по семейству statistics: submit + poll + download.
@@ -71,6 +83,22 @@ select 'since_utc_midnight'                                         as window,
        2000 - sum(requests) over ()                                 as headroom_vs_2000
 from by_kind
 order by requests desc;
+
+
+-- ── Расход квоты в units: то, что реально сравнивается с 2000 ────────────────
+--
+-- select
+--     coalesce(sum(campaign_units) filter (
+--         where event_at >= now() - interval '24 hours'), 0)            as units_rolling_24h,
+--     coalesce(sum(campaign_units) filter (
+--         where event_at >= date_trunc('day', now() at time zone 'utc')
+--                           at time zone 'utc'), 0)                     as units_since_utc_midnight,
+--     2000                                                             as limit_hint
+-- from ozon_performance_statistics_json_usage
+-- where request_kind = 'submit';
+--
+-- Напоминание: наши units в момент 429 обычно около половины лимита, поэтому
+-- «мало units» не означает «429 быть не может» — часть расхода нам не видна.
 
 
 -- ── Оба окна одной строкой: то, что нужно смотреть в момент 429 ───────────────

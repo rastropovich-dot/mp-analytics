@@ -6698,6 +6698,13 @@ def verify_write_result(run_summary, written_expense_rows, db_client=None):
     становится completed_without_data — дата обязана остаться видимой в бэклоге.
     Сравнение с медианой соседей — только предупреждение: на днях с реально низкой
     активностью оно даст ложную тревогу, и превращать его в отказ мы не хотим.
+
+    Почему проверяется именно НОЛЬ, а не отношение строк к завершённым выгрузкам.
+    marketplace_expenses ключуется по SKU без campaign_id, поэтому несколько
+    кампаний на одну SKU дают одну строку. На 2026-07-13 112 строк атрибуции по
+    112 разным кампаниям покрыли 83 SKU. Любое отношение units к строкам меряет
+    среднее число кампаний на товар, а не полноту загрузки; осмысленны только
+    абсолютный ноль и сравнение с соседними днями.
     """
     verification = summarize_written_expense_rows(written_expense_rows)
     completed_total = int(float(run_summary.get("cpc_campaign_units_completed_total") or 0))

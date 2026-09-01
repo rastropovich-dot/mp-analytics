@@ -110,14 +110,14 @@ def evaluate_row(row):
         risk_flags.append(data_quality)
     if organic_reconciliation_status and organic_reconciliation_status != "clean":
         risk_flags.append(f"organic:{organic_reconciliation_status}")
-    if source_run_status in {"partial_ads", "partial_quota", "failed"}:
+    if source_run_status in {"partial_ads", "partial_quota", "failed", "completed_without_data"}:
         risk_flags.append(f"run:{source_run_status}")
     if stock_qty is not None and stock_qty < MIN_STOCK_QTY:
         risk_flags.append("stock_risk")
     if orders_qty < MIN_ORDERS_FOR_ACTION:
         risk_flags.append("low_volume")
 
-    if source_run_status in {"partial_ads", "partial_quota", "failed"}:
+    if source_run_status in {"partial_ads", "partial_quota", "failed", "completed_without_data"}:
         return "hold", "Источник рекламы неполный; decision layer остаётся в hold", roas, risk_flags
 
     if stock_status == "missing_stock":

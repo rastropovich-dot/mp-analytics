@@ -52,6 +52,9 @@ def is_partial_ads_candidate(row):
     return (
         run_status == "partial_ads"
         or run_status == "failed"
+        # Выгрузки завершились, а строк не легло: pending_units при этом 0,
+        # поэтому без явной проверки дата выпадала из бэклога как успешная.
+        or run_status == loader.COMPLETED_WITHOUT_DATA_STATUS
         or cpc_status == "failed"
         or cpc_status in {"pending_429", "pending_backfill", "pending_quota"}
         or pending_campaigns > 0

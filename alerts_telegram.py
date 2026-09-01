@@ -216,6 +216,10 @@ def get_ozon_report_completeness(target_date):
 
         if run_status == "partial_ads":
             blockers.append("ozon_performance_partial_ads")
+        if run_status == "completed_without_data":
+            # Выгрузки завершились, строк нет. Молчать на этом нельзя:
+            # именно молчаливый пропуск такого случая и потерял 24 даты.
+            blockers.append("ozon_performance_completed_without_data")
         if cpc_status == "pending_429":
             blockers.append("ozon_cpc_pending_429")
         elif cpc_status in {"pending_quota", "daily_quota_exhausted"}:

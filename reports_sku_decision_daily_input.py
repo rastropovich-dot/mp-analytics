@@ -672,7 +672,7 @@ def build_fast_sku_rows(date_from, date_to, sku_filter):
             organic_reconciliation_status = "warning"
     unreconciled_revenue = num(reconciliation_row.get("unreconciled_revenue"))
 
-    if run_status in {"partial_ads", "partial_quota", "failed"}:
+    if run_status in {"partial_ads", "partial_quota", "failed", "completed_without_data"}:
         quality_flags.append(run_status)
     if not organic_row and ad_spend > 0:
         quality_flags.append("missing_organic_attribution")
@@ -985,7 +985,7 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
                 organic_reconciliation_status = "warning"
         unreconciled_revenue = num(reconciliation_row.get("unreconciled_revenue"))
 
-        if run_status in {"partial_ads", "partial_quota", "failed"}:
+        if run_status in {"partial_ads", "partial_quota", "failed", "completed_without_data"}:
             quality_flags.append(run_status)
         if not organic_row and ad_spend > 0:
             quality_flags.append("missing_organic_attribution")

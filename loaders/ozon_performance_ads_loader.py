@@ -6281,9 +6281,10 @@ def print_statistics_json_probe_plan(campaign_id, date_from, date_to, cooldown_u
 
 
 def save_rows(rows):
+    """Возвращает фактически записанные строки — их считает проверка после записи."""
     if not rows:
         print("Нет рекламных расходов Ozon Performance для записи")
-        return
+        return []
 
     aggregated_rows = aggregate_rows(rows)
     print(
@@ -6298,6 +6299,7 @@ def save_rows(rows):
         ).execute()
 
     print(f"✅ Ozon Performance ads записаны в marketplace_expenses: {len(aggregated_rows)} строк")
+    return aggregated_rows
 
 
 def save_ad_attribution_rows(rows):
@@ -6613,6 +6615,127 @@ def annotate_run_summary_error(summary, exc, traceback_summary=None):
     }
     summary.update(payload)
     return payload
+
+
+COMPLETED_WITHOUT_DATA_STATUS = "completed_without_data"
+NEIGHBOUR_SPEND_WARNING_RATIO = 0.2
+
+
+def summarize_written_expense_rows(written_rows):
+    """Сводка по ФАКТИЧЕСКИ записанному, в разрезе expense_type."""
+    by_type = {}
+    for row in written_rows or []:
+        expense_type = str(row.get("expense_type") or "unknown")
+        bucket = by_type.setdefault(expense_type, {"rows": 0, "spend": 0.0})
+        bucket["rows"] += 1
+        bucket["spend"] += float(row.get("expense_amount") or 0)
+
+    for bucket in by_type.values():
+        bucket["spend"] = round(bucket["spend"], 2)
+
+    ad_types = {key: value for key, value in by_type.items() if key in AD_EXPENSE_TYPES}
+    return {
+        "rows_written": sum(value["rows"] for value in by_type.values()),
+        "spend_written": round(sum(value["spend"] for value in by_type.values()), 2),
+        "ad_rows_written": sum(value["rows"] for value in ad_types.values()),
+        "ad_spend_written": round(sum(value["spend"] for value in ad_types.values()), 2),
+        "by_expense_type": {key: by_type[key] for key in sorted(by_type)},
+    }
+
+
+def read_neighbour_cpc_spend_median(target_date, days=3, db_client=None):
+    """Медиана расхода CPC по соседним дням — только для предупреждения."""
+    client = db_client or supabase
+    try:
+        anchor_date = date.fromisoformat(str(target_date))
+    except Exception:
+        return None
+
+    lo = (anchor_date - timedelta(days=days)).isoformat()
+    hi = (anchor_date + timedelta(days=days)).isoformat()
+    try:
+        result = (
+            client.table("marketplace_expenses")
+            .select("expense_date,expense_amount")
+            .eq("marketplace_code", "ozon")
+            .eq("expense_type", "advertising_clicks")
+            .gte("expense_date", lo)
+            .lte("expense_date", hi)
+            .execute()
+        )
+    except Exception as exc:
+        print(
+            "WARNING: не удалось прочитать соседние дни для сверки расхода. "
+            f"Ошибка: {sanitize_text(exc)}"
+        )
+        return None
+
+    totals = {}
+    for row in result.data or []:
+        day = str(row.get("expense_date") or "")
+        if not day or day == str(target_date):
+            continue
+        totals[day] = totals.get(day, 0.0) + float(row.get("expense_amount") or 0)
+
+    values = sorted(totals.values())
+    if not values:
+        return None
+    middle = len(values) // 2
+    if len(values) % 2:
+        return round(values[middle], 2)
+    return round((values[middle - 1] + values[middle]) / 2, 2)
+
+
+def verify_write_result(run_summary, written_expense_rows, db_client=None):
+    """Статус должен отражать результат ЗАПИСИ, а не результат скачивания.
+
+    До этого run_status=success ставился по факту завершения выгрузок. Прогон мог
+    забрать 1123 кампании, не записать ни строки и отчитаться успехом — так из
+    бэклога выпали 2026-05-12 и 2026-07-13, и найти их удалось только сравнением
+    с соседними днями.
+
+    Жёсткий отказ ровно один: выгрузки завершились, а строк не легло. Тогда статус
+    становится completed_without_data — дата обязана остаться видимой в бэклоге.
+    Сравнение с медианой соседей — только предупреждение: на днях с реально низкой
+    активностью оно даст ложную тревогу, и превращать его в отказ мы не хотим.
+    """
+    verification = summarize_written_expense_rows(written_expense_rows)
+    completed_total = int(float(run_summary.get("cpc_campaign_units_completed_total") or 0))
+    verification["cpc_campaign_units_completed_total"] = completed_total
+    verification["warnings"] = []
+
+    neighbour_median = read_neighbour_cpc_spend_median(
+        run_summary.get("target_date"),
+        db_client=db_client,
+    )
+    verification["neighbour_cpc_spend_median"] = neighbour_median
+    if neighbour_median:
+        share = verification["ad_spend_written"] / neighbour_median
+        verification["spend_vs_neighbour_median"] = round(share, 3)
+        if share < NEIGHBOUR_SPEND_WARNING_RATIO:
+            warning = (
+                f"ad_spend_written={verification['ad_spend_written']} — "
+                f"{round(100 * share, 1)}% от медианы соседних дней ({neighbour_median}). "
+                "Предупреждение, не блокировка."
+            )
+            verification["warnings"].append(warning)
+            print(f"WARNING: Ozon Performance write verification: {warning}")
+
+    if completed_total > 0 and verification["rows_written"] == 0:
+        verification["hard_fail"] = True
+        verification["hard_fail_reason"] = "completed_units_without_written_rows"
+        if run_summary.get("overall_status") == "success":
+            run_summary["overall_status"] = COMPLETED_WITHOUT_DATA_STATUS
+        print(
+            "WARNING: Ozon Performance завершил "
+            f"{completed_total} выгрузок и не записал ни одной строки. "
+            f"Статус: {run_summary.get('overall_status')} — дата остаётся в бэклоге."
+        )
+    else:
+        verification["hard_fail"] = False
+
+    run_summary["write_verification"] = verification
+    return verification
 
 
 def run_selected_cpo_step(client, args, target_date, run_summary):
@@ -8277,6 +8400,7 @@ def run():
         print("Dry run: данные не записывались")
         return
 
+    written_expense_rows = None
     if args.write_runtime_only:
         print(
             "Runtime-only write mode: пропускаем marketplace_expenses и "
@@ -8284,7 +8408,7 @@ def run():
         )
     else:
         try:
-            save_rows(rows)
+            written_expense_rows = save_rows(rows)
             save_ad_attribution_rows(ad_attribution_rows)
         except Exception as exc:
             cpc_progress_snapshot = client.get_cpc_progress(progress_key)
@@ -8305,6 +8429,17 @@ def run():
     # Живой Selected CPO — строго после save_rows: сначала сохраняем то, что уже
     # добыто за ночь, и только потом идём за дополнительными данными.
     run_selected_cpo_step(client, args, target_date, run_summary)
+
+    # Статус должен отражать результат записи, а не результат скачивания.
+    # write_runtime_only пропускает запись намеренно, там проверять нечего.
+    if not args.write_runtime_only:
+        try:
+            verify_write_result(run_summary, written_expense_rows)
+        except Exception as exc:
+            print(
+                "WARNING: не удалось выполнить проверку после записи. "
+                f"Ошибка: {sanitize_text(exc)}"
+            )
 
     run_summary["updated_at"] = to_iso(utcnow())
     client.write_run_status(run_summary)

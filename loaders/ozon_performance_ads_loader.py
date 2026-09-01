@@ -2459,6 +2459,49 @@ def classify_by_rate(spend, revenue):
     return None
 
 
+CPC_SOURCE_EXPENSE_TYPE = "advertising_clicks"
+
+
+def resolve_expense_type(row, campaign, source_expense_type=None, counters=None):
+    """Тип расхода берётся из источника данных, а не выводится из названия кампании.
+
+    statistics/json запрашивается только по CPC-кампаниям (build_daily_cpc_selection
+    фильтрует is_cpc_campaign), поэтому на этом пути тип известен: advertising_clicks.
+
+    Зачем: classify_expense_type читает текст метаданных кампании, а при бэкфилле
+    старой даты архивные кампании уже не возвращаются /api/client/campaign. Текст
+    пустой, ни один маркер не совпадает, и функция проваливалась в catch-all
+    advertising_other — расход записывался под типом, который не видит ни один
+    CPC-отчёт. На 2026-07-13 так ушло 70 строк и 14 216,52 ₽: те же SKU на
+    соседних датах лежат как advertising_clicks.
+
+    Порядок приоритетов:
+      1. EXPLICIT_CAMPAIGN_TYPES — явная привязка оператором через env, сильнее всего;
+      2. источник данных, если вызывающий его знает;
+      3. текст названия — только там, где источник действительно неоднозначен.
+    """
+    campaign = campaign or {}
+    campaign_id = extract_campaign_id(row) or str(campaign.get("id") or "")
+
+    for expense_type, campaign_ids in EXPLICIT_CAMPAIGN_TYPES.items():
+        if campaign_id and campaign_id in campaign_ids:
+            if counters is not None:
+                counters["expense_type_from_explicit_map"] += 1
+            return expense_type
+
+    if source_expense_type:
+        if counters is not None:
+            counters["expense_type_from_source"] += 1
+            if not campaign:
+                # Раньше ровно эти строки уезжали в advertising_other.
+                counters["expense_type_from_source_without_campaign_metadata"] += 1
+        return source_expense_type
+
+    if counters is not None:
+        counters["expense_type_from_campaign_text"] += 1
+    return classify_expense_type(row, campaign)
+
+
 def classify_expense_type(row, campaign):
     campaign_id = extract_campaign_id(row) or str(campaign.get("id") or "")
 
@@ -4230,7 +4273,13 @@ def load_catalog():
     return {str(row.get("marketplace_sku")): row for row in rows}
 
 
-def build_rows(report_data, campaigns_by_id, date_from):
+def build_rows(report_data, campaigns_by_id, date_from, source_expense_type=None):
+    """source_expense_type — тип, известный вызывающему из источника данных.
+
+    На CPC-пути это CPC_SOURCE_EXPENSE_TYPE: statistics/json тянется только по
+    CPC-кампаниям. Без него классификация падает на текст названия кампании и
+    при отсутствующих метаданных даёт advertising_other — см. resolve_expense_type.
+    """
     grouped = {}
     counters = defaultdict(int)
 
@@ -4248,7 +4297,12 @@ def build_rows(report_data, campaigns_by_id, date_from):
 
         campaign_id = extract_campaign_id(raw_row)
         campaign = campaigns_by_id.get(campaign_id, {})
-        expense_type = classify_expense_type(raw_row, campaign)
+        expense_type = resolve_expense_type(
+            raw_row,
+            campaign,
+            source_expense_type=source_expense_type,
+            counters=counters,
+        )
 
         expense_date = normalize_date(value_by_keys(raw_row, DATE_KEYS), fallback=date_from)
         if not expense_date:
@@ -4268,6 +4322,21 @@ def build_rows(report_data, campaigns_by_id, date_from):
 
         grouped[key]["expense_amount"] += spend
         counters[expense_type] += 1
+
+    missing_metadata = int(counters.get("expense_type_from_source_without_campaign_metadata") or 0)
+    if missing_metadata:
+        print(
+            "Ozon Performance: у "
+            f"{missing_metadata} строк нет метаданных кампании (архивные кампании при бэкфилле). "
+            f"Тип взят из источника: {source_expense_type}. "
+            "Раньше такие строки уезжали в advertising_other."
+        )
+    text_classified = int(counters.get("expense_type_from_campaign_text") or 0)
+    if text_classified and source_expense_type:
+        print(
+            f"WARNING: {text_classified} строк классифицированы по тексту названия кампании, "
+            "хотя тип должен быть известен из источника."
+        )
 
     return list(grouped.values()), counters
 
@@ -5797,7 +5866,12 @@ def run_cpc_recovery_mode(
         if campaign_ids:
             report_data = filter_statistics_report_to_campaign_ids(report_data, campaign_ids)
 
-        rows, _ = build_rows(report_data, plan["campaigns_by_id"], target_date)
+        rows, _ = build_rows(
+            report_data,
+            plan["campaigns_by_id"],
+            target_date,
+            source_expense_type=CPC_SOURCE_EXPENSE_TYPE,
+        )
         attribution_rows, _ = build_cpc_attribution_rows(report_data, target_date)
 
         for row in rows:
@@ -7864,7 +7938,12 @@ def run():
             if args.debug_sample:
                 print(json.dumps(report_data, ensure_ascii=False, indent=2)[:5000])
 
-            rows, counters = build_rows(report_data, campaigns_by_id, date_from)
+            rows, counters = build_rows(
+                report_data,
+                campaigns_by_id,
+                date_from,
+                source_expense_type=CPC_SOURCE_EXPENSE_TYPE,
+            )
             attribution_rows, attribution_counters = build_cpc_attribution_rows(report_data, date_from)
             cpc_current_run_expense_rows_count += sum(
                 1

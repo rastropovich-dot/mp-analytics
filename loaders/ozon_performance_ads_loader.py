@@ -4903,7 +4903,43 @@ def build_selected_cpo_marketplace_expenses_rows(source_rows):
     return rows
 
 
+SELECTED_CPO_ORDER_SOURCE_MARKER = "оплата за заказ"
+
+
+def is_selected_cpo_instrument_row(row):
+    """Строка отчёта, где заказ пришёл из инструмента "Оплата за заказ".
+
+    Остальные строки — комбо-модель: товар одновременно в CPO и CPC, и Ozon
+    списывает CPO за заказ, пришедший с кликовой кампании. В поле
+    "Источник заказов" у них стоит "Кампания за клики".
+    """
+    return SELECTED_CPO_ORDER_SOURCE_MARKER in str(row.get("order_source_raw") or "").lower()
+
+
 def build_selected_cpo_ad_attribution_rows(source_rows):
+    """Расход — по всем строкам отчёта, выручка и количество — только по CPO.
+
+    Асимметрия намеренная, это не баг. Так считает сам Ozon; справка
+    "Аналитика продвижения" (docs.ozon.ru):
+
+        «В разрезе данных "Тип продвижения" и "Кампания" покажем общий расход
+        по инструменту "Оплата за заказ" и комбо-модели, а продажи в продвижении
+        и долю рекламных расходов посчитаем только по инструменту "Оплата за
+        заказ". Расход — затраты на продвижение товаров в инструментах "Оплата
+        за заказ" и "Оплата за клик". Продажи в продвижении — сумма, на которую
+        вы продали только в результате продвижения в инструменте "Оплата за
+        заказ".»
+
+    Вторая причина — наша собственная: выручка заказов из кликовых кампаний уже
+    лежит в ozon_daily_sku_ad_attribution с ad_source='cpc', и повторный учёт
+    задвоил бы её. Проверено на 2026-08-30: из 5 строк "Кампания за клики"
+    четыре (155 754,00 ₽) совпадают с CPC-атрибуцией копейка в копейку.
+
+    ВНИМАНИЕ при сверке с интерфейсом: база зависит от разреза. В разрезах
+    "Категория" и "Товар" Ozon считает ОБЕ метрики по обоим инструментам, то
+    есть там выручка будет больше нашей. Сверять надо с разрезом
+    "Тип продвижения"/"Кампания".
+    """
     grouped = {}
 
     for row in source_rows or []:
@@ -4933,10 +4969,14 @@ def build_selected_cpo_ad_attribution_rows(source_rows):
                 "ad_clicks": 0.0,
                 "ad_views": 0.0,
                 "ad_spend": 0.0,
-                "warning": "selected_cpo_search_promo_organisation_level_spend_only",
             }
 
+        # Расход списан инструментом CPO независимо от источника заказа.
         grouped[key]["ad_spend"] += float(row.get("spend") or 0)
+        # Выручка и количество — только по "Оплате за заказ", см. докстроку.
+        if is_selected_cpo_instrument_row(row):
+            grouped[key]["ad_orders_revenue"] += float(row.get("sale_amount") or 0)
+            grouped[key]["ad_orders_qty"] += float(row.get("quantity") or 0)
         if not grouped[key].get("article") and row.get("offer_id"):
             grouped[key]["article"] = str(row.get("offer_id") or "").strip()
         if not grouped[key].get("product_name") and row.get("product_name"):
@@ -4945,6 +4985,8 @@ def build_selected_cpo_ad_attribution_rows(source_rows):
     rows = []
     for row in grouped.values():
         row["ad_spend"] = round(float(row.get("ad_spend") or 0), 2)
+        row["ad_orders_revenue"] = round(float(row.get("ad_orders_revenue") or 0), 2)
+        row["ad_orders_qty"] = round(float(row.get("ad_orders_qty") or 0), 2)
         rows.append(row)
     rows.sort(key=lambda item: (item["sale_date"], item["marketplace_sku"], item["ad_source"]))
     return rows

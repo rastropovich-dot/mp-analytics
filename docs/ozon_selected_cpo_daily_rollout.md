@@ -1,120 +1,305 @@
-# Ozon Selected CPO Daily Rollout
+# Ozon Selected CPO — план раскатки
 
-## 1. Current status
+> Переписан 2026-09-01. Прошлая версия была от 2026-05-12 и устарела так, что
+> её проверки проходили на отсутствии данных. Что именно было сломано — в §3,
+> оно там не ради истории, а чтобы те же грабли не легли обратно.
 
-Current selected CPO status:
+---
 
-- source is confirmed
-- source write is idempotent
-- downstream write is idempotent
-- daily hook is implemented and gated
-- Render configuration is unchanged
+## 1. Статус
 
-Confirmed local daily-style dry-run for `2026-05-06`:
+Что доказано на живых данных:
 
-- `source_rows = 3`
-- `source_sum = 25841.80`
-- `marketplace_expenses_rows = 3`
-- `marketplace_expenses_sum = 25841.80`
-- `ad_attribution_rows = 3`
-- `ad_attribution_sum = 25841.80`
-- `totals_match = true`
-- `db_writes = 0`
+- **Ветка API работает.** Прогон за `2026-08-30` вне ночного джоба: расход
+  сошёлся с эталоном Ozon копейка в копейку — 144 294,20 ₽.
+- **Идентификаторы не пересекаются** с CPO «Все товары» — проверено по факту.
+- **Атрибуция выручки починена** (коммит `cea162a`): до этого downstream писал
+  расход и терял всю выручку.
+- **Ночной прогон защищён** (коммит `27dd399`): сбой Selected CPO больше не
+  может помешать записи CPC и CPO.
 
-Current code state:
+Что в базе сейчас:
 
-- commit `60b57ff` added the gated daily integration
-- commit `c70c547` changed daily dry-run to use the already-loaded source table instead of calling the API
+| | |
+|---|---|
+| source-таблица | 102 строки, 8 дней: 6, 12–16, 20, 21 мая |
+| последние данные | 21 мая — **пропуск 101 день** |
+| наполнение | вручную, тремя заходами 11/17/23 мая; автоматики не было никогда |
+| downstream атрибуция | 50 строк, выручка **0,00 ₽** — писалась старым билдером |
 
-## 2. Feature flags
+Оба флага выключены, ничего не включено.
 
-Two flags control daily selected CPO behavior:
+---
 
-- `ENABLE_OZON_SELECTED_CPO_DAILY=false` by default
-- `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false` by default
+## 2. Флаги
 
-Meaning:
+```
+ENABLE_OZON_SELECTED_CPO_DAILY=false
+APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false
+```
 
-- if `ENABLE_OZON_SELECTED_CPO_DAILY=false`, selected CPO daily step is skipped
-- if `ENABLE_OZON_SELECTED_CPO_DAILY=true` but `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false`, selected CPO daily step can run only in dry-run style and must not write DB
-- only when **both** are `true` may the daily selected CPO write path run
+- `ENABLE=false` — шаг пропускается целиком;
+- `ENABLE=true`, `APPROVE=false` — шаг **только читает source-таблицу**, в Ozon
+  не ходит и ничего не пишет;
+- оба `true` — шаг **идёт в живой Ozon** и пишет source-таблицу и downstream.
 
-## 3. Safe rollout sequence
+Флаги — переменные окружения Render, меняются вручную.
 
-Recommended rollout:
+**Это две разные ветки кода, а не «то же самое, но без записи».** Ровно на этом
+разошлась прошлая версия плана.
 
-1. keep both flags `false`
-2. run a local daily-style dry-run
-3. enable only:
-   - `ENABLE_OZON_SELECTED_CPO_DAILY=true`
-   - keep `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false`
-4. verify dry-run summary and confirm:
-   - no writes
-   - totals match
-   - selected CPO rows/sums are stable
-5. only after that enable:
-   - `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=true`
-6. monitor the next D-1 selected CPO totals in:
-   - source table
-   - `marketplace_expenses`
-   - `ozon_daily_sku_ad_attribution`
+---
 
-The intended rollout order is:
+## 3. Что было сломано в прошлой версии
 
-- dry-run first
-- controlled write second
-- routine production daily only after the first controlled production result is verified
+Не повторять:
 
-## 4. Rollback
+1. **Прогон проверял не тот код, который включают.** Шаги 3–4 старого плана
+   гоняли ветку чтения из таблицы, а шаг 5 переключал на ветку похода в API.
+   Ночное включение `APPROVE` было бы первым в проде запуском той ветки.
+   Причина зафиксирована в самом же старом документе: коммит `c70c547` перевёл
+   дневной dry-run на готовую таблицу, а план после этого не переписали.
 
-Rollback sequence:
+2. **Проверка была пустая.** Таблица пуста после 21 мая, поэтому для D-1
+   dry-run возвращал `source_rows = 0`, все суммы 0, и `totals_match = True`,
+   потому что `0.0 == 0.0 == 0.0`. Все критерии шага 4 — «no writes, totals
+   match, rows/sums stable» — проходили на отсутствии данных.
 
-1. set `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false`
-2. then set `ENABLE_OZON_SELECTED_CPO_DAILY=false`
+3. **Бэкфилла не было вовсе.** План был написан как «включаем вперёд», а
+   основная пропажа — сто с лишним дней назад.
 
-Important:
+---
 
-- no Render schedule change is required for rollback
-- the existing daily pipeline step remains the same
-- selected CPO is only an internal gated sub-stage inside the existing Ozon Performance step
+## 4. Порядок раскатки
 
-## 5. Expected downstream identities
+### Шаг 0. Пересобрать downstream за 8 дней, что уже в базе
 
-Expected selected CPO downstream mapping:
+Ноль обращений к Ozon: source-строки лежат в БД, нужен только пересчёт
+downstream новым билдером. Сейчас там выручка 0,00 ₽; должно стать
+**3 132 538,00 ₽** (сумма `sale_amount` по строкам «Оплата за заказ»).
 
-### `marketplace_expenses`
+Это самая дешёвая проверка фикса на реальных данных — сделать до всего
+остального.
 
+### Шаг 1. Проверка на дате, где данные заведомо есть
+
+**Не на D-1.** Брать дату из тех восьми: `2026-05-16` или `2026-05-06`.
+
+Критерии прохождения:
+
+- `source_rows > 0` — **обязательно**;
+- `totals_match = true`;
+- `db_writes = 0`.
+
+> **`source_rows = 0` — это провал, а не успех.** На пустых данных
+> `totals_match` даёт `true`, потому что `0 == 0 == 0`. Проверка, где эта
+> величина не проверяется первой, не проверяет ничего.
+
+### Шаг 2. Доказать ветку API на одной дате, вне ночного джоба
+
+**До флипа `APPROVE`**, иначе первым запуском этой ветки в проде окажется
+ночной прогон.
+
+```bash
+python3 scripts/selected_cpo_source_fetch_dry_run.py --date <дата> --sku <sku>
+```
+
+Эталон для сверки — `2026-08-30`:
+
+| Метрика | Эталон | База |
+|---|---:|---|
+| Расход | 144 294,20 ₽ | **все** строки отчёта (22) |
+| Выручка | 1 228 652,00 ₽ | только «Оплата за заказ» (17) |
+| Строк атрибуции | 17 | |
+
+Окно: ночной джоб идёт с 00:15 UTC около 5 ч 47 мин, то есть примерно до
+06:00 UTC. Запускать после этого. Selected CPO занимает **единственный** слот
+одновременной выгрузки: замерено 5 секунд, худший случай 13,8 минуты
+(30 опросов). Стоимость — 1 submit (вне лимита 2000) + 2–3 опроса + 1 download.
+
+### Шаг 3. Включить чтение
+
+```
+ENABLE_OZON_SELECTED_CPO_DAILY=true
+APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false
+```
+
+Убедиться в ночном summary, что шаг отработал и `db_writes = 0`. Помнить, что
+эта ветка **не** проверяет то, что включит следующий шаг — она уже проверена на
+шаге 1, а ветка API на шаге 2.
+
+### Шаг 4. Включить запись
+
+```
+APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=true
+```
+
+Наутро сверить за D-1: source-таблицу, `marketplace_expenses`,
+`ozon_daily_sku_ad_attribution` — и обязательно, что выручка **не нулевая**.
+
+### Шаг 5. Бэкфилл
+
+См. §7. Отдельная операция, не часть раскатки вперёд.
+
+---
+
+## 5. Асимметрия расход/выручка
+
+**Расход считается по всем строкам отчёта, выручка — только по строкам
+«Оплата за заказ».** Это не баг и не должно «чиниться».
+
+Так считает сам Ozon. Справка «Аналитика продвижения», docs.ozon.ru:
+
+> «В разрезе данных "Тип продвижения" и "Кампания" покажем общий расход по
+> инструменту "Оплата за заказ" и комбо-модели, а продажи в продвижении и долю
+> рекламных расходов посчитаем только по инструменту "Оплата за заказ".
+> Расход — затраты на продвижение товаров в инструментах "Оплата за заказ" и
+> "Оплата за клик". Продажи в продвижении — сумма, на которую вы продали только
+> в результате продвижения в инструменте "Оплата за заказ".»
+
+Строки «Кампания за клики» возникают из-за комбо-модели: товар одновременно в
+CPO и CPC, и Ozon списывает CPO за заказ, пришедший с кликовой кампании.
+
+Вторая причина — наша: выручка этих заказов уже лежит в
+`ozon_daily_sku_ad_attribution` с `ad_source = 'cpc'`. Проверено на
+`2026-08-30`: из 5 кликовых строк четыре, 155 754,00 ₽, совпадают с
+CPC-атрибуцией копейка в копейку. Повторный учёт задвоил бы их.
+
+Реализация — `build_selected_cpo_ad_attribution_rows`, обоснование продублировано
+в докстроке.
+
+### ⚠️ Сверять только с разрезом «Тип продвижения» / «Кампания»
+
+**В разрезах «Категория» и «Товар» Ozon считает обе метрики по обоим
+инструментам.** Там выручка будет больше нашей, и сверка «не сойдётся» на ровном
+месте. База сравнения зависит от разреза — это свойство интерфейса Ozon, а не
+наша ошибка.
+
+---
+
+## 6. Известная утечка выручки
+
+Строки «Кампания за клики», которых нет в CPC-атрибуции, после фикса не
+попадают **никуда**: в Selected CPO мы их намеренно не берём, а в CPC их и не
+было. По формуле органики
+`organic_orders_revenue = max(total_orders_revenue - ad_orders_revenue, 0)`
+эта выручка уезжает в органику и завышает её.
+
+Масштаб на имеющихся 102 исторических строках (8 дней мая):
+
+| Срез | Строк | Кликовая выручка | Утекает | Доля |
+|---|---:|---:|---:|---:|
+| заказанный SKU == продвигаемый | 54 | 3 957 432,00 ₽ | 459 699,00 ₽ | 11,6% |
+| заказанный SKU != продвигаемый | 6 | 453 860,00 ₽ | 453 860,00 ₽ | **100%** |
+| **Всего** | **60** | **4 411 292,00 ₽** | **913 559,00 ₽** | **20,7%** |
+
+На `2026-08-30` — 58 536,00 ₽, SKU `1508613384` (продвигался `1313569252`).
+
+**Кросс-SKU заказы утекают полностью, все до одного.** Это частный случай
+нерешённого вопроса `promoted_sku` против `order_sku`: см.
+`docs/ozon_organic_sales.md:75` — «`promoted_sku` и `order_sku` нельзя смешивать
+в одной organic-формуле без отдельного решения». CPC-отчёт относит выручку к
+продвигаемому товару, отчёт Selected CPO — к заказанному, и заказ, где они
+разошлись, не находится ни там, ни там.
+
+Оставшиеся 11,6% по совпадающим SKU объясняются не этим и требуют отдельного
+разбора: вероятные причины — окна атрибуции и частичный учёт выручки в CPC.
+
+**Это не блокер раскатки:** утечка существует уже сейчас, и фикс её не создаёт,
+а делает измеримой. Но решать вопрос надо до того, как органику начнут
+использовать для решений по ставкам.
+
+---
+
+## 7. Бэкфилл
+
+### Объём
+
+| Диапазон | Дней | Обращений к Ozon |
+|---|---:|---:|
+| 8 дней, уже лежащих в source-таблице | 8 | **0** (только пересчёт downstream) |
+| 22 мая — 30 августа | 101 | 101 выгрузка |
+| дыры мая: 7–11 | 5 | 5 выгрузок |
+| дыры мая: 17–19 | 3 | 3 выгрузки |
+| **Итого новых выгрузок** | | **109** |
+
+### Стоимость
+
+По замеру `2026-08-30`, на одну дату:
+
+- 1 submit `POST /api/client/statistic/orders/generate` — **вне** лимита 2000 и
+  в ledger не классифицируется;
+- 2 опроса `GET /api/client/statistics/{uuid}` — **попадают** в ledger одной
+  агрегированной строкой;
+- 1 download по прямой ссылке — в ledger не классифицируется;
+- слот занят ~5 секунд.
+
+Итого около **2 учтённых запросов на дату**, ~220 на весь бэкфилл. Запас
+дневной квоты после ночного джоба — около 1830, так что бэкфилл влезает
+в один день по квоте. Ограничение не квота, а **единственный слот выгрузки**:
+даты идут строго последовательно.
+
+Проверять расход перед запуском и по ходу:
+`sql/ozon_statistics_json_usage_last_24h.sql`.
+
+### Порядок
+
+1. Шаг 0 из §4 — пересобрать downstream за 8 имеющихся дней, без Ozon.
+2. Сверить результат с 3 132 538,00 ₽ — это проверка фикса на реальных данных.
+3. Только потом качать новые даты, последовательно, вне окна 00:15–06:00 UTC.
+4. Идти от свежих дат к старым: свежие нужнее для решений.
+
+### Чего не делать
+
+- не запускать параллельно — слот один;
+- не запускать во время ночного джоба;
+- не смешивать бэкфилл с флипом флагов: сначала раскатка вперёд, потом история.
+
+---
+
+## 8. Rollback
+
+Без изменений с прошлой версии:
+
+1. `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false`
+2. затем `ENABLE_OZON_SELECTED_CPO_DAILY=false`
+
+Расписание Render менять не требуется — Selected CPO это внутренний
+подшаг существующего шага Ozon Performance.
+
+---
+
+## 9. Идентификаторы downstream
+
+Без изменений с прошлой версии, проверены по факту на `2026-08-30`:
+
+**`marketplace_expenses`**
 - `expense_type = advertising_order_selected_cpo`
 
-### `ozon_daily_sku_ad_attribution`
-
+**`ozon_daily_sku_ad_attribution`**
 - `ad_source = cpo_selected_products`
 - `attribution_type = direct`
 - `campaign_id = ''`
 
-These identities must stay distinct from existing all-products CPO.
+Пересечений с CPO «Все товары» нет: `advertising_order_5` и `ad_source = 'cpo'`
+в строках Selected CPO не встречаются.
 
-## 6. What must not change
+---
 
-The following must remain unchanged:
+## 10. Что не должно меняться
 
-- `advertising_order_5` remains all-products CPO
-- `ad_source = cpo` remains all-products CPO
-- `statistics/json` is not used for selected CPO
-- Render schedule remains unchanged
+- `advertising_order_5` — это CPO «Все товары»;
+- `ad_source = 'cpo'` — это CPO «Все товары»;
+- **`statistics/json` для Selected CPO не используется** — эндпоинт
+  `POST /api/client/statistic/orders/generate` (singular), в коде
+  `used_statistics_json = False`;
+- расписание Render не меняется;
+- Selected CPO не сливается с CPO «Все товары» и не переиспользует его
+  идентификаторы.
 
-Also:
+Добавилось к этому списку:
 
-- selected CPO must not be merged into all-products CPO
-- selected CPO must not reuse `advertising_order_5`
-- selected CPO must not reuse `ad_source = cpo`
-
-## 7. Operational note
-
-The selected CPO daily hook is safe to keep in code with flags off.
-
-That gives a clean operational posture:
-
-- code path exists
-- local dry-run can be verified
-- production behavior stays unchanged until both flags are explicitly enabled
+- **асимметрия расход/выручка из §5 сохраняется** — у неё есть причина, и она
+  подтверждена справкой Ozon;
+- **живой Selected CPO вызывается только после `save_rows`** — он не должен
+  снова оказаться на пути записи CPC и CPO.

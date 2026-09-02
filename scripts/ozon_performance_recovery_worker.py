@@ -19,6 +19,11 @@ import loaders.ozon_performance_ads_loader as loader
 # покрывать всю историю: усечение прячет старые pending-хвосты, а не просто урезает выдачу.
 CANDIDATE_SCAN_LIMIT = int(os.getenv("OZON_RECOVERY_CANDIDATE_SCAN_LIMIT", "5000"))
 
+# Отдельный код возврата для сбоя бэкфилла ИСТОРИЧЕСКОЙ даты. Пайплайн трактует
+# его как нефатальный и продолжает строить текущий день. Любой другой ненулевой
+# код остаётся фатальным.
+HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
+
 CONTROLLED_FINAL_STATUSES = {
     "complete",
     "no_partial_candidates",
@@ -930,6 +935,33 @@ def run_recovery_write(plan, approve_write=False, write_runtime_only=False, inte
     return result
 
 
+def first_runnable_target_date(plan):
+    """Дата, на которой воркер реально работал в этой попытке."""
+    for candidate in (plan or {}).get("candidates", []) or []:
+        if candidate.get("will_run"):
+            return candidate.get("target_date")
+    return None
+
+
+def recovery_failure_scope(failed_target_date, today_local_date=None):
+    """Граница фатальности: сегодняшний сбор или исторический бэкфилл.
+
+    Воркер обслуживает две разные вещи одним шагом:
+      * хвост ВЧЕРАШНЕЙ даты — это часть сегодняшнего сбора, без него витрина
+        текущего дня будет неполной, и падение здесь обязано быть фатальным;
+      * бэкфилл СТАРЫХ дат — это отдельная работа по историческим дырам, и её
+        неудача не должна мешать построить сегодняшний день.
+
+    Если дату определить не удалось, считаем сбой сегодняшним: неизвестность
+    трактуется в сторону остановки, а не в сторону молчаливого продолжения.
+    """
+    today = today_local_date or loader.today_local()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    if not failed_target_date:
+        return "unknown"
+    return "current_day" if str(failed_target_date) == yesterday else "historical_backfill"
+
+
 def should_continue_loop(wait_until, wait_for_minutes, stop_when_complete):
     return bool(wait_until or wait_for_minutes is not None or stop_when_complete)
 
@@ -1036,12 +1068,15 @@ def execute_recovery_session(
         )
 
         if result.get("status") == "failed":
+            failed_target_date = first_runnable_target_date(plan)
             return {
                 "status": "failed",
                 "attempts": attempts,
                 "history": history,
                 "plan": plan,
                 "result": result,
+                "failed_target_date": failed_target_date,
+                "failure_scope": recovery_failure_scope(failed_target_date),
             }
 
         if result.get("status") == "runtime_state_unavailable":
@@ -1195,7 +1230,15 @@ def main():
     print(json.dumps(loader.sanitize_value(payload), ensure_ascii=False, indent=2))
 
     if payload.get("status") == "failed":
-        raise RuntimeError("Ozon Performance recovery worker failed unexpectedly")
+        # Код возврата несёт границу из recovery_failure_scope, чтобы пайплайну
+        # не пришлось разбирать stdout: 1 — сорван сегодняшний сбор (или дата
+        # неизвестна), 2 — сорван бэкфилл исторической даты.
+        scope = payload.get("failure_scope") or recovery_failure_scope(payload.get("failed_target_date"))
+        print(
+            "Ozon Performance recovery worker failed: "
+            f"target_date={payload.get('failed_target_date')} scope={scope}"
+        )
+        sys.exit(HISTORICAL_BACKFILL_FAILURE_EXIT_CODE if scope == "historical_backfill" else 1)
 
 
 if __name__ == "__main__":

@@ -427,6 +427,41 @@ class OzonReportErrorStateError(RuntimeError):
         self.data = data
 
 
+class OzonReportTimeoutError(TimeoutError):
+    """Отчёт всё ещё собирается, когда закончился НАШ бюджет опроса.
+
+    Это НЕ 429 и обращаться с ним как с 429 нельзя.
+
+    429 — ответ Ozon «лимит исчерпан». По нему действует правило из CLAUDE.md:
+    остановиться на первом же отказе и не повторять в том же quota-окне, потому
+    что каждая повторная попытка гарантированно упирается в ту же стену.
+
+    Таймаут — наш собственный предел ожидания (POLL_PROFILES["statistics_json"]:
+    20 попыток, суммарно 18 мин 45 с сна). Ozon при этом ничего не сообщил:
+    отчёт в состоянии PENDING и, возможно, соберётся позже. Отсюда другое
+    поведение:
+      * прогон НЕ останавливается — переходим к следующему батчу;
+      * тот же отчёт НЕ пересобирается в этом же прогоне: повторный submit
+        стоит ещё одну единицу квоты, а выгрузка за этот батч уже оплачена;
+      * батч остаётся в pending, и дата честно получает неполный статус.
+    """
+
+    def __init__(self, uuid, attempts=None, waited_seconds=None):
+        super().__init__(f"Ozon Performance report timeout: uuid={uuid}")
+        self.uuid = uuid
+        self.attempts = attempts
+        self.waited_seconds = waited_seconds
+
+
+def poll_profile_wait_budget_seconds(poll_profile):
+    """Сколько мы ждём по профилю. Нужно, чтобы писать это в диагностику."""
+    profile = POLL_PROFILES[poll_profile]
+    return sum(
+        min(int(profile["cap_sleep_seconds"]), int(profile["base_sleep_seconds"]) * (2 ** (attempt - 1)))
+        for attempt in range(1, int(profile["max_attempts"]) + 1)
+    )
+
+
 def chunks(items, size):
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -3747,7 +3782,11 @@ class OzonPerformanceClient:
 
             outcome = {"response_kind": "poll_timeout", "http_status": None}
             self.forget_jobs_by_uuid(uuid)
-            raise TimeoutError(f"Ozon Performance report timeout: {uuid}")
+            raise OzonReportTimeoutError(
+                uuid,
+                attempts=int(profile["max_attempts"]),
+                waited_seconds=poll_profile_wait_budget_seconds(poll_profile),
+            )
         except RateLimitPending as exc:
             outcome = {
                 "response_kind": (
@@ -5583,7 +5622,11 @@ def wait_statistics_stateless(
             time.sleep(sleep_seconds)
 
         outcome = {"response_kind": "poll_timeout", "http_status": None}
-        raise TimeoutError(f"Ozon Performance CPC recovery report timeout: {uuid}")
+        raise OzonReportTimeoutError(
+            uuid,
+            attempts=int(profile["max_attempts"]),
+            waited_seconds=poll_profile_wait_budget_seconds(poll_profile),
+        )
     except RateLimitPending as exc:
         outcome = {
             "response_kind": (
@@ -5841,6 +5884,25 @@ def run_cpc_recovery_mode(
                     date_to=target_date,
                     group_by=group_by,
                 )
+            except OzonReportTimeoutError as exc:
+                # Тот же принцип, что и в основном цикле: таймаут — наш предел
+                # ожидания, а не отказ Ozon. Батч пропускаем, прогон продолжаем,
+                # повторный submit того же отчёта не делаем (он стоит квоты).
+                summary["statistics_json_submit_attempts"] += 1
+                summary.setdefault("timed_out_batches", []).append(
+                    {
+                        "batch_index": batch_index,
+                        "report_uuid": getattr(exc, "uuid", None),
+                        "campaign_ids": list(campaign_batch),
+                        "poll_attempts": getattr(exc, "attempts", None),
+                        "waited_seconds": getattr(exc, "waited_seconds", None),
+                    }
+                )
+                print(
+                    "Ozon Performance CPC recovery report timeout: "
+                    + json.dumps(sanitize_value(summary["timed_out_batches"][-1]), ensure_ascii=False)
+                )
+                continue
             except RateLimitPending as exc:
                 summary["statistics_json_submit_attempts"] += 1
                 summary["status"] = "quota_limited_before_refetch" if batch_index == 0 else "quota_limited_during_refetch"
@@ -5903,6 +5965,12 @@ def run_cpc_recovery_mode(
 
     expense_rows = aggregate_rows(list(expense_rows_by_key.values()))
     ad_attribution_rows = aggregate_ad_attribution_rows(list(ad_attribution_rows_by_key.values()))
+
+    # Пропущенные по таймауту батчи делают прогон неполным, даже если всё
+    # остальное записалось. Дата не должна выглядеть закрытой.
+    if summary.get("timed_out_batches"):
+        summary["incomplete_reason"] = "report_timeout"
+        summary["timed_out_batch_count"] = len(summary["timed_out_batches"])
 
     if campaign_ids and not expense_rows and not ad_attribution_rows:
         summary["status"] = "expected_row_not_found"
@@ -7841,6 +7909,8 @@ def run():
 
         consecutive_500_batches = 0
         consecutive_error_state_batches = 0
+        consecutive_timeout_batches = 0
+        timed_out_batches = []
 
         for batch_index in target_batch_indexes:
             if batch_index >= len(cpc_batches):
@@ -8015,6 +8085,67 @@ def run():
                     break
                 else:
                     continue
+            except OzonReportTimeoutError as exc:
+                # Один зависший отчёт не роняет прогон. Батч не помечается
+                # completed, поэтому остаётся в pending и дата получит неполный
+                # статус. Повторно этот же отчёт в текущем прогоне не трогаем:
+                # см. комментарий в OzonReportTimeoutError о разнице с 429.
+                batch_finished_at = utcnow()
+                consecutive_timeout_batches += 1
+                consecutive_500_batches = 0
+                consecutive_error_state_batches = 0
+                timeout_record = {
+                    "batch_index": int(batch_index),
+                    "report_uuid": getattr(exc, "uuid", None),
+                    "campaign_ids": list(campaign_batch),
+                    "poll_attempts": getattr(exc, "attempts", None),
+                    "waited_seconds": getattr(exc, "waited_seconds", None),
+                    "started_at": to_iso(batch_started_at),
+                    "timed_out_at": to_iso(batch_finished_at),
+                }
+                timed_out_batches.append(timeout_record)
+                batch_event = {
+                    "batch_index": int(batch_index),
+                    "start_time": to_iso(batch_started_at),
+                    "end_time": to_iso(batch_finished_at),
+                    "duration_seconds": round((batch_finished_at - batch_started_at).total_seconds(), 3),
+                    "http_status": "report_timeout",
+                    "report_uuid": getattr(exc, "uuid", None),
+                    "pause_before_next_batch_seconds": 0,
+                }
+                batch_events.append(batch_event)
+                print(
+                    "Ozon Performance CPC batch event: "
+                    + json.dumps(sanitize_value(batch_event), ensure_ascii=False)
+                )
+                print(
+                    "Ozon Performance CPC report timeout: "
+                    + json.dumps(sanitize_value(timeout_record), ensure_ascii=False)
+                )
+                run_summary["cpc_timed_out_batches"] = list(timed_out_batches)
+                if consecutive_timeout_batches >= 3:
+                    print(
+                        "Ozon Performance CPC: 3 consecutive report timeouts, "
+                        f"stopping gracefully at batch_index={batch_index}"
+                    )
+                    cpc_progress_snapshot = client.get_cpc_progress(progress_key)
+                    build_partial_failure_status(
+                        run_summary=run_summary,
+                        cpc_progress_snapshot=cpc_progress_snapshot,
+                        cpc_batches=cpc_batches,
+                        ordered_campaign_ids=ordered_campaign_ids,
+                        progress_key=progress_key,
+                        exc=exc,
+                    )
+                    run_summary["cpc"]["failed_batch_index"] = batch_index
+                    run_summary["cpc"]["failed_batch"] = campaign_batch
+                    run_summary["cpc"]["timed_out_batches"] = list(timed_out_batches)
+                    run_summary["cpc_stop_reason"] = "report_timeout_graceful_stop"
+                    run_summary["updated_at"] = to_iso(utcnow())
+                    client.write_run_status(run_summary)
+                    save_daily_load_status(run_summary)
+                    break
+                continue
             except Exception as exc:
                 batch_finished_at = utcnow()
                 batch_event = {

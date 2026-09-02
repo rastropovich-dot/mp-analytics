@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +15,9 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# Держим значение рядом с воркером: менять его надо в одном месте.
+HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 
 def is_yesterday_cpc_loaded():
     try:
@@ -222,10 +225,30 @@ def is_ozon_organic_step(title):
     return title == "Ozon: расчет organic sales по SKU"
 
 
-def recovery_result_allows_ozon_downstream(recovery_result):
+def recovery_pending_units_for_date(recovery_result, target_date):
+    """Сколько единиц по конкретной дате воркер оставил недобранными."""
+    plan = (recovery_result or {}).get("plan") or {}
+    for candidate in plan.get("candidates", []) or []:
+        if str(candidate.get("target_date") or "") == str(target_date or ""):
+            return int(float(candidate.get("pending_campaign_units") or 0))
+    return 0
+
+
+def recovery_result_allows_ozon_downstream(recovery_result, yesterday=None):
+    """Витрину текущего дня открывает полнота ВЧЕРАШНЕЙ даты, а не пустота бэклога.
+
+    Здесь стояло `status == "complete"`, то есть воркер обязан был закрыть весь
+    исторический бэклог, иначе шаг органики пропускался. Бэклог непустой с мая,
+    поэтому шаг органики не отрабатывал ни разу с 2026-05-21 — при том что к
+    вчерашней дате это отношения не имело.
+    """
     if not recovery_result:
         return False
-    return recovery_result.get("status") == "complete"
+    if recovery_result.get("status") == "complete":
+        return True
+    if not yesterday:
+        return False
+    return recovery_pending_units_for_date(recovery_result, yesterday) == 0
 
 
 def ozon_run_summary_is_complete(run_summary):
@@ -253,7 +276,7 @@ def should_skip_pipeline_step(title, args, ozon_downstream_allowed, yesterday_cp
     return False, None
 
 
-def run_step(title, command, fatal=True):
+def run_step(title, command, fatal=True, nonfatal_returncodes=()):
     prepared_command = prepare_command(command)
 
     print("\n" + "=" * 80)
@@ -286,7 +309,7 @@ def run_step(title, command, fatal=True):
         print(f"❌ Ошибка на шаге: {title}")
         print(f"Код ошибки: {returncode}")
         send_failure_alert(title, returncode, list(tail_lines))
-        if fatal:
+        if fatal and returncode not in set(nonfatal_returncodes or ()):
             sys.exit(returncode)
         return {
             "failed": True,
@@ -323,6 +346,7 @@ def main():
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
     yesterday_cpc_complete = is_yesterday_cpc_loaded()
     ozon_downstream_allowed = None
 
@@ -333,7 +357,21 @@ def main():
         if should_skip:
             print(skip_message)
             continue
-        step_result = run_step(title, command, fatal=(title != "Ozon: реклама Performance API"))
+        step_result = run_step(
+            title,
+            command,
+            fatal=(title != "Ozon: реклама Performance API"),
+            # Сбой бэкфилла ИСТОРИЧЕСКОЙ даты (код 2) не должен уносить с собой
+            # текущий день: после этого шага строятся total orders, органика,
+            # остатки, KPI, decision, excel и Telegram. Сбой сбора за вчера
+            # приходит кодом 1 и остаётся фатальным.
+            nonfatal_returncodes=(HISTORICAL_BACKFILL_FAILURE_EXIT_CODE,) if is_recovery_step(title) else (),
+        )
+        if step_result.get("failed") and is_recovery_step(title):
+            print(
+                f"⚠️  {title}: сорван бэкфилл исторической даты "
+                f"(код {step_result.get('returncode')}). Текущий день строим дальше."
+            )
 
         if title == "Ozon: реклама Performance API":
             if step_result.get("failed"):
@@ -351,7 +389,7 @@ def main():
                 )
         elif title == "Ozon Performance: CPC recovery after daily":
             recovery_result = step_result.get("recovery_result") or {}
-            if recovery_result_allows_ozon_downstream(recovery_result):
+            if recovery_result_allows_ozon_downstream(recovery_result, yesterday=yesterday):
                 ozon_downstream_allowed = True
             else:
                 ozon_downstream_allowed = False

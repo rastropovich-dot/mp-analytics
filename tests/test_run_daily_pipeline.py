@@ -226,7 +226,7 @@ class RunStepNonFatalTests(unittest.TestCase):
         titles_run = []
         step_results = {}
 
-        def fake_run_step(title, command, fatal=True):
+        def fake_run_step(title, command, fatal=True, nonfatal_returncodes=()):
             titles_run.append(title)
             if title == "Ozon: реклама Performance API":
                 self.assertFalse(fatal, "Ozon Performance step must be non-fatal")

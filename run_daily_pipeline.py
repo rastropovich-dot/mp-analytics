@@ -152,6 +152,17 @@ def parse_args():
         help="Skip Excel export step. Useful as a temporary mitigation if export causes memory pressure.",
     )
     parser.add_argument(
+        "--skip-organic",
+        action="store_true",
+        help=(
+            "Skip the Ozon organic sales step. organic = total_orders - ad_attributed, and Selected "
+            "CPO has not been collected since 2026-05-21, so the result would be overstated by "
+            "roughly a quarter and the first write since May would clear the "
+            "ozon_daily_sku_organic_missing blocker in the morning alert. Keep this flag on until "
+            "Selected CPO is backfilled; drop it in the same change that starts collecting it."
+        ),
+    )
+    parser.add_argument(
         "--skip-decision",
         action="store_true",
         help="Skip Decision: SKU daily input step. Useful as an emergency mitigation if decision rebuild causes memory pressure.",
@@ -332,6 +343,14 @@ def should_skip_pipeline_step(title, args, ozon_downstream_allowed, yesterday_cp
         return True, f"⏭️ Пропускаем шаг: {title}"
     if args.skip_decision and title == "Decision: SKU daily input":
         return True, f"⏭️ Пропускаем шаг: {title}"
+    if getattr(args, "skip_organic", False) and is_ozon_organic_step(title):
+        # Выключение намеренное и названное, а не побочный эффект гейта
+        # ozon_downstream_allowed: тот закрывается лишь когда у дневного сбора
+        # остался хвост, то есть по случайности. Снимать вместе со сбором Selected CPO.
+        return True, (
+            f"⏭️ Пропускаем шаг: {title} "
+            "(Selected CPO не собран, органика была бы завышена примерно на четверть)"
+        )
     if args.skip_telegram and title.startswith("Telegram:"):
         return True, f"⏭️ Пропускаем шаг: {title}"
     if ozon_downstream_allowed is False and is_ozon_organic_step(title):

@@ -19,6 +19,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Держим значение рядом с воркером: менять его надо в одном месте.
 HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 
+# Хвост вчерашней даты — это один-два батча по 10 кампаний.
+CURRENT_DAY_TAIL_MAX_BATCHES = 2
+
 def is_yesterday_cpc_loaded():
     try:
         from loaders.ozon_performance_ads_loader import supabase, today_local, timedelta
@@ -39,6 +42,45 @@ def is_yesterday_cpc_loaded():
     except Exception as exc:
         print(f"Warning: cannot check yesterday CPC status ({exc}) — skipping pre-phase to be safe")
         return False
+
+
+def pipeline_yesterday():
+    """Вчера в той же зоне, в какой его понимает лоадер.
+
+    Лоадер живёт по Europe/Moscow (today_local), и recovery-воркер выбирает
+    кандидатов по той же дате. Считать здесь по UTC значило бы иногда
+    промахиваться на сутки. Импорт локальный и защищённый: build_steps зовётся
+    на импорте модуля, и тянуть туда тяжёлый лоадер незачем.
+    """
+    try:
+        from loaders.ozon_performance_ads_loader import today_local
+        return (today_local() - timedelta(days=1)).isoformat()
+    except Exception:
+        return (date.today() - timedelta(days=1)).isoformat()
+
+
+def build_post_recovery_command(args=None):
+    """Post-фаза recovery. С --ozon-recovery-current-day-only сужается до вчера.
+
+    Зачем сужение. Один и тот же шаг обслуживает две разные вещи: хвост
+    ВЧЕРАШНЕЙ даты (часть сегодняшнего сбора) и бэкфилл СТАРЫХ дат. Выбор
+    старых дат сейчас неисправен — воркер строит бэклог по статусным строкам и
+    расходится с детектором дыр: 30 дат против 28 при пересечении 11, причём
+    17 реальных дыр он не видит, а 19 нормальных дат качает зря. Пока это не
+    починено, бэкфилл включать рано, а хвост текущего дня нужен: он копится по
+    10 юнитов за ночь.
+
+    --date сужает кандидатов до одной даты (get_partial_candidates), а малое
+    число батчей отражает реальный размер хвоста — один-два батча по 10 кампаний.
+    """
+    command = (
+        "python3 scripts/ozon_performance_recovery_worker.py --write "
+        "--approve-recovery-worker-write --phase post --wait-for-minutes 240 "
+        "--timezone Europe/Moscow --max-attempts 10"
+    )
+    if args is not None and getattr(args, "ozon_recovery_current_day_only", False):
+        return f"{command} --max-batches-per-run {CURRENT_DAY_TAIL_MAX_BATCHES} --date {pipeline_yesterday()}"
+    return f"{command} --max-batches-per-run 26 --stop-when-complete"
 
 
 def build_ozon_performance_daily_command(args=None):
@@ -81,7 +123,7 @@ def build_steps(args=None):
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
         (
             "Ozon Performance: CPC recovery after daily",
-            "python3 scripts/ozon_performance_recovery_worker.py --write --approve-recovery-worker-write --phase post --wait-for-minutes 240 --timezone Europe/Moscow --max-attempts 10 --max-batches-per-run 26 --stop-when-complete",
+            build_post_recovery_command(args),
         ),
         ("Ozon: total orders analytics по SKU", "python3 loaders/ozon_sku_total_analytics_loader.py --mode daily-yesterday"),
         ("Ozon: расчет organic sales по SKU", "python3 reports_ozon_sku_organic.py --mode daily-yesterday --from-db-only"),
@@ -113,6 +155,15 @@ def parse_args():
         "--skip-decision",
         action="store_true",
         help="Skip Decision: SKU daily input step. Useful as an emergency mitigation if decision rebuild causes memory pressure.",
+    )
+    parser.add_argument(
+        "--ozon-recovery-current-day-only",
+        action="store_true",
+        help=(
+            "Recovery works only on yesterday's CPC tail: pre-phase is skipped and the post-phase "
+            "is restricted to yesterday's date. Use while the worker's date selection for historical "
+            "backfill is still unfixed."
+        ),
     )
     parser.add_argument(
         "--skip-recovery",
@@ -260,6 +311,18 @@ def ozon_run_summary_is_complete(run_summary):
 def should_skip_pipeline_step(title, args, ozon_downstream_allowed, yesterday_cpc_complete=True):
     if args.skip_recovery and is_recovery_step(title):
         return True, f"⏭️ Пропускаем шаг: {title}"
+    if (
+        getattr(args, "ozon_recovery_current_day_only", False)
+        and title == "Ozon Performance: CPC recovery before daily"
+    ):
+        # Pre-фаза — это НЕ подбор вчерашнего хвоста. Она стоит под гейтом
+        # is_yesterday_cpc_loaded и запускается, только когда вчера уже success,
+        # то есть по построению всегда работает со старыми датами. Именно её и
+        # надо выключить, чтобы бэкфилл не шёл.
+        return True, (
+            f"⏭️ Пропускаем шаг: {title} "
+            "(режим только текущего дня — историческим бэкфиллом занимается pre-фаза)"
+        )
     if not yesterday_cpc_complete and title == "Ozon Performance: CPC recovery before daily":
         return True, (
             f"⏭️ Пропускаем шаг: {title} "

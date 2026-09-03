@@ -1,0 +1,81 @@
+{
+  "taken_at_utc": "2026-09-03T15:29:34.994070+00:00",
+  "purpose": "состояние до полного пересчёта KPI 2026-09-03",
+  "daily_sku_kpi": {
+    "rows": 183345,
+    "file": "snapshots/daily_sku_kpi_before_20260903.csv.gz",
+    "sha256": "71e7283c9b49c193845b9aef980ee70a3c1474df671f1031d83fdb9dc44662c4",
+    "key": [
+      "kpi_date",
+      "marketplace_code",
+      "marketplace_sku"
+    ],
+    "columns": [
+      "ad_orders_qty",
+      "ad_orders_revenue",
+      "ad_share_of_orders",
+      "ad_share_orders",
+      "ad_share_revenue",
+      "ad_spend",
+      "article",
+      "buyout_rate",
+      "buyouts_amount_seller",
+      "buyouts_qty",
+      "commission_amount",
+      "created_at",
+      "ebitda_amount",
+      "ebitda_percent",
+      "gross_margin_amount",
+      "gross_margin_percent",
+      "id",
+      "kpi_date",
+      "logistics_amount",
+      "marketplace_code",
+      "marketplace_sku",
+      "orders_amount_seller",
+      "orders_qty",
+      "organic_orders_qty",
+      "organic_orders_revenue",
+      "other_expenses_amount",
+      "product_cost",
+      "product_name",
+      "roas"
+    ]
+  },
+  "daily_marketplace_kpi": {
+    "rows": 346,
+    "file": "snapshots/daily_marketplace_kpi_before_20260903.csv.gz",
+    "sha256": "b640709527b4b80a1915468565ca2c976789f1d22839849e99533ef1699a934c",
+    "key": [
+      "kpi_date",
+      "marketplace_code"
+    ],
+    "columns": [
+      "ad_orders_qty",
+      "ad_orders_revenue",
+      "ad_share_of_orders",
+      "ad_share_orders",
+      "ad_share_revenue",
+      "ad_spend",
+      "buyout_rate",
+      "buyouts_amount_seller",
+      "buyouts_qty",
+      "commission_amount",
+      "created_at",
+      "ebitda_amount",
+      "ebitda_percent",
+      "gross_margin_amount",
+      "gross_margin_percent",
+      "id",
+      "kpi_date",
+      "logistics_amount",
+      "marketplace_code",
+      "orders_amount_seller",
+      "orders_qty",
+      "organic_orders_qty",
+      "organic_orders_revenue",
+      "other_expenses_amount",
+      "roas"
+    ]
+  }
+}

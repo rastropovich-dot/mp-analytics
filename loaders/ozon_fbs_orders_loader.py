@@ -1,5 +1,10 @@
 import os
 import requests
+
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -60,7 +65,8 @@ def get_ozon_fbs_postings(days_back=14):
     all_postings = []
 
     while True:
-        response = requests.post(url, headers=ozon_headers(), json=payload, timeout=120)
+        response = http_retry.post(url, label="Ozon FBS orders",
+                                   headers=ozon_headers(), json=payload, timeout=120)
 
         print("Ozon FBS orders HTTP status:", response.status_code)
 

@@ -21,6 +21,10 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products"
 
+# Предел повторов по 429. Без него цикл ниже крутился бесконечно.
+WB_RATE_LIMIT_MAX_ATTEMPTS = 5
+WB_RATE_LIMIT_SLEEP_SECONDS = 60
+
 HEADERS = {
     "Authorization": WB_API_KEY,
     "Content-Type": "application/json",
@@ -58,6 +62,8 @@ def fetch_wb_sales_funnel_day(day: str):
     total_order_sum = 0
     total_products = 0
 
+    rate_limit_attempts = 0
+
     while True:
         payload = {
             "selectedPeriod": {
@@ -78,13 +84,30 @@ def fetch_wb_sales_funnel_day(day: str):
         print(f"WB Sales Funnel {day} offset {offset} HTTP: {resp.status_code}")
 
         if resp.status_code == 429:
-            print("⏳ WB rate limit. Жду 60 секунд...")
-            time.sleep(60)
+            # Раньше здесь был `continue` без счётчика: при устойчивом 429 цикл
+            # крутился бесконечно, по минуте на оборот, и шаг не заканчивался
+            # никогда. Теперь попытки ограничены, а по их исчерпании — обычная
+            # ошибка. WB-429 транзиентный (частота запросов), поэтому повтор
+            # осмыслен — в отличие от 429 Performance API, где это исчерпанная
+            # суточная квота и повторять нечего.
+            rate_limit_attempts += 1
+            if rate_limit_attempts > WB_RATE_LIMIT_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"WB Sales Funnel rate limit не изжит за {WB_RATE_LIMIT_MAX_ATTEMPTS} попыток "
+                    f"({day}, offset {offset})"
+                )
+            print(
+                f"⏳ WB rate limit. Жду {WB_RATE_LIMIT_SLEEP_SECONDS} секунд "
+                f"(попытка {rate_limit_attempts}/{WB_RATE_LIMIT_MAX_ATTEMPTS})..."
+            )
+            time.sleep(WB_RATE_LIMIT_SLEEP_SECONDS)
             continue
 
         if resp.status_code != 200:
             print(resp.text[:3000])
             raise RuntimeError(f"WB Sales Funnel API error: {resp.status_code}")
+
+        rate_limit_attempts = 0
 
         data = resp.json()
         products = data.get("data", {}).get("products", [])

@@ -1,5 +1,10 @@
 import os
 import requests
+
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
 from datetime import date, timedelta
 from dotenv import load_dotenv
 from supabase import create_client
@@ -25,7 +30,8 @@ def get_wb_orders(days_back=30):
         "flag": 0
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=120)
+    response = http_retry.get(url, label="WB orders", retry_429=http_retry.RETRY_429_ANY,
+                              headers=headers, params=params, timeout=120)
 
     print("WB orders HTTP status:", response.status_code)
 

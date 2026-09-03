@@ -6,6 +6,11 @@ from collections import Counter, defaultdict
 from datetime import date
 
 import requests
+
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -237,7 +242,8 @@ def get_ozon_stocks(products, stock_api_batch_size):
             "limit": 1000
         }
 
-        response = requests.post(url, headers=ozon_headers(), json=payload, timeout=60)
+        response = http_retry.post(url, label="Ozon stocks",
+                                   headers=ozon_headers(), json=payload, timeout=60)
 
         if response.status_code != 200:
             print("Ошибка Ozon stocks API:")

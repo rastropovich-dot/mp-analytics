@@ -1,5 +1,10 @@
 import os
 import requests
+
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client
@@ -61,7 +66,8 @@ def get_ozon_finance_transactions(days_back=30):
             "page_size": page_size,
         }
 
-        response = requests.post(url, headers=ozon_headers(), json=payload, timeout=120)
+        response = http_retry.post(url, label="Ozon finance transactions",
+                                   headers=ozon_headers(), json=payload, timeout=120)
         print(f"Ozon finance page {page} HTTP status: {response.status_code}")
 
         if response.status_code != 200:

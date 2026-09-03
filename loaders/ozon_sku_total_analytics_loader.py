@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -214,24 +215,122 @@ def load_catalog():
     return {str(row.get("marketplace_sku")): row for row in rows}
 
 
-def request_page(date_from, date_to, page_size, offset):
+# ДВА РАЗНЫХ 429. Не смешивать — правила прямо противоположные.
+#
+# 1. Performance API (api-performance.ozon.ru, /api/client/statistics/json).
+#    429 означает исчерпание СУТОЧНОЙ квоты выгрузок. Повтор бессмыслен: до
+#    сброса окна ответ будет тем же. Действует правило CLAUDE.md — «стоп на
+#    первом 429, не retry storm». Реализовано в
+#    loaders/ozon_performance_ads_loader.py: REQUEST_PROFILES["statistics_json"]
+#    имеет fail_fast_on_429 = True, а RateLimitPending останавливает прогон.
+#
+# 2. Seller API (api-seller.ozon.ru, /v1/analytics/data) — здесь.
+#    429 с "code": 8 означает превышение частоты запросов В СЕКУНДУ. Ошибка
+#    транзиентная, и повтор через паузу — ровно то, что нужно.
+#
+#    Доказательство транзиентности: 2026-09-03 в 02:56:16 первый же запрос
+#    страницы (offset=0) вернул 429 code 8 и уронил весь ночной пайплайн, а
+#    накануне, 2026-09-01 в 05:08:10, тот же самый запрос вернул 200 с первой
+#    попытки. Ретраев в этом файле не было вовсе: любой не-200 сразу шёл в
+#    RuntimeError, шаг падал с кодом 1 и уносил витрину за весь день.
+#
+# Повторяем только то, что заведомо транзиентно: 429 с code 8 и 5xx. Любой
+# другой ответ — включая 429 с иным кодом — остаётся немедленной ошибкой:
+# неизвестный отказ не должен молча превращаться в серию повторов.
+SELLER_RETRY_MAX_ATTEMPTS = 4
+SELLER_RETRY_BASE_SLEEP_SECONDS = 1
+SELLER_RETRY_CAP_SLEEP_SECONDS = 10
+SELLER_RATE_LIMIT_PER_SECOND_CODE = 8
+
+
+def parse_seller_error_code(response):
+    """Код ошибки из тела ответа Ozon. None, если тело не разобрать."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("code")
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_retryable_seller_response(response):
+    """Транзиентный отказ, который имеет смысл повторить.
+
+    Возвращает (retryable, reason) — reason идёт в лог, чтобы по логу было
+    видно, почему решили повторять или не повторять.
+    """
+    status = int(response.status_code)
+    if 500 <= status <= 599:
+        return True, f"http_{status}"
+    if status == 429:
+        code = parse_seller_error_code(response)
+        if code == SELLER_RATE_LIMIT_PER_SECOND_CODE:
+            return True, "rate_limit_per_second"
+        # 429 с другим кодом — это НЕ секундный троттлинг. Возможно, суточный
+        # лимит Seller API, для которого повтор так же бессмыслен, как для
+        # Performance. Не угадываем: падаем и пишем код в лог.
+        return False, f"429_code_{code}"
+    return False, f"http_{status}"
+
+
+def seller_retry_sleep_seconds(response, attempt):
+    """Пауза перед следующей попыткой. Retry-After имеет приоритет."""
+    retry_after = (response.headers or {}).get("Retry-After")
+    if retry_after is not None:
+        try:
+            return max(0, min(SELLER_RETRY_CAP_SLEEP_SECONDS, int(float(str(retry_after).strip()))))
+        except (TypeError, ValueError):
+            pass
+    return min(
+        SELLER_RETRY_CAP_SLEEP_SECONDS,
+        SELLER_RETRY_BASE_SLEEP_SECONDS * (2 ** max(attempt - 1, 0)),
+    )
+
+
+def request_page(date_from, date_to, page_size, offset, sleep_fn=time.sleep):
     payload = build_payload(date_from, date_to, page_size, offset)
-    response = requests.post(
-        SELLER_ANALYTICS_URL,
-        headers=ozon_headers(),
-        json=payload,
-        timeout=120,
-    )
 
-    print(
-        "Ozon Seller Analytics page request: "
-        f"offset={offset} limit={page_size} status={response.status_code}"
-    )
+    for attempt in range(1, SELLER_RETRY_MAX_ATTEMPTS + 1):
+        response = requests.post(
+            SELLER_ANALYTICS_URL,
+            headers=ozon_headers(),
+            json=payload,
+            timeout=120,
+        )
 
-    if response.status_code != 200:
-        raise RuntimeError(f"Ozon Seller Analytics error {response.status_code}: {response.text[:2000]}")
+        print(
+            "Ozon Seller Analytics page request: "
+            f"offset={offset} limit={page_size} status={response.status_code} "
+            f"attempt={attempt}/{SELLER_RETRY_MAX_ATTEMPTS}"
+        )
 
-    return response.json(), payload
+        if response.status_code == 200:
+            return response.json(), payload
+
+        retryable, reason = is_retryable_seller_response(response)
+        if not retryable or attempt >= SELLER_RETRY_MAX_ATTEMPTS:
+            # Попытки исчерпаны или отказ не транзиентный — ошибка наружу.
+            # Глотать нельзя: шаг кормит органику и KPI, и молчаливый пропуск
+            # оставил бы витрину неполной без единого следа.
+            raise RuntimeError(
+                f"Ozon Seller Analytics error {response.status_code} "
+                f"(reason={reason}, attempts={attempt}): {response.text[:2000]}"
+            )
+
+        sleep_seconds = seller_retry_sleep_seconds(response, attempt)
+        print(
+            "Ozon Seller Analytics transient error: "
+            f"reason={reason} attempt={attempt}/{SELLER_RETRY_MAX_ATTEMPTS} "
+            f"sleep={sleep_seconds}s"
+        )
+        sleep_fn(sleep_seconds)
+
+    raise RuntimeError("Ozon Seller Analytics retry loop exited without a result")
 
 
 def parse_rows(response_data):

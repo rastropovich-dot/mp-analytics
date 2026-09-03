@@ -1,5 +1,10 @@
 import os
 import requests
+
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -69,7 +74,8 @@ def get_fbo_postings(days_back=30):
             },
         }
 
-        response = requests.post(url, headers=ozon_headers(), json=payload, timeout=120)
+        response = http_retry.post(url, label="Ozon FBO postings",
+                                   headers=ozon_headers(), json=payload, timeout=120)
         print(f"Ozon FBO postings offset {offset} HTTP status: {response.status_code}")
 
         if response.status_code != 200:

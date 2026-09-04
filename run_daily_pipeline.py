@@ -19,6 +19,19 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Держим значение рядом с воркером: менять его надо в одном месте.
 HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 
+# Шаги, чей сбой не должен уносить с собой остальной день.
+#
+# «Ozon: total orders analytics по SKU» ходит в Seller API за SKU-слоем, и тот
+# отвечает 429 code 8 на ПЕРВОМ же запросе шага — при том, что предыдущее
+# обращение к api-seller.ozon.ru было за 2 ч 39 мин до него (ночи на 2026-09-03
+# и 2026-09-04). То есть отказ не связан с нашей частотой, ретраи его не
+# изживают, а шаг роняет всё, что идёт после: остатки, KPI, decision, excel.
+#
+# Питает он единственную таблицу ozon_daily_sku_total_orders, которую читает
+# только расчёт органики — а тот выключен флагом --skip-organic до сбора
+# Selected CPO. Терять из-за него витрину нечем.
+NON_FATAL_STEPS = ("Ozon: total orders analytics по SKU",)
+
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
 CURRENT_DAY_TAIL_MAX_BATCHES = 2
 
@@ -442,13 +455,19 @@ def main():
         step_result = run_step(
             title,
             command,
-            fatal=(title != "Ozon: реклама Performance API"),
+            fatal=(title != "Ozon: реклама Performance API" and title not in NON_FATAL_STEPS),
             # Сбой бэкфилла ИСТОРИЧЕСКОЙ даты (код 2) не должен уносить с собой
             # текущий день: после этого шага строятся total orders, органика,
             # остатки, KPI, decision, excel и Telegram. Сбой сбора за вчера
             # приходит кодом 1 и остаётся фатальным.
             nonfatal_returncodes=(HISTORICAL_BACKFILL_FAILURE_EXIT_CODE,) if is_recovery_step(title) else (),
         )
+        if step_result.get("failed") and title in NON_FATAL_STEPS:
+            print(
+                f"⚠️  {title}: шаг не удался (код {step_result.get('returncode')}). "
+                "Он питает только ozon_daily_sku_total_orders, которую читает выключенная "
+                "органика — витрину строим дальше."
+            )
         if step_result.get("failed") and is_recovery_step(title):
             print(
                 f"⚠️  {title}: сорван бэкфилл исторической даты "

@@ -30,7 +30,17 @@ HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 # Питает он единственную таблицу ozon_daily_sku_total_orders, которую читает
 # только расчёт органики — а тот выключен флагом --skip-organic до сбора
 # Selected CPO. Терять из-за него витрину нечем.
-NON_FATAL_STEPS = ("Ozon: total orders analytics по SKU",)
+NON_FATAL_STEPS = (
+    "Ozon: total orders analytics по SKU",
+    # Выкупы: загрузчик ходит в /v3/finance/transaction/list, отключённый Ozon
+    # 2026-09-08. Переводить его на accrual/by-day наспех нельзя — это база
+    # расчёта прибыли, а форма продаж и возвратов в новой модели пока не
+    # разобрана. Шаг стоит ПЕРЕД сбором рекламы, поэтому фатальным он уносил бы
+    # исправную рекламу, органику, KPI и витрину вместе с собой.
+    # Данные не теряются: загрузчик добирает окном в 30 дней, как только будет
+    # переведён. См. docs/ozon_finance_migration.md, раздел «Что НЕ мигрировано».
+    "Ozon: дневные финоперации",
+)
 
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
 CURRENT_DAY_TAIL_MAX_BATCHES = 2
@@ -226,7 +236,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def send_failure_alert(title, returncode, tail_lines):
+def send_failure_alert(title, returncode, tail_lines, fatal=True):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
@@ -234,11 +244,20 @@ def send_failure_alert(title, returncode, tail_lines):
     if len(tail_text) > 3500:
         tail_text = tail_text[-3500:]
 
-    message = (
-        "❌ <b>Пайплайн MP Analytics упал</b>\n"
-        f"Шаг: {html.escape(title)}\n"
-        f"Код ошибки: {returncode}\n"
-    )
+    # Ложная тревога дороже молчания: падение ОДНОГО известного нефатального
+    # шага — это не крах прогона, и сообщать о нём так нельзя.
+    if fatal:
+        message = (
+            "❌ <b>Пайплайн MP Analytics упал</b>\n"
+            f"Шаг: {html.escape(title)}\n"
+            f"Код ошибки: {returncode}\n"
+        )
+    else:
+        message = (
+            "⚠️ <b>Шаг не выполнен, прогон продолжен</b>\n"
+            f"Шаг: {html.escape(title)}\n"
+            f"Код ошибки: {returncode}\n"
+        )
 
     if tail_text:
         message += f"\n<pre>{html.escape(tail_text)}</pre>"
@@ -403,8 +422,9 @@ def run_step(title, command, fatal=True, nonfatal_returncodes=()):
     if returncode != 0:
         print(f"❌ Ошибка на шаге: {title}")
         print(f"Код ошибки: {returncode}")
-        send_failure_alert(title, returncode, list(tail_lines))
-        if fatal and returncode not in set(nonfatal_returncodes or ()):
+        step_is_fatal = fatal and returncode not in set(nonfatal_returncodes or ())
+        send_failure_alert(title, returncode, list(tail_lines), fatal=step_is_fatal)
+        if step_is_fatal:
             sys.exit(returncode)
         return {
             "failed": True,
@@ -465,8 +485,7 @@ def main():
         if step_result.get("failed") and title in NON_FATAL_STEPS:
             print(
                 f"⚠️  {title}: шаг не удался (код {step_result.get('returncode')}). "
-                "Он питает только ozon_daily_sku_total_orders, которую читает выключенная "
-                "органика — витрину строим дальше."
+                "Шаг помечен нефатальным по известной причине — витрину строим дальше."
             )
         if step_result.get("failed") and is_recovery_step(title):
             print(

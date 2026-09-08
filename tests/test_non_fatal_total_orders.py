@@ -25,8 +25,18 @@ class NonFatalStepsTests(unittest.TestCase):
         self.assertIn(STEP, pipeline.NON_FATAL_STEPS)
 
     def test_the_list_is_narrow(self):
-        """Нефатальным должен быть ровно тот шаг, который мы разобрали."""
-        self.assertEqual(tuple(pipeline.NON_FATAL_STEPS), (STEP,))
+        """Нефатальны ровно те шаги, каждый из которых разобран отдельно.
+
+        Список расширяется только осознанно: каждая запись должна иметь
+        причину в коде и разбор, почему её падение не рушит витрину.
+          - total orders: питает только выключенную органику
+          - дневные финоперации: /v3/finance/transaction/list отключён
+            Ozon 2026-09-08, загрузчик ждёт миграции
+        """
+        self.assertEqual(
+            tuple(pipeline.NON_FATAL_STEPS),
+            (STEP, "Ozon: дневные финоперации"),
+        )
 
     def test_steps_that_must_stay_fatal(self):
         for title in ("KPI: расчет SKU", "KPI: расчет маркетплейсов",

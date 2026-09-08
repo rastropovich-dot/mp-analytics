@@ -57,6 +57,12 @@ CPC_COOLDOWN_SECONDS = int(os.getenv("OZON_PERFORMANCE_CPC_COOLDOWN_SECONDS", "1
 BATCH_SIZE_RECOVERY_TTL_SECONDS = int(os.getenv("OZON_PERFORMANCE_BATCH_SIZE_RECOVERY_TTL_SECONDS", "21600"))
 DEFAULT_CAMPAIGN_BATCH_SIZE = int(os.getenv("OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE", "10"))
 DEFAULT_MAX_CPC_BATCHES_PER_RUN = int(os.getenv("OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN", "5"))
+# Валюта лимита — ВЫГРУЗКИ, не запросы: «одна рекламная кампания = одна выгрузка»,
+# «лимит на количество выгрузок за 24 часа с аккаунта — 2000» (документация Performance).
+# Текст отказа Ozon говорит «Превышен дневной лимит запросов (максимум 2000)» — это
+# неточная формулировка СООБЩЕНИЯ, а не определение единицы учёта.
+# 2026-09-06 модель ошибочно переписали на «запросы», приняв текст ошибки за
+# спецификацию; правка отозвана. Подробности: docs/ozon_ad_spend_reconciliation.md §4a.
 STATS_DAILY_CAMPAIGN_LIMIT = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT", "2000"))
 STATS_DAILY_CAMPAIGN_RESERVE = int(os.getenv("OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE", "200"))
 STATS_DAILY_LIMIT_PER_ACTIVE_CAMPAIGN = int(
@@ -298,6 +304,13 @@ DATE_KEYS = (
     "operationDate",
 )
 
+# ЗНАК И МОДУЛЬ. abs() на суммах Performance API оставлен намеренно: отчёты
+# statistics/json, campaign/product и all_sku_promo отдают «Расход, ₽» всегда
+# положительным, возвратов и сторно в них не бывает — движение денег живёт в
+# finance API, а не здесь. Модуль защищает от минуса в CSV при смене формата.
+# ВАЖНО: в финансовых загрузчиках abs() на суммах ЗАПРЕЩЁН — там знак несёт
+# смысл (списание против возврата), см. loaders/ozon_expenses_loader.py и
+# CLAUDE.md, правило о сравнении величин.
 SPEND_KEYS = (
     "moneySpent",
     "money_spent",
@@ -1163,6 +1176,15 @@ def parse_args():
         ),
     )
     parser.add_argument("--days-back", type=int, default=30)
+    parser.add_argument(
+        "--target-dates",
+        help=(
+            "Comma-separated dates to WRITE when the requested period spans several days. "
+            "Everything else the report returns is dropped before the write. Required to "
+            "run cpc-backfill over a multi-day window: without it a window would overwrite "
+            "healthy dates with a campaign set assembled for other dates."
+        ),
+    )
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--group-by", default=DEFAULT_GROUP_BY)
@@ -4592,6 +4614,47 @@ def enrich_rows(rows, catalog):
     return rows
 
 
+def parse_target_dates(raw):
+    """--target-dates: список дат через запятую. Пусто — фильтра нет."""
+    if not raw:
+        return []
+    return [d.strip() for d in str(raw).split(",") if d.strip()]
+
+
+def enforce_target_dates(rows, target_dates, date_field, label):
+    """Оставить только целевые даты и убедиться, что чужих не осталось.
+
+    Зачем. Многодневное окно (statistics поддерживает до 62 дней) возвращает и
+    те даты, которые у нас в порядке. Записывать их НЕЛЬЗЯ: marketplace_expenses
+    ключуется по (expense_date, marketplace_code, marketplace_sku, expense_type)
+    БЕЗ campaign_id, upsert замещает строку целиком, а набор кампаний в окне
+    собран под целевые даты, а не под каждую дату окна. Запись здоровой даты
+    неполным набором кампаний затрёт её полное значение — тот же механизм, что
+    осыпает историю заказов WB.
+
+    Практически: бэкфилл 28 дат тремя окнами по 62 дня затронул бы 145 дат,
+    то есть испортил бы 117 здоровых ради починки 28.
+
+    Возвращает (оставленные, отброшено). Бросает, если после фильтра осталась
+    дата вне списка — проверяем не «работает», а «не портит».
+    """
+    if not target_dates:
+        return list(rows), 0
+    allowed = {str(d) for d in target_dates}
+    kept, dropped = [], 0
+    for row in rows:
+        if str(row.get(date_field) or "") in allowed:
+            kept.append(row)
+        else:
+            dropped += 1
+    leaked = sorted({str(r.get(date_field) or "") for r in kept} - allowed)
+    if leaked:
+        raise RuntimeError(
+            f"{label}: после фильтра остались даты вне целевого списка: {leaked}"
+        )
+    return kept, dropped
+
+
 def aggregate_rows(rows):
     grouped = {}
 
@@ -7193,9 +7256,10 @@ def run():
         return
 
     if args.mode == "cpc-backfill" and args.plan_only:
-        if date_from != date_to:
+        if date_from != date_to and not parse_target_dates(args.target_dates):
             raise RuntimeError(
-                "cpc-backfill mode supports exactly one calendar day. "
+                "cpc-backfill mode supports exactly one calendar day unless --target-dates "
+                "lists what to write. "
                 f"Got {date_from}..{date_to}"
             )
         if args.progress_key:
@@ -7429,9 +7493,10 @@ def run():
         print(json.dumps(cpc_activity_sample, ensure_ascii=False))
 
     if args.mode == "cpc-backfill":
-        if date_from != date_to:
+        if date_from != date_to and not parse_target_dates(args.target_dates):
             raise RuntimeError(
-                "cpc-backfill mode supports exactly one calendar day. "
+                "cpc-backfill mode supports exactly one calendar day unless --target-dates "
+                "lists what to write. Окно без списка целевых дат перезапишет здоровые даты. "
                 f"Got {date_from}..{date_to}"
             )
         if args.progress_key:
@@ -8460,8 +8525,15 @@ def run():
         run_summary["cpc_stop_reason"] = "429"
     elif cpc_stage_status == "pending_backfill" and run_summary.get("batch_cap_limited"):
         run_summary["cpc_stop_reason"] = "batch_cap_reached"
+    elif str(cpc_stage_status or "").startswith("pending"):
+        # Причина обязана быть у ЛЮБОГО незавершённого сбора. Ночь 2026-09-08
+        # закончилась статусом pending_backfill с пустой причиной: прогон знал,
+        # что недобрал 10 кампаний из 535, и молчал о том, почему. Пустая
+        # причина при незавершённом статусе теперь невозможна — вместо неё
+        # громкое значение, по которому дефект видно сразу.
+        run_summary["cpc_stop_reason"] = f"incomplete_without_reason:{cpc_stage_status}"
     else:
-        run_summary["cpc_stop_reason"] = None
+        run_summary["cpc_stop_reason"] = "completed"
 
     statistics_requests = dict(getattr(client, "request_counts", {}) or {})
     submit_requests = int(statistics_requests.get("statistics_job_create", 0))
@@ -8545,6 +8617,21 @@ def run():
             "ozon_daily_sku_ad_attribution"
         )
     else:
+        target_dates = parse_target_dates(getattr(args, "target_dates", None))
+        if target_dates:
+            rows, dropped_expenses = enforce_target_dates(
+                rows, target_dates, "expense_date", "marketplace_expenses")
+            ad_attribution_rows, dropped_attribution = enforce_target_dates(
+                ad_attribution_rows, target_dates, "sale_date", "ozon_daily_sku_ad_attribution")
+            print(
+                f"Target-date filter: пишем {len(target_dates)} дат, "
+                f"отброшено строк расхода {dropped_expenses}, атрибуции {dropped_attribution}"
+            )
+            run_summary["target_dates"] = list(target_dates)
+            run_summary["dropped_outside_target_dates"] = {
+                "marketplace_expenses": dropped_expenses,
+                "ozon_daily_sku_ad_attribution": dropped_attribution,
+            }
         try:
             written_expense_rows = save_rows(rows)
             save_ad_attribution_rows(ad_attribution_rows)

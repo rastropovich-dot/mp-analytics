@@ -2,6 +2,11 @@ import os
 import requests
 
 try:
+    from loaders import ozon_finance_accrual as accrual
+except ImportError:  # пайплайн зовёт как скрипт
+    import ozon_finance_accrual as accrual
+
+try:
     from loaders import http_retry
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
@@ -61,6 +66,15 @@ def chunks(items, size):
 
 
 def get_ozon_finance_transactions(days_back=30):
+    """ОТКЛЮЧЁН 2026-09-08: «obsolete method cannot be used». Оставлен как
+    свидетельство прежнего поведения; вызывать нельзя."""
+    raise RuntimeError(
+        "/v3/finance/transaction/list отключён Ozon 2026-09-08. "
+        "Источник расходов — loaders/ozon_finance_accrual.py"
+    )
+
+
+def _dead_transaction_list(days_back=30):
     url = "https://api-seller.ozon.ru/v3/finance/transaction/list"
 
     date_to = datetime.now(timezone.utc)
@@ -129,10 +143,42 @@ def detect_expense_type(op):
 
 
 def get_expense_amount(op, expense_type):
-    if expense_type == "commission":
-        return abs(float(op.get("sale_commission") or 0))
+    """Расход как ПОЛОЖИТЕЛЬНАЯ величина, но со знаком движения денег.
 
-    return abs(float(op.get("amount") or 0))
+    Ozon отдаёт списание отрицательным, возврат положительным. Модуль убивает
+    это различие, и возврат прибавляется к расходу вместо вычитания: так
+    27 721,60 рекламных возвратов за период считались как расход дважды —
+    один раз списанием, второй возвратом.
+
+    Поэтому знак инвертируем, а не отбрасываем: списание (amount < 0) даёт
+    положительный расход, возврат (amount > 0) — отрицательный.
+    """
+    if expense_type == "commission":
+        # sale_commission Ozon отдаёт положительной у продаж и положительной же
+        # у возвратов, где она нам ВОЗВРАЩАЕТСЯ. Знак берём по типу операции.
+        commission = float(op.get("sale_commission") or 0)
+        if op.get("operation_type") in RETURN_COMMISSION_OPERATION_TYPES:
+            return -abs(commission)
+        return abs(commission)
+
+    return -float(op.get("amount") or 0)
+
+
+# Операции, где комиссия не удерживается, а возвращается продавцу.
+RETURN_COMMISSION_OPERATION_TYPES = {"ClientReturnAgentOperation"}
+
+
+def save_expense_rows(rows):
+    """Запись готовых строк. Разбор живёт в loaders/ozon_finance_accrual.py."""
+    if not rows:
+        print("Нет расходов Ozon для записи")
+        return
+    for i in range(0, len(rows), 500):
+        supabase.table("marketplace_expenses").upsert(
+            rows[i:i + 500],
+            on_conflict="expense_date,marketplace_code,marketplace_sku,expense_type",
+        ).execute()
+    print(f"✅ Расходы Ozon записаны в marketplace_expenses: {len(rows)} строк")
 
 
 def save_ozon_expenses(operations):
@@ -226,5 +272,23 @@ def save_ozon_expenses(operations):
 
 
 if __name__ == "__main__":
-    operations = get_ozon_finance_transactions(days_back=30)
-    save_ozon_expenses(operations)
+    # Источник расходов — /v1/finance/accrual/by-day. Разбор построчный по
+    # услугам: старое operation_type из новых данных не восстанавливается,
+    # доказано перебором (ни одно подмножество type_id не воспроизводит
+    # прежние суммы). Поэтому 2026-09-08 — ДАТА РАЗРЫВА РЯДА расходов:
+    # до неё логика одна, после другая, и до пересчёта истории периоды
+    # несопоставимы. См. docs/ozon_finance_migration.md.
+    accruals = accrual.fetch_window(days_back=30)
+    type_names = accrual.load_accrual_types()
+    rows, counters, unknown = accrual.build_expense_rows(accruals, type_names)
+
+    print("Расходы Ozon из accrual/by-day:")
+    print(f"  начислений получено: {len(accruals)}")
+    print(f"  строк к записи: {len(rows)}")
+    print(f"  счётчики: {counters}")
+    if unknown:
+        print("  НЕРАЗОБРАННЫЕ ТИПЫ (в витрины не идут, ждут классификации):")
+        for type_id, amount in unknown.items():
+            print(f"    unknown_{type_id:<5} {type_names.get(type_id, '?'):<34} {amount:>14,.2f}")
+
+    save_expense_rows(rows)

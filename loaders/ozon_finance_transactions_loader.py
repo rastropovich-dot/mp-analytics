@@ -119,7 +119,17 @@ def save_ozon_sales_to_buyouts(operations):
 
         buyout_date = operation_date_raw[:10]
 
-        accruals_for_sale = abs(float(op.get("accruals_for_sale") or 0))
+        # Модуль здесь НЕ отбрасывает знак, а нормализует величину, знак
+        # приходит отдельно из sign по типу операции (продажа +1, возврат −1).
+        # Проверяем, что собственный знак Ozon с ним не спорит: если поспорит,
+        # это перемена в API, и молча ошибиться на возвратах мы не хотим.
+        raw_accruals = float(op.get("accruals_for_sale") or 0)
+        if raw_accruals and (raw_accruals < 0) != (sign < 0):
+            print(
+                "WARNING: знак accruals_for_sale не совпадает с типом операции: "
+                f"operation_type={operation_type}, accruals_for_sale={raw_accruals}, sign={sign}"
+            )
+        accruals_for_sale = abs(raw_accruals)
         sale_commission = abs(float(op.get("sale_commission") or 0))
         amount = float(op.get("amount") or 0)
 

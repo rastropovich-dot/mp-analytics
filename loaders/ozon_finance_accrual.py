@@ -207,3 +207,86 @@ def build_expense_rows(accruals, type_names=None):
     return rows, dict(counters), {
         int(k): round(v, 2) for k, v in sorted(unknown.items(), key=lambda x: -abs(x[1]))
     }
+
+
+def build_buyout_rows(accruals):
+    """Выкупы из начислений: продажи и возвраты одной таблицей.
+
+    Продажа и возврат в новой модели — одно и то же начисление с обратными
+    знаками во всех полях. Отдельного типа операции больше нет, знак несёт
+    смысл сам:
+
+        продажа   sale_amount +2751,00   sale_commission −1237,95
+        возврат   sale_amount −2272,00   sale_commission +1067,84
+
+    Комиссия у продажи отрицательна (удержана), у возврата положительна
+    (возвращена нам). Модуль здесь запрещён: он превратил бы возврат комиссии
+    в расход. Старая конструкция «abs() плюс sign по типу операции» не просто
+    не нужна — она бы здесь всё сломала.
+    """
+    grouped = {}
+    counters = defaultdict(int)
+
+    for accrual in accruals:
+        day = str(accrual.get("date") or "")[:10]
+        if not day:
+            counters["without_date"] += 1
+            continue
+        for product in ((accrual.get("posting") or {}).get("products") or []):
+            commission = product.get("commission") or {}
+            if not commission:
+                continue
+            sale_amount = money(commission.get("sale_amount"))
+            sale_commission = money(commission.get("sale_commission"))
+            if sale_amount == 0 and sale_commission == 0:
+                counters["zero"] += 1
+                continue
+            sku = str(product.get("sku") or "")
+            key = (day, "ozon", sku)
+            if key not in grouped:
+                grouped[key] = {
+                    "buyout_date": day,
+                    "marketplace_code": "ozon",
+                    "marketplace_sku": sku,
+                    "article": "",
+                    "product_name": None,
+                    "buyouts_qty": 0,
+                    "buyouts_amount_buyer": 0.0,
+                    "buyouts_amount_seller": 0.0,
+                    "commission_amount": 0.0,
+                    "revenue_after_commission_vat": 0.0,
+                    "vat_amount": 0.0,
+                }
+            row = grouped[key]
+            # ВНИМАНИЕ: количество. Поля штук в новой модели НЕТ — у товарной
+            # строки всего три поля: sku, delivery, commission. Считаем позиции.
+            # Старый код считал записи items[], где один SKU мог встречаться
+            # дважды (две моносерьги = две записи), поэтому его число больше:
+            # на 2026-09-07 в базе 234 против 227 позиций. Расхождение известно
+            # и НЕ подогнано: сумма, комиссия и выручка сходятся точно, а штуки
+            # новая модель не отдаёт.
+            row["buyouts_qty"] += 1 if sale_amount >= 0 else -1
+            row["buyouts_amount_buyer"] += sale_amount
+            row["buyouts_amount_seller"] += sale_amount
+            # Комиссия в таблице хранится положительной у продажи.
+            row["commission_amount"] += -sale_commission
+            # Выручка после комиссии включает и услуги доставки: старый код
+            # брал её из amount целой операции, а он вычитал логистику тоже.
+            # Проверено на 2026-09-07: sale_amount + commission даёт
+            # 2 443 481,77 против 2 421 187,15 в базе, с услугами — ровно
+            # 2 421 187,15.
+            delivery_services = sum(
+                money(service.get("accrued"))
+                for service in ((product.get("delivery") or {}).get("services") or [])
+            )
+            row["revenue_after_commission_vat"] += sale_amount + sale_commission + delivery_services
+            counters["sale" if sale_amount >= 0 else "return"] += 1
+
+    rows = []
+    for row in grouped.values():
+        for field in ("buyouts_amount_buyer", "buyouts_amount_seller",
+                      "commission_amount", "revenue_after_commission_vat"):
+            row[field] = round(row[field], 2)
+        if any(row[f] for f in ("buyouts_qty", "buyouts_amount_buyer", "commission_amount")):
+            rows.append(row)
+    return rows, dict(counters)

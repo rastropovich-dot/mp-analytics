@@ -2,6 +2,11 @@ import os
 import requests
 
 try:
+    from loaders import ozon_finance_accrual as accrual
+except ImportError:  # пайплайн зовёт как скрипт
+    import ozon_finance_accrual as accrual
+
+try:
     from loaders import http_retry
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
@@ -42,6 +47,14 @@ def chunks(items, size):
 
 
 def get_ozon_finance_transactions(days_back=30):
+    """ОТКЛЮЧЁН Ozon 2026-09-08. Источник выкупов — accrual/by-day."""
+    raise RuntimeError(
+        "/v3/finance/transaction/list отключён Ozon 2026-09-08. "
+        "Источник выкупов — loaders/ozon_finance_accrual.py"
+    )
+
+
+def _dead_transaction_list(days_back=30):
     url = "https://api-seller.ozon.ru/v3/finance/transaction/list"
 
     date_to = datetime.now(timezone.utc)
@@ -90,6 +103,19 @@ def get_ozon_finance_transactions(days_back=30):
 
     print(f"Получено операций Ozon finance: {len(operations)}")
     return operations
+
+
+def save_buyout_rows(rows):
+    """Запись готовых строк выкупов. Разбор — в loaders/ozon_finance_accrual.py."""
+    if not rows:
+        print("Нет выкупов Ozon для записи")
+        return
+    for i in range(0, len(rows), 500):
+        supabase.table("marketplace_buyouts").upsert(
+            rows[i:i + 500],
+            on_conflict="buyout_date,marketplace_code,marketplace_sku",
+        ).execute()
+    print(f"✅ Выкупы Ozon записаны в marketplace_buyouts: {len(rows)} строк")
 
 
 def save_ozon_sales_to_buyouts(operations):
@@ -195,5 +221,15 @@ def save_ozon_sales_to_buyouts(operations):
 
 
 if __name__ == "__main__":
-    operations = get_ozon_finance_transactions(days_back=30)
-    save_ozon_sales_to_buyouts(operations)
+    # Продажа и возврат в новой модели — одно начисление с обратными знаками.
+    # Отдельного типа операции нет, знак несёт смысл сам, поэтому прежняя
+    # конструкция «abs() плюс sign по типу» здесь не нужна и была бы вредна.
+    # Приёмка (2026-09-11): сумма, комиссия и выручка после комиссии совпали
+    # с прежними значениями до копейки на 09-05, 09-06 и 09-07.
+    accruals = accrual.fetch_window(days_back=30)
+    rows, counters = accrual.build_buyout_rows(accruals)
+    print("Выкупы Ozon из accrual/by-day:")
+    print(f"  начислений получено: {len(accruals)}")
+    print(f"  строк к записи: {len(rows)}")
+    print(f"  счётчики: {counters}")
+    save_buyout_rows(rows)

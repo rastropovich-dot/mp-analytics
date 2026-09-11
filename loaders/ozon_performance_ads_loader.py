@@ -1042,6 +1042,13 @@ def response_body_preview(response, limit=1000):
     return sanitize_text(text[:limit])
 
 
+# Антиспам Ozon отпускает сам за несколько минут (сообщение поддержки).
+# Суточный лимит — не отпускает. Различаем и ведём счёт пауз: без него через
+# месяц не отличить «антиспам случался часто» от «мы придумали, что случается».
+ANTISPAM_PAUSE_SECONDS = int(os.getenv("OZON_ANTISPAM_PAUSE_SECONDS", "60"))
+ANTISPAM_MAX_PAUSES = int(os.getenv("OZON_ANTISPAM_MAX_PAUSES", "3"))
+
+
 def classify_statistics_json_429_preview(preview):
     text = str(preview or "").lower()
     markers = (
@@ -2588,6 +2595,9 @@ def classify_expense_type(row, campaign):
 
 class OzonPerformanceClient:
     def __init__(self, skip_persistent_state_load=False):
+        # Сколько раз пережидали антиспам за этот прогон. В ledger и в отчёт:
+        # без счёта не отличить «часто случался» от «мы придумали, что случается».
+        self.antispam_pauses_taken = 0
         self.token = None
         self.token_expires_at = 0
         self.account_signature = mask_client_id(OZON_PERFORMANCE_CLIENT_ID)
@@ -3142,6 +3152,10 @@ class OzonPerformanceClient:
             "campaign_scope": campaign_scope,
         }
 
+    def clear_cooldown(self, key):
+        """Снять паузу: антиспам отпускает сам, держать её незачем."""
+        (self.state.get("cooldowns") or {}).pop(key, None)
+
     def set_cooldown(self, key, cooldown_until):
         self.state.setdefault("cooldowns", {})[key] = cooldown_until
         self.save_state()
@@ -3456,6 +3470,35 @@ class OzonPerformanceClient:
 
                 if cooldown_key:
                     self.set_cooldown(cooldown_key, cooldown_until_iso)
+
+                # ДВЕ ВЕТКИ 429, и они требуют разного.
+                #
+                # daily_quota_exhausted — настоящий суточный лимит выгрузок:
+                #   ждать до сброса окна, как и раньше.
+                # всё остальное — вероятный антиспам: поддержка Ozon сообщает,
+                #   что «при подозрении на спам система перестаёт принимать
+                #   запросы на несколько минут, а после автоматически
+                #   включает». Останавливать сбор на сутки из-за паузы в
+                #   несколько минут — цена, которой мы платили зря.
+                #
+                # Потолок три паузы: если после них не проходит, это уже не
+                # антиспам, и дальше идёт обычная остановка с явной причиной.
+                if (
+                    profile.get("fail_fast_on_429")
+                    and response_kind != "daily_quota_exhausted"
+                    and self.antispam_pauses_taken < ANTISPAM_MAX_PAUSES
+                ):
+                    self.antispam_pauses_taken += 1
+                    print(
+                        "Ozon 429 без признаков суточного лимита — вероятный антиспам. "
+                        f"Пауза {ANTISPAM_PAUSE_SECONDS} с, попытка "
+                        f"{self.antispam_pauses_taken}/{ANTISPAM_MAX_PAUSES}, "
+                        f"endpoint={endpoint}, preview={raw_preview[:120]}"
+                    )
+                    if cooldown_key:
+                        self.clear_cooldown(cooldown_key)
+                    time.sleep(ANTISPAM_PAUSE_SECONDS)
+                    continue
 
                 if profile.get("fail_fast_on_429"):
                     raise RateLimitPending(

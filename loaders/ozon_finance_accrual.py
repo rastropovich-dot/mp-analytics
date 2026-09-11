@@ -170,6 +170,13 @@ def build_expense_rows(accruals, type_names=None):
         if not day:
             counters["without_date"] += 1
             continue
+        # Ozon (2026-09-10): одинаковых SKU внутри начисления не бывает, а две
+        # строки услуги с ОДНИМ type_id внутри одного SKU «теоретически»
+        # возможны — «мы сейчас не отдаём, но явного запрета нет».
+        # Суммирование ниже это выдерживает (замещения нет), но факт надо
+        # видеть: если «теоретически» станет практикой, мы узнаем из лога, а не
+        # из расхождения по деньгам через месяц.
+        seen_service_keys = set()
         posting = accrual.get("posting") or {}
         for product in (posting.get("products") or []):
             commission = product.get("commission") or {}
@@ -184,6 +191,15 @@ def build_expense_rows(accruals, type_names=None):
             if expense_type is None:
                 expense_type = f"unknown_{type_id}"
                 unknown[type_id] += -amount
+            service_key = (accrual.get("accrual_id"), sku, type_id)
+            if service_key in seen_service_keys:
+                counters["duplicate_service_line"] += 1
+                print(
+                    "ВНИМАНИЕ: в одном SKU две строки услуги одного типа — "
+                    f"accrual_id={accrual.get('accrual_id')} sku={sku} type_id={type_id}. "
+                    "Суммируем (замещения нет), но факт зафиксирован."
+                )
+            seen_service_keys.add(service_key)
             put(day, sku, expense_type, amount)
 
     rows = [dict(r, expense_amount=round(r["expense_amount"], 2)) for r in grouped.values()]

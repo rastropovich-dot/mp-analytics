@@ -124,7 +124,8 @@ def load_daily_facts():
         if expense_type in CPC_EXPENSE_TYPES:
             cpc_rows[day] += 1
             cpc_spend[day] += amount
-        elif expense_type in ("commission", "logistics", "other"):
+        elif expense_type in ("commission", "logistics", "other",
+                              "subscription", "external_promo"):
             # Не реклама: показывает, что кабинет в этот день вообще работал.
             cabinet_spend[day] += amount
 

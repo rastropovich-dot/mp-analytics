@@ -31,13 +31,13 @@ except ImportError:  # пайплайн зовёт как скрипт
 
 BASE = "https://api-seller.ozon.ru"
 
-# ДАТА РАЗРЫВА РЯДА РАСХОДОВ. До неё расходы собраны старой логикой (по
-# operation_type целой операции), после — новой (построчно по услугам).
-# Периоды НЕСОПОСТАВИМЫ, пока не выполнен пересчёт истории. Проверено строго:
+# ДАТА РАЗРЫВА РЯДА РАСХОДОВ — снята пересчётом 2026-09-11. Вся история с
+# 2026-03-28 пересобрана новой классификацией, ряд снова единый.
+# Держим дату для истории: до неё расходы БЫЛИ собраны старой логикой. Проверено строго:
 # ни одно подмножество type_id не воспроизводит прежние суммы, потому что
 # старая величина складывалась из услуг разных типов внутри одной операции.
 EXPENSES_SERIES_BREAK_DATE = "2026-09-08"
-EXPENSES_HISTORY_RECALCULATED = False
+EXPENSES_HISTORY_RECALCULATED = True  # пересчёт выполнен 2026-09-11, 168 дат, расхождений 0
 
 # Реклама берётся из Performance API. Финансы для неё — только сверка, иначе
 # расход задвоится: витрины читают advertising_clicks и advertising_order_5.
@@ -45,18 +45,64 @@ AD_TYPE_IDS = {41, 54}
 
 # Соответствие подтверждено сверкой обоих методов на 161 дате.
 TYPE_TO_EXPENSE = {
-    1: "other",    # Acquiring        <- MarketplaceRedistributionOfAcquiringOperation
-    46: "other",   # Placements       <- OperationMarketplaceServiceStorage
-    38: "other",   # PackageCost      <- OperationMarketplacePackageMaterialsProvision
-    39: "other",   # PackingFee       <- OperationMarketplacePackageRedistribution
-    61: "other",   # ReviewsPin       <- OperationMarketPlaceItemPinReview
-    # Соответствие подтверждено сопоставлением операций со 100 % чистотой.
-    79: "other",       # TemporaryPlacementsAgent <- OperationMarketplaceItemTemporaryStorageRedistribution
-    17: "logistics",   # Drop-Off Agent           <- OperationReturnGoodsFBSofRMS
-    62: "logistics",   # RfbsClientDeliveryCharge <- MarketplaceSellerReexposureDeliveryReturnOperation
-    64: "logistics",   # RfbsDomesticDelivery     <- MarketplaceServiceRedistributionOfDeliveryServicesRFBS
+    # Классификация владельца от 2026-09-11. Основание по каждому типу — в
+    # docs/ozon_finance_migration.md. Реклама (41, 54) не пишется: её источник
+    # Performance API. Типы 25 ItemCompensation и 10 Compensation оставлены ВНЕ
+    # классификации: у них возвраты кратно больше списаний, это деньги нам, а
+    # не от нас, и природа не установлена.
+    #
+    # Имя external_promo НЕ начинается с advertising намеренно: пять мест берут
+    # рекламу по startswith("advertising"), и префикс утянул бы внешнее
+    # продвижение в рекламный расход и в расчёт органики.
+    #
+    # Доставка, приёмка, обработка, возвратная логистика:
+    32: "logistics",  # Logistic
+    29: "logistics",  # LastMileCourier
+    16: "logistics",  # Drop-Off
+    17: "logistics",  # Drop-Off Agent
+    45: "logistics",  # PickUpPointReturnAcceptance
+    98: "logistics",  # DeliveryToHandoverPlaceByOzon
+    59: "logistics",  # ReturnFlowLogistic
+    78: "logistics",  # TemporaryPlacement
+    82: "logistics",  # VolumeWeightCharacteristicsProcessing
+    65: "logistics",  # RfbsEasyReturn
+    71: "logistics",  # SellerReturns
+    6:  "logistics",  # Cancellation
+    9:  "logistics",  # ClientReturn
+    40: "logistics",  # PartialReturn
+    62: "logistics",  # RfbsClientDeliveryCharge
+    64: "logistics",  # RfbsDomesticDelivery
+    # Подписки — отдельная статья: платим за подписку, а не за операцию.
+    # Проверено 2026-09-11: в комиссию НЕ входят. sale_commission равна
+    # sale_amount × commission_ratio на 1000 строк из 1000, а услуга 51
+    # приходит начислениями категории ITEM, тогда как комиссия живёт в POSTING.
+    51: "subscription",  # PremiumMembership
+    52: "subscription",  # PremiumSubscription
+    74: "subscription",  # StarsMembership
+    # Внешнее продвижение: заказов не приписывает, в органике не участвует.
+    23: "external_promo",  # InternetSiteAdvertising
+    # Прочие затраты: штрафы, разовые услуги, корректировки.
+    1:  "other",  # Acquiring
+    38: "other",  # PackageCost
+    39: "other",  # PackingFee
+    46: "other",  # Placements
+    61: "other",  # ReviewsPin
+    79: "other",  # TemporaryPlacementsAgent
+    76: "other",  # StockInsurance
+    94: "other",  # DefectFineShipmentDelayRate
+    96: "other",  # AcceleratedReviewCollection
+    93: "other",  # DefectFineErrors
+    92: "other",  # DefectFineComplaint
+    63: "other",  # RfbsDomesticAgentFee
+    47: "other",  # PointsForReviews
+    15: "other",  # Disposal — утилизация, не доставка
+    57: "other",  # RealizationReportCorrection
+    11: "other",  # CorrectionCommission
 }
 
+# Вне классификации: деньги идут НАМ, природа не установлена. В расходы не
+# пишем, видим отдельно. Разрешит только сверка с отчётом в кабинете.
+UNCLASSIFIED_TYPE_IDS = {25, 10}
 
 def headers():
     return {
@@ -145,6 +191,7 @@ def build_expense_rows(accruals, type_names=None):
     grouped = {}
     counters = defaultdict(int)
     unknown = defaultdict(float)
+    unclassified = defaultdict(float)
 
     def put(day, sku, expense_type, amount):
         # Расход положителен при списании: Ozon отдаёт списание отрицательным.
@@ -187,6 +234,12 @@ def build_expense_rows(accruals, type_names=None):
             if type_id in AD_TYPE_IDS:
                 counters["advertising_skipped"] += 1
                 continue
+            if type_id in UNCLASSIFIED_TYPE_IDS:
+                # Деньги идут НАМ, природа не установлена. Ни в расходы, ни в
+                # доходы, пока владелец не сверит с кабинетом.
+                counters["unclassified_skipped"] += 1
+                unclassified[type_id] += -amount
+                continue
             expense_type = TYPE_TO_EXPENSE.get(type_id)
             if expense_type is None:
                 expense_type = f"unknown_{type_id}"
@@ -204,6 +257,10 @@ def build_expense_rows(accruals, type_names=None):
 
     rows = [dict(r, expense_amount=round(r["expense_amount"], 2)) for r in grouped.values()]
     rows = [r for r in rows if r["expense_amount"] != 0]
+    if unclassified:
+        print("Вне классификации (в расходы НЕ идут, ждут сверки с кабинетом):")
+        for type_id, amount in sorted(unclassified.items(), key=lambda x: -abs(x[1])):
+            print(f"    type_id {type_id:<5}{amount:>16,.2f}")
     return rows, dict(counters), {
         int(k): round(v, 2) for k, v in sorted(unknown.items(), key=lambda x: -abs(x[1]))
     }

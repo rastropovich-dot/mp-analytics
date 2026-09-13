@@ -122,6 +122,52 @@ def fetch_cursor(path, day, limit=100):
 READ_FIELDS = ("posting_number", "status", "created_at", "in_process_at", "products")
 PRODUCT_FIELDS = ("sku", "offer_id", "name", "quantity", "price")
 
+# Значения, а не только наличие: совпадение множеств posting_number ничего не
+# говорит о том, что внутри. Цена и статус — те поля, расхождение в которых
+# означает стоп: на них стоят выручка и признак состоявшегося заказа.
+VALUE_FIELDS = ("status", "in_process_at", "shipment_date")
+VALUE_PRODUCT_FIELDS = ("sku", "offer_id", "quantity", "price")
+CRITICAL = ("status", "price")
+
+
+def product_key(prod):
+    return str(prod.get("sku") or prod.get("product_id") or prod.get("offer_id") or "")
+
+
+def diff_values(old_list, new_list):
+    """Список отличий значений по общим posting_number."""
+    old_by = {str(p.get("posting_number")): p for p in old_list}
+    new_by = {str(p.get("posting_number")): p for p in new_list}
+    out = []
+    for pn in sorted(set(old_by) & set(new_by)):
+        o, n = old_by[pn], new_by[pn]
+        for f in VALUE_FIELDS:
+            ov, nv = o.get(f), n.get(f)
+            if ov != nv:
+                out.append({"posting_number": pn, "field": f, "old": ov, "new": nv,
+                            "critical": f in CRITICAL})
+        op = {product_key(x): x for x in (o.get("products") or [])}
+        np_ = {product_key(x): x for x in (n.get("products") or [])}
+        for sku in sorted(set(op) | set(np_)):
+            if sku not in op or sku not in np_:
+                out.append({"posting_number": pn, "field": f"products[{sku}]",
+                            "old": "есть" if sku in op else "нет",
+                            "new": "есть" if sku in np_ else "нет", "critical": True})
+                continue
+            for f in VALUE_PRODUCT_FIELDS:
+                ov, nv = op[sku].get(f), np_[sku].get(f)
+                if f in ("quantity", "price"):
+                    try:
+                        same = abs(float(ov or 0) - float(nv or 0)) < 0.005
+                    except (TypeError, ValueError):
+                        same = ov == nv
+                else:
+                    same = str(ov or "") == str(nv or "")
+                if not same:
+                    out.append({"posting_number": pn, "field": f"products.{f}", "sku": sku,
+                                "old": ov, "new": nv, "critical": f in CRITICAL})
+    return out
+
 
 def compare(day, old_path, new_path):
     old, old_pages = fetch_offset(old_path, day)
@@ -140,7 +186,8 @@ def compare(day, old_path, new_path):
             for f in PRODUCT_FIELDS:
                 if f not in prod:
                     miss_fields.add(f"products.{f}")
-    return {"day": day, "old": len(old), "new": len(new),
+    value_diffs = diff_values(old, new)
+    return {"day": day, "old": len(old), "new": len(new), "value_diffs": value_diffs,
             "old_unique": len(so), "new_unique": len(sn),
             "old_pages": old_pages, "new_pages": new_pages,
             "missing_in_new": missing_new, "missing_in_old": missing_old,
@@ -161,7 +208,8 @@ def main():
     bad = 0
     for day in [d.strip() for d in args.dates.split(",") if d.strip()]:
         r = compare(day, old_path, new_path)
-        ok = not r["missing_in_new"] and not r["missing_in_old"] and not r["missing_fields"]
+        ok = (not r["missing_in_new"] and not r["missing_in_old"]
+              and not r["missing_fields"] and not r["value_diffs"])
         bad += 0 if ok else 1
         print(f"{r['day']:<12}{r['old']:>8}{r['new']:>8}{r['old_unique']:>9}{r['new_unique']:>10}"
               f"{r['old_pages']:>8}{r['new_pages']:>9}  {'✅' if ok else '❌'}")
@@ -171,6 +219,15 @@ def main():
             print(f"    нет в старом ({len(r['missing_in_old'])}): {r['missing_in_old'][:5]}")
         if r["missing_fields"]:
             print(f"    отсутствуют поля: {r['missing_fields']}")
+        if r["value_diffs"]:
+            crit = [d for d in r["value_diffs"] if d.get("critical")]
+            print(f"    ОТЛИЧАЮТСЯ ЗНАЧЕНИЯ: {len(r['value_diffs'])}, "
+                  f"из них критичных (status/price): {len(crit)}")
+            for d in r["value_diffs"][:10]:
+                sku = f" sku={d['sku']}" if d.get("sku") else ""
+                mark = " ← КРИТИЧНО" if d.get("critical") else ""
+                print(f"      {d['posting_number']}{sku} {d['field']}: "
+                      f"{d['old']!r} -> {d['new']!r}{mark}")
     print(f"\nдат с расхождением: {bad}")
     return 1 if bad else 0
 

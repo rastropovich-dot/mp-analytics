@@ -1,7 +1,7 @@
 # MP Analytics — Project Context for Claude Code
 
 > Единый источник правды для всех AI-сессий.
-> Сверен с кодом и данными: **2026-09-13**. Render — только по панели, см. §1.
+> Сверен с кодом и данными: **2026-09-14**. Render — по панели или API, см. §1.
 
 ---
 
@@ -26,6 +26,13 @@
   см. §5. Telegram/Excel/Decision — флагами, давно.
 - **Сломано:** органика не считается с 2026-05-21; остатки WB не обновляются с
   2026-07-14; история заказов WB осыпается каждую ночь.
+- **Заказы FBO не пишутся с 2026-09-11** (найдено 2026-09-14): шаг ловит 429
+  `rate_limit_per_second`, старый загрузчик молча писал частичное. В БД
+  09-11…09-13 — 0 строк FBO. Загрузчик на `/v3` с паузами смержен 09-14,
+  первая ночь — 09-15. Подробности: `docs/outbox.md`, `docs/ozon_postings_migration.md`.
+- **Отменённые заказы остаются в `marketplace_orders`**: upsert не удаляет
+  ключи без отправлений. FBO за 08-16…09-09: 1 119 ключей, 15 843 585 ₽,
+  21,0 % суммы (замер 2026-09-14). Тот же класс, что осыпание WB, но в плюс.
 - **Вне классификации:** типы 25 `ItemCompensation` и 10 `Compensation`,
   чистое −27,5 млн — это ДОХОД (подтверждено кабинетом: 31.08 статья
   «Компенсации и декомпенсации» 5 687 875 ₽ против наших 5 687 875,16). В
@@ -52,14 +59,20 @@
 ### Живая команда `mp-analytics` (crn-d7n7nan7f7vs73fk70kg, `15 0 * * *`)
 
 ```
-python3 run_daily_pipeline.py --skip-recovery --skip-telegram --skip-excel --skip-decision --ozon-campaign-selection smart_recent_active --ozon-recent-activity-days 7 --ozon-dormant-probe-size 100 --ozon-max-daily-cpc-units 1200 --ozon-allow-staged-cpc-partial
+python3 run_daily_pipeline.py --skip-recovery --skip-organic --skip-telegram --skip-excel --skip-decision --ozon-campaign-selection smart_recent_active --ozon-recent-activity-days 7 --ozon-dormant-probe-size 100 --ozon-max-daily-cpc-units 1200 --ozon-allow-staged-cpc-partial
 ```
 
 `mp-analytics-telegram-report` (crn-d7t5ed1j2pic73aiqmog, `30 7 * * *`): `python3 alerts_telegram.py`.
 
-> **Сверять команду с Render, а не с этим файлом.** Файл отстаёт: он не менялся,
-> когда 2026-09-03 добавили `--skip-recovery`. Живое значение — в панели Render
-> или через `GET /v1/services/{id}` → `serviceDetails.envSpecificDetails.startCommand`.
+> **Сверять команду с Render, а не с этим файлом.** Файл отставал дважды: не
+> заметил `--skip-recovery` (09-03) и `--skip-organic` (снят через API 2026-09-14).
+> Живое значение — панель или `GET /v1/services/{id}` →
+> `serviceDetails.envSpecificDetails.startCommand`.
+
+Читать Render можно и без панели: `RENDER_API_KEY` лежит в `.env`,
+`GET https://api.render.com/v1/logs?ownerId=tea-d7n5qs1f9bms738bfvug&resource=crn-d7n7nan7f7vs73fk70kg&startTime=…&endTime=…&text=…`
+отдаёт логи прогона (проверено 2026-09-14: так найден отказ FBO). Менять
+через API ничего нельзя — §2.
 
 ---
 
@@ -225,6 +238,8 @@ resolve_existing_cpc_backfill_progress  строка 2208
 | Восемь загрузчиков молча отдают неполное с кодом 0 | давно | `loader_partial_data_contract.md` |
 | Selected CPO не собирается | 2026-05-21 | **устарело:** собран 2026-09-05, 104 даты, 7 166 302,55 ₽, сверен с интерфейсом до копейки |
 | Финансовый API v3 отключён | 2026-09-08 | «obsolete method cannot be used». Мигрировано, см. `ozon_finance_migration.md` |
+| Заказы FBO не пишутся | 2026-09-11 | 429 per-second на шаге FBO сразу после FBS; старый код — молчун. Новый `/v3` с паузами смержен 09-14, шаг фатальный. `docs/outbox.md` |
+| Отменённые заказы не удаляются | всегда | upsert не чистит ключи без отправлений: FBO 08-16…09-09 завышен на 21,0 % (15,8 млн). Модель данных |
 
 ### Флаги Selected CPO
 
@@ -289,6 +304,10 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 🔴 3. **Три определения рекламных заказов** (21 / 47 / 70 на 2026-09-03) —
    блокируют органику.
 🔴 4. **WB `flag=1`** — остановить осыпание, затем восстановить историю.
+🔴 4а. **FBO после ночи 09-15** — проверить, что `/v3` прошёл и добрал
+   09-10…09-14; решить, делать ли шаг нефатальным (`docs/outbox.md`).
+🔴 4б. **Отменённые заказы в `marketplace_orders`** — 21 % завышения FBO;
+   нужна очистка ключей без отправлений или пересборка окна целиком.
 🟡 5. **Остатки WB** — на `POST /api/analytics/v1/stocks-report/wb-warehouses`.
 🟡 6. **Органика** — пересчитать за 2026-05-22 … сегодня. Selected CPO собран,
    препятствие снято.

@@ -34,6 +34,14 @@ class PriceShapeTests(unittest.TestCase):
             fbo.posting_price({"sku": 7, "price": {"amount": "100", "currency": "USD"}})
         self.assertIn("USD", str(ctx.exception))
 
+    def test_object_without_amount_raises(self):
+        """Объект без amount — сломанный контракт, а не бесплатный товар."""
+        for price in ({"currency": "RUB"}, {"amount": None, "currency": "RUB"},
+                      {"amount": "", "currency": "RUB"}):
+            with self.subTest(price=price), self.assertRaises(RuntimeError) as ctx:
+                fbo.posting_price({"sku": 9, "price": price})
+            self.assertIn("amount", str(ctx.exception))
+
     def test_missing_price_is_zero(self):
         self.assertEqual(fbo.posting_price({"sku": 1}), 0.0)
 

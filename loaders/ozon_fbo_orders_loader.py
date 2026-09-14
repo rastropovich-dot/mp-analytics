@@ -77,7 +77,13 @@ def posting_price(product):
                 f"Ozon FBO: цена не в рублях — currency={currency}, "
                 f"sku={product.get('sku')}, price={raw}"
             )
-        raw = raw.get("amount")
+        if raw.get("amount") in (None, ""):
+            # Объект без amount — не «бесплатный товар», а сломанный контракт.
+            # Молчаливый ноль занизил бы выручку по всем заказам; падаем.
+            raise RuntimeError(
+                f"Ozon FBO: в цене нет amount — sku={product.get('sku')}, price={raw}"
+            )
+        raw = raw["amount"]
     return float(raw or 0)
 
 

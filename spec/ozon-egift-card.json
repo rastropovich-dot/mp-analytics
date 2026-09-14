@@ -1,0 +1,838 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Документация EGiftCard B2B API",
+    "version": null
+  },
+  "servers": [
+    {
+      "url": "http://egift-card-b2b-api-sandbox.stg.a.o3.ru:80"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Intro",
+        "Errors"
+      ]
+    },
+    {
+      "name": "Методы EGiftCard B2B API",
+      "tags": [
+        "Balance",
+        "Order",
+        "User"
+      ]
+    },
+    {
+      "name": "Обновления",
+      "dataSelector": "tab-news",
+      "tags": [
+        "News"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Intro",
+      "x-displayName": "Введение",
+      "description": "В документе описана работа Ozon API для заказа электронных подарочных сертификатов. \n\n<aside class=\"notice\">\nURL контуров\n\nРабочая среда: https://egiftcard-api.ozon.ru/\n\nТестовая среда (sandbox): https://egiftcard-sandbox-api.ozon.ru/\n\n</aside>\n\nАвторизация построена на X.509-сертификатах, которые нужны для каждого запроса к Ozon API. \n\n\n## Порядок получения сертификата\n\n1. Генерация приватного ключа контрагентом.\n2. Генерация CSR (Certificate Signing Request).\n3. Заключение договора (к договору присоединяется CSR).\n4. Генерация клиентского сертификата на основе CSR и отправка его контрагенту.\n5. Использование сертификата для подключения к B2B API.\n\n## Генерация приватного ключа\nНеобходимо сгенерировать приватный ключ RSA битностью не меньше 2048. Это можно сделать при помощи OpenSSL.\n\n## Генерация CSR\nНа основе приватного RSA-ключа необходимо создать CSR.\n\nПервые два шага в в linux/macOS можно реализовать через скрипт:\n\n```bash\n#!/bin/bash \necho \"Enter your organization name:\" \nread organization\n \necho \"Enter your organization email:\" \nread email\n \nopenssl req \n  -subj \"\"\"/emailAddress=$email/O=$organization\"\"\" \n  -newkey rsa:2048 -nodes \n  -keyout secret.key \n  -out request.csr\n \n  echo \"Your csr data:\" \n  echo \"\" \n  cat request.csr\n```\n\nРезультатом его выполнения будет приватный ключ в файле secret.key и CSR в файле request.csr — обязательно сохраните эти файлы. \n\n<aside class=\"warning\">\n<b>secret.key</b> понадобится в работе с API\n\nСодержимое <b>request.csr</b> необходимо приложить к договору на подключение\n</aside>\n\n## Заключение договора\nПосле заключения договора будет автоматически создана учётная запись в системе, создан X.509-сертификат на базе CSR, \nприложенного к договору, и отправлен на электронную почту, указанную в договоре.\n\nЕсли хотите подключиться к системе, обращайтесь на giftcards@ozon.ru.\n\n## Использование сертификата для подключения к B2B API\n\nВсе обращения к B2B API должны использовать TLS Client Authentication. \nЭто означает, что все подключения должны использовать TLS Client-authenticated handshake, то есть при установлении \nподключения клиент должен предоставлять сертификат и подписывать запросы своим приватным ключом.\nПример реализации такого клиента на .Net Core:\n\n```csharp\nusing var handler = new HttpClientHandler();\n\n// сертификат, выписанный Ozon.ru на основе CSR контрагента\nvar cert = new X509Certificate2(\"auth/cert.crt\");\n\n// private key, приведённый в DER-формат\nvar privateKeyBytes = await File.ReadAllBytesAsync(\"auth/secret.key.der\");\n\nusing var rsa = RSA.Create();\n\nrsa.ImportPkcs8PrivateKey(privateKeyBytes, out _);\n\nvar certWithPrivate = cert.CopyWithPrivateKey(rsa);\n\nhandler.ClientCertificates.Add(certWithPrivate);\n \nusing var client = new HttpClient(handler);\n\nvar response = await client.GetAsync(\"https://egiftcard-api.ozon.ru/user/\");\n```\n\n## Примеры secret.key и request.csr\n\n### Пример secret.key\n\n<img src=\"https://cdn1.ozone.ru/s3/helppartners/secret.key.png\" style=\"border-radius: 7.0px;width: 500.0px;\"/>\n\n### Пример request.csr\n\n<img src=\"https://cdn1.ozone.ru/s3/helppartners/request.csr.png\" style=\"border-radius: 7.0px;width: 500.0px;\"/>\n"
+    },
+    {
+      "name": "Errors",
+      "x-displayName": "Ошибки",
+      "description": "Формат сообщения об ошибках определяет стандарт [RFC 7807 – Problem Details for HTTP APIs](https://tools.ietf.org/html/rfc7807). \n\nДля ошибок с кодами 401, 409, 500 используется формат **ProblemDetails**, для ошибки с кодом 400 — **ValidationProblemDetails**.\n\n### ProblemDetails\n\n```\n{\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 0,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"additionalProp1\": {},\n  \"additionalProp2\": {},\n  \"additionalProp3\": {}\n}\n```\n\n### ValidationProblemDetails\n\n```\n{\n  \"errors\": {\n    \"additionalProp1\": [\n      \"string\"\n    ],\n    \"additionalProp2\": [\n      \"string\"\n    ],\n    \"additionalProp3\": [\n      \"string\"\n    ]\n  },\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 0,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"additionalProp1\": {},\n  \"additionalProp2\": {},\n  \"additionalProp3\": {}\n}\n```"
+    },
+    {
+      "name": "Balance",
+      "x-displayName": "Баланс"
+    },
+    {
+      "name": "Order",
+      "x-displayName": "Заказ",
+      "description": "Методы для работы с заказами. С их помощью можно создать или отменить заказ или посмотреть список сертификатов для заказа."
+    },
+    {
+      "name": "User",
+      "x-displayName": "Пользователь"
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 12 марта 2026\n\n| Метод | Изменение                                                               |\n|-------|-------------------------------------------------------------------------|\n| —     | В разделе [**Введение**](#tag/Intro) обновили ссылку на тестовую среду. |\n"
+    }
+  ],
+  "paths": {
+    "/balance": {
+      "get": {
+        "tags": [
+          "Balance"
+        ],
+        "summary": "Получить баланс текущего пользователя",
+        "responses": {
+          "200": {
+            "description": "Информация о балансе пользователя",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": [
+          "Order"
+        ],
+        "summary": "Создать заказ",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Заказ создан",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateOrderResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Заказ не найден"
+          },
+          "409": {
+            "description": "Заказ находится в неподходящем статусе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Order"
+        ],
+        "summary": "Получить список заказов",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Максимальное количество возвращаемых элементов.",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Смещение в списке заказов.",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список заказов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetOrdersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Заказ не найден"
+          },
+          "409": {
+            "description": "Заказ находится в неподходящем статусе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{orderId}": {
+      "get": {
+        "tags": [
+          "Order"
+        ],
+        "summary": "Получить информацию о заказе",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Идентификатор заказа."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о заказе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Заказ не найден"
+          },
+          "409": {
+            "description": "Заказ находится в неподходящем статусе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{orderId}/certificates": {
+      "get": {
+        "tags": [
+          "Order"
+        ],
+        "summary": "Получить список сертификатов в заказе",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "description": "Идентификатор заказа.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список сертификатов в заказе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Certificate"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Заказ не найден"
+          },
+          "409": {
+            "description": "Заказ заказ находится в неподходящем статусе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{orderId}/cancel": {
+      "post": {
+        "tags": [
+          "Order"
+        ],
+        "summary": "Отменить заказ",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "description": "Идентификатор заказа.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешно"
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Заказ не найден"
+          },
+          "409": {
+            "description": "Заказ заказ находится в неподходящем статусе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/user": {
+      "get": {
+        "tags": [
+          "User"
+        ],
+        "summary": "Получение информации о текущем пользователе",
+        "responses": {
+          "200": {
+            "description": "Информация о пользователе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректные аргументы запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Пользователь не авторизован",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BalanceInfo": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "number",
+            "description": "Доступный остаток.",
+            "format": "double"
+          },
+          "reserved": {
+            "type": "number",
+            "description": "Зарезервированная часть.",
+            "format": "double"
+          },
+          "total": {
+            "type": "number",
+            "description": "Общая сумма на балансе пользователя.",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация о балансе пользователя."
+      },
+      "ValidationProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "nullable": true
+          },
+          "instance": {
+            "type": "string",
+            "nullable": true
+          },
+          "errors": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": {}
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "nullable": true
+          },
+          "instance": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": {}
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Идентификатор заказа в системе Ozon.",
+            "format": "int64",
+            "nullable": true
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Идентификатор, который был указан клиентом при создании заказа.",
+            "nullable": true
+          },
+          "total": {
+            "type": "number",
+            "description": "Общая сумма заказа",
+            "format": "double"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            "description": "Статус заказа:\n\n- `0` — статус неизвестен,\n- `1` — в обработке,\n- `2` — создан,\n- `3` — завершён,\n- `4` — отменён.\n"
+          },
+          "date": {
+            "type": "string",
+            "description": "Дата создания заказа.",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetOrdersResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Список заказов.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Order"
+            },
+            "nullable": true
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Общая сумма заказа."
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Максимальное количество возвращаемых элементов."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Смещение в списке заказов."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateOrderRequestItem": {
+        "type": "object",
+        "properties": {
+          "nominalValue": {
+            "type": "number",
+            "description": "Номинал сертификата.",
+            "format": "double"
+          },
+          "termInMonths": {
+            "type": "integer",
+            "description": "Срок действия сертификата в месяцах.",
+            "format": "int32",
+            "nullable": true
+          },
+          "qty": {
+            "type": "integer",
+            "description": "Количество сертификатов в заказе.",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateOrderRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "description": "Идентификатор запроса.",
+            "nullable": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreateOrderRequestItem"
+            },
+            "description": "Информация о сертификатах в заказе.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateOrderResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Идентификатор созданного заказа.",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Certificate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Идентификатор (серийный номер) сертификата. \n\nВ CRM и PDF-файле может быть с разделительными дефисами, вида `111-222-333-444-5`.\n",
+            "format": "int64"
+          },
+          "codeWord": {
+            "type": "string",
+            "description": "Кодовое слово. \n\nК каждому заказанному сертификату автоматически сгенерировано и привязано кодовое слово, по которому его позже будут активировать пользователи в личном кабинете.\n",
+            "nullable": true
+          },
+          "nominalValue": {
+            "type": "number",
+            "description": "Номинал сертификата.",
+            "format": "double"
+          },
+          "activationDateUntil": {
+            "type": "string",
+            "description": "Дата, до которой действует сертификат",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "description": "Статус сертификата:\n- `0` — неизвестно,\n- `1` — ожидает активации,\n- `2` — активация запрещена,\n- `3` — активирован.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Имя пользователя.",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "description": "Почта пользователя.",
+            "nullable": true
+          },
+          "contractId": {
+            "type": "integer",
+            "description": "Идентификатор пользователя.",
+            "format": "int64"
+          },
+          "minValue": {
+            "type": "integer",
+            "description": "Минимальный доступный номинал сертификата.",
+            "format": "int32"
+          },
+          "maxValue": {
+            "type": "integer",
+            "description": "Максимальный доступный номинал сертификата.",
+            "format": "int32"
+          },
+          "minPeriodDays": {
+            "type": "integer",
+            "description": "Минимальный период действия сертификата в днях.",
+            "format": "int32"
+          },
+          "maxPeriodDays": {
+            "type": "integer",
+            "description": "Максимальный период действия сертификата в днях.",
+            "format": "int32"
+          },
+          "isBlocked": {
+            "type": "boolean",
+            "description": "`true`, если пользователь заблокирован.\n"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

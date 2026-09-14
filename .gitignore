@@ -10,3 +10,6 @@ logs/
 *.log
 wb_sales_funnel_*.json
 test_wb_sales_funnel*.py
+
+# промежуточный архив экспорта чата, распакованный JSON лежит рядом
+knowledge/telegram/*.gz

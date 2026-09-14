@@ -1,0 +1,5053 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Export API Logistic Platform",
+    "version": "1.0.0",
+    "description": "В документе описаны методы Ozon Logistic Platform API для схемы экспортного потока.\n    \n**Окружения**:\n- Тестовая среда: https://export-api-logistic-platform.ozonru.me:443\n- Рабочая среда: https://export-api-logistic-platform.ozon.ru:443\n"
+  },
+  "servers": [
+    {
+      "url": "https://export-api-logistic-platform.ozonru.me:443"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Intro",
+        "Process",
+        "News"
+      ]
+    },
+    {
+      "name": "Методы API",
+      "tags": [
+        "Authorization",
+        "Information",
+        "Parcels",
+        "Attributes",
+        "ParcelEvents",
+        "Cancel",
+        "Document",
+        "Manifests",
+        "Points",
+        "Routes",
+        "Services",
+        "PersonalData"
+      ]
+    },
+    {
+      "name": "Приложения",
+      "tags": [
+        "Events",
+        "ErrorCodes"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Intro",
+      "x-displayName": "Введение",
+      "description": "Export API Logistic Platform — программный интерфейс для интеграции логистических компаний (3PL)\nс логистической платформой Ozon по схеме экспортного потока.\n\nС помощью Export API Logistic Platform можно:\n\n- получить список перевозок, географических объектов и событий трекинга;\n- отследить заказы и получить о них информацию;\n- создать, получить и обновить пункты выдачи, маршруты, услуги доставки."
+    },
+    {
+      "name": "Process",
+      "x-displayName": "Порядок работы с методами",
+      "description": "## Первичная настройка\n\n<a href=\"https://ir.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/set-up_1675412635.png\" target=\"_blank\"><img src=\"https://ir.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/set-up_1675412635.png\"></a>\n\nДля подключения к API обратитесь к менеджеру Ozon, чтобы получить пару ключей `ClientID` и `ClientSecret`.\n\nС помощью метода [/AuthToken](#operation/Token) получите токен авторизации.\nПолучайте новый токен раз в 2 часа и отправляйте его при обращении к каждому методу API. \nЧтобы отправить токен, добавьте в запрос заголовок Authorization со значением `Bearer {токен}`.\n\nЗатем передайте информацию об услугах доставки, пунктах выдачи заказов и маршрутах.\n\n- Услуги доставки, с помощью которых вы будете осуществлять доставку по последней миле.\n  1. [POST /v1/Services](#operation/PostServices) — создайте одну или несколько услуг доставки.\n  2. [GET /v1/Services](#operation/GetServices) — проверьте, что в системе Ozon услуги доставки отображаются правильно.\n  3. [PUT /v1/Services](#operation/PutServices) — измените существующие услуги доставки.\n\n- Пункты выдачи, которые будут отображаться клиенту при оформлении заказа.\n  1. [POST /v1/Points](#operation/PostPoints) — создайте один или несколько пунктов.\n  2. [GET /v1/Points](#operation/GetPoints) — проверьте, что пункты отображаются в системе Ozon правильно.\n  3. [PUT /v1/Points](#operation/PutPoints) — измените существующие пункты.\n\n- Маршруты, по которым будет осуществляться доставка.\n  1. [GET /v1/Geography](#operation/Geography) — получите информацию о доступной географии Ozon.\n  2. [POST /v1/Routes](#operation/PostRoutes) — создайте один или несколько маршрутов. Также этим методом можно их изменить.\n  3. [GET /v1/Routes](#operation/GetRoutes) — получите список всех маршрутов в формате CSV, чтобы проверить, что они отображаются в системе Ozon правильно.\n\n  Чтобы получить список маршрутов по регионам доставки и отгрузки, используйте метод [GET /v1/RoutesByRegion](#operation/RoutesByRegion).\n\n## Интеграция\n\n<a href=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/scheme-aggregator_1733502870.png\" target=\"_blank\"><img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/scheme-aggregator_1733502870.png\"></a>\n\n1. Клиент заказывает товар на Ozon и полностью оплачивает его.\n\n2. Ozon получает информацию о заказе и комплектует его.\n\n3. 3PL-провайдер получает список новых заказов: [GET /v1/NewParcels](#operation/NewParcels).\n\n4. 3PL-провайдер регистрирует заказ: [POST /v1/ParcelResponse](#operation/ParcelResponse).\n   Если заказ успешно зарегистрирован, ему присваивается трек-номер и статус «OK», если нет, то указывается причина отмены и статус «Declined».\n\n5. 3PL-провайдер может получить информацию по интересующим его заказам с помощью метода [POST /v1/ParcelsInfo](#operation/ParcelsInfo).\n\n6. Ozon формирует манифест. Тип манифеста зависит от того, как 3PL провайдер получает заказы:\n    - **PickUp**, если 3PL забирает заказ со склада Ozon самостоятельно;\n    - **DropOff**, если Ozon или другие перевозчики доставляют заказ на склад 3PL.\n\nПосле этого 3PL-провайдер:\n\n1. Получает информацию о манифесте: [GET /v1/Manifest](#operation/Manifest). \n   Если тип манифеста — PickUp, 3PL может передать информацию о водителе с помощью метода [POST /v1/ManifestTransferInfo](#operation/ManifestTransferInfo).\n\n2. Регистрирует манифест: [POST /v1/ManifestResponse](#operation/ManifestResponse). В зависимости от ответа 3PL-провайдер выполняет одно из действий:\n    - Устанавливает статус «Подтверждена» и затем переводит в статус «Принята на складе». После приёмки всех заказов устанавливает статус «Завершена».\n    - Устанавливает статус «Отмена» и указывает причину отказа.\n\n3. Принимает заказы от Ozon на своём складе.\n\n4. После установки статуса «Принята на складе» передаёт в систему Ozon статус `Event_id = 103` о приёме заказа на своём складе: [POST /v1/ParcelEventsResponse](#operation/ParcelEventsResponse).\n\n   Все статусы Ozon можно получить с помощью [GET /v1/EventTypes](#operation/EventTypes).\n   Список уже установленных статусов на заказе можно получить с помощью [POST /v1/ParcelEvents](#operation/ParcelEvents).\n\n5. Устанавливает объёмно-весовые характеристики на заказы, если они не сходятся с заявленными продавцом: [POST /v1/ParcelAttributes](#operation/ParcelAttributes).\n   Также в этом методе можно изменить трек-номер отправления, установленный при регистрации.\n\n6. Передаёт в систему Ozon остальные статусы по заказам: [POST /v1/ParcelEventsResponse](#operation/ParcelEventsResponse).\n   Доставка считается выполненной при получении терминального статуса заказа:\n    - `Event_id = 402`: заказ доставлен получателю — при курьерской доставке.\n    - `Event_id = 502`: заказ получен в пункте выдачи — при самовывозе из пункта выдачи или постамата.\n\n## Условная отмена заказов\n\n<a href=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/parcel-cancel_1675161087.png\" target=\"_blank\"> <img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/aggregator-export-api/images/parcel-cancel_1675161087.png\"></a>\n\nOzon получает информацию об отмене заказа покупателем и передаёт её 3PL-провайдеру с помощью метода [GET /v1/ParcelsToCancel](#operation/ParcelsToCancel).\n\n3PL-провайдер может:\n\n- Подтвердить отмену заказа и назначить заявке на отмену статус «Canceled».\n- Отказать в отмене и назначить заявке на отмену статус «Declined».\n- Уточнить информацию об отмене и назначить заявке на отмену статус «Accepted». В таком случае у 3PL-провайдера есть два часа, чтобы с помощью метода [POST /v1/ParcelsCancelResponse](#operation/ParcelsCancelResponse) передать информацию об отмене или отказе отмены.\n\n  Если 3PL-провайдер не передаёт ответ в установленное время, Ozon автоматически рассматривает это как отказ отмены."
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 25 августа 2026\n\n| Метод | Изменение                                                                                                                                                              |\n|-------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| —     | В разделе [**Список EventId → Отказы и отмены**](#section/Otkazy-i-otmeny):<ul><li>добавили описание статуса `619`;</li><li>обновили описание статуса `617`.</li></ul> |\n\n## 14 июля 2026\n\n| Метод                                                  | Изменение                                                  |\n|--------------------------------------------------------|------------------------------------------------------------|\n| [GET /v1/LabelByItemCode](#operation/LabelByItemCode)  | Добавили метод для получения информации об этикетке Ozon.  |  \n\n## 13 июля 2026\n\n| Метод                                                                              | Изменение                                                                                                   |\n|------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|\n| [GET /v1/Points](#operation/GetPoints)                                             | Обновили описание параметра `Data.Price` в ответе метода.                                                          |\n| [POST /v1/Points](#operation/PostPoints)<br>[PUT /v1/Points](#operation/PutPoints) <br> [POST /v2/Points](#operation/PostPointsV2) | Обновили описание параметра `Price` в запросах методов.                                                            |\n| —                                                                                  | В разделе [**Список EventId → Доставка заказа**](#section/Dostavka-zakaza) обновили описание статуса `303`.        |\n\n## 23 апреля 2026\n\n| Метод                                               | Изменение                                                                                        |\n|-----------------------------------------------------|--------------------------------------------------------------------------------------------------|\n| [GET /v1/PersonalData](#operation/personalData) | Добавили параметры `Data.Index` и `Data.Address` в ответ метода. |  \n\n## 2 апреля 2026\n\n| Метод | Изменение                                                                                               |\n|-------|--------------------------------------------------------------------------------------------------------------|\n| [GET /v2/DeliveryMethods/Ticket/{ticketId}](#operation/DeliveryMethodsV2) | Добавили метод для получения информации о статусе создания пункта выдачи.  | \n\n## 31 марта 2026\n\n| Метод | Изменение                                 |\n|-------|-------------------------------------------|\n| [POST /v2/Points](#operation/PostPointsV2) | Пометили обязательными параметры `StoragePeriod` и `Capacity` в запросе метода. | \n\n## 2 марта 2026\n\n| Метод | Изменение                                                                                               |\n|-------|--------------------------------------------------------------------------------------------------------------|\n| [POST /v2/Points](#operation/PostPointsV2) | Добавили новую версию метода для создания пунктов выдачи.  | \n\n## 16 декабря 2025\n\n| Метод | Изменение                                                                                               |\n|-------|--------------------------------------------------------------------------------------------------------------|\n| —     | В разделе [**Список EventId → Отказы и отмены**](#section/Otkazy-i-otmeny) обновили описание статуса `603`.  | \n\n## 9 октября 2025\n\n| Метод                                                                              | Изменение                                                                                                             |\n|------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|\n| —  | В разделе [**Список EventId → Отказы и отмены**](#section/Otkazy-i-otmeny) обновили описания статусов `610`, `611`, `618`. | \n\n## 19 сентября 2025\n\n| Метод                                                                              | Изменение                                                                                    |\n|------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|\n| [POST /v1/CustomsDeclarationFile](#operation/CustomsDeclarationFile)               | Добавили метод для загрузки файла декларации по заказам в формате PDF.                |\n\n## 17 июля 2025\n\n| Метод                                                                              | Изменение                                                                                    |\n|------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|\n| [POST /v1/CustomsDeclarationInfo](#operation/CustomsDeclarationInfo)               | Добавили метод для загрузки номера и даты декларации по заказам.                |\n| —  | В разделе [**Список EventId → Таможня**](#section/Tamozhnya) обновили описания статусов `207`, `213`, `218`. | \n\n## 10 февраля 2025\n\n| Метод                                                                              | Изменение                                                                                    |\n|------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|\n| [GET /v1/Points](#operation/GetPoints)                                             | Отметили устаревшими параметры `Data.AvailableCash` и `Data.AvailableCreditCard` в ответе метода. |\n| [POST /v1/Points](#operation/PostPoints)<br>[PUT /v1/Points](#operation/PutPoints) | Отметили устаревшими параметры `AvailableCash` и `AvailableCreditCard` в запросах методов.        |\n\n## 13 января 2025\n\n| Метод    | Изменение                                                                              |\n|----------|---------------------------------------------------------------------------------------------|\n| [GET /v1/Points](#operation/GetPoints) | Добавили параметры `Data.LocationUid`, `Data.RegionUid` и `Data.CountryUid` в ответ метода. |  \n\n## 24 октября 2024\n\n| Метод | Изменение                                                                                                                                                                 |\n|-------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| —     | В разделе [**Список EventId → Первая миля и доставка до границы**](#section/Pervaya-milya-i-dostavka-do-granicy) обновили примечание к статусу 103, удалили статусы 104 и 105. |  \n\n## 19 июня 2024\n\n| Метод                                                    | Изменение                                                                                   |\n|----------------------------------------------------------|--------------------------------------------------------------------------------------------------|\n| [POST /v1/ManifestResponse](#operation/ManifestResponse) | Изменили статус `Complete` на `Completed` в параметре `ManifestStatus` в ответе метода. |  \n\n## 29 мая 2024\n\n| Метод                                              | Изменение                                       |\n|----------------------------------------------------|------------------------------------------------------|\n| [GET /v1/Manifest](#operation/Manifest) | Обновили описание параметра `Data.ManifestType` в ответе метода. |  \n\n## 23 мая 2024\n\n| Метод                                               | Изменение                            |\n|-----------------------------------------------------|-------------------------------------------|\n| [GET /v1/PersonalData](#operation/personalData) | Добавили параметр `Data.DocumentIdentification` в ответ метода. |  \n\n## 6 мая 2024\n\n| Метод                                            | Изменение                                                  |\n|--------------------------------------------------|-----------------------------------------------------------------|\n| [POST /v1/ManifestResponse](#operation/ManifestResponse) | Дополнили описание параметра `ManifestStatus` в запросе метода. |  \n\n## 25 апреля 2024\n\n| Метод                                                            | Изменение                                              |\n|------------------------------------------------------------------|-------------------------------------------------------------|\n| [POST /v1/ParcelsInfo](#operation/ParcelsInfo) <br><br> [GET /v1/NewParcels](#operation/NewParcels) | Добавили параметр `Data.Product.Categories` в ответ метода. |  \n\n\n## 22 апреля 2024\n\n| Метод     | Изменение                                              |\n|-----------|-------------------------------------------------------------|\n| [POST /v1/ParcelInfo/parcelId/Product/Attribute](#operation/ParcelProductAttribute) | Изменили тип данных параметра `Languages` в запросе метода. |  \n\n## 29 марта 2024\n\n| Метод                                                     | Изменение                                             |\n|-----------------------------------------------------------|------------------------------------------------------------|\n| [GET /v1/PersonalData](#operation/personalData) | Изменили в ответе метода тип параметра `Data` на `object`. |  \n\n## 6 марта 2024\n\n| Метод                                                                                 | Изменение                                                                |\n|---------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|\n| [POST /v1/ParcelInfo/{parcelId}/Product/Attribute](#operation/ParcelProductAttribute) | Изменили в ответе метода тип параметра `Description` на `object`.             |  \n\n## 17 января 2024\n\n| Метод                                                                                                   | Изменение                                               |\n|---------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|\n| [GET /v1/NewParcels](#operation/NewParcels)<br><br>[POST /v1/ParcelsInfo](#operation/ParcelsInfo)       | Добавили параметр `Data.RequestedTimeslot` в ответы методов. |  \n\n\n## 25 декабря 2023\n\n| Метод                                                                 | Изменение                                                   |\n|-----------------------------------------------------------------------|------------------------------------------------------------------|\n| [/v1/ParcelsToCancel](#operation/ParcelsToCancel)       | Обновили описание параметра `isTerminalCancel` в запросе метода. |  \n\n\n## 18 декабря 2023\n\n| Метод                                                                                                   | Изменение                                                |\n|---------------------------------------------------------------------------------------------------------|---------------------------------------------------------------|\n| [/v1/ParcelInfo/{parcelId}/Document](#operation/ParcelDocument)                                         | Добавили метод для получения списка документов.               |\n| [/v1/ParcelInfo/{parcelId}/Document/{documentId}/Content/{contentId}](#operation/ParcelDocumentContent) | Добавили метод для получения содержимого в документе.         |\n| [/v1/Product/Attribute](#operation/ProductAttribute)                                                    | Добавили метод для получения списка поддерживаемых атрибутов. |\n| [/v1/ParcelInfo/{parcelId}/Product/Attribute](#operation/ParcelProductAttribute)                        | Добавили метод для получения списка атрибутов по заказам.     |\n\n## 12 декабря 2023\n\n| Метод                                         | Изменение                                                 |\n|-----------------------------------------------|----------------------------------------------------------------|\n| [GET /v1/NewParcels](#operation/NewParcels)<br><br>[POST /v1/ParcelsInfo](#operation/ParcelsInfo) | Добавили параметр `Data.ClientDeliveryPrice` в ответы методов. |\n\n## 29 ноября 2023\n\n| Метод | Изменение                                                                             |\n|-------|--------------------------------------------------------------------------------------------|\n| —     | Добавили описание статуса `666` в таблицу [**Отказы и отмены**](#section/Otkazy-i-otmeny). |\n| [GET /v1/RoutesByRegion](#operation/RoutesByRegion) | Добавили метод для получения маршрутов по регионам отгрузки и доставки. |\n\n## 25 октября 2023\n\n| Метод                                     | Изменение                                                     |\n|-------------------------------------------|--------------------------------------------------------------------|\n| [GET /v1/PersonalData](#tag/PersonalData) | Добавили параметр `IndividualIdentificationNumber` в ответ метода. |\n\n## 28 июля 2023\n\n| Метод                                   | Изменение                                                    |\n|-----------------------------------------|-------------------------------------------------------------------|\n| [/v1/Geography](#operation/Geography) | Добавили необязательный параметр `includeVillages` в запрос метода. |\n\n## 25 июля 2023\n\n| Метод | Изменение                                             |\n|---|------------------------------------------------------------|\n| [/v1/PersonalData](#operation/personalData) | Добавили метод для получения паспортных данных покупателя. |"
+    },
+    {
+      "name": "Authorization",
+      "x-displayName": "Токен для доступа"
+    },
+    {
+      "name": "Information",
+      "x-displayName": "События трекинга и города доставки"
+    },
+    {
+      "name": "Parcels",
+      "x-displayName": "Информация о заказах"
+    },
+    {
+      "name": "Attributes",
+      "x-displayName": "Атрибуты товаров"
+    },
+    {
+      "name": "ParcelEvents",
+      "x-displayName": "Трекинг заказов"
+    },
+    {
+      "name": "Cancel",
+      "x-displayName": "Отмены"
+    },
+    {
+      "name": "Document",
+      "x-displayName": "Документы"
+    },
+    {
+      "name": "Manifests",
+      "x-displayName": "Перевозки"
+    },
+    {
+      "name": "Points",
+      "x-displayName": "Пункты выдачи"
+    },
+    {
+      "name": "Routes",
+      "x-displayName": "Списки маршрутов"
+    },
+    {
+      "name": "Services",
+      "x-displayName": "Услуги"
+    },
+    {
+      "name": "PersonalData",
+      "x-displayName": "Данные покупателя"
+    },
+    {
+      "name": "Events",
+      "x-displayName": "Список EventId",
+      "description": "Статусы передаются для продвинутой аналитики и повышения информированности продавцов и покупателей Ozon.\n\nСтатусы из таблиц [Первая миля и доставка до границы](#section/Pervaya-milya-i-dostavka-do-granicy), [Таможня](#section/Tamozhnya)\nи [Доставка заказа](#section/Dostavka-zakaza) — необязательные, кроме тех, у которых есть примечание.\n\nЕсли есть примечание «Обязательный статус», то необходимо передать как минимум один из обязательных статусов.\n\n## Первая миля и доставка до границы\n\n| EventId | Название события              | Описание на английском                                                           | Описание на русском                                               | Примечание            |\n|---------|-------------------------------|----------------------------------------------------------------------------------|-------------------------------------------------------------------|-----------------------|\n| 101     | Info Received                 | 3PL received the request.                                                        | 3PL получил информацию о заказе.                                  |                       |\n| 102     | Parcel ready to ship          | 3PL received the request from the shipper and is about to pick up the parcel.    | 3PL получил запрос от отправителя и скоро заберёт груз.           |                       |\n| 103     | Parcel accepted               | Parcel accepted by the carrier.                                                  | Заказ принят перевозчиком.                                        | Обязательный статус.  |\n| 106     | Parcel Arrival to carrier     | Parcel arrived at the hub or sorting center.                                     | Заказ прибыл на склад перевозчика в стране отправления.           |                       |\n| 107     | Parcel Departure from carrier | Parcel departured from the hub or sorting center.                                | Заказ покинул склад перевозчика в стране отправления.             |                       |\n| 108     | Awaiting MSDS                 | Parcel awaiting Material Safety Data Sheet.                                      | Заказ ожидает предоставления паспорта безопасности.               |                       |\n| 109     | Awaiting extra payment        | Parcel awaits extra payment due to overweight or incorrect dimensions.           | Заказ ожидает доплаты за перевес или ошибочные габариты.          |                       |\n| 110     | Delivery channel changed      | Type of parcel delivery is changed by the carrier.                               | Канал доставки заказа изменён перевозчиком.                       |                       |\n| 111     | Delivery plan date changed    | Delivery planned date is changed by the carrier.                                 | Плановая дата доставки изменена перевозчиком.                     |                       |\n| 901     | Parcel hasn't arrived         | Parcel hasn't arrived at the 3PL warehouse.                                      | Заказ не поступил на склад 3PL.                                   |\n| 902     | Parcel isn't identified       | 3PL received the parcel that wasn't included in the manifest at their warehouse. | 3PL получил заказ, которого не было в манифесте, на своём складе. |\n\n## Таможня\n\nПрименяются, если заказ проходит таможенное оформление.\n\n| EventId | Название события                | Описание на английском                                                       | Описание на русском                                                      |\n|---------|---------------------------------|------------------------------------------------------------------------------|--------------------------------------------------------------------------|\n| 201     | Customs Clearance in process    | Parcel is in process of customs clearance.                                   | Заказ в процессе таможенного оформления.                                 |\n| 202     | Awaiting Customs Clearance      | Parcel awaiting for customs clearance.                                       | Заказ ожидает предтаможенного контроля.                                  |            \n| 203     | Customs clearance started       | Parcel handed over to customs clearance.                                     | Заказ передан на таможенное оформление.                                  |            \n| 204     | Customs clearance completed     | Customs clearance completed in the country of departure.                     | Заказ выпущен таможней в стране отправления.                             |            \n| 205     | Held by customs                 | Parcel is held by customs.                                                   | Заказ задержан таможней.                                                 |            \n| 206     | Parcel released                 | Parcel was released by customs in the destination country.                   | Заказ выпущен таможней в стране назначения. |            \n| 207     | Customs duty receiver           | Parcel is held by customs: pay customs duty.                 | Заказ задержан таможней: оплатите пошлину.  |            \n| 208     | Provide Personal data           | Receiver should provide additional data for customs.                         | Не хватает персональных данных получателя, предоставьте данные таможне.  |            \n| 209     | Provide Passport                | Receiver should provide passport number.                                     | Получатель должен предоставить номер паспорта.                           |            \n| 210     | Provide Tax Number              | Receiver should provide Tax Number.                                          | Получатель должен предоставить номер ИНН.                                |            \n| 211     | Provide Passport Scan           | Receiver should provide passport scan.                                       | Получатель должен предоставить скан паспорта.                            |            \n| 212     | Passport invalid                | Passport provided by the receiver is invalid.                                | Паспорт, который предоставил получатель, неверен.                        |            \n| 213     | Incorrect value in declaration  | Parcel is held by customs: enter the correct value in the declaration. | Заказ задержан таможней: укажите корректную стоимость в декларации.                          |            \n| 214     | Customs refuse                  | Customs refused parcel release.                                              | Таможня отказала в выпуске заказа.                                       |            \n| 215     | Law restriction                 | Parcel is held by customs due to law restriction.                            | Заказ задержан таможней в связи с законодательными ограничениями.        |            \n| 216     | Departured to destination country | Parcel left the country of departure.                                        | Заказ покинул страну отправления.                                        |            \n| 217     | Arrived at destination country  | Parcel arrived at the destination country.                                   | Заказ прибыл в страну назначения.                                        |            \n| 218     | Customs declaration             | Parcel is held by customs: fill out the declaration.         | Заказ задержан таможней: заполните декларацию.     |            \n\n## Доставка заказа\n\n| EventId | Название события                | Описание на английском                                           | Описание на русском                                         |\n| ------- | ------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |\n| 301     | Departured from transit country | Parcel left the transit country.                                 | Заказ покинул транзитную страну.                            |\n| 302     | Arrived at transit country      | Parcel arrived at the transit country.                           | Заказ прибыл в транзитную страну.                           |\n| 303     | Arrived at sorting center       | Parcel arrived at the sorting center in the destination country. | Заказ прибыл на сортировочный терминал в стране назначения. |\n| 304     | Released from sorting centre    | Parcel is released from the sorting center.                      | Заказ покинул сортировочный терминал.                       |\n| 305     | Awaiting recipient city         | Parcel awaiting for dispatch to the receiver's city.             | Заказ ожидает отправки в город получателя.                  |\n| 306     | In transit recipient city       | Parcel is in transit to the receiver's city.                     | Заказ в пути в город получателя.                            |\n| 307     | Delivery changed courier        | Parcel delivery type was changed to courier type.                | Тип доставки заказа изменён на доставку курьером.           |\n| 308     | Parcel is on the way            | Parcel is on the way.                                            | Заказ доставляется.                                         |\n| 309     | Delivery changed pickup         | Parcel delivery type was changed to pick-up type.                | Тип доставки заказа изменён на доставку в пункт выдачи.     |\n| 310     | Pickup address changed          | Parcel forwarded to a different pick-up point.                   | Заказ переадресован в другой пункт выдачи.                  |\n| 311     | Receiver address changed        | Parcel forwarded to a different delivery address.                | Заказ переадресован на другой адрес доставки.               |\n\n## Курьерская доставка\n\n| EventId | Название события               | Описание на английском                         | Описание на русском                   | Примечание                                                                                                                                                                                       |\n|---------|--------------------------------|------------------------------------------------|---------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| 401     | Submitted for courier delivery | Parcel is submitted for courier delivery.      | Заказ передан в курьерскую доставку. | Обязательный статус для услуги, у которой `DeliveryTypeId = 1` — курьер.                                                                                            |\n| 402     | Delivered by courier           | Parcel delivered successfully to the receiver. | Заказ успешно доставлен получателю. | Перевести в статус возможно только из статуса 401 — Submitted for courier delivery. <br><br> Обязательный статус для услуги, у которой `DeliveryTypeId = 1` — курьер.|\n\n## Доставка в пункт выдачи\n\n| EventId | Название события          | Описание на английском                                                 | Описание на русском                        | Примечание                                                                                                                                                                             |\n|---------|---------------------------|------------------------------------------------------------------------|--------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| 501     | Available for pickup      | The package arrived at the pick-up point and is available for pick-up. | Заказ доступен к получению в пункте выдачи. | Обязательный статус для услуги `DeliveryTypeId = 2` или `3` — пункт выдачи или постамат.                                                                                               |\n| 502     | Picked up by the customer | Parcel is picked up by the customer.                                   | Заказ получен в пункте выдачи.             | Перевести в статус возможно только из статуса 501 — Available for pick-up. <br><br> Обязательный статус для услуги, у которой `DeliveryTypeId = 2` или `3`— пункт выдачи или постамат. |\n\n## Отказы и отмены\n\n| EventId | Название события                               | Описание на английском                                                                                                               | Описание на русском                                                                                    |\n|---------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|\n| 601     | Customer refused delivery                      | Delivery of the package failed as the receiver refused to take the package.                                                          | Отмена заказа: заказ не доставлен получателю, так как получатель отказался от получения.               |            \n| 602     | Unsuccessful delivery                          | Unsuccessful delivery. There will be a retry of delivery.                                                                            | Неудачная доставка. Будет повторная попытка доставки.                                                  |            \n| 603     | Pick up missed                                 | Storage period has expired: the receiver didn't pick up the order from the pick-up point or the courier delivery limit was exceeded. | Истёк срок хранения: получатель не забрал заказ из пункта выдачи или превышен лимит доставки курьером. |            \n| 604     | Incorrect Address                              | Parcel wasn't delivered due to incorrect receiver's address.                                                                         | Заказ не доставлен из-за некорректного адреса получателя.                                              |            \n| 605     | Addressee not available                        | Receiver wasn't available at the given address.                                                                                      | Получатель недоступен по указанному адресу.                                                            |            \n| 606     | Parcel lost                                    | Delivery of the parcel failed as it got lost.                                                                                        | Доставка заказа не удалась из-за потери.                                                               |            \n| 607     | Parcel damaged                                 | Parcel was damaged.                                                                                                                  | Заказ повреждён.                                                                                       |            \n| 608     | Returning to sender                            | Parcel is returning to the sender.                                                                                                   | Заказ возвращается отправителю.                                                                        |            \n| 609     | Returned to sender                             | Parcel is returned to the sender.                                                                                                    | Заказ возвращён отправителю.                                                                           |            \n| 610     | Utilization decision                           | Parcel was disposed of by the customs.                                                                                               | Заказ утилизирован таможенным органом.                                                                 |            \n| 611     | Utilized by 3PL                                | Parcel was utilized by 3PL.                                                                                                          | Заказ утилизирован на стороне 3PL.                                                                     |            \n| 612     | Parcel cancelled by sender                     | Parcel was canceled by the sender request.                                                                                           | Заказ отменён по запросу отправителя.                                                                  |            \n| 614     | Rejected by carrier                            | Parcel was rejected by the carrier due to noncompliance with its guidelines.                                                         | Заказ отклонён перевозчиком, так как не соответствует требованиям.                                     |            \n| 615     | Rejected by carrier by hazmat                  | Parcel was rejected by the carrier due to Hazard Materials.                                                                          | Заказ отклонён перевозчиком, так как содержит опасные материалы.                                       |            \n| 616     | Rejected by carrier by damage                  | Parcel was rejected by the carrier due to damage.                                                                                    | Заказ отклонён перевозчиком, так как повреждён.                                                        |            \n| 617     | Rejected by carrier forbidden goods for export | Parcel was rejected by the carrier due to forbidden products for export.                                                             | Заказ отклонён перевозчиком, так как содержит запрещённые к экспорту товары.                           |\n| 618     | Phone number not available                     | Receiver wasn't available by the phone number.                                                                                       | Получатель недоступен по указанному номеру телефона.                                                   |\n| 619     | Rejected by carrier forbidden goods for import | Parcel was rejected by the carrier due to forbidden products for import.                                                             | Заказ отклонён перевозчиком, так как содержит запрещённые к импорту товары.                            |\n| 666     | Canceled by Ozon                               | Parcel was canceled by Ozon.                                                                                                         | Посылка отменена Ozon.                                                                                 |\n"
+    },
+    {
+      "name": "ErrorCodes",
+      "x-displayName": "Коды ошибок",
+      "description": "| Код | Текст сообщения\t                     | Описание                                                                                                                    |\n|-----|--------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|\n| 500 | Operation failed. [Описание ошибки]  | Операция не выполнена.                                                                                                      |\n| 404 | Data not found.\t                     | Данные по запросу не найдены.                                                                                               |\n| 401 | Access denied.  [Описание ошибки]    | Доступ запрещён. Например, неправильно указан логин или пароль.                                                             |\n| 400 | Validation error. [Описание ошибки]  | Неверный входящий параметр. Ошибка возвращается если обязательный параметр не заполнен или заполнен некорректным значением. |\n| 403 | Permission denied. [Описание ошибки] | У пользователя нет прав, чтобы выполнить операцию. Обратитесь к своему менеджеру Ozon или в чат поддержки.                  | "
+    }
+  ],
+  "paths": {
+    "/AuthToken": {
+      "post": {
+        "tags": [
+          "Authorization"
+        ],
+        "summary": "Токен авторизации",
+        "operationId": "Token",
+        "description": "Метод для получения токена авторизации 3PL-провайдеров в API.\n\nТокен нужно обновлять каждые два часа.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Токен авторизации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/EventTypes": {
+      "get": {
+        "tags": [
+          "Information"
+        ],
+        "summary": "Список событий для трекинга",
+        "operationId": "EventTypes",
+        "description": "Метод для получения списка событий, которые 3PL-провайдер передаёт для трекинга заказов.",
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTypeResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Geography": {
+      "get": {
+        "tags": [
+          "Information"
+        ],
+        "summary": "Список географических объектов",
+        "operationId": "Geography",
+        "description": "Метод для получения списка географических объектов, с которыми работает Ozon.",
+        "parameters": [
+          {
+            "name": "includeVillages",
+            "default": false,
+            "enum": "- true\n- false\n",
+            "in": "query",
+            "description": "Фильтр для деревень:\n\n- `true` — в ответе вернутся географические объекты всех типов, включая деревни.\n- `false` или пустой параметр — в ответе вернутся данные без учёта деревень.\n\nЗначение по умолчанию — `false`.\n",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeographyResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelsInfo": {
+      "post": {
+        "tags": [
+          "Parcels"
+        ],
+        "summary": "Информация о заказах",
+        "operationId": "ParcelsInfo",
+        "description": "Информацию о заказах можно получить на любом этапе пересылки по их идентификатору или их трек-номеру.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelsInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Информация о заказах",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelsInfoResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/NewParcels": {
+      "get": {
+        "tags": [
+          "Parcels"
+        ],
+        "summary": "Информация о новых заказах",
+        "operationId": "NewParcels",
+        "description": "Метод для получения информации о списке заказов, доступных к регистрации.\n\nКогда Ozon получает трек-номер заказа, заказ исчезает из этого списка.\n\n3PL-провайдер должен обращаться к этому методу не реже одного раза в час.\n",
+        "parameters": [
+          {
+            "name": "languageResponse",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Language"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список заказов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelsInfoResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelAttributes": {
+      "post": {
+        "tags": [
+          "Parcels"
+        ],
+        "summary": "Передать габариты заказа или сменить трек-номер 3PL",
+        "operationId": "ParcelAttributes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelAttributesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelResponse": {
+      "post": {
+        "tags": [
+          "Parcels"
+        ],
+        "summary": "Передать трек-номер заказа",
+        "operationId": "ParcelResponse",
+        "description": "Метод для передачи Ozon статуса регистрации заказа:\n- Если статус регистрации заказа — `Declined`, заполните параметр `registrationCancelReason`. Передавать трек-номер не нужно.\n- Если статус регистрации заказа — `OK`, заполните параметр `trackingNumber`.\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelResponseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/LabelByItemCode": {
+      "get": {
+        "tags": [
+          "Parcels"
+        ],
+        "summary": "Получить этикетку Ozon",
+        "operationId": "LabelByItemCode",
+        "parameters": [
+          {
+            "name": "itemCode",
+            "in": "query",
+            "description": "Код товара.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация об этикетке Ozon",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetLabelByItemCodeResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Product/Attribute": {
+      "get": {
+        "tags": [
+          "Attributes"
+        ],
+        "summary": "Список поддерживаемых атрибутов",
+        "operationId": "ProductAttribute",
+        "responses": {
+          "200": {
+            "description": "Список атрибутов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductAttributeResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelInfo/parcelId/Product/Attribute": {
+      "post": {
+        "tags": [
+          "Attributes"
+        ],
+        "summary": "Список атрибутов по заказу",
+        "operationId": "ParcelProductAttribute",
+        "parameters": [
+          {
+            "name": "parcelId",
+            "description": "Идентификатор заказа.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelProductsAttributesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Список атрибутов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelProductsAttributesResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelEventsResponse": {
+      "post": {
+        "tags": [
+          "ParcelEvents"
+        ],
+        "summary": "Установить событие трекинга",
+        "operationId": "ParcelEventsResponse",
+        "description": "Метод для установки события трекинга на один или несколько заказов.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ParcelEventsResponseRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelEvents": {
+      "post": {
+        "tags": [
+          "ParcelEvents"
+        ],
+        "summary": "Все события по заказам",
+        "operationId": "ParcelEvents",
+        "description": "Метод для получения событий трекинга по одному или нескольким заказам.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelEventsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Статусы заказов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelEventsResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelsToCancel": {
+      "get": {
+        "tags": [
+          "Cancel"
+        ],
+        "summary": "Список отменённых заказов и заявок на отмену",
+        "operationId": "ParcelsToCancel",
+        "description": "Метод для получения отменённых заказов и заявок на отмену.",
+        "parameters": [
+          {
+            "name": "isTerminalCancel",
+            "in": "query",
+            "description": "Фильтр по отменённым заказам:\n- `true` — показать отменённые заказы. Используется для терминальных отмен.\n- `false` — показать заказы, которые ждут решения по отмене. Используется для условных отмен.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cписок отменённых заказов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelToCancelResponseListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelsCancelResponse": {
+      "post": {
+        "tags": [
+          "Cancel"
+        ],
+        "summary": "Установить статус отмены заказа",
+        "operationId": "ParcelsCancelResponse",
+        "description": "Метод для передачи статуса по заявке на отмену.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ParcelsCancelResponseRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelInfo/parcelId/Document": {
+      "get": {
+        "tags": [
+          "Document"
+        ],
+        "summary": "Список документов",
+        "operationId": "ParcelDocument",
+        "parameters": [
+          {
+            "name": "parcelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Идентификатор заказа."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список документов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ParcelInfo/parcelId/Document/documentId/Content/contentId": {
+      "get": {
+        "tags": [
+          "Document"
+        ],
+        "summary": "Содержимое документа",
+        "operationId": "ParcelDocumentContent",
+        "parameters": [
+          {
+            "name": "parcelId",
+            "in": "path",
+            "required": true,
+            "description": "Идентификатор заказа.",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "documentId",
+            "in": "path",
+            "required": true,
+            "description": "Идентификатор документа.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "contentId",
+            "in": "path",
+            "required": true,
+            "description": "Идентификатор файла.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Содержимое документа",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Содержимое документа в бинарном формате.",
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/CustomsDeclarationInfo": {
+      "post": {
+        "tags": [
+          "Document"
+        ],
+        "summary": "Загрузить номер и дату декларации по заказам",
+        "operationId": "CustomsDeclarationInfo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomsDeclarationInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/CustomsDeclarationFile": {
+      "post": {
+        "tags": [
+          "Document"
+        ],
+        "summary": "Загрузить файл декларации по заказам",
+        "operationId": "CustomsDeclarationFile",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "required": [
+                  "customsDeclarationFile",
+                  "customsDeclarationNumber"
+                ],
+                "type": "object",
+                "properties": {
+                  "customsDeclarationNumber": {
+                    "type": "string",
+                    "description": "Номер декларации на товары для экспресс-грузов."
+                  },
+                  "customsDeclarationFile": {
+                    "type": "string",
+                    "description": "Файл декларации на товары для экспресс-грузов в формате PDF.",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ManifestResponse": {
+      "post": {
+        "tags": [
+          "Manifests"
+        ],
+        "operationId": "ManifestResponse",
+        "summary": "Подтвердить или отклонить перевозку",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestResponseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ManifestTransferInfo": {
+      "post": {
+        "tags": [
+          "Manifests"
+        ],
+        "operationId": "ManifestTransferInfo",
+        "summary": "Загрузить информацию об автомобиле и курьере",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestTransferInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Manifest": {
+      "get": {
+        "tags": [
+          "Manifests"
+        ],
+        "operationId": "Manifest",
+        "summary": "Информация о перевозке",
+        "description": null,
+        "parameters": [
+          {
+            "name": "manifestId",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Идентификатор перевозки."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о перевозке",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Points": {
+      "post": {
+        "tags": [
+          "Points"
+        ],
+        "summary": "Создать пункты выдачи",
+        "operationId": "PostPoints",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PointRequest"
+                }
+              },
+              "example": [
+                {
+                  "Code": "string",
+                  "DeliveryTypeId": 2,
+                  "Address": "string",
+                  "HowToGet": "string",
+                  "StoragePeriod": 0,
+                  "Latitude": 0,
+                  "Longitude": 0,
+                  "PostalCode": "string",
+                  "DeliveryForLegalUsers": true,
+                  "FreeWifi": true,
+                  "ClothesDressingRoom": true,
+                  "ShoesDressingRoom": true,
+                  "OrderPartialRedemption": true,
+                  "DomesticMerchandiseReturn": true,
+                  "CrossborderMerchandiseReturn": true,
+                  "Price": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Weight": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Length": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Width": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Height": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "DimensionSum": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Schedule": [
+                    {
+                      "Day": 1,
+                      "IsHoliday": true,
+                      "FromTo": "string",
+                      "BreakFromTo": "string"
+                    }
+                  ],
+                  "IsActive": true
+                }
+              ]
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Points"
+        ],
+        "summary": "Список пунктов выдачи",
+        "operationId": "GetPoints",
+        "description": "Метод для получения пунктов выдачи заказов, которые создал 3PL-провайдер в системах Ozon.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "Код пункта в системе 3PL-провайдера.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "isActive",
+            "in": "query",
+            "description": "Статус пункта:\n- `true` — открыт или работает,\n- `false` — закрыт.\n",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Пункты выдачи",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PointResponseListResponse"
+                },
+                "example": {
+                  "Data": [
+                    {
+                      "Code": "string",
+                      "Name": "string",
+                      "DeliveryTypeId": 0,
+                      "Address": "string",
+                      "HowToGet": "string",
+                      "StoragePeriod": 0,
+                      "Latitude": 0,
+                      "Longitude": 0,
+                      "LocationUid": "string",
+                      "RegionUid": "string",
+                      "CountryUid": "string",
+                      "PostalCode": "string",
+                      "DeliveryForLegalUsers": true,
+                      "FreeWifi": true,
+                      "ClothesDressingRoom": true,
+                      "ShoesDressingRoom": true,
+                      "DomesticMerchandiseReturn": true,
+                      "CrossborderMerchandiseReturn": true,
+                      "OrderPartialRedemption": true,
+                      "Price": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "Weight": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "Length": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "Width": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "Height": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "DimensionSum": {
+                        "Min": 0,
+                        "Max": 0
+                      },
+                      "Schedule": [
+                        {
+                          "Day": 1,
+                          "IsHoliday": true,
+                          "FromTo": "string",
+                          "BreakFromTo": "string"
+                        }
+                      ],
+                      "IsActive": true
+                    }
+                  ],
+                  "Errors": [
+                    {
+                      "ErrorCode": 0,
+                      "Entity": "string",
+                      "Message": "string",
+                      "Details": "string",
+                      "Value": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Points"
+        ],
+        "summary": "Обновить информацию о пунктах выдачи",
+        "operationId": "PutPoints",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PointRequest"
+                }
+              },
+              "example": [
+                {
+                  "Code": "string",
+                  "DeliveryTypeId": 2,
+                  "Address": "string",
+                  "HowToGet": "string",
+                  "StoragePeriod": 0,
+                  "Latitude": 0,
+                  "Longitude": 0,
+                  "PostalCode": "string",
+                  "DeliveryForLegalUsers": true,
+                  "FreeWifi": true,
+                  "ClothesDressingRoom": true,
+                  "ShoesDressingRoom": true,
+                  "OrderPartialRedemption": true,
+                  "DomesticMerchandiseReturn": true,
+                  "CrossborderMerchandiseReturn": true,
+                  "Price": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Weight": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Length": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Width": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Height": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "DimensionSum": {
+                    "Min": 0,
+                    "Max": 0
+                  },
+                  "Schedule": [
+                    {
+                      "Day": 1,
+                      "IsHoliday": true,
+                      "FromTo": "string",
+                      "BreakFromTo": "string"
+                    }
+                  ],
+                  "IsActive": true
+                }
+              ]
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/Points": {
+      "post": {
+        "summary": "Создать пункты выдачи",
+        "operationId": "PostPointsV2",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/v2Point"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Пункты выдачи созданы",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/v2PointsV2Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Points"
+        ]
+      }
+    },
+    "/v2/DeliveryMethods/Ticket/{ticketId}": {
+      "get": {
+        "summary": "Получить информацию о статусе создания пункта выдачи",
+        "operationId": "DeliveryMethodsV2",
+        "parameters": [
+          {
+            "name": "ticketId",
+            "in": "path",
+            "description": "Идентификатор заявки. Получите значение параметра методом [POST /v2/Points](#operation/PostPointsV2).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о статусе создания пункта выдачи",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Points"
+        ]
+      }
+    },
+    "/v1/RoutesByRegion": {
+      "get": {
+        "tags": [
+          "Routes"
+        ],
+        "summary": "Список маршрутов по регионам",
+        "operationId": "RoutesByRegion",
+        "parameters": [
+          {
+            "name": "serviceCode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Код услуги доставки в системе 3PL-провайдера."
+            }
+          },
+          {
+            "name": "regionFromUid",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Точка отправки: UID населённого пункта.\n\nПараметр обязателен, если в `regionToUid` передана пустая строка.\n"
+            }
+          },
+          {
+            "name": "regionToUid",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Точка доставки: UID населённого пункта.\n\nПараметр обязателен, если в `regionFromUid` передана пустая строка.\n"
+            }
+          },
+          {
+            "name": "isActive",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "description": "Статус маршрута:\n- `true` — открыт или работает,\n- `false` — закрыт.\n\nПо умолчанию — `false`.\n"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список маршрутов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Routes": {
+      "get": {
+        "tags": [
+          "Routes"
+        ],
+        "summary": "Список маршрутов",
+        "operationId": "GetRoutes",
+        "description": "Метод для получения списка всех созданных в Ozon маршрутов.\n\nФормат ответа — CSV, в качестве разделителя используется табуляция.\nCSV-файл содержит поля:\n- **provider_id** — идентификатор провайдера.\n- **service_code** — код услуги доставки в системе 3PL-провайдера.\n- **region_from_uid** — UID точки отправки.\n- **region_to_uid** — UID точки доставки.\n- **duration_min** — минимальный срок доставки в днях.\n- **duration_max** — максимальный срок доставки в днях.\n- **is_active** — статус маршрута: \n  - true — открыт или работает, \n  - false — закрыт.\n- **updated_at** — дата создания или обновления записи маршрута.\n",
+        "responses": {
+          "200": {
+            "description": "Список маршрутов"
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Routes"
+        ],
+        "summary": "Создать и обновить список маршрутов",
+        "operationId": "PostRoutes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RouteRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Services": {
+      "post": {
+        "tags": [
+          "Services"
+        ],
+        "summary": "Создать список услуг доставки",
+        "operationId": "PostServices",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProviderTemplateRequestItem"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Services"
+        ],
+        "operationId": "GetServices",
+        "summary": "Получить список услуг доставки",
+        "parameters": [
+          {
+            "name": "isActive",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "description": "Статус услуг, по которому отфильтровать список:\n\n- `true` — активны,\n- `false` — не активны.\n\nПо умолчанию — `false`.\n"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список услуг",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTemplateListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Services"
+        ],
+        "operationId": "PutServices",
+        "summary": "Обновить список услуг доставки",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProviderTemplateRequestItem"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/PersonalData": {
+      "get": {
+        "tags": [
+          "PersonalData"
+        ],
+        "operationId": "personalData",
+        "summary": "Паспортные данные покупателя",
+        "parameters": [
+          {
+            "name": "parcelId",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Идентификатор заказа."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Данные покупателя",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPersonalDataResponseListResponse"
+                },
+                "example": {
+                  "Data": {
+                    "ReceiverEmail": "string",
+                    "ReceiverPhone": "string",
+                    "FamilyName": "string",
+                    "FirstName": "string",
+                    "MiddleName": "string",
+                    "BirthDate": "string",
+                    "PassportSeries": "string",
+                    "PassportNumber": "string",
+                    "PassportIssueDate": "string",
+                    "PassportIssuedBy": "string",
+                    "PassportIssuerCode": "string",
+                    "TaxIdentificationNumber": "string",
+                    "IndividualIdentificationNumber": "string",
+                    "DocumentIdentification": "string",
+                    "Index": "string",
+                    "Address": "string",
+                    "PassportScan": {
+                      "MimeType": "string",
+                      "Payload": "string"
+                    },
+                    "TempResidencePermitScan": {
+                      "MimeType": "string",
+                      "Payload": "string"
+                    }
+                  },
+                  "Errors": [
+                    {
+                      "ErrorCode": 0,
+                      "Entity": "string",
+                      "Message": "string",
+                      "Details": "string",
+                      "Value": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuthTokenRequest": {
+        "required": [
+          "ClientId",
+          "ClientSecret"
+        ],
+        "type": "object",
+        "properties": {
+          "ClientId": {
+            "type": "string",
+            "description": "Логин."
+          },
+          "ClientSecret": {
+            "type": "string",
+            "description": "Пароль."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "ErrorCode": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "Entity": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор объекта, для которого возникла ошибка."
+          },
+          "Message": {
+            "type": "string",
+            "description": "Текст ошибки."
+          },
+          "Details": {
+            "type": "string",
+            "nullable": true,
+            "description": "Подробное описание ошибки."
+          },
+          "Value": {
+            "type": "string",
+            "nullable": true,
+            "description": "Значение c ошибкой."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Response": {
+        "type": "object",
+        "description": "Данные об ошибках.",
+        "properties": {
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StringResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "string",
+            "description": "Токен для доступа в API.",
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Данные об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "EventTypeResponse": {
+        "type": "object",
+        "properties": {
+          "EventId": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Идентификатор события трекинга."
+          },
+          "EventName": {
+            "type": "string",
+            "description": "Название события."
+          },
+          "EventDescriptionEng": {
+            "type": "string",
+            "description": "Описание события на английском."
+          },
+          "EventDescriptionRu": {
+            "type": "string",
+            "description": "Описание события на русском."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EventTypeResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Информация о событиях.\n\nПри ошибке — `null`.\n",
+            "items": {
+              "$ref": "#/components/schemas/EventTypeResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Данные об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GeographyResponse": {
+        "properties": {
+          "Uid": {
+            "type": "string",
+            "description": "Идентификатор географического объекта."
+          },
+          "Name": {
+            "type": "string",
+            "description": "Название географического объекта. Например, название города, округа или области."
+          },
+          "Type": {
+            "type": "string",
+            "description": "Тип географического объекта.\n\nВозможные значения:\n\n- `country` — страна.\n- `federal` — федеральный округ, только для России.\n- `region` — область или регион страны.\n- `district` — район внутри области или региона.\n- `city` — город.\n- `village` — деревня.\n"
+          },
+          "Fias": {
+            "type": "string",
+            "nullable": true,
+            "description": "ФИАС географического объекта."
+          },
+          "Nodes": {
+            "type": "array",
+            "description": "Географические объекты внутри объекта.",
+            "items": {
+              "$ref": "#/components/schemas/GeographyResponse"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GeographyResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Список географических объектов.\n\nПри ошибке — `null`.\n",
+            "items": {
+              "$ref": "#/components/schemas/GeographyResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Данные об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Language": {
+        "enum": [
+          "Ru",
+          "Eng",
+          "Chn"
+        ],
+        "type": "string",
+        "description": "Язык ответа:\n- `Ru` — русский,\n- `Eng` — английский,\n- `Chn` — китайский.\n"
+      },
+      "ParcelsInfoRequest": {
+        "required": [
+          "LanguageResponse",
+          "ParcelIds"
+        ],
+        "type": "object",
+        "properties": {
+          "ParcelIds": {
+            "type": "array",
+            "description": "Список идентификаторов заказов в системе Ozon.",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "TrackingNumbers": {
+            "type": "array",
+            "description": "Список трек-номеров заказов в системе Ozon.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "LanguageResponse": {
+            "$ref": "#/components/schemas/Language"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TimeSlot": {
+        "type": "object",
+        "description": "Выбранный период доставки.",
+        "properties": {
+          "Begin": {
+            "description": "Начало периода.",
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "End": {
+            "description": "Конец периода.",
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelSenderReturn": {
+        "type": "object",
+        "description": "Информация о складе возврата.",
+        "properties": {
+          "Country": {
+            "type": "string",
+            "description": "Страна.",
+            "nullable": true
+          },
+          "CountryCode": {
+            "type": "string",
+            "description": "Код страны по стандарту ISO 3166-1.",
+            "nullable": true
+          },
+          "Region": {
+            "type": "string",
+            "description": "Регион.",
+            "nullable": true
+          },
+          "City": {
+            "type": "string",
+            "description": "Город.",
+            "nullable": true
+          },
+          "CityUid": {
+            "type": "string",
+            "description": "Идентификатор города.",
+            "nullable": true
+          },
+          "District": {
+            "type": "string",
+            "description": "Район.",
+            "nullable": true
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес.",
+            "nullable": true
+          },
+          "AddressAddInfo": {
+            "type": "string",
+            "description": "Дополнительная информация об адресе.",
+            "nullable": true
+          },
+          "ZipCode": {
+            "type": "string",
+            "description": "Почтовый индекс.",
+            "nullable": true
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Долгота."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelSender": {
+        "type": "object",
+        "description": "Информация о грузоотправителе.",
+        "properties": {
+          "Company": {
+            "type": "string",
+            "description": "Название.",
+            "nullable": true
+          },
+          "Email": {
+            "type": "string",
+            "description": "Электронная почта.",
+            "nullable": true
+          },
+          "Name": {
+            "type": "string",
+            "description": "Имя контактного лица.",
+            "nullable": true
+          },
+          "Phone": {
+            "type": "string",
+            "description": "Телефон.",
+            "nullable": true
+          },
+          "Country": {
+            "type": "string",
+            "description": "Страна.",
+            "nullable": true
+          },
+          "CountryCode": {
+            "type": "string",
+            "description": "Код страны по стандарту ISO 3166-1.",
+            "nullable": true
+          },
+          "Region": {
+            "type": "string",
+            "description": "Регион.",
+            "nullable": true
+          },
+          "City": {
+            "type": "string",
+            "description": "Город.",
+            "nullable": true
+          },
+          "CityUid": {
+            "type": "string",
+            "description": "Идентификатор города. \n\nЗначение `Uid` из ответа [GET /v1/Geography](#operation/Geography).\n",
+            "nullable": true
+          },
+          "District": {
+            "type": "string",
+            "description": "Район.",
+            "nullable": true
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес.",
+            "nullable": true
+          },
+          "AddressAddInfo": {
+            "type": "string",
+            "description": "Дополнительная информация об адресе.",
+            "nullable": true
+          },
+          "ZipCode": {
+            "type": "string",
+            "description": "Почтовый индекс.",
+            "nullable": true
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Долгота."
+          },
+          "PlaceID": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор склада.",
+            "nullable": true
+          },
+          "Inn": {
+            "type": "string",
+            "description": "ИНН.",
+            "nullable": true
+          },
+          "Return": {
+            "$ref": "#/components/schemas/ParcelSenderReturn"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelReceiver": {
+        "type": "object",
+        "description": "Информация о получателе.",
+        "properties": {
+          "Company": {
+            "type": "string",
+            "description": "Название.",
+            "nullable": true
+          },
+          "Email": {
+            "type": "string",
+            "description": "Электронная почта.",
+            "nullable": true
+          },
+          "Name": {
+            "type": "string",
+            "description": "Имя.",
+            "nullable": true
+          },
+          "Phone": {
+            "type": "string",
+            "description": "Телефон.",
+            "nullable": true
+          },
+          "Country": {
+            "type": "string",
+            "description": "Страна.",
+            "nullable": true
+          },
+          "CountryCode": {
+            "type": "string",
+            "description": "Код страны по стандарту ISO 3166-1.",
+            "nullable": true
+          },
+          "Region": {
+            "type": "string",
+            "description": "Регион.",
+            "nullable": true
+          },
+          "City": {
+            "type": "string",
+            "description": "Город.",
+            "nullable": true
+          },
+          "CityUid": {
+            "type": "string",
+            "description": "Идентификатор города. \n\nЗначение `Uid` из ответа [GET /v1/Geography](#operation/Geography).\n",
+            "nullable": true
+          },
+          "District": {
+            "type": "string",
+            "description": "Район.",
+            "nullable": true
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес.",
+            "nullable": true
+          },
+          "AddressAddInfo": {
+            "type": "string",
+            "description": "Дополнительная информация об адресе.",
+            "nullable": true
+          },
+          "ZipCode": {
+            "type": "string",
+            "description": "Почтовый индекс.",
+            "nullable": true
+          },
+          "Latitude": {
+            "type": "number",
+            "description": "Широта.",
+            "format": "double"
+          },
+          "Longitude": {
+            "type": "number",
+            "description": "Долгота.",
+            "format": "double"
+          },
+          "Inn": {
+            "type": "string",
+            "description": "ИНН.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProductCategory": {
+        "type": "object",
+        "properties": {
+          "Name": {
+            "type": "string",
+            "description": "Название категории."
+          },
+          "Level": {
+            "type": "integer",
+            "description": "Уровень категории в иерархии.",
+            "format": "int64"
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "Description": {
+            "type": "string",
+            "description": "Краткое описание товара.",
+            "nullable": true
+          },
+          "Item": {
+            "type": "string",
+            "description": "Артикул товара.",
+            "nullable": true
+          },
+          "Categories": {
+            "type": "array",
+            "description": "Информация о категории товара.",
+            "items": {
+              "$ref": "#/components/schemas/ProductCategory"
+            }
+          },
+          "Weight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Вес товара в граммах."
+          },
+          "Quantity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Количество товара."
+          },
+          "Length": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Длина товара в миллиметрах."
+          },
+          "Width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Ширина товара в миллиметрах."
+          },
+          "Height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Высота товара в миллиметрах."
+          },
+          "DeclareValue": {
+            "type": "number",
+            "format": "double",
+            "description": "Стоимость товара в рублях."
+          },
+          "HsCodeUe": {
+            "type": "string",
+            "description": "Код ТН-ВЭД в формате Евросоюза.",
+            "nullable": true
+          },
+          "HsCodeIs": {
+            "type": "string",
+            "description": "Код ТН-ВЭД в международном формате.",
+            "nullable": true
+          },
+          "Url": {
+            "type": "string",
+            "description": "Ссылка на товар на сайте Ozon.",
+            "nullable": true
+          },
+          "AirDeliveryAllowed": {
+            "type": "boolean",
+            "description": "Признак, что товар доступен к авиадоставке:\n- `true` — доступен,\n- `false` — недоступен,\n- `null` — нет информации о доступности.\n",
+            "nullable": true
+          },
+          "HasBattery": {
+            "type": "boolean",
+            "description": "Признак, что в товаре есть батарея:\n- `true` — содержит,\n- `false` — не содержит,\n- `null` — нет информации о содержании.\n",
+            "nullable": true
+          },
+          "HasLiquid": {
+            "type": "boolean",
+            "description": "Признак, что товар содержит жидкость:\n- `true` — содержит,\n- `false` — не содержит,\n- `null` — нет информации о содержании.\n",
+            "nullable": true
+          },
+          "HasPowder": {
+            "type": "boolean",
+            "description": "Признак, что товар содержит порошок:\n- `true` — содержит,\n- `false` — не содержит,\n- `null` — нет информации о содержании.\n",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelInfo": {
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "ParcelNumber": {
+            "type": "string",
+            "description": "Номер заказа."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер заказа.",
+            "nullable": true
+          },
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки в системе 3PL-провайдера.",
+            "nullable": true
+          },
+          "Code": {
+            "type": "string",
+            "description": "Код пункта в системе 3PL-провайдера.\n\nПоле не заполнено, если последнюю милю доставляет курьер.\n",
+            "nullable": true
+          },
+          "DropOffCode": {
+            "type": "string",
+            "description": "Код пункта приёма заказов в системе 3PL-провайдера.",
+            "nullable": true
+          },
+          "ReqDeliveryDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Требуемая дата доставки, которая устанавливается покупателем.",
+            "nullable": true
+          },
+          "RequestedTimeslot": {
+            "$ref": "#/components/schemas/TimeSlot"
+          },
+          "ParcelWeight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Вес заказа в граммах."
+          },
+          "ParcelLength": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Длина заказа в миллиметрах."
+          },
+          "ParcelWidth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Ширина заказа в миллиметрах."
+          },
+          "ParcelHeight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Высота заказа в миллиметрах."
+          },
+          "ParcelDeclareValue": {
+            "type": "number",
+            "format": "double",
+            "description": "Стоимость заказа."
+          },
+          "ClientDeliveryPrice": {
+            "type": "number",
+            "format": "double",
+            "description": "Стоимость доставки."
+          },
+          "ParcelDeclareCurrency": {
+            "type": "string",
+            "description": "Валюта стоимости заказа.",
+            "nullable": true
+          },
+          "CustomsDeclaration": {
+            "type": "string",
+            "description": "Номер таможенного реестра при прохождении таможни.",
+            "nullable": true
+          },
+          "MasterAirWaybill": {
+            "type": "string",
+            "description": "Номер авиационной накладной.",
+            "nullable": true
+          },
+          "Sender": {
+            "$ref": "#/components/schemas/ParcelSender"
+          },
+          "Receiver": {
+            "$ref": "#/components/schemas/ParcelReceiver"
+          },
+          "Product": {
+            "type": "array",
+            "description": "Информация о товарах.",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "Error": {
+            "type": "string",
+            "description": "Ошибка."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelsInfoResponse": {
+        "type": "object",
+        "description": "Информация о заказах.",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Список заказов.",
+            "items": {
+              "$ref": "#/components/schemas/ParcelInfo"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelsInfoResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ParcelsInfoResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelAttributesRequest": {
+        "required": [
+          "ParcelHeight",
+          "ParcelId",
+          "ParcelLength",
+          "ParcelWeight",
+          "ParcelWidth"
+        ],
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "ParcelWeight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Вес заказа в граммах."
+          },
+          "ParcelLength": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Длина заказа в миллиметрах."
+          },
+          "ParcelWidth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Ширина заказа в миллиметрах."
+          },
+          "ParcelHeight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Высота заказа в миллиметрах."
+          },
+          "ParcelVolumeWeight": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Объёмный вес заказа.",
+            "nullable": true
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Новый трек-номер.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelResponseRequest": {
+        "required": [
+          "ParcelId",
+          "RegistrationStatus"
+        ],
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "RegistrationStatus": {
+            "type": "string",
+            "description": "Статус регистрации заказа:\n- `OK` — подтверждена,\n- `Declined` — отклонена.\n"
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер.",
+            "nullable": true
+          },
+          "RegistrationCancelReason": {
+            "type": "string",
+            "description": "Причина отмены регистрации.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetLabelByItemCodeResponse": {
+        "type": "object",
+        "description": "Информация об этикетке.",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "description": "Идентификатор заказа.",
+            "format": "int64"
+          },
+          "ParcelNumber": {
+            "type": "string",
+            "description": "Номер заказа в системе Ozon."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер заказа.",
+            "nullable": true
+          },
+          "LabelData": {
+            "type": "string",
+            "description": "Этикетка в формате Base64."
+          }
+        }
+      },
+      "GetLabelByItemCodeResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/GetLabelByItemCodeResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProductAttributeResponse": {
+        "required": [
+          "Id",
+          "Name"
+        ],
+        "type": "object",
+        "properties": {
+          "Id": {
+            "description": "Идентификатор атрибута.",
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "Name": {
+            "description": "Описание атрибута.",
+            "type": "string"
+          },
+          "Sample": {
+            "description": "Пример атрибута.",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProductAttributeResponseListResponse": {
+        "required": [
+          "Errors"
+        ],
+        "type": "object",
+        "properties": {
+          "Data": {
+            "description": "Список атрибутов.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductAttributeResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "description": "Данные об ошибках.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelProductsAttributesRequest": {
+        "required": [
+          "Attributes",
+          "Languages"
+        ],
+        "type": "object",
+        "properties": {
+          "Attributes": {
+            "description": "Список атрибутов.",
+            "minItems": 1,
+            "uniqueItems": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Languages": {
+            "minItems": 1,
+            "uniqueItems": true,
+            "type": "array",
+            "description": "Язык ответа:\n- `Ru` — русский,\n- `Eng` — английский,\n- `Chn` — китайский.\n",
+            "items": {
+              "$ref": "#/components/schemas/Language"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProductAttributeValue": {
+        "required": [
+          "Description"
+        ],
+        "type": "object",
+        "title": "Values",
+        "properties": {
+          "Description": {
+            "description": "Значения атрибутов на запрошенных языках.",
+            "minLength": 0,
+            "required": [
+              "Ru",
+              "Eng",
+              "Chn"
+            ],
+            "type": "object",
+            "properties": {
+              "Ru": {
+                "type": "string",
+                "description": "Значения на русском."
+              },
+              "Eng": {
+                "type": "string",
+                "description": "Значения на английском."
+              },
+              "Chn": {
+                "type": "string",
+                "description": "Значения на китайском."
+              }
+            }
+          }
+        }
+      },
+      "ProductAttribute": {
+        "required": [
+          "Id",
+          "Values"
+        ],
+        "type": "object",
+        "title": "Attributes",
+        "properties": {
+          "Id": {
+            "type": "string",
+            "description": "Идентификатор атрибута."
+          },
+          "Values": {
+            "minItems": 0,
+            "type": "array",
+            "description": "Значения атрибута.",
+            "items": {
+              "$ref": "#/components/schemas/ProductAttributeValue"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelProductWithAttributes": {
+        "required": [
+          "Attributes",
+          "Item"
+        ],
+        "type": "object",
+        "title": "Products",
+        "properties": {
+          "Item": {
+            "type": "string",
+            "description": "Артикул товара."
+          },
+          "Attributes": {
+            "minItems": 0,
+            "type": "array",
+            "description": "Список атрибутов.",
+            "items": {
+              "$ref": "#/components/schemas/ProductAttribute"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelProductsAttributesResponse": {
+        "required": [
+          "ParcelId",
+          "Products"
+        ],
+        "type": "object",
+        "title": "Data",
+        "nullable": true,
+        "description": "Список атрибутов по заказам.",
+        "properties": {
+          "ParcelId": {
+            "description": "Идентификатор заказа.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "Products": {
+            "minItems": 0,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParcelProductWithAttributes"
+            },
+            "description": "Список товаров с атрибутами."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelProductsAttributesResponseListResponse": {
+        "required": [
+          "Errors"
+        ],
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ParcelProductsAttributesResponse"
+          },
+          "Errors": {
+            "description": "Данные об ошибках.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsResponseData": {
+        "required": [
+          "EventId",
+          "Guid",
+          "Moment",
+          "ProviderEventCode"
+        ],
+        "type": "object",
+        "properties": {
+          "Guid": {
+            "type": "string",
+            "description": "Уникальный идентификатор."
+          },
+          "EventId": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Идентификатор события.\n\nЗначение `EventId` из ответа [GET /v1/EventTypes](#operation/EventTypes).\n"
+          },
+          "EventMessage": {
+            "type": "string",
+            "description": "Информационный статус или дополнительный статус для трекинга.",
+            "nullable": true
+          },
+          "Moment": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время возникновения события в формате UTС."
+          },
+          "DeliveryPlanDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Плановая дата доставки, которую устанавливает 3PL-провайдер после регистрации заказа.",
+            "nullable": true
+          },
+          "EventPlaceUid": {
+            "type": "string",
+            "description": "Идентификатор географического объекта, где произошло событие. Например, страна или город.",
+            "nullable": true
+          },
+          "ProviderEventCode": {
+            "type": "string",
+            "description": "Код исходного события у 3PL-провайдера."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsResponseRequest": {
+        "required": [
+          "Data",
+          "ParcelId",
+          "TrackingNumber"
+        ],
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер 3PL-провайдера."
+          },
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки 3PL-провайдера.",
+            "nullable": true
+          },
+          "CourierName": {
+            "type": "string",
+            "description": "Имя курьера.\n\nПараметр учитывается, если способ доставки последней мили — курьер: `DeliveryTypeId = 1`.\n",
+            "nullable": true
+          },
+          "CourierPhone": {
+            "type": "string",
+            "description": "Телефон курьера.\n\nПараметр учитывается, если способ доставки последней мили — курьер: `DeliveryTypeId = 1`.\n",
+            "nullable": true
+          },
+          "PointCode": {
+            "type": "string",
+            "description": "Код пункта выдачи или постамата.\n\nПараметр учитывается, если способ доставки последней мили — пункт выдачи или постамат: `DeliveryTypeId = 2` или `DeliveryTypeId = 3`.\n",
+            "nullable": true
+          },
+          "Data": {
+            "type": "array",
+            "description": "Список событий трекинга.",
+            "items": {
+              "$ref": "#/components/schemas/ParcelEventsResponseData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsRequest": {
+        "type": "object",
+        "properties": {
+          "ParcelIds": {
+            "type": "array",
+            "description": "Список идентификаторов заказов.",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsEvent": {
+        "type": "object",
+        "properties": {
+          "EventId": {
+            "type": "string",
+            "description": "Идентификатор события. \n\nЗначение `EventId` из ответа [GET /v1/EventTypes](#operation/EventTypes).\n"
+          },
+          "EventName": {
+            "type": "string",
+            "description": "Название события на английском.",
+            "nullable": true
+          },
+          "EventDescriptionEng": {
+            "type": "string",
+            "description": "Описание события на английском.",
+            "nullable": true
+          },
+          "EventDescriptionRu": {
+            "type": "string",
+            "description": "Описание события на русском.",
+            "nullable": true
+          },
+          "Moment": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время события в формате UTС."
+          },
+          "DeliveryPlanDate": {
+            "type": "string",
+            "description": "Плановая дата доставки.\n\nУстанавливается 3PL-провайдером после регистрации заказа.\n",
+            "nullable": true
+          },
+          "EventPlaceUid": {
+            "type": "string",
+            "description": "Идентификатор географического объекта, где произошло событие. Например, страна или город.",
+            "nullable": true
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер 3PL-провайдера.",
+            "nullable": true
+          },
+          "ProviderEventCode": {
+            "type": "string",
+            "description": "Код исходного события у 3PL-провайдера."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsResponse": {
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "ParcelNumber": {
+            "type": "string",
+            "description": "Номер заказа в системе Ozon."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер 3PL-провайдера."
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Признак активного трекинга:\n\n- `true` — трекинг активен,\n- `false` — трекинг неактивен.\n"
+          },
+          "Events": {
+            "type": "array",
+            "description": "Список событий трекинга.",
+            "items": {
+              "$ref": "#/components/schemas/ParcelEventsEvent"
+            }
+          },
+          "Error": {
+            "type": "string",
+            "description": "Ошибка."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelEventsResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Информация о трекинге заказов в Ozon.",
+            "items": {
+              "$ref": "#/components/schemas/ParcelEventsResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelToCancelResponse": {
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "ParcelNumber": {
+            "type": "string",
+            "description": "Номер заказа."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер."
+          },
+          "CreatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время создания заявки на отмену."
+          },
+          "AutoApprovedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Дата и время, до которых нужно подтвердить или отклонить заявку на отмену."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelToCancelResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Заказы.",
+            "items": {
+              "$ref": "#/components/schemas/ParcelToCancelResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostingState": {
+        "enum": [
+          "Accepted",
+          "Canceled",
+          "Declined"
+        ],
+        "type": "string",
+        "description": "Новый статус:\n\n- `Accepted` — получили запрос, но ещё не приняли решение.\n- `Canceled` — отменили заказ.\n- `Declined` — отклонили отмену.\n"
+      },
+      "ParcelsCancelResponseRequest": {
+        "required": [
+          "NewState",
+          "ParcelId"
+        ],
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "NewState": {
+            "$ref": "#/components/schemas/PostingState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentStatus": {
+        "description": "Статусы документа:\n- `ReadyToProcessing` — готов к формированию,\n- `InProgress` — в процессе формирования,\n- `Created` — документ создан,\n- `Error` — ошибка при формировании,\n- `Deleted` — документ удалён.\n",
+        "type": "string"
+      },
+      "Content": {
+        "required": [
+          "ContentSize",
+          "ContentType",
+          "Id",
+          "Name"
+        ],
+        "type": "object",
+        "properties": {
+          "Id": {
+            "description": "Идентификатор файла.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "Name": {
+            "description": "Имя файла.",
+            "type": "string"
+          },
+          "ContentType": {
+            "description": "Формат файла.",
+            "maxLength": 255,
+            "minLength": 0,
+            "type": "string"
+          },
+          "ContentSize": {
+            "description": "Размер файла.",
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Document": {
+        "required": [
+          "Content",
+          "DocumentType",
+          "Id",
+          "Status",
+          "StatusDate"
+        ],
+        "type": "object",
+        "properties": {
+          "Id": {
+            "description": "Идентификатор документа.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "DocumentType": {
+            "description": "Тип документа.",
+            "maxLength": 64,
+            "minLength": 0,
+            "type": "string"
+          },
+          "Status": {
+            "$ref": "#/components/schemas/DocumentStatus"
+          },
+          "StatusDate": {
+            "description": "Дата изменения статуса.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "StatusInfo": {
+            "description": "Информация о статусе.",
+            "type": "string",
+            "nullable": true
+          },
+          "Content": {
+            "description": "Список файлов в бинарном виде.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentListResponse": {
+        "required": [
+          "Errors"
+        ],
+        "type": "object",
+        "description": "Информация об ошибках.",
+        "properties": {
+          "Data": {
+            "description": "Список документов.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Document"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "description": "Данные об ошибках.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CustomsDeclarationInfoRequest": {
+        "type": "object",
+        "required": [
+          "CustomsDeclarationNumber",
+          "CustomsReleaseDate",
+          "ParcelIds"
+        ],
+        "properties": {
+          "ParcelIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Список идентификаторов заказов в системе Ozon.",
+            "maximum": 1000
+          },
+          "CustomsDeclarationNumber": {
+            "type": "string",
+            "description": "Номер декларации на товары для экспресс-грузов."
+          },
+          "CustomsReleaseDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата прохождения таможни и выпуска декларации на товары для экспресс-грузов."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestStatus": {
+        "enum": [
+          "OK",
+          "Arrived",
+          "Completed",
+          "Declined"
+        ],
+        "type": "string",
+        "description": "Статус перевозки:\n- `OK` — подтверждена,\n- `Arrived` — принята на складе,\n- `Completed` — завершена,\n- `Declined` — отклонена.\n"
+      },
+      "ManifestResponseRequest": {
+        "required": [
+          "ManifestId",
+          "ManifestStatus"
+        ],
+        "type": "object",
+        "properties": {
+          "ManifestId": {
+            "type": "string",
+            "description": "Идентификатор перевозки."
+          },
+          "ManifestStatus": {
+            "$ref": "#/components/schemas/ManifestStatus"
+          },
+          "ManifestDeclineReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Причина отмены."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestTransferInfoRequest": {
+        "required": [
+          "ManifestId"
+        ],
+        "type": "object",
+        "properties": {
+          "ManifestId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор перевозки."
+          },
+          "VehicleBrand": {
+            "type": "string",
+            "nullable": true,
+            "description": "Марка автомобиля."
+          },
+          "VehicleNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер автомобиля."
+          },
+          "DriverFullName": {
+            "type": "string",
+            "nullable": true,
+            "description": "ФИО курьера."
+          },
+          "PhoneNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер телефона курьера."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InnerDocument": {
+        "type": "object",
+        "properties": {
+          "DocId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор документа."
+          },
+          "DocName": {
+            "type": "string",
+            "description": "Название документа."
+          },
+          "DocType": {
+            "type": "string",
+            "description": "Тип документа."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestType": {
+        "enum": [
+          "Unset"
+        ],
+        "type": "string",
+        "description": "Тип перевозки: `Unset`.\n"
+      },
+      "SenderAddress": {
+        "type": "object",
+        "description": "Адрес отправителя.",
+        "properties": {
+          "PlaceId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор склада."
+          },
+          "Company": {
+            "type": "string",
+            "nullable": true,
+            "description": "Название компании."
+          },
+          "Email": {
+            "type": "string",
+            "nullable": true,
+            "description": "Электронная почта."
+          },
+          "Name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Имя."
+          },
+          "Phone": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер телефона."
+          },
+          "Country": {
+            "type": "string",
+            "nullable": true,
+            "description": "Страна."
+          },
+          "CountryCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "Код страны."
+          },
+          "Region": {
+            "type": "string",
+            "nullable": true,
+            "description": "Регион."
+          },
+          "City": {
+            "type": "string",
+            "nullable": true,
+            "description": "Город."
+          },
+          "CityUid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "UID города. \n\nЗначение `Uid` из ответа [GET /v1/Geography](#operation/Geography).\n"
+          },
+          "District": {
+            "type": "string",
+            "nullable": true,
+            "description": "Область."
+          },
+          "Address": {
+            "type": "string",
+            "nullable": true,
+            "description": "Адрес."
+          },
+          "AddressAddInfo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Дополнительная информация об адресе."
+          },
+          "ZipCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "Индекс."
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Долгота."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReceiverAddress": {
+        "type": "object",
+        "description": "Адрес получателя.",
+        "properties": {
+          "PlaceId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор склада."
+          },
+          "Company": {
+            "type": "string",
+            "nullable": true,
+            "description": "Название компании."
+          },
+          "Email": {
+            "type": "string",
+            "nullable": true,
+            "description": "Электронная почта."
+          },
+          "Name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Имя."
+          },
+          "Phone": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер телефона."
+          },
+          "Country": {
+            "type": "string",
+            "nullable": true,
+            "description": "Страна."
+          },
+          "CountryCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "Код страны."
+          },
+          "Region": {
+            "type": "string",
+            "nullable": true,
+            "description": "Регион."
+          },
+          "City": {
+            "type": "string",
+            "nullable": true,
+            "description": "Город."
+          },
+          "CityUid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "UID города. \n\nЗначение `Uid` из ответа [GET /v1/Geography](#operation/Geography).\n"
+          },
+          "District": {
+            "type": "string",
+            "nullable": true,
+            "description": "Область."
+          },
+          "Address": {
+            "type": "string",
+            "nullable": true,
+            "description": "Адрес."
+          },
+          "AddressAddInfo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Дополнительная информация об адресе."
+          },
+          "ZipCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "Индекс."
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Долгота."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InnerParcel": {
+        "type": "object",
+        "properties": {
+          "ParcelId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заказа."
+          },
+          "ParcelNumber": {
+            "type": "string",
+            "description": "Номер заказа."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InnerManifestDetails": {
+        "type": "object",
+        "description": "Детали доставки.",
+        "properties": {
+          "ParcelsCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Количество заказов."
+          },
+          "MessageToManifest": {
+            "type": "string",
+            "description": "Сообщение о доставке."
+          },
+          "DeliveryDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Дата доставки."
+          },
+          "DeliveryTimeFrom": {
+            "type": "string",
+            "description": "Время, после которого доставят."
+          },
+          "DeliveryTimeTo": {
+            "type": "string",
+            "description": "Время, до которого доставят."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponseData": {
+        "type": "object",
+        "properties": {
+          "ManifestId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор перевозки."
+          },
+          "Documents": {
+            "type": "array",
+            "description": "Информация о документах.",
+            "items": {
+              "$ref": "#/components/schemas/InnerDocument"
+            }
+          },
+          "ManifestType": {
+            "$ref": "#/components/schemas/ManifestType"
+          },
+          "ManifestStatus": {
+            "type": "string",
+            "description": "Статус перевозки."
+          },
+          "SenderAddress": {
+            "$ref": "#/components/schemas/SenderAddress"
+          },
+          "ReceiverAddress": {
+            "$ref": "#/components/schemas/ReceiverAddress"
+          },
+          "Parcels": {
+            "type": "array",
+            "description": "Информация о заказах.",
+            "items": {
+              "$ref": "#/components/schemas/InnerParcel"
+            }
+          },
+          "ManifestDetails": {
+            "$ref": "#/components/schemas/InnerManifestDetails"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponse": {
+        "type": "object",
+        "description": "Результат запроса.",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Список перевозок и информация по каждой из них.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestResponseData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ManifestResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionPriceResponse": {
+        "type": "object",
+        "description": "Ограничение по стоимости.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная цена."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная цена."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionWeightResponse": {
+        "type": "object",
+        "description": "Ограничение по весу в граммах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальный вес."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальный вес."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionLengthResponse": {
+        "type": "object",
+        "description": "Ограничение по длине в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная длина."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная длина."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionWidthResponse": {
+        "type": "object",
+        "description": "Ограничение по ширине в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная ширина."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная ширина."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionHeightResponse": {
+        "type": "object",
+        "description": "Ограничение по высоте в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная высота."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная высота."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionDimensionSumResponse": {
+        "type": "object",
+        "description": "Ограничение по сумме всех габаритов в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная сумма всех габаритов."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная сумма всех габаритов."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DayScheduleResponse": {
+        "type": "object",
+        "properties": {
+          "Day": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": "integer",
+            "format": "int32",
+            "description": "День недели:\n\n- `1` — понедельник,\n- `2` — вторник,\n- `3` — среда,\n- `4` — четверг,\n- `5` — пятница,\n- `6` — суббота,\n- `7` — воскресенье.\n"
+          },
+          "IsHoliday": {
+            "type": "boolean",
+            "description": "Признак выходного дня."
+          },
+          "FromTo": {
+            "maxLength": 30,
+            "type": "string",
+            "description": "Время работы в формате: 10:00–22:00.\n"
+          },
+          "BreakFromTo": {
+            "maxLength": 30,
+            "type": "string",
+            "nullable": true,
+            "description": "Время перерыва в формате: 10:00–22:00.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointResponse": {
+        "type": "object",
+        "properties": {
+          "Code": {
+            "type": "string",
+            "description": "Код пункта в системе 3PL-провайдера."
+          },
+          "Name": {
+            "type": "string",
+            "description": "Название."
+          },
+          "DeliveryTypeId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор типа доставки:\n- `2` — пункт выдачи,\n- `3` — постамат.\n"
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес."
+          },
+          "HowToGet": {
+            "type": "string",
+            "description": "Инструкция, как добраться."
+          },
+          "StoragePeriod": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "description": "Срок хранения в днях."
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Долгота."
+          },
+          "LocationUid": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор географического расположения пункта."
+          },
+          "RegionUid": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор региона пункта."
+          },
+          "CountryUid": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор страны пункта."
+          },
+          "PostalCode": {
+            "type": "string",
+            "description": "Индекс."
+          },
+          "DeliveryForLegalUsers": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак обслуживания юридических лиц. `true`, если обслуживаются."
+          },
+          "FreeWifi": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия бесплатного Wi-Fi. `true`, если есть."
+          },
+          "ClothesDressingRoom": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия примерочной для одежды. `true`, если есть."
+          },
+          "ShoesDressingRoom": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия примерочной для обуви. `true`, если есть."
+          },
+          "DomesticMerchandiseReturn": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступен возврат продавцу внутри России."
+          },
+          "CrossborderMerchandiseReturn": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступен возврат продавцу за границу."
+          },
+          "AvailableCreditCard": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна оплата картой на месте.",
+            "deprecated": true
+          },
+          "AvailableCash": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна оплата наличными на месте.",
+            "deprecated": true
+          },
+          "OrderPartialRedemption": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна частичная выдача товара."
+          },
+          "Price": {
+            "$ref": "#/components/schemas/MinMaxRestrictionPriceResponse"
+          },
+          "Weight": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWeightResponse"
+          },
+          "Length": {
+            "$ref": "#/components/schemas/MinMaxRestrictionLengthResponse"
+          },
+          "Width": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWidthResponse"
+          },
+          "Height": {
+            "$ref": "#/components/schemas/MinMaxRestrictionHeightResponse"
+          },
+          "DimensionSum": {
+            "$ref": "#/components/schemas/MinMaxRestrictionDimensionSumResponse"
+          },
+          "Schedule": {
+            "type": "array",
+            "description": "Pасписание работы.",
+            "items": {
+              "$ref": "#/components/schemas/DayScheduleResponse"
+            }
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус пункта:\n- `true` — открыт или работает,\n- `false` — закрыт.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Список пунктов выдачи.",
+            "items": {
+              "$ref": "#/components/schemas/PointResponse"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionPrice": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по стоимости.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная цена."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная цена."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionWeight": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по весу в граммах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальный вес."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальный вес."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionLength": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по длине в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная длина."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная длина."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionWidth": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по ширине в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная ширина."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная ширина."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionHeight": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по высоте в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная высота."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная высота."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MinMaxRestrictionDimensionSum": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по сумме всех габаритов в миллиметрах.",
+        "properties": {
+          "Min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Минимальная сумма всех габаритов."
+          },
+          "Max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Максимальная сумма всех габаритов."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaySchedule": {
+        "required": [
+          "Day",
+          "FromTo",
+          "IsHoliday"
+        ],
+        "type": "object",
+        "properties": {
+          "Day": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": "integer",
+            "format": "int32",
+            "description": "День недели:\n\n- `1` — понедельник,\n- `2` — вторник,\n- `3` — среда,\n- `4` — четверг,\n- `5` — пятница,\n- `6` — суббота,\n- `7` — воскресенье.\n"
+          },
+          "IsHoliday": {
+            "type": "boolean",
+            "description": "Признак выходного дня."
+          },
+          "FromTo": {
+            "maxLength": 30,
+            "type": "string",
+            "description": "Время работы в формате: 10:00–22:00.\n"
+          },
+          "BreakFromTo": {
+            "maxLength": 30,
+            "type": "string",
+            "nullable": true,
+            "description": "Время перерыва в формате: 10:00–22:00.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointRequest": {
+        "required": [
+          "Address",
+          "Code",
+          "DeliveryTypeId",
+          "DimensionSum",
+          "Height",
+          "HowToGet",
+          "IsActive",
+          "Latitude",
+          "Length",
+          "Longitude",
+          "PostalCode",
+          "Price",
+          "Schedule",
+          "Weight",
+          "Width"
+        ],
+        "type": "object",
+        "properties": {
+          "Code": {
+            "type": "string",
+            "description": "Код пункта в системе 3PL-провайдера."
+          },
+          "DeliveryTypeId": {
+            "maximum": 3,
+            "minimum": 2,
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор типа доставки:\n- `2` — пункт выдачи,\n- `3` — постамат.\n"
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес."
+          },
+          "HowToGet": {
+            "type": "string",
+            "description": "Инструкция, как добраться."
+          },
+          "StoragePeriod": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "description": "Срок хранения в днях."
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Долгота."
+          },
+          "PostalCode": {
+            "maxLength": 16,
+            "type": "string",
+            "description": "Индекс."
+          },
+          "DeliveryForLegalUsers": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак обслуживания юридических лиц. `true`, если обслуживаются."
+          },
+          "FreeWifi": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия бесплатного Wi-Fi. `true`, если есть."
+          },
+          "ClothesDressingRoom": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия примерочной для одежды. `true`, если есть."
+          },
+          "ShoesDressingRoom": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Признак наличия примерочной для обуви. `true`, если есть."
+          },
+          "AvailableCreditCard": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна оплата картой на месте.",
+            "deprecated": true
+          },
+          "AvailableCash": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна оплата наличными на месте.",
+            "deprecated": true
+          },
+          "OrderPartialRedemption": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступна частичная выдача товара."
+          },
+          "DomesticMerchandiseReturn": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступен возврат продавцу внутри России."
+          },
+          "CrossborderMerchandiseReturn": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Доступен возврат продавцу за границу."
+          },
+          "Price": {
+            "$ref": "#/components/schemas/MinMaxRestrictionPrice"
+          },
+          "Weight": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWeight"
+          },
+          "Length": {
+            "$ref": "#/components/schemas/MinMaxRestrictionLength"
+          },
+          "Width": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWidth"
+          },
+          "Height": {
+            "$ref": "#/components/schemas/MinMaxRestrictionHeight"
+          },
+          "DimensionSum": {
+            "$ref": "#/components/schemas/MinMaxRestrictionDimensionSum"
+          },
+          "Schedule": {
+            "type": "array",
+            "description": "Pасписание работы.",
+            "items": {
+              "$ref": "#/components/schemas/DaySchedule"
+            }
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус пункта:\n- `true` — открыт или работает,\n- `false` — закрыт.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "v2MinMaxRestriction": {
+        "required": [
+          "Max",
+          "Min"
+        ],
+        "type": "object",
+        "description": "Ограничение по стоимости.",
+        "properties": {
+          "Max": {
+            "type": "string",
+            "format": "int64",
+            "description": "Максимальная цена."
+          },
+          "Min": {
+            "type": "string",
+            "format": "int64",
+            "description": "Минимальная цена."
+          }
+        }
+      },
+      "v2DaySchedule": {
+        "required": [
+          "Day",
+          "FromTo",
+          "IsHoliday"
+        ],
+        "type": "object",
+        "properties": {
+          "BreakFromTo": {
+            "pattern": " HH:MM-HH:MM",
+            "type": "string",
+            "description": "Время перерыва."
+          },
+          "Day": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 7,
+            "minimum": 1,
+            "description": "День недели:\n\n- `1` — понедельник,\n- `2` — вторник,\n- `3` — среда,\n- `4` — четверг,\n- `5` — пятница,\n- `6` — суббота,\n- `7` — воскресенье.\n"
+          },
+          "FromTo": {
+            "type": "string",
+            "pattern": " HH:MM-HH:MM",
+            "description": "Время работы."
+          },
+          "IsHoliday": {
+            "type": "boolean",
+            "description": "`true`, если день выходной.\n"
+          }
+        }
+      },
+      "v2Point": {
+        "required": [
+          "Address",
+          "Code",
+          "Height",
+          "HowToGet",
+          "Latitude",
+          "Length",
+          "Longitude",
+          "PostalCode",
+          "Price",
+          "Schedule",
+          "Weight",
+          "Width",
+          "ServiceCode",
+          "DeliveryDays",
+          "StoragePeriod",
+          "Capacity"
+        ],
+        "type": "object",
+        "properties": {
+          "Code": {
+            "type": "string",
+            "description": "Код пункта в системе 3PL-провайдера."
+          },
+          "Address": {
+            "type": "string",
+            "description": "Адрес."
+          },
+          "HowToGet": {
+            "type": "string",
+            "description": "Инструкция, как добраться."
+          },
+          "StoragePeriod": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Срок хранения в днях."
+          },
+          "Latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Широта."
+          },
+          "Longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Долгота."
+          },
+          "PostalCode": {
+            "maxLength": 16,
+            "type": "string",
+            "description": "Индекс."
+          },
+          "FreeWifi": {
+            "type": "boolean",
+            "description": "`true`, если есть Wi-Fi.\n"
+          },
+          "ClothesDressingRoom": {
+            "type": "boolean",
+            "description": "`true`, если есть примерочная для одежды.\n"
+          },
+          "ShoesDressingRoom": {
+            "type": "boolean",
+            "description": "`true`, если есть примерочная для обуви.\n"
+          },
+          "Price": {
+            "$ref": "#/components/schemas/v2MinMaxRestriction"
+          },
+          "Weight": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWeight"
+          },
+          "Width": {
+            "$ref": "#/components/schemas/MinMaxRestrictionWidth"
+          },
+          "Length": {
+            "$ref": "#/components/schemas/MinMaxRestrictionLength"
+          },
+          "Height": {
+            "$ref": "#/components/schemas/MinMaxRestrictionHeight"
+          },
+          "Schedule": {
+            "type": "array",
+            "description": "Pасписание работы.",
+            "items": {
+              "$ref": "#/components/schemas/v2DaySchedule"
+            }
+          },
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код сервиса доставки."
+          },
+          "DeliveryDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Количество дней на доставку."
+          },
+          "Capacity": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Вместимость пункта в отправлениях."
+          }
+        }
+      },
+      "protobufAny": {
+        "type": "object",
+        "properties": {
+          "@type": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {}
+      },
+      "rpcStatus": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "description": "Код ошибки.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "details": {
+            "description": "Подробное описание ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/protobufAny"
+            }
+          },
+          "message": {
+            "description": "Текст ошибки.",
+            "type": "string"
+          }
+        }
+      },
+      "v1Error": {
+        "type": "object",
+        "properties": {
+          "Details": {
+            "type": "string",
+            "description": "Подробное описание ошибки."
+          },
+          "Entity": {
+            "type": "string",
+            "description": "Идентификатор объекта, для которого возникла ошибка."
+          },
+          "ErrorCode": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "Message": {
+            "type": "string",
+            "description": "Текст ошибки."
+          },
+          "Value": {
+            "type": "string",
+            "description": "Значение c ошибкой."
+          }
+        }
+      },
+      "v2PointsV2Response": {
+        "type": "object",
+        "properties": {
+          "TicketId": {
+            "type": "string",
+            "description": "Идентификатор заявки."
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Список ошибок.",
+            "items": {
+              "$ref": "#/components/schemas/v1Error"
+            }
+          }
+        }
+      },
+      "Route": {
+        "type": "object",
+        "properties": {
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки в системе 3PL-провайдера."
+          },
+          "RegionFromUid": {
+            "type": "string",
+            "description": "Точка отправки: UID населённого пункта.\n"
+          },
+          "RegionToUid": {
+            "type": "string",
+            "description": "Точка доставки: UID населённого пункта.\n"
+          },
+          "DeliveryDaysMin": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int32",
+            "description": "Минимальный срок доставки в днях."
+          },
+          "DeliveryDaysMax": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int32",
+            "description": "Максимальный срок доставки в днях."
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус маршрута:\n- `true` — открыт или работает,\n- `false` — закрыт.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RouteListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Информация о маршрутах.",
+            "items": {
+              "$ref": "#/components/schemas/Route"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "RouteRequest": {
+        "required": [
+          "DeliveryDaysMax",
+          "DeliveryDaysMin",
+          "IsActive",
+          "RegionFromUid",
+          "RegionToUid",
+          "ServiceCode"
+        ],
+        "type": "object",
+        "properties": {
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки в системе 3PL-провайдера."
+          },
+          "RegionFromUid": {
+            "type": "string",
+            "description": "UID точки отправки.\n"
+          },
+          "RegionToUid": {
+            "type": "string",
+            "description": "UID точки доставки.\n"
+          },
+          "DeliveryDaysMin": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int32",
+            "description": "Минимальный срок доставки в днях."
+          },
+          "DeliveryDaysMax": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int32",
+            "description": "Максимальный срок доставки в днях."
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус маршрута:\n- `true` — открыт или работает,\n- `false` — закрыт.\n\nПо умолчанию — `false`.\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "FirstMileType": {
+        "enum": [
+          "PickUp",
+          "DropOff"
+        ],
+        "type": "string",
+        "description": "Тип первой мили:\n- `PickUp`,\n- `DropOff`.\n\nЗаполняется при создании услуги. Обновить через метод [PUT /v1/Services](#operation/PutServices) нельзя.\n"
+      },
+      "LabelType": {
+        "enum": [
+          "Ozon",
+          "Tpl"
+        ],
+        "type": "string",
+        "description": "Тип этикетки:\n- `Ozon` — стандартная этикетка Ozon.\n- `Tpl` — этикетка 3PL-провайдера. Временно отключена.\n"
+      },
+      "ProviderTemplate": {
+        "type": "object",
+        "properties": {
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки в системе 3PL-провайдера."
+          },
+          "ContractNameRu": {
+            "type": "string",
+            "description": "Название услуги как в контракте на русском.",
+            "nullable": true
+          },
+          "ContractNameEng": {
+            "type": "string",
+            "description": "Название услуги как в контракте на английском.",
+            "nullable": true
+          },
+          "DeliveryTypeId": {
+            "maximum": 3,
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64",
+            "description": "Способ доставки последней мили:\n\n- `1` — курьер;\n- `2` — пункт выдачи;\n- `3` — постамат, временно отключён.\n"
+          },
+          "TransportType": {
+            "type": "string",
+            "description": "Тип транспорта услуги:\n\n- `auto` — автотранспорт,\n- `air` — самолёт,\n- `railway` — поезд,\n- `other` — другое.\n",
+            "nullable": true
+          },
+          "MaxWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальный вес заказа в граммах. Если поле пустое, ограничений по максимальному весу нет.",
+            "nullable": true
+          },
+          "MinWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Минимальный вес заказа в граммах. Если поле пустое, ограничений по минимальному весу нет.",
+            "nullable": true
+          },
+          "MaxPrice": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная стоимость товара, доступного к доставке по этой услуге. Указывается в рублях.",
+            "nullable": true
+          },
+          "MinPrice": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Минимальная стоимость товара, доступного к доставке по этой услуге. Указывается в рублях.",
+            "nullable": true
+          },
+          "CurrencyPriceLimit": {
+            "type": "string",
+            "description": "Валюта, в которой устанавливаются ограничения к стоимости товара: `RUR` — рубли.\n",
+            "nullable": true
+          },
+          "MaxLength": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная длина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinLength": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная длина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MaxWidth": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная ширина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinWidth": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная ширина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MaxHeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная высота заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinHeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная высота заказа в миллиметрах.",
+            "nullable": true
+          },
+          "SumDimensionLimit": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Ограничение по сумме сторон заказа в миллиметрах. Если поле пустое, ограничений нет.",
+            "nullable": true
+          },
+          "LongestSideLimit": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Ограничение по наибольшей стороне заказа в миллиметрах. Если поле пустое, ограничений нет.",
+            "nullable": true
+          },
+          "MaxVolume": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимально допустимый объём заказа в кубических миллиметрах.",
+            "nullable": true
+          },
+          "VolumeWeightCoefficient": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Коэффициент расчёта объёмного веса.",
+            "nullable": true
+          },
+          "MaxVolumeWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимально допустимый объёмный вес заказа в килограммах.",
+            "nullable": true
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус услуги:\n\n- `true` — активна,\n- `false` — не активна.\n\nПо умолчанию — `false`.\n"
+          },
+          "IsPostalService": {
+            "type": "boolean",
+            "description": "Признак, что заказ доставляется почтой. \nЕсли `\"IsPostalService\": true`, сбора паспортных данных не будет.\n\nАктуален для импорта в Россию. При доставке внутри ЕАС поле пустое.\n",
+            "nullable": true
+          },
+          "FirstMileType": {
+            "$ref": "#/components/schemas/FirstMileType"
+          },
+          "LabelType": {
+            "$ref": "#/components/schemas/LabelType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderTemplateListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "array",
+            "description": "Информация об услугах доставки.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderTemplate"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderTemplateRequestItem": {
+        "required": [
+          "DeliveryTypeId",
+          "IsActive",
+          "ServiceCode",
+          "ContractNameRu"
+        ],
+        "type": "object",
+        "properties": {
+          "ServiceCode": {
+            "type": "string",
+            "description": "Код услуги доставки в системе 3PL-провайдера."
+          },
+          "ContractNameRu": {
+            "type": "string",
+            "description": "Название услуги как в контракте на русском.",
+            "nullable": true
+          },
+          "ContractNameEng": {
+            "type": "string",
+            "description": "Название услуги как в контракте на английском.",
+            "nullable": true
+          },
+          "DeliveryTypeId": {
+            "maximum": 3,
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64",
+            "description": "Способ доставки последней мили:\n\n- `1` — курьер;\n- `2` — пункт выдачи;\n- `3` — постамат, временно отключён.\n"
+          },
+          "TransportType": {
+            "type": "string",
+            "description": "Тип транспорта услуги:\n\n- `auto` — автотранспорт,\n- `air` — самолёт,\n- `railway` — поезд,\n- `other` — другое.\n",
+            "nullable": true
+          },
+          "MaxWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальный вес заказа в граммах. Если поле пустое, ограничений по максимальному весу нет.",
+            "nullable": true
+          },
+          "MinWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Минимальный вес заказа в граммах. Если поле пустое, ограничений по минимальному весу нет.",
+            "nullable": true
+          },
+          "MaxPrice": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная стоимость товара, доступного к доставке по этой услуге. Указывается в рублях.",
+            "nullable": true
+          },
+          "MinPrice": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Минимальная стоимость товара, доступного к доставке по этой услуге. Указывается в рублях.",
+            "nullable": true
+          },
+          "CurrencyPriceLimit": {
+            "type": "string",
+            "description": "Валюта, в которой устанавливаются ограничения к стоимости товара: `RUR` — рубли.\n",
+            "nullable": true
+          },
+          "MaxLength": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная длина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinLength": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная длина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MaxWidth": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная ширина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinWidth": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная ширина заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MaxHeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимальная высота заказа в миллиметрах.",
+            "nullable": true
+          },
+          "MinHeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "number",
+            "format": "double",
+            "description": "Минимальная высота заказа в миллиметрах.",
+            "nullable": true
+          },
+          "SumDimensionLimit": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Ограничение по сумме сторон заказа в миллиметрах. Если поле пустое, ограничений нет.",
+            "nullable": true
+          },
+          "LongestSideLimit": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Ограничение по наибольшей стороне заказа в миллиметрах. Если поле пустое, ограничений нет.",
+            "nullable": true
+          },
+          "MaxVolume": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимально допустимый объём заказа в кубических миллиметрах.",
+            "nullable": true
+          },
+          "VolumeWeightCoefficient": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Коэффициент расчёта объёмного веса.",
+            "nullable": true
+          },
+          "MaxVolumeWeight": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer",
+            "format": "int64",
+            "description": "Максимально допустимый объёмный вес заказа в килограммах.",
+            "nullable": true
+          },
+          "IsActive": {
+            "type": "boolean",
+            "description": "Статус услуги:\n\n- `true` — активна,\n- `false` — не активна.\n\nПо умолчанию — `false`.\n"
+          },
+          "IsPostalService": {
+            "type": "boolean",
+            "description": "Признак, что заказ доставляется почтой. \nЕсли `\"IsPostalService\": true`, сбора паспортных данных не будет.\n\nАктуален для импорта в Россию. При доставке внутри ЕАС поле пустое.\n",
+            "nullable": true
+          },
+          "FirstMileType": {
+            "$ref": "#/components/schemas/FirstMileType"
+          },
+          "LabelType": {
+            "$ref": "#/components/schemas/LabelType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PassportBinaryData": {
+        "type": "object",
+        "properties": {
+          "MimeType": {
+            "type": "string"
+          },
+          "Payload": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Скан документа."
+      },
+      "GetPersonalDataResponse": {
+        "description": "Персональные данные покупателя.",
+        "type": "object",
+        "properties": {
+          "FamilyName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Фамилия."
+          },
+          "FirstName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Имя."
+          },
+          "MiddleName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Отчество."
+          },
+          "BirthDate": {
+            "type": "string",
+            "nullable": true,
+            "description": "Дата рождения."
+          },
+          "ReceiverPhone": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер телефона."
+          },
+          "ReceiverEmail": {
+            "type": "string",
+            "nullable": true,
+            "description": "Электронный адрес."
+          },
+          "PassportSeries": {
+            "type": "string",
+            "nullable": true,
+            "description": "Серия паспорта."
+          },
+          "PassportNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Номер паспорта."
+          },
+          "PassportIssueDate": {
+            "type": "string",
+            "nullable": true,
+            "description": "Дата выдачи паспорта."
+          },
+          "PassportIssuedBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "Кем выдан паспорт."
+          },
+          "PassportIssuerCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "Код подразделения, выдавшего паспорт."
+          },
+          "TaxIdentificationNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "ИНН."
+          },
+          "IndividualIdentificationNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "ИИН."
+          },
+          "DocumentIdentification": {
+            "type": "string",
+            "nullable": true,
+            "description": "Серия и номер паспорта или ID."
+          },
+          "Index": {
+            "type": "string",
+            "nullable": true,
+            "description": "Индекс регистрации из паспорта."
+          },
+          "Address": {
+            "type": "string",
+            "nullable": true,
+            "description": "Адрес регистрации из паспорта."
+          },
+          "PassportScan": {
+            "description": "Скан паспорта.",
+            "items": {
+              "$ref": "#/components/schemas/PassportBinaryData"
+            }
+          },
+          "TempResidencePermitScan": {
+            "description": "Скан вида на жительство или разрешения на временное проживание.",
+            "items": {
+              "$ref": "#/components/schemas/PassportBinaryData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetPersonalDataResponseListResponse": {
+        "required": [
+          "Errors"
+        ],
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/GetPersonalDataResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

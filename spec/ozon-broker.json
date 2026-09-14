@@ -1,0 +1,1540 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Документация Broker API",
+    "version": "1.0.0",
+    "x-logo": {
+      "url": "https://st.ozone.ru/s3/redoc/ozon-seller-logo.svg",
+      "backgroundColor": null,
+      "altText": "Ozon logo"
+    },
+    "description": "В документе описаны методы Broker API.\n\n**Окружения**:\n- Тестовая среда: https://xapi.stg.ozonru.me:443/api-broker\n- Рабочая среда: https://xapi.ozon.ru:443/api-broker\n"
+  },
+  "servers": [
+    {
+      "url": "https://xapi.ozon.ru:443/api-broker"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Introduction",
+        "Process",
+        "News"
+      ]
+    },
+    {
+      "name": "Методы API",
+      "tags": [
+        "Authorization",
+        "PersonalData",
+        "Parcel",
+        "Documents"
+      ]
+    },
+    {
+      "name": "Приложения",
+      "tags": [
+        "Errors"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Introduction",
+      "x-displayName": "Введение",
+      "description": "Broker API — программный интерфейс для интеграции брокеров с логистической платформой Ozon.\n\nС помощью Broker API вы можете:\n- получить информацию по постингам,\n- получить персональные данные покупателя,\n- передать документы от Федеральной таможенной службы и отчёты по пошлинам в Ozon. \n\nOzon хранит данные по операциям с Broker API 90 дней. Получить данные для разбора инцидентов и расхождений по операциям старше этого срока не получится."
+    },
+    {
+      "name": "Process",
+      "x-displayName": "Порядок работы с методами",
+      "description": "Чтобы работать с методами, получите API-токен с помощью метода [/GetAuthToken](#operation/GetAuthToken).\n\nСписок методов:\n- [/v1/GetParcelsInfo](#operation/ParcelInfo) — получите информацию по постингу.\n- [/v1/PersonalData](#operation/PersonalData) — получите персональные данные покупателя.\n- [/v1/TaxReport](#operation/TaxReport) — отправьте отчёт по пошлине в Ozon.\n- [/v1/TaxDocuments](#operation/TaxDocuments) — отправьте документ, который вы получили от Федеральной таможенной службы, в Ozon.\n\n"
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 18 августа 2026\n\n| Метод                                                 | Изменение                                                               |\n|-------------------------------------------------------|-------------------------------------------------------------------------|\n| [/v1/CustomsOfficeCode](#operation/CustomsOfficeCode) | Обновили описание параметра `items.customsOfficeCode` в запросе метода. |\n\n## 6 августа 2026\n\n| Метод                                                  | Изменение                                                                                        |\n|--------------------------------------------------------|--------------------------------------------------------------------------------------------------|\n| [/v1/TaxReports/ListByDates](#operation/GetTaxReports) | Добавили параметр `Data.taxReports.currencyCode` в ответ метода.                                 |\n| —                                                      | В разделе [**Документация Broker API**](/api/broker) обновили URL для запросов в тестовой среде. |\n\n## 5 августа 2026\n\n| Метод                                                | Изменение                                                          |\n|------------------------------------------------------|-------------------------------------------------------------------------|\n| [/v1/CustomsOfficeCode](#operation/CustomsOfficeCode) | Обновили описание параметра `items.customsOfficeCode` в запросе метода. |\n\n## 11 июня 2026\n\n| Метод                                                 | Изменение                                                          |\n|-------------------------------------------------------|-------------------------------------------------------------------------|\n| [/v1/CustomsOfficeCode](#operation/CustomsOfficeCode) | Обновили описание параметра `items.customsOfficeCode` в запросе метода. |\n\n## 24 апреля 2026\n\n| Метод                                                 | Изменение                                      |\n|-------------------------------------------------------|------------------------------------------------|\n| — | Добавили таблицу [Коды ошибок](#tag/Errors) в приложения. |\n\n## 3 марта 2026\n\n| Метод                                                 | Изменение                                                          |\n|-------------------------------------------------------|-------------------------------------------------------------------------|\n| [/v1/TaxDocuments/ListByDates](#operation/GetTaxDocuments) | Добавили метод для получения информации о документе по пошлинам. |\n| [/v1/TaxReports/ListByDates](#operation/GetTaxReports) | Добавили метод для получения отчёта по пошлинам.|\n\n## 3 февраля 2026\n\n| Метод                                                 | Изменение                                                          |\n|-------------------------------------------------------|-------------------------------------------------------------------------|\n| [/v1/CustomsOfficeCode](#operation/CustomsOfficeCode) | Обновили описание параметра `items.customsOfficeCode` в запросе метода. |\n\n## 18 декабря 2025\n\n| Метод                                       | Изменение                                 |\n|---------------------------------------------|------------------------------------------------|\n| [/v1/CustomsOfficeCode](#operation/CustomsOfficeCode) | Добавили метод для передачи кода таможенного офиса по номеру постинга. |\n\n## 20 ноября 2025\n\n| Метод                                 | Изменение                                                   |\n|---------------------------------------|------------------------------------------------------------------|\n| [/v1/TaxReport](#operation/TaxReport) | Обновили описание метода.                                        |\n| —                                     | Обновили информацию в разделе [**Введение**](#tag/Introduction). |\n\n## 17 июля 2025\n\n| Метод                                       | Изменение                                 |\n|---------------------------------------------|------------------------------------------------|\n| [/v1/PersonalData](#operation/PersonalData) | Обновили тип параметра `Data` в ответе метода. |"
+    },
+    {
+      "name": "Authorization",
+      "x-displayName": "Токен для доступа"
+    },
+    {
+      "name": "Parcel",
+      "x-displayName": "Информация по постингам"
+    },
+    {
+      "name": "PersonalData",
+      "x-displayName": "Персональные данные"
+    },
+    {
+      "name": "Documents",
+      "x-displayName": "Документы"
+    },
+    {
+      "name": "Errors",
+      "x-displayName": "Коды ошибок",
+      "description": "| Код | Текст сообщения\t                                                                                                                                                                                                       | Описание                                                                                                                                      |\n|-----|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|\n| 500 | Operation failed. Внутренняя ошибка сервера. Операция не выполнена. [Описание ошибки] Повторите попытку позднее. Если ошибка повторяется, обратитесь в службу поддержки.                                               | Операция не выполнена из-за сбоя на стороне сервера.                                                                                          |\n| 404 | Data not found. Запрашиваемые данные не найдены. Проверьте корректность переданных параметров. Например, идентификатор объекта.  \t                                                                                     | Данные по запросу отсутствуют в системе.                                                                                                      |\n| 401 | Access denied.  Ошибка аутентификации. Доступ запрещён. [Описание ошибки] Проверьте корректность учётных данных: логин и пароль. Возможно, требуется выполнить вход повторно.                                          | Доступ запрещён. Причина: недействительные или отсутствующие учётные данные. Например, неверный логин или пароль, истёк срок действия сессии. |\n| 400 | Validation error. Ошибка валидации входных данных. [Описание ошибки] Запрос содержит некорректные значения или обязательные параметры не заполнены. Приведите данные в соответствии с требованиями и повторите запрос. | Неверный входящий параметр. Обязательное поле не заполнено или заполнено некорректным значением.                                              |\n| 403 | Permission denied. Недостаточно прав для выполнения операции. [Описание ошибки] Учётная запись не имеет необходимых разрешений. Для получения доступа обратитесь к администратору или в чат поддержки Ozon.            | У пользователя отсутствуют права на выполнение операции.                                                                                      | "
+    }
+  ],
+  "paths": {
+    "/GetAuthToken": {
+      "post": {
+        "tags": [
+          "Authorization"
+        ],
+        "summary": "Получить токен авторизации",
+        "description": "Метод для получения токенов авторизации брокеров в API. \n\nТокен действует 24 часа.\n",
+        "operationId": "GetAuthToken",
+        "requestBody": {
+          "content": {
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTokenModel"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTokenModel"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTokenModel"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTokenModel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Токен авторизации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/PersonalData": {
+      "get": {
+        "tags": [
+          "PersonalData"
+        ],
+        "summary": "Получить персональные данные покупателя по постингу",
+        "operationId": "PersonalData",
+        "parameters": [
+          {
+            "name": "postingNumber",
+            "description": "Номер постинга.",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Данные получены",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPersonalDataResponseListResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPersonalDataResponseListResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPersonalDataResponseListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/GetParcelsInfo": {
+      "post": {
+        "tags": [
+          "Parcel"
+        ],
+        "summary": "Получить информацию о постингах по номеру постинга и трек-номеру",
+        "operationId": "ParcelInfo",
+        "requestBody": {
+          "content": {
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelsInfoRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelsInfoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelsInfoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParcelsInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Информация получена по всем постингам",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelsInfoResponseResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelsInfoResponseResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelsInfoResponseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/CustomsOfficeCode": {
+      "post": {
+        "summary": "Передать код таможенного офиса по номеру постинга",
+        "operationId": "CustomsOfficeCode",
+        "requestBody": {
+          "content": {
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPostingCustomsOfficeCodeRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPostingCustomsOfficeCodeRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPostingCustomsOfficeCodeRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPostingCustomsOfficeCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Код передан",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Parcel"
+        ]
+      }
+    },
+    "/v1/TaxDocuments/ListByDates": {
+      "get": {
+        "summary": "Получить информацию о документе по пошлинам",
+        "operationId": "GetTaxDocuments",
+        "parameters": [
+          {
+            "name": "dateFrom",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "description": "Начало периода в формате:\n - `YYYY-MM-DD` — дата;\n - `YYYY-MM-DDTHH:MM±HH:MM` — дата и время с часовым поясом;\n - `YYYY-MM-DDTHH:MM:SSZ` — дата и время в UTC. <br>\n    Можно передать без `Z`, секунд и миллисекунд.\n",
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "dateTo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "description": "Конец периода в формате:\n - `YYYY-MM-DD` — дата;\n - `YYYY-MM-DDTHH:MM±HH:MM` — дата и время с часовым поясом;\n - `YYYY-MM-DDTHH:MM:SSZ` — дата и время в UTC. <br>\n    Можно передать без `Z`, секунд и миллисекунд.\n",
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о документе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxDocumentsByDatesResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxDocumentsByDatesResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxDocumentsByDatesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Documents"
+        ]
+      }
+    },
+    "/v1/TaxDocuments": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Передать документ по пошлинам",
+        "operationId": "TaxDocuments",
+        "requestBody": {
+          "content": {
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadTaxDocumentsRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadTaxDocumentsRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadTaxDocumentsRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadTaxDocumentsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Документ передан"
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/TaxReports/ListByDates": {
+      "get": {
+        "summary": "Получить отчёт по пошлинам",
+        "operationId": "GetTaxReports",
+        "parameters": [
+          {
+            "name": "dateFrom",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "description": "Начало периода в формате:\n - `YYYY-MM-DD` — дата;\n - `YYYY-MM-DDTHH:MM±HH:MM` — дата и время с часовым поясом;\n - `YYYY-MM-DDTHH:MM:SSZ` — дата и время в UTC. <br>\n    Можно передать без `Z`, секунд и миллисекунд.\n",
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "dateTo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "description": "Конец периода в формате:\n - `YYYY-MM-DD` — дата;\n - `YYYY-MM-DDTHH:MM±HH:MM` — дата и время с часовым поясом;\n - `YYYY-MM-DDTHH:MM:SSZ` — дата и время в UTC. <br>\n    Можно передать без `Z`, секунд и миллисекунд.\n",
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Отчёт",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxReportsByDatesResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxReportsByDatesResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response_GetTaxReportsByDatesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Documents"
+        ]
+      }
+    },
+    "/v1/TaxReport": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Передать отчёт по пошлинам",
+        "description": "После выполнения запроса проверьте HTTP-статус и параметр `Errors` в ответе. Все отчёты будут переданы, только если получен HTTP-статус `200` и параметр `Errors` в ответе пустой. \n    \nЕсли получен другой HTTP-статус или параметр `Errors` не пустой, данные из запроса не сохранятся в системе Ozon.\n",
+        "operationId": "TaxReport",
+        "requestBody": {
+          "content": {
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostSaveTaxReportsRequest"
+              }
+            },
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostSaveTaxReportsRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostSaveTaxReportsRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostSaveTaxReportsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Все отчёты переданы"
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GetTokenModel": {
+        "type": "object",
+        "required": [
+          "ClientId",
+          "ClientSecret"
+        ],
+        "properties": {
+          "ClientId": {
+            "type": "string",
+            "required": true,
+            "description": "Логин."
+          },
+          "ClientSecret": {
+            "type": "string",
+            "required": true,
+            "description": "Пароль."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "ErrorCode": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "Entity": {
+            "type": "string",
+            "nullable": true,
+            "description": "Идентификатор объекта, у которого возникла ошибка.\n\nПоле пустое для ошибок, которые не относятся к конкретному объекту.\n"
+          },
+          "Message": {
+            "type": "string",
+            "description": "Текст ошибки."
+          },
+          "Value": {
+            "type": "string",
+            "nullable": true,
+            "description": "Значение ошибки."
+          }
+        },
+        "additionalProperties": false
+      },
+      "StringResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "string",
+            "nullable": true,
+            "description": "Токен авторизации.\n\nАктивен 24 часа.\n"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PassportBinaryData": {
+        "type": "object",
+        "description": "Скан-копия паспорта.",
+        "properties": {
+          "MimeType": {
+            "type": "string"
+          },
+          "Payload": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TempResidencePermitScan": {
+        "type": "object",
+        "description": "Скан-копия вида на жительство или разрешения на временное проживание.",
+        "properties": {
+          "MimeType": {
+            "type": "string"
+          },
+          "Payload": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetPersonalDataResponse": {
+        "type": "object",
+        "description": "Персональные данные покупателя.",
+        "nullable": true,
+        "properties": {
+          "ReceiverEmail": {
+            "description": "Адрес электронной почты.",
+            "type": "string",
+            "nullable": true
+          },
+          "ReceiverPhone": {
+            "description": "Номер телефона.",
+            "type": "string",
+            "nullable": true
+          },
+          "FamilyName": {
+            "description": "Фамилия.",
+            "type": "string",
+            "nullable": true
+          },
+          "FirstName": {
+            "description": "Имя.",
+            "type": "string",
+            "nullable": true
+          },
+          "MiddleName": {
+            "description": "Отчество.",
+            "type": "string",
+            "nullable": true
+          },
+          "BirthDate": {
+            "description": "Дата рождения.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportSeries": {
+            "description": "Серия паспорта.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportNumber": {
+            "description": "Номер паспорта.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportIssueDate": {
+            "description": "Дата выдачи паспорта.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportIssuedBy": {
+            "description": "Орган, который выдал паспорт.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportIssuerCode": {
+            "description": "Код подразделения, которое выдало паспорт.",
+            "type": "string",
+            "nullable": true
+          },
+          "TaxIdentificationNumber": {
+            "description": "ИНН.",
+            "type": "string",
+            "nullable": true
+          },
+          "PassportScan": {
+            "$ref": "#/components/schemas/PassportBinaryData"
+          },
+          "TempResidencePermitScan": {
+            "$ref": "#/components/schemas/TempResidencePermitScan"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetPersonalDataResponseListResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/GetPersonalDataResponse"
+          },
+          "Errors": {
+            "description": "Отчёт об ошибках.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Response": {
+        "type": "object",
+        "properties": {
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelsInfoRequest": {
+        "type": "object",
+        "properties": {
+          "postingNumbers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Список номеров постинга в системе Ozon."
+          },
+          "trackingNumbers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Список трек-номеров постинга в системе Ozon."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация о постингах."
+      },
+      "ParcelReceiver": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Адрес электронной почты.",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "Имя.",
+            "nullable": true
+          },
+          "country": {
+            "type": "string",
+            "description": "Страна.",
+            "nullable": true
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "Код страны по стандарту ISO 3166&#8209;1.",
+            "nullable": true
+          },
+          "region": {
+            "type": "string",
+            "description": "Регион.",
+            "nullable": true
+          },
+          "city": {
+            "type": "string",
+            "description": "Город.",
+            "nullable": true
+          },
+          "cityUid": {
+            "type": "string",
+            "description": "UID города.",
+            "nullable": true
+          },
+          "district": {
+            "type": "string",
+            "description": "Район.",
+            "nullable": true
+          },
+          "address": {
+            "type": "string",
+            "description": "Адрес.",
+            "nullable": true
+          },
+          "apartment": {
+            "type": "string",
+            "description": "Номер квартиры.",
+            "nullable": true
+          },
+          "zipCode": {
+            "type": "string",
+            "description": "Почтовый индекс.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация о получателе."
+      },
+      "Product": {
+        "required": [
+          "sellerPriceCurrency"
+        ],
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Описание.",
+            "nullable": true
+          },
+          "item": {
+            "type": "string",
+            "description": "Артикул.",
+            "nullable": true
+          },
+          "weight": {
+            "type": "integer",
+            "description": "Вес в граммах.",
+            "format": "int32"
+          },
+          "quantity": {
+            "type": "integer",
+            "description": "Количество.",
+            "format": "int32"
+          },
+          "length": {
+            "type": "integer",
+            "description": "Длина в миллиметрах.",
+            "format": "int32"
+          },
+          "width": {
+            "type": "integer",
+            "description": "Ширина в миллиметрах.",
+            "format": "int32"
+          },
+          "height": {
+            "type": "integer",
+            "description": "Высота в миллиметрах.",
+            "format": "int32"
+          },
+          "declareValue": {
+            "type": "number",
+            "description": "Стоимость в рублях.",
+            "format": "double"
+          },
+          "url": {
+            "type": "string",
+            "description": "Ссылка на товар с сайта Ozon.",
+            "nullable": true
+          },
+          "commercialType": {
+            "type": "string",
+            "description": "Название категории.",
+            "nullable": true
+          },
+          "sellerPriceValue": {
+            "type": "number",
+            "description": "Цена продавца без скидок.",
+            "format": "double"
+          },
+          "sellerPriceRUB": {
+            "type": "number",
+            "description": "Цена продавца в рублях.",
+            "format": "double"
+          },
+          "sellerPriceCurrency": {
+            "type": "string",
+            "description": "Валюта цены товара, которую указал продавец."
+          },
+          "declareValueUSD": {
+            "type": "number",
+            "description": "Цена в долларах США, по которой покупатель купил товар.",
+            "format": "double"
+          },
+          "declareValueEUR": {
+            "type": "number",
+            "description": "Цена отправления в евро, по которой покупатель купил товар.",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация о товаре."
+      },
+      "ParcelInfo": {
+        "type": "object",
+        "properties": {
+          "postingNumber": {
+            "type": "string",
+            "description": "Номер постинга в системе Ozon."
+          },
+          "trackingNumber": {
+            "type": "string",
+            "description": "Трек-номер 3PL-провайдера.",
+            "nullable": true
+          },
+          "parcelWeight": {
+            "type": "integer",
+            "description": "Вес постинга в граммах.",
+            "format": "int32"
+          },
+          "parcelLength": {
+            "type": "integer",
+            "description": "Длина постинга в миллиметрах.",
+            "format": "int32"
+          },
+          "parcelWidth": {
+            "type": "integer",
+            "description": "Ширина постинга в миллиметрах.",
+            "format": "int32"
+          },
+          "parcelHeight": {
+            "type": "integer",
+            "description": "Высота постинга в миллиметрах.",
+            "format": "int32"
+          },
+          "parcelDeclareValue": {
+            "type": "number",
+            "description": "Стоимость постинга.",
+            "format": "double"
+          },
+          "parcelDeclareCurrency": {
+            "type": "string",
+            "description": "Валюта стоимости постинга.",
+            "nullable": true
+          },
+          "receiver": {
+            "$ref": "#/components/schemas/ParcelReceiver"
+          },
+          "product": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            },
+            "description": "Информация о товарах в постинге."
+          },
+          "parcelDateCreation": {
+            "type": "string",
+            "description": "Дата создания постинга.",
+            "format": "date-time",
+            "nullable": true
+          },
+          "boxQuantity": {
+            "type": "integer",
+            "description": "Количество коробок в постинге.",
+            "format": "int32"
+          },
+          "parcelDeclareValueUSD": {
+            "type": "number",
+            "description": "Цена товаров в отправлении в долларах США.",
+            "format": "double"
+          },
+          "parcelDeclareValueEUR": {
+            "type": "number",
+            "description": "Цена товаров в отправлении в евро.",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация о постинге."
+      },
+      "ParcelsInfoResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParcelInfo"
+            },
+            "description": "Список постингов, по которым не начался активный трекинг."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParcelsInfoResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "description": "Информация о постингах.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParcelsInfoResponse"
+            }
+          },
+          "Errors": {
+            "description": "Отчёт об ошибке.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CustomsCodeItem": {
+        "required": [
+          "customsOfficeCode",
+          "postingNumber"
+        ],
+        "type": "object",
+        "properties": {
+          "postingNumber": {
+            "type": "string",
+            "description": "Номер постинга."
+          },
+          "customsOfficeCode": {
+            "type": "string",
+            "description": "Код таможенного офиса.\n\nВозможные значения:\n<table>\n  <tr><th>Адрес таможенного офиса</th><th>Код</th></tr>\n  <tr><td>т/п Аэропорт Внуково (грузовой)</td><td>10001020</td></tr>\n  <tr><td>т/п Аэропорт Шереметьево (грузовой)</td><td>10005020</td></tr>\n  <tr><td>т/п Уссурийский</td><td>10716050</td></tr>\n  <tr><td>т/п Аэропорт Толмачево</td><td>10609060</td></tr>\n  <tr><td>ОТОиТК №2 т/п Благовещенский</td><td>10703164</td></tr>\n  <tr><td>т/п Селятинский</td><td>10132200</td></tr>\n  <tr><td>т/п Вашутинский</td><td>10132020</td></tr>\n  <tr><td>ОТОиТК №2 т/п Новосибирский западный</td><td>10609033</td></tr>\n  <tr><td>т/п Первомайский</td><td>10702020</td></tr>\n  <tr><td>т/п Сходненский</td><td>10132220</td></tr>\n  <tr><td>ОСТП №1 т/п Уссурийский</td><td>10716053</td></tr>\n  <tr><td>т/п Пулковский</td><td>10221010</td></tr>\n  <tr><td>т/п Аэропорт Кольцово</td><td>10508010</td></tr>\n  <tr><td>ОТО и ТК т/п Аэропорт Шереметьево</td><td>10014111</td></tr>\n  <tr><td>т/п Внуково</td><td>10014031</td></tr>\n  <tr><td>т/п Казанский</td><td>10014050</td></tr>\n  <tr><td>т/п Новосибирский</td><td>10014060</td></tr>\n  <tr><td>т/п Восточный</td><td>10132030</td></tr>\n  <tr><td>т/п Благовещенский</td><td>10703160</td></tr>\n  <tr><td>т/п Аэропорт Казань</td><td>10404010</td></tr>\n  <tr><td>т/п Октябрьский</td><td>10502090</td></tr>\n  <tr><td>т/п Аэропорт Минск-2</td><td>11206536</td></tr>\n  <tr><td>т/п Набережночелнинский</td><td>10404080</td></tr>\n  <tr><td>т/п Орша-ТЛЦ</td><td>11207271</td></tr>\n  <tr><td>т/п Алматы ЦТО</td><td>39855302</td></tr>\n  <tr><td>т/п Жетiсу</td><td>39855301</td></tr>\n</table>\n"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AddPostingCustomsOfficeCodeRequest": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Коды таможенных офисов по номерам постингов.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomsCodeItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxDocument.TaxDocumentInfo": {
+        "type": "object",
+        "properties": {
+          "envelopeId": {
+            "description": "Идентификатор документа.",
+            "type": "string"
+          },
+          "preparationDate": {
+            "description": "Дата и время подготовки документа.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxDocument.GetTaxDocumentsByDatesResponse": {
+        "description": "Информация о документе.",
+        "type": "object",
+        "properties": {
+          "taxDocuments": {
+            "description": "Документы по пошлинам.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxDocument.TaxDocumentInfo"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ozon.TplApi.Shared.Facade.Models.Error": {
+        "type": "object",
+        "properties": {
+          "ErrorCode": {
+            "description": "Код ошибки.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "Entity": {
+            "description": "Идентификатор объекта, у которого возникла ошибка.\n\nПоле пустое для ошибок, которые не относятся к конкретному объекту.\n",
+            "type": "string",
+            "nullable": true
+          },
+          "Message": {
+            "description": "Текст ошибки.",
+            "type": "string"
+          },
+          "Value": {
+            "description": "Значение ошибки.",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Response_GetTaxDocumentsByDatesResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxDocument.GetTaxDocumentsByDatesResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Отчёт об ошибке.",
+            "items": {
+              "$ref": "#/components/schemas/Ozon.TplApi.Shared.Facade.Models.Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "UploadTaxDocumentsRequest": {
+        "required": [
+          "documentData",
+          "documentType"
+        ],
+        "type": "object",
+        "properties": {
+          "documentType": {
+            "minLength": 1,
+            "type": "string",
+            "description": "Тип документа."
+          },
+          "documentData": {
+            "minLength": 1,
+            "type": "string",
+            "format": "binary",
+            "description": "Файл отчёта в формате base64."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxReport.TaxReportInfo": {
+        "type": "object",
+        "properties": {
+          "postingNumber": {
+            "description": "Номер отправления.",
+            "type": "string"
+          },
+          "invoiceNumber": {
+            "description": "Номер накладной.",
+            "type": "string"
+          },
+          "registerNumber": {
+            "description": "Номер реестра.",
+            "type": "string"
+          },
+          "dutyAmount": {
+            "description": "Сумма таможенной пошлины.",
+            "type": "number",
+            "format": "double"
+          },
+          "taxAmount": {
+            "description": "Сумма налога.",
+            "type": "number",
+            "format": "double"
+          },
+          "customsDate": {
+            "description": "Дата и время таможенного оформления.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "currencyCode": {
+            "description": "Валюта.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxReport.GetTaxReportsByDatesResponse": {
+        "description": "Информация об отчёте.",
+        "type": "object",
+        "properties": {
+          "taxReports": {
+            "description": "Отчёты.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxReport.TaxReportInfo"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Response_GetTaxReportsByDatesResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/Ozon.Tpl.Api.BrokerFacade.Logic.Models.TaxReport.GetTaxReportsByDatesResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Отчёт об ошибке.",
+            "items": {
+              "$ref": "#/components/schemas/Ozon.TplApi.Shared.Facade.Models.Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaxReport": {
+        "type": "object",
+        "required": [
+          "PostingNumber",
+          "TrackingNumber",
+          "TaxPayment",
+          "CustomsDuty",
+          "Total",
+          "Currency",
+          "InvoiceNumber",
+          "DateOfPayment",
+          "RegisterNumber"
+        ],
+        "properties": {
+          "PostingNumber": {
+            "type": "string",
+            "description": "Номер постинга."
+          },
+          "TrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер."
+          },
+          "TaxPayment": {
+            "type": "number",
+            "format": "double",
+            "description": "Сумма пошлины."
+          },
+          "CustomsDuty": {
+            "type": "number",
+            "format": "double",
+            "description": "Таможенный сбор."
+          },
+          "Total": {
+            "type": "number",
+            "format": "double",
+            "description": "Общая сумма."
+          },
+          "Currency": {
+            "type": "string",
+            "description": "Валюта пошлины."
+          },
+          "InvoiceNumber": {
+            "type": "string",
+            "description": "Номер накладной."
+          },
+          "DateOfPayment": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата оплаты."
+          },
+          "RegisterNumber": {
+            "type": "string",
+            "description": "Номер реестра."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostSaveTaxReportsRequest": {
+        "required": [
+          "TaxReports"
+        ],
+        "type": "object",
+        "properties": {
+          "TaxReports": {
+            "minItems": 1,
+            "type": "array",
+            "description": "Отчёты по постингам.",
+            "items": {
+              "$ref": "#/components/schemas/TaxReport"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

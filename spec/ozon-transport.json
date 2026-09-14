@@ -1,0 +1,1829 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Документация ТК API",
+    "version": 2.1,
+    "x-logo": {
+      "url": "https://st.ozone.ru/s3/redoc/ozon-seller-logo.svg",
+      "backgroundColor": null,
+      "altText": "Ozon logo"
+    },
+    "description": ""
+  },
+  "servers": [
+    {
+      "url": "//xapi.ozon.ru/tms-contractor-api/"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Introduction",
+        "Auth",
+        "Request",
+        "News"
+      ]
+    },
+    {
+      "name": "Методы ТК API",
+      "tags": [
+        "CoreService",
+        "Response",
+        "Drivers",
+        "Transport"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Introduction",
+      "x-displayName": "Введение",
+      "description": "Документация API для работы транспортных компаний с заявками ТМС.\n\nТМС — система для автоматизации взаимодействия логистов и транспортных компаний. \nИспользуется для заказа транспорта на перевозку.\n\nС помощью ТК API можно:\n- получать информацию о заявках на перевозку и отвечать на них;\n- передавать информацию о водителях, выполняющих перевозки;\n- получать подробную информацию о требуемых типах автомобилей."
+    },
+    {
+      "name": "Auth",
+      "x-displayName": "Доступ к API",
+      "description": "Чтобы получить ключи для доступа к ТК API, \nсоздайте запрос в [личном кабинете Ozon ID](https://id.ozon.ru/oauth/token) с указанием\n`client_id` и `client_secret`. В ответ придёт `access_token`. Если у вас нет `client_id` и `client_secret`, напишите нам на почту [tmsapigo@ozon.ru](mailto:tmsapigo@ozon.ru).\n\nВсе запросы к API начинаются с заголовка ```Authorization: Bearer <token>```.\n\nПример запроса:\n``` JSON\ncurl -i -X POST 'https://id.ozon.ru/oauth/token' -d 'grant_type=client_credentials&client_id=<client_id>&client_secret=<client_secret>\n```\n\nПример ответа:\n\n``` JSON\nHTTP/1.1 200 OK\nCache-Control: no-store\nContent-Type: application/json;charset=UTF-8\nPragma: no-cache\nVary: Origin\nDate: Fri, 21 Jan 2022 07:54:29 GMT\nContent-Length: 1061\n\n{\"access_token\":\"<access_token>\", \"expires_in\":3599, \"scope\":\"\", \"token_type\":\"bearer\"}\n```\n\n<aside class=\"warning\">\nОбновите токен, если он попал в посторонние руки или его срок истёк.\n</aside>\n"
+    },
+    {
+      "name": "Process",
+      "x-displayName": "Порядок работы с методами",
+      "description": ""
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 5 июля 2024\n\n| Метод                                                                       | Что изменилось                                                                                 |\n|-----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|\n| [/tms/orders](#operation/CoreService_SearchOrders)                          | Добавили параметры `startRoutePoint.point.lmsId` и `endRoutePoint.point.lmsId` в ответ метода. |\n\n## 16 ноября 2023\n\n| Метод                                                                       | Что изменилось                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |\n|-----------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| [/tms/orders](#operation/CoreService_SearchOrders)                          | Обновили названия параметров в запросе метода:<br/>• `page` на `page.page`,<br/>• `itemsPerPage` на `page.itemsPerPage`,<br/>• `tariffTypes` на `filter.tariffTypes`,<br/>• `createdAt.start` на `filter.createdAt.start`,<br/>• `createdAt.end` на `filter.createdAt.end`,<br/>• `createdAt.startExclusive` на `filter.createdAt.startExclusive`,<br/>• `createdAt.endExclusive` на `filter.createdAt.endExclusive`. <br/> Дополнили описание параметра `page.page` в запросе метода. |\n| [/tms/drivers](#operation/CoreService_CreateDriver)                         | Пометили параметры `licenseIssueDate.day`, `licenseIssueDate.month`, `licenseIssueDate.year` в запросе метода как обязательные.                                                                                                                                                                                                                                                                                                                                                        |\n| [/tms/drivers](#operation/CoreService_SearchDrivers)                        | Дополнили описание параметра `page.page` в запросе метода.                                                                                                                                                                                                                                                                                                                                                                                                                             |                                                                                                                                                                                                         |\n| [/tms/orders/{orderId}/response](#operation/CoreService_SetOrderResponse)   | Пометили параметр `vehicle` в запросе метода как обязательный.                                                                                                                                                                                                                                                                                                                                                                                                                         |\n\n## 31 октября 2023\n\n| Метод                                                                  | Что изменилось                                                                                                                                                                                               |\n|------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| [/tms/drivers](#operation/CoreService_SearchDrivers)                | Обновили описание параметра `page.itemsPerPage` в запросе метода. Пометили параметры `page.page` и `page.itemsPerPage` как обязательные.                                                                     |\n| [/tms/orders](#operation/CoreService_SearchOrders)                     | Обновили описание параметра `ItemsPerPage` в запросе метода. Пометили параметры `page`, `itemsPerPage`, `driverId`, `brand`, `model`, `plateCountryCode`, `plateNumber`, `transportTypeId` как обязательные. |\n| [/tms/orders/{orderId}/response](#operation/CoreService_SetOrderResponse) | Обновили описание параметра `carrier`  в запросе метода.                                                                                                                                                     | |                                                                                                                                                                                                         |\n"
+    },
+    {
+      "name": "CoreService",
+      "x-displayName": "Заявки",
+      "description": "Заявка — запрос на выполнение маршрута. \nЧерез неё логист заказывает автомобиль для выполнения перевозки.\n"
+    },
+    {
+      "name": "Response",
+      "x-displayName": "Ответы на заявку",
+      "description": "Ответ на заявку — согласие выполнить заявку. \nВ ответе передаются данные о транспортном средстве и водителе, который выполнит заявку."
+    },
+    {
+      "name": "Drivers",
+      "x-displayName": "Водители",
+      "description": "Водитель — сотрудник транспортной компании, который выполняет заявку. "
+    },
+    {
+      "name": "Transport",
+      "x-displayName": "Транспортные средства",
+      "description": "Транспортное средство — автомобиль, на котором выполняется перевозка."
+    }
+  ],
+  "paths": {
+    "/tms/drivers": {
+      "post": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Добавить водителя",
+        "description": "Добавить данные водителя в систему.",
+        "operationId": "CoreService_CreateDriver",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/coreCreateDriverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Водитель добавлен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/coreCreateDriverResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_916903586"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Данные водителей",
+        "description": "Получить список водителей по их ФИО или номерам телефонов.",
+        "operationId": "CoreService_SearchDrivers",
+        "parameters": [
+          {
+            "description": "Поисковый запрос. Укажите ФИО или номер телефона. Если параметр пустой, в ответе будут все активные водители в вашей транспортной компании.",
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page.page",
+            "description": "Номер страницы. Минимальное значение — 1.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            },
+            "required": true
+          },
+          {
+            "name": "page.itemsPerPage",
+            "description": "Количество водителей на странице. Максимальное значение — 100 строк.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список с данными водителей",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/coreDriver"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_916903586"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/drivers/{driverId}": {
+      "get": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Данные водителя",
+        "description": "Получить данные водителя по его идентификатору.",
+        "operationId": "CoreService_GetDriver",
+        "parameters": [
+          {
+            "name": "driverId",
+            "description": "Идентификатор водителя.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Данные водителя",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/coreDriver"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_916903586"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Обновить данные водителя",
+        "description": "При обновлении данных водителя в ответе вернётся новый идентификатор, а старый станет недействительным.",
+        "operationId": "CoreService_UpdateDriver",
+        "parameters": [
+          {
+            "description": "Идентификатор водителя.",
+            "name": "driverId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "firstName": {
+                    "type": "string",
+                    "description": "Имя."
+                  },
+                  "lastName": {
+                    "type": "string",
+                    "description": "Фамилия."
+                  },
+                  "licenseIssueDate": {
+                    "$ref": "#/components/schemas/coreDate"
+                  },
+                  "licenseNumber": {
+                    "type": "string",
+                    "description": "Номер водительского удостоверения."
+                  },
+                  "patronymic": {
+                    "type": "string",
+                    "description": "Отчество."
+                  },
+                  "phoneCountryOrigin": {
+                    "type": "string",
+                    "description": "Телефонный код страны по ISO."
+                  },
+                  "phoneNumber": {
+                    "type": "string",
+                    "description": "Номер телефона."
+                  },
+                  "taxNumber": {
+                    "type": "string",
+                    "description": "ИНН."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Данные обновлены",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/coreUpdateDriverResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_916903586"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Удалить данные водителя",
+        "operationId": "CoreService_DeactivateDriver",
+        "parameters": [
+          {
+            "name": "driverId",
+            "description": "Идентификатор водителя.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Данные удалены",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/coreDeactivateDriverResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_916903586"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders": {
+      "get": {
+        "tags": [
+          "CoreService"
+        ],
+        "summary": "Список заявок",
+        "description": null,
+        "operationId": "CoreService_SearchOrders",
+        "parameters": [
+          {
+            "name": "page.page",
+            "description": "Номер страницы. Минимальное значение — 1.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            },
+            "required": true
+          },
+          {
+            "name": "page.itemsPerPage",
+            "description": "Количество заявок на странице. Максимальное значение — 100 строк.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            },
+            "required": true
+          },
+          {
+            "description": "Статус заявки:\n - `ORDER_STATUS_UNSPECIFIED` — не указан,\n - `ORDER_STATUS_NEW` — новая,\n - `ORDER_STATUS_GOT_RESPONSE` — получен ответ,\n - `ORDER_STATUS_CANCELED` — отменена,\n - `ORDER_STATUS_COMPLETE` — завершена.\n",
+            "name": "filter.statuses",
+            "in": "query",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "ORDER_STATUS_UNSPECIFIED",
+                  "ORDER_STATUS_NEW",
+                  "ORDER_STATUS_GOT_RESPONSE",
+                  "ORDER_STATUS_CANCELED",
+                  "ORDER_STATUS_COMPLETE"
+                ],
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "filter.tariffTypes",
+            "description": "Тип тарифа:\n - `TARIFF_TYPE_UNSPECIFIED` — не указано,\n - `TARIFF_TYPE_FTL_SHUTTLE` — регулярные перевозки между складами Ozon,\n - `TARIFF_TYPE_LTL_DELIVERY` — перевозки между СЦ и ПВЗ с не полностью загруженной товарами Ozon машиной,\n - `TARIFF_TYPE_FTL_DELIVERY` — перевозки между СЦ и ПВЗ с полностью загруженной товарами Ozon машиной,\n - `TARIFF_TYPE_FTL_PICKUP` — перевозка от продавца до СЦ и возвраты продавцу,\n - `TARIFF_TYPE_FTL_FRESH` — Fresh.\n",
+            "in": "query",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "TARIFF_TYPE_UNSPECIFIED",
+                  "TARIFF_TYPE_FTL_SHUTTLE",
+                  "TARIFF_TYPE_LTL_DELIVERY",
+                  "TARIFF_TYPE_FTL_DELIVERY",
+                  "TARIFF_TYPE_FTL_PICKUP",
+                  "TARIFF_TYPE_FTL_FRESH"
+                ],
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "filter.createdAt.start",
+            "description": "Начало периода создания заявки.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "filter.createdAt.end",
+            "description": "Конец периода создания заявки.",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "filter.createdAt.startExclusive",
+            "description": "Включить начальную дату периода.",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "filter.createdAt.endExclusive",
+            "description": "Включить конечную дату периода.",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Краткая информация по заявкам",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SearchOrdersResponseConstrainedOrderInfo"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}": {
+      "get": {
+        "tags": [
+          "CoreService"
+        ],
+        "summary": "Полная информация о заявке",
+        "operationId": "CoreService_GetOrder",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Полная информация о заявке",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/coreOrder"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}/action-logs": {
+      "get": {
+        "tags": [
+          "CoreService"
+        ],
+        "summary": "История изменений заявки",
+        "operationId": "CoreService_GetOrderActionLogs",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "История изменений заявки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/coreOrderActionLog"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}/response": {
+      "post": {
+        "tags": [
+          "Response"
+        ],
+        "summary": "Добавить ответ",
+        "operationId": "CoreService_SetOrderResponse",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "carrier": {
+                    "$ref": "#/components/schemas/SetOrderResponseRequestCarrierCreate"
+                  },
+                  "containerNumber": {
+                    "description": "Номер контейнера.",
+                    "type": "string"
+                  },
+                  "driverId": {
+                    "description": "Идентификатор водителя.",
+                    "type": "string",
+                    "format": "int64"
+                  },
+                  "vehicle": {
+                    "$ref": "#/components/schemas/SetOrderResponseRequestVehicleCreate"
+                  }
+                },
+                "required": [
+                  "driverId",
+                  "vehicle"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ответ добавлен"
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}/response/cancel": {
+      "post": {
+        "tags": [
+          "Response"
+        ],
+        "summary": "Отменить ответ",
+        "operationId": "CoreService_CancelOrderResponse",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "comment": {
+                    "description": "Причина отмены.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ответ отменён"
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}/responses-history": {
+      "get": {
+        "tags": [
+          "Response"
+        ],
+        "summary": "История ответов",
+        "operationId": "CoreService_GetOrderResponsesHistory",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "История ответов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/coreOrderResponse"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/orders/{orderId}/transactions": {
+      "get": {
+        "tags": [
+          "CoreService"
+        ],
+        "summary": "Транзакции по заявке",
+        "operationId": "CoreService_GetOrderTransactions",
+        "parameters": [
+          {
+            "name": "orderId",
+            "description": "Идентификатор заявки.",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Транзакции по заявке",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/coreTransaction"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tms/transport-types": {
+      "get": {
+        "tags": [
+          "Transport"
+        ],
+        "summary": "Типы автомобилей",
+        "operationId": "CoreService_GetTransportTypes",
+        "responses": {
+          "200": {
+            "description": "Типы автомобилей",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/coreTransportType"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Неверный параметр",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Доступ запрещён",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Ответ не найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Внутренняя ошибка сервера",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus_515512454"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "protobufAny_916903586": {
+        "type": "object",
+        "properties": {
+          "typeUrl": {
+            "type": "string",
+            "description": "Тип протокола передачи данных."
+          },
+          "value": {
+            "type": "string",
+            "format": "byte",
+            "description": "Значение ошибки."
+          }
+        }
+      },
+      "rpcStatus_916903586": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/protobufAny_916903586"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "coreDate": {
+        "description": "Дата выдачи водительского удостоверения.",
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "День."
+          },
+          "month": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Месяц."
+          },
+          "year": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Год."
+          }
+        },
+        "required": [
+          "day",
+          "month",
+          "year"
+        ]
+      },
+      "coreDriver": {
+        "type": "object",
+        "description": "Новые данные водителя.",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "description": "Имя."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор."
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "Передайте `true`, если водитель активен и можно указать его идентификатор в ответе на заявку."
+          },
+          "lastName": {
+            "type": "string",
+            "description": "Фамилия."
+          },
+          "licenseIssueDate": {
+            "$ref": "#/components/schemas/coreDate"
+          },
+          "licenseNumber": {
+            "type": "string",
+            "description": "Номер водительского удостоверения."
+          },
+          "patronymic": {
+            "type": "string",
+            "description": "Отчество."
+          },
+          "phoneCountryOrigin": {
+            "type": "string",
+            "description": "Телефонный код страны по ISO."
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "Номер телефона."
+          },
+          "taxNumber": {
+            "type": "string",
+            "description": "ИНН."
+          }
+        }
+      },
+      "coreCreateDriverRequest": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "description": "Имя."
+          },
+          "lastName": {
+            "type": "string",
+            "description": "Фамилия."
+          },
+          "licenseIssueDate": {
+            "$ref": "#/components/schemas/coreDate"
+          },
+          "licenseNumber": {
+            "type": "string",
+            "description": "Серия и номер водительского удостоверения."
+          },
+          "patronymic": {
+            "type": "string",
+            "description": "Отчество."
+          },
+          "phoneCountryOrigin": {
+            "type": "string",
+            "description": "Телефонный код страны по ISO."
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "Номер телефона."
+          },
+          "taxNumber": {
+            "type": "string",
+            "description": "ИНН."
+          }
+        },
+        "required": [
+          "firstName",
+          "lastName",
+          "licenseIssueDate",
+          "licenseNumber",
+          "phoneCountryOrigin",
+          "phoneNumber",
+          "taxNumber"
+        ]
+      },
+      "coreCreateDriverResponse": {
+        "type": "object",
+        "properties": {
+          "driverId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор водителя."
+          }
+        }
+      },
+      "coreUpdateDriverResponse": {
+        "type": "object",
+        "properties": {
+          "updatedDriver": {
+            "$ref": "#/components/schemas/coreDriver"
+          }
+        }
+      },
+      "coreDeactivateDriverResponse": {
+        "type": "object"
+      },
+      "coreCargoHandlingAction": {
+        "type": "string",
+        "description": "Тип действия на точке:\n - `CARGO_HANDLING_ACTION_UNSPECIFIED` — не указано.\n - `CARGO_HANDLING_ACTION_LOADING` — погрузка.\n - `CARGO_HANDLING_ACTION_UNLOADING` — разгрузка.\n\nЗначение по умолчанию — `CARGO_HANDLING_ACTION_UNSPECIFIED`.\n"
+      },
+      "corePoint": {
+        "type": "object",
+        "description": "Точка маршрута.",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Адрес."
+          },
+          "name": {
+            "type": "string",
+            "description": "Название."
+          },
+          "pointId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор."
+          },
+          "lmsId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Единый идентификатор точки для сервиса ТМС и смежных API-сервисов логистики."
+          }
+        }
+      },
+      "coreWaypointStart": {
+        "type": "object",
+        "description": "Информация о старте маршрута.",
+        "properties": {
+          "arrivalAt": {
+            "description": "Время прибытия.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "cargoHandlingActions": {
+            "description": "Тип погрузочно-разгрузочных работ.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/coreCargoHandlingAction"
+            }
+          },
+          "cargoHandlingDuration": {
+            "description": "Время погрузочно-разгрузочных работ.",
+            "type": "string"
+          },
+          "point": {
+            "$ref": "#/components/schemas/corePoint"
+          }
+        }
+      },
+      "coreWaypointEnd": {
+        "type": "object",
+        "description": "Информация об окончании маршрута.",
+        "properties": {
+          "arrivalAt": {
+            "description": "Время прибытия.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "cargoHandlingActions": {
+            "description": "Тип погрузочно-разгрузочных работ.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/coreCargoHandlingAction"
+            }
+          },
+          "cargoHandlingDuration": {
+            "description": "Время погрузочно-разгрузочных работ.",
+            "type": "string"
+          },
+          "point": {
+            "$ref": "#/components/schemas/corePoint"
+          }
+        }
+      },
+      "coreOrderStatus": {
+        "default": "ORDER_STATUS_UNSPECIFIED",
+        "enum": [
+          "ORDER_STATUS_UNSPECIFIED",
+          "ORDER_STATUS_NEW",
+          "ORDER_STATUS_GOT_RESPONSE",
+          "ORDER_STATUS_CANCELED",
+          "ORDER_STATUS_COMPLETE"
+        ],
+        "type": "string",
+        "description": "Статус заявки:\n - `ORDER_STATUS_UNSPECIFIED` — не указан,\n - `ORDER_STATUS_NEW` — новая,\n - `ORDER_STATUS_GOT_RESPONSE` — получен ответ,\n - `ORDER_STATUS_CANCELED` — отменена,\n - `ORDER_STATUS_COMPLETE` — завершена.\n"
+      },
+      "coreTariffType": {
+        "default": "TARIFF_TYPE_UNSPECIFIED",
+        "enum": [
+          "TARIFF_TYPE_UNSPECIFIED",
+          "TARIFF_TYPE_FTL_SHUTTLE",
+          "TARIFF_TYPE_LTL_DELIVERY",
+          "TARIFF_TYPE_FTL_DELIVERY",
+          "TARIFF_TYPE_FTL_PICKUP",
+          "TARIFF_TYPE_FTL_FRESH"
+        ],
+        "type": "string",
+        "description": "Тип тарифа:\n - `TARIFF_TYPE_UNSPECIFIED` — не указано,\n - `TARIFF_TYPE_FTL_SHUTTLE` — регулярные перевозки между складами Ozon,\n - `TARIFF_TYPE_LTL_DELIVERY` — перевозки между СЦ и ПВЗ с не полностью загруженной товарами Ozon машиной,\n - `TARIFF_TYPE_FTL_DELIVERY` — перевозки между СЦ и ПВЗ с полностью загруженной товарами Ozon машиной,\n - `TARIFF_TYPE_FTL_PICKUP` — перевозка от продавца до СЦ и возвраты продавцу,\n - `TARIFF_TYPE_FTL_FRESH` — Fresh.\n"
+      },
+      "SearchOrdersResponseConstrainedOrderInfo": {
+        "type": "object",
+        "properties": {
+          "additionalServices": {
+            "type": "array",
+            "description": "Дополнительные услуги.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время выполнения заявки."
+          },
+          "startRoutePoint": {
+            "$ref": "#/components/schemas/coreWaypointStart"
+          },
+          "endRoutePoint": {
+            "$ref": "#/components/schemas/coreWaypointEnd"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заявки."
+          },
+          "status": {
+            "$ref": "#/components/schemas/coreOrderStatus"
+          },
+          "tariffType": {
+            "$ref": "#/components/schemas/coreTariffType"
+          },
+          "transportTypeId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор типа транспортного средства."
+          }
+        }
+      },
+      "protobufAny_515512454": {
+        "type": "object",
+        "properties": {
+          "typeUrl": {
+            "type": "string",
+            "description": "Тип протокола передачи данных."
+          },
+          "value": {
+            "type": "string",
+            "format": "byte",
+            "description": "Описание ошибки."
+          }
+        }
+      },
+      "rpcStatus_515512454": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/protobufAny_515512454"
+            },
+            "description": "Дополнительная информация об ошибке."
+          }
+        }
+      },
+      "coreCarrier": {
+        "type": "object",
+        "description": "Информация о перевозчике.",
+        "properties": {
+          "companyName": {
+            "description": "Название компании.",
+            "type": "string"
+          },
+          "countryCode": {
+            "description": "Код страны.",
+            "type": "string"
+          },
+          "taxNumber": {
+            "description": "ИНН.",
+            "type": "string"
+          }
+        }
+      },
+      "coreOrderResponseStatus": {
+        "default": "ORDER_RESPONSE_STATUS_UNSPECIFIED",
+        "enum": [
+          "ORDER_RESPONSE_STATUS_UNSPECIFIED",
+          "ORDER_RESPONSE_STATUS_CONFIRMED",
+          "ORDER_RESPONSE_STATUS_CANCELED"
+        ],
+        "description": "Статус ответа на заявку:\n - `ORDER_RESPONSE_STATUS_UNSPECIFIED` — не указан,\n - `ORDER_RESPONSE_STATUS_CONFIRMED` — подтверждён,\n - `ORDER_RESPONSE_STATUS_CANCELED` — отменён.\n",
+        "type": "string"
+      },
+      "coreVehicle": {
+        "type": "object",
+        "description": "Информация о транспортном средстве.",
+        "properties": {
+          "brand": {
+            "description": "Бренд.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Модель.",
+            "type": "string"
+          },
+          "plateCountryCode": {
+            "description": "ISO-код страны транспортного средства.",
+            "type": "string"
+          },
+          "plateNumber": {
+            "description": "Государственный номер транспортного средства.",
+            "type": "string"
+          },
+          "trailerCountryCode": {
+            "description": "ISO-код страны прицепа.",
+            "type": "string"
+          },
+          "trailerNumber": {
+            "description": "Государственный номер прицепа.",
+            "type": "string"
+          },
+          "transportTypeId": {
+            "description": "Идентификатор типа транспортного средства.",
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "coreOrderResponse": {
+        "type": "object",
+        "description": "Ответ на заявку.",
+        "properties": {
+          "carrier": {
+            "$ref": "#/components/schemas/coreCarrier"
+          },
+          "containerNumber": {
+            "description": "Номер контейнера.",
+            "type": "string"
+          },
+          "driverId": {
+            "description": "Идентификатор водителя.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "orderId": {
+            "description": "Идентификатор заявки.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/coreOrderResponseStatus"
+          },
+          "vehicle": {
+            "$ref": "#/components/schemas/coreVehicle"
+          }
+        }
+      },
+      "coreWaypoint": {
+        "type": "object",
+        "properties": {
+          "arrivalAt": {
+            "description": "Время прибытия.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "cargoHandlingActions": {
+            "description": "Действия по передаче груза.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/coreCargoHandlingAction"
+            }
+          },
+          "cargoHandlingDuration": {
+            "description": "Длительность передачи груза.",
+            "type": "string"
+          },
+          "point": {
+            "$ref": "#/components/schemas/corePoint"
+          }
+        }
+      },
+      "coreRoute": {
+        "type": "object",
+        "description": "Маршрут заявки.",
+        "properties": {
+          "waypoints": {
+            "description": "Маршрутные точки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/coreWaypoint"
+            }
+          }
+        }
+      },
+      "coreOrder": {
+        "type": "object",
+        "title": "Заявка",
+        "properties": {
+          "additionalServices": {
+            "type": "array",
+            "description": "Дополнительные услуги.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время выполнения заявки."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заявки."
+          },
+          "response": {
+            "$ref": "#/components/schemas/coreOrderResponse"
+          },
+          "route": {
+            "$ref": "#/components/schemas/coreRoute"
+          },
+          "status": {
+            "$ref": "#/components/schemas/coreOrderStatus"
+          },
+          "tariffType": {
+            "$ref": "#/components/schemas/coreTariffType"
+          },
+          "transactionSum": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Сумма транзакций по заявке."
+          },
+          "transportTypeId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Тип транспортного средства."
+          }
+        }
+      },
+      "OrderActionLogOrderLogAction": {
+        "type": "string",
+        "default": "ORDER_LOG_ACTION_UNSPECIFIED",
+        "enum": [
+          "ORDER_LOG_ACTION_UNSPECIFIED",
+          "ORDER_LOG_ACTION_ORDER_CREATED",
+          "ORDER_LOG_ACTION_ORDER_ATTRIBUTES_CHANGED",
+          "ORDER_LOG_ACTION_ORDER_ROUTE_CHANGED",
+          "ORDER_LOG_ACTION_ORDER_LABELS_CHANGED",
+          "ORDER_LOG_ACTION_ORDER_MANUAL_TRANSACTIONS_ADDED",
+          "ORDER_LOG_ACTION_ORDER_RESPONSE_CHANGED",
+          "ORDER_LOG_ACTION_ORDER_RESPONSE_CONFIRMED",
+          "ORDER_LOG_ACTION_ORDER_RESPONSE_CANCELED",
+          "ORDER_LOG_ACTION_ORDER_CANCELED",
+          "ORDER_LOG_ACTION_ORDER_COMMENT_SET"
+        ],
+        "description": "Действия по заявке:\n - `ORDER_LOG_ACTION_UNSPECIFIED` — не указано,\n - `ORDER_LOG_ACTION_ORDER_CREATED` — создана,\n - `ORDER_LOG_ACTION_ORDER_ATTRIBUTES_CHANGED` — изменены характеристики,\n - `ORDER_LOG_ACTION_ORDER_ROUTE_CHANGED` — изменён маршрут,\n - `ORDER_LOG_ACTION_ORDER_LABELS_CHANGED` — изменена маркировка,\n - `ORDER_LOG_ACTION_ORDER_MANUAL_TRANSACTIONS_ADDED` — проведены операции вручную,\n - `ORDER_LOG_ACTION_ORDER_RESPONSE_CHANGED` — ответ изменён,\n - `ORDER_LOG_ACTION_ORDER_RESPONSE_CONFIRMED` — ответ подтверждён,\n - `ORDER_LOG_ACTION_ORDER_RESPONSE_CANCELED` — ответ отменён,\n - `ORDER_LOG_ACTION_ORDER_CANCELED` — отменена,\n - `ORDER_LOG_ACTION_ORDER_COMMENT_SET` — добавлен комментарий.\n"
+      },
+      "coreOrderActionLog": {
+        "type": "object",
+        "description": "История изменений по заявке.",
+        "properties": {
+          "createdAt": {
+            "description": "Дата создания.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "orderAction": {
+            "$ref": "#/components/schemas/OrderActionLogOrderLogAction"
+          },
+          "orderId": {
+            "description": "Идентификатор заявки.",
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SetOrderResponseRequestCarrierCreate": {
+        "type": "object",
+        "description": "Информация о перевозчике-субподрядчике.",
+        "properties": {
+          "companyName": {
+            "description": "Название компании.",
+            "type": "string"
+          },
+          "countryCode": {
+            "description": "Код страны.",
+            "type": "string"
+          },
+          "taxNumber": {
+            "description": "ИНН.",
+            "type": "string"
+          }
+        }
+      },
+      "SetOrderResponseRequestVehicleCreate": {
+        "type": "object",
+        "description": "Информация об автомобиле.",
+        "properties": {
+          "brand": {
+            "description": "Бренд.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Модель.",
+            "type": "string"
+          },
+          "plateCountryCode": {
+            "description": "ISO-код страны автомобиля.",
+            "type": "string"
+          },
+          "plateNumber": {
+            "description": "Государственный номер автомобиля.",
+            "type": "string"
+          },
+          "trailerCountryCode": {
+            "description": "ISO-код страны прицепа.",
+            "type": "string"
+          },
+          "trailerNumber": {
+            "description": "Государственный номер прицепа.",
+            "type": "string"
+          },
+          "transportTypeId": {
+            "description": "Идентификатор типа автомобиля.",
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "brand",
+          "model",
+          "plateCountryCode",
+          "plateNumber",
+          "transportTypeId"
+        ]
+      },
+      "coreTransaction": {
+        "type": "object",
+        "description": "Транзакция.",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Сумма транзакции в копейках."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата и время создания."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Валюта."
+          },
+          "description": {
+            "type": "string",
+            "description": "Описание."
+          },
+          "orderId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор заявки."
+          }
+        }
+      },
+      "coreTransportType": {
+        "type": "object",
+        "description": "Тип автомобиля.",
+        "properties": {
+          "capacity": {
+            "description": "Объём.",
+            "type": "number",
+            "format": "double"
+          },
+          "id": {
+            "description": "Идентификатор типа.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "isActive": {
+            "description": "Доступен для выполнения заказа.",
+            "type": "boolean"
+          },
+          "pallets": {
+            "description": "Палетность.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "description": "Название.",
+            "type": "string"
+          },
+          "tonnage": {
+            "description": "Тоннаж.",
+            "type": "number",
+            "format": "double"
+          },
+          "withContainer": {
+            "description": "С контейнером.",
+            "type": "boolean"
+          },
+          "withTrailer": {
+            "description": "С прицепом.",
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

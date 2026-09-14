@@ -22,6 +22,26 @@ def _kpi_row(marketplace_code, kpi_date="2026-05-20", orders_qty=10, orders_amou
     }
 
 
+def _presence(mkpi=True, skpi=True, organic=True, ads_expenses=True, ads_attribution=False,
+              fbo=True, fbs=True):
+    """table_has_rows по имени таблицы, а не по порядку вызовов: порядок — деталь реализации."""
+    by_table = {
+        "daily_marketplace_kpi": mkpi,
+        "daily_sku_kpi": skpi,
+        "ozon_daily_sku_organic": organic,
+        "marketplace_expenses": ads_expenses,
+        "ozon_daily_sku_ad_attribution": ads_attribution,
+    }
+
+    def side_effect(table_name, filters):
+        if table_name == "marketplace_orders":
+            schema = next(v for a, b, v in filters if "order_schema" in (a, b))
+            return {"fbo": fbo, "fbs": fbs}[schema]
+        return by_table[table_name]
+
+    return side_effect
+
+
 class OzonCompletenessGateTests(unittest.TestCase):
     def test_table_has_rows_supports_in_filter_regardless_of_tuple_order(self):
         class _FakeResult:
@@ -78,7 +98,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
     def test_missing_organic_marks_ozon_incomplete(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
-            table_has_rows.side_effect = [True, True, False, True, False]
+            table_has_rows.side_effect = _presence(True, True, False, True, False)
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_daily_sku_organic_missing", result["blockers"])
@@ -86,7 +106,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
     def test_missing_ads_marks_ozon_incomplete_not_zero(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
-            table_has_rows.side_effect = [True, True, True, False, False]
+            table_has_rows.side_effect = _presence(True, True, True, False, False)
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_ads_layer_missing", result["blockers"])
@@ -95,7 +115,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
     def test_all_required_layers_present_marks_complete(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
-            table_has_rows.side_effect = [True, True, True, True, False]
+            table_has_rows.side_effect = _presence(True, True, True, True, False)
             result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertTrue(result["complete"])
         self.assertEqual(result["blockers"], [])
@@ -109,7 +129,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "cpc_pending_campaigns": 13,
                 "cpc_campaign_units_pending_total": 13,
             }):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_performance_partial_ads", result["blockers"])
@@ -124,7 +144,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "cpc_pending_campaigns": 0,
                 "cpc_campaign_units_pending_total": 0,
             }):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_cpc_pending_429", result["blockers"])
@@ -138,7 +158,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "cpc_pending_campaigns": 3,
                 "cpc_campaign_units_pending_total": 0,
             }):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_performance_cpc_incomplete", result["blockers"])
@@ -152,7 +172,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "cpc_pending_campaigns": 285,
                 "cpc_campaign_units_pending_total": 285,
             }):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-25")
         self.assertFalse(result["complete"])
         self.assertIn("ozon_statistics_json_daily_quota_exhausted", result["blockers"])
@@ -167,7 +187,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "cpc_pending_campaigns": 0,
                 "cpc_campaign_units_pending_total": 0,
             }):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertTrue(result["complete"])
         self.assertTrue(result["performance_status_present"])
@@ -176,7 +196,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
     def test_missing_performance_row_does_not_fail_complete_layers(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
-            table_has_rows.side_effect = [True, True, True, True, True]
+            table_has_rows.side_effect = _presence(True, True, True, True, True)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertTrue(result["complete"])
         self.assertFalse(result["performance_status_present"])
@@ -327,7 +347,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
     def test_get_ozon_report_completeness_checks_expense_type_in_without_crash(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
-            table_has_rows.side_effect = [True, True, True, True, False]
+            table_has_rows.side_effect = _presence(True, True, True, True, False)
             result = alerts.get_ozon_report_completeness("2026-05-21")
         self.assertTrue(result["ads_present"])
 
@@ -346,6 +366,41 @@ class OzonCompletenessGateTests(unittest.TestCase):
             mock_table.return_value.select.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value.data = []
             alerts.build_message(skip_snapshot=True)
         save_today_snapshot.assert_not_called()
+
+
+class OzonOrdersPresenceGateTests(unittest.TestCase):
+    """Шаг FBO нефатальный с 2026-09-14; тихий пропуск заказов должен стать блокером."""
+
+    def test_missing_fbo_orders_marks_ozon_incomplete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            table_has_rows.side_effect = _presence(fbo=False)
+            result = alerts.get_ozon_report_completeness("2026-09-13")
+        self.assertFalse(result["complete"])
+        self.assertIn("ozon_fbo_orders_missing", result["blockers"])
+        self.assertNotIn("ozon_fbs_orders_missing", result["blockers"])
+        self.assertFalse(result["fbo_orders_present"])
+
+    def test_missing_fbs_orders_marks_ozon_incomplete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            table_has_rows.side_effect = _presence(fbs=False)
+            result = alerts.get_ozon_report_completeness("2026-09-13")
+        self.assertIn("ozon_fbs_orders_missing", result["blockers"])
+
+    def test_orders_check_asks_for_the_target_date_and_schema(self):
+        seen = []
+
+        def record(table_name, filters):
+            if table_name == "marketplace_orders":
+                seen.append(tuple(sorted(filters)))
+            return True
+
+        with mock.patch.object(alerts, "table_has_rows", side_effect=record), \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            alerts.get_ozon_report_completeness("2026-09-13")
+        self.assertIn(tuple(sorted([("marketplace_code", "eq", "ozon"), ("order_schema", "eq", "fbo"),
+                                    ("order_date", "eq", "2026-09-13")])), seen)
 
 
 if __name__ == "__main__":

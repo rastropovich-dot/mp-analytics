@@ -32,10 +32,14 @@ class NonFatalStepsTests(unittest.TestCase):
           - total orders: питает только выключенную органику
           - дневные финоперации: /v3/finance/transaction/list отключён
             Ozon 2026-09-08, загрузчик ждёт миграции
+          - загрузка FBO заказов: с 2026-09-11 429 per-second, загрузчик на
+            /v3 падает вместо частичной записи; одна ночь добирается окном,
+            расходы/реклама/KPI — нет. Решение владельца 2026-09-14,
+            tests/test_fbo_step_non_fatal.py
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
-            (STEP, "Ozon: дневные финоперации"),
+            (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов"),
         )
 
     def test_steps_that_must_stay_fatal(self):

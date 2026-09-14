@@ -20,3 +20,6 @@ data/cost_*.xlsx
 # сырые ответы realization/by-day — 32 дня глубины, снимаем в файлы, в git не кладём
 data/ozon_realization_by_day/
 data/manual_report_*.xlsx
+
+# снимки строк перед необратимыми перезаписями
+data/snapshots/

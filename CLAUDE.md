@@ -276,15 +276,15 @@ python alerts_telegram.py --dry-run --no-send --skip-snapshot --target-date YYYY
 ```
 article:  F000283615    sku: 1300079194
 product:  Серьги золотые 585 с танцующими бриллиантами KARATOV
-COGS:     32 963 ₽  ← пока hardcode, нужен DB seed
-          ⚠ файл себестоимости 1С на 2026-05-20 даёт 29 390,06 для F000283615,
-          а 32 963,25 — сумма составляющих ПЕРВОЙ строки файла (F007752682-ИЗгт,
-          другой товар). Гипотеза: хардкод взят не из той строки. `docs/cost_of_goods.md`
+COGS:     29 390,06 ₽  ← файл 1С на 2026-05-20, «Себестоимость» (решение 2026-09-14)
+          Прежние 32 963 (hardcode до 09-14) в файле отсутствуют: 32 963,25 — сумма
+          составляющих ПЕРВОЙ строки файла, F007752682-ИЗгт, другой товар.
+          Эталон ниже считан при 32 963 — net estimate под вопросом, см. `docs/cost_of_goods.md`
 ```
 
 Эталон 2026-05-16: orders 2 / 221 646 ₽ | CPC 3 369,84 ₽ (подтверждено по
 `marketplace_expenses`) | selected CPO 22 047,30 ₽ | organic 221 646 ₽ |
-net estimate 36 161,71 ₽ | total_order_TACOS 7,64 % | cpc_order_TACOS 1,01 %.
+net estimate 36 161,71 ₽ (при COGS 32 963; при 29 390,06 не пересчитан) | total_order_TACOS 7,64 % | cpc_order_TACOS 1,01 %.
 
 Selected CPO — суммы **по этому SKU**, не по дате (за 05-20 по SKU 56 431,50 при
 125 772,90 по всей дате):
@@ -299,13 +299,12 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 
 Сверено 2026-09-13.
 
-🔴 1. **Себестоимость** — `article_unit_costs` НЕ СУЩЕСТВУЕТ как таблица
-   (проверено 2026-09-13, миграция `sql/20260518_*` не применена). Без неё
-   маржа по товару неполна в принципе, а компенсации в 27,5 млн не с чем
-   сопоставить. **2026-09-14: файл 1С проверен на стыковку** — ключ offer_id
-   без учёта регистра по трём колонкам, покрытие 99,97 % выручки за 90 дней;
-   числовой id в файле — `product_id`, не SKU. Ждёт решений владельца
-   (какая колонка, регулярность снимка) — `docs/cost_of_goods.md`.
+🔴 1. **Себестоимость** — `article_unit_costs` ещё НЕ СОЗДАНА (2026-09-14):
+   миграция `sql/20260914_create_article_unit_costs.sql` и загрузчик
+   `scripts/load_article_unit_costs.py` готовы, ждут слова владельца.
+   Решено: колонка «Себестоимость», ключ `(offer_id_norm, snapshot_date)`,
+   файл 1С 2026-05-20 в git не кладём. Покрытие 99,997 % выручки за 90 дней
+   без учёта регистра. Читатель адаптирован. `docs/cost_of_goods.md`.
 🔴 2. **Дефект резюма recovery** — §5, строки 1556 и 2208. До починки recovery
    включать нельзя.
 🔴 3. **Три определения рекламных заказов** (21 / 47 / 70 на 2026-09-03) —
@@ -342,7 +341,8 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 run_daily_pipeline.py    alerts_telegram.py    loaders/http_retry.py
 loaders/ozon_performance_ads_loader.py    scripts/ozon_performance_recovery_worker.py
 scripts/ozon_cpc_data_gap_report.py    export_management_excel.py ← OOM risk
-sql/20260518_create_article_unit_costs.sql ← НЕ применён
+sql/20260914_create_article_unit_costs.sql ← НЕ применён, ждёт слова; 20260518_* удалён 09-14 (другая модель)
+scripts/load_article_unit_costs.py        загрузчик снимка 1С, без --apply ничего не пишет
 
 docs/how-we-work.md                     метод работы, см. §11
 docs/inbox.md / docs/outbox.md          задача и отчёт, см. §11

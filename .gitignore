@@ -13,3 +13,6 @@ test_wb_sales_funnel*.py
 
 # промежуточный архив экспорта чата, распакованный JSON лежит рядом
 knowledge/telegram/*.gz
+
+# закупочные цены — держим вне репозитория
+data/cost_*.xlsx

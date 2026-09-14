@@ -299,9 +299,9 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 
 Сверено 2026-09-13.
 
-🔴 1. **Себестоимость** — `article_unit_costs` ещё НЕ СОЗДАНА (2026-09-14):
-   миграция `sql/20260914_create_article_unit_costs.sql` и загрузчик
-   `scripts/load_article_unit_costs.py` готовы, ждут слова владельца.
+🔴 1. **Себестоимость** — `article_unit_costs` СОЗДАНА 2026-09-14 (миграция
+   `sql/20260914_*` применена через MCP, 0 строк, 18 колонок, PK + 3 check +
+   2 индекса). Загрузчик `scripts/load_article_unit_costs.py` запускает владелец.
    Решено: колонка «Себестоимость», ключ `(offer_id_norm, snapshot_date)`,
    файл 1С 2026-05-20 в git не кладём. Покрытие 99,997 % выручки за 90 дней
    без учёта регистра. Читатель адаптирован. `docs/cost_of_goods.md`.
@@ -341,7 +341,7 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 run_daily_pipeline.py    alerts_telegram.py    loaders/http_retry.py
 loaders/ozon_performance_ads_loader.py    scripts/ozon_performance_recovery_worker.py
 scripts/ozon_cpc_data_gap_report.py    export_management_excel.py ← OOM risk
-sql/20260914_create_article_unit_costs.sql ← НЕ применён, ждёт слова; 20260518_* удалён 09-14 (другая модель)
+sql/20260914_create_article_unit_costs.sql ← применён 2026-09-14 через MCP, таблица пуста; 20260518_* удалён (другая модель)
 scripts/load_article_unit_costs.py        загрузчик снимка 1С, без --apply ничего не пишет
 
 docs/how-we-work.md                     метод работы, см. §11

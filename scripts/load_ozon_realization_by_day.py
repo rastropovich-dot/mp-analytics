@@ -81,6 +81,11 @@ def flatten_rows(rows, realization_date, fetched_at, marketplace_code="ozon"):
             offer_id = str(item.get("offer_id") or "").strip()
             if not offer_id or not item.get("sku"):
                 raise RuntimeError(f"{realization_date} строка {row.get('rowNumber')}: нет sku/offer_id: {item}")
+            ratio_raw = row.get("commission_ratio")
+            if isinstance(ratio_raw, str) and not ratio_raw.replace(".", "", 1).isdigit():
+                # Протечка protobuf вида value:"0.450000" (чат 14.09) — у accrual/*;
+                # здесь число, но если придёт строка-мусор — падаем, не пишем ноль.
+                raise RuntimeError(f"{realization_date} строка {row.get('rowNumber')}: commission_ratio не число: {ratio_raw!r}")
             rec = {
                 "marketplace_code": marketplace_code,
                 "realization_date": realization_date,
@@ -92,7 +97,7 @@ def flatten_rows(rows, realization_date, fetched_at, marketplace_code="ozon"):
                 "barcode": item.get("barcode"),
                 "product_name": item.get("name"),
                 "seller_price_per_instance": str(money(row.get("seller_price_per_instance"))),
-                "commission_ratio": str(Decimal(str(row.get("commission_ratio") or 0)).quantize(Decimal("0.0001"))),
+                "commission_ratio": str(Decimal(str(ratio_raw or 0)).quantize(Decimal("0.0001"))),
                 "quantity": quantity,
                 "raw_row": row,
                 "source": "/v1/finance/realization/by-day",

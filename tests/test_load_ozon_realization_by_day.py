@@ -45,6 +45,12 @@ class FlattenTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             flatten_rows([row], "2026-08-31", "t")
 
+    def test_protobuf_leak_in_commission_ratio_is_loud(self):
+        row = dict(ROW, commission_ratio='value:"0.450000"')
+        with self.assertRaises(RuntimeError) as ctx:
+            flatten_rows([row], "2026-08-31", "t")
+        self.assertIn("commission_ratio", str(ctx.exception))
+
     def test_missing_sku_is_loud(self):
         row = dict(ROW, item={"offer_id": "X", "sku": None})
         with self.assertRaises(RuntimeError):

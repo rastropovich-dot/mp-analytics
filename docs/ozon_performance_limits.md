@@ -192,3 +192,14 @@ This split is safer than running one combined cron because:
   - `cpc_status / run_status`
 - If resume falls back to `deterministic_sort_fallback`, do not auto-resume that progress.
 - Treat `statistics/json` campaign units as the scarce resource.
+
+## Сверка со спекой 2026-09-13 (выполнена 2026-09-15, без обращений к API)
+
+Тег `Limits` в `spec/ozon-performance.json` совпадает с CLAUDE.md §4 по
+всем числам выгрузок (2000 за 24 ч с аккаунта и в рамках организации, 1
+одновременная с аккаунта, 62 дня, 10 кампаний, формула активные × 240,
+общий лимит запросов 100 000) и добавляет одно, чего у нас не было:
+**одновременных выгрузок по организации — 5**. Плюс с 14.09.2026 —
+лимиты на операции с кампаниями (создание/копирование 1000 в день,
+бюджет и стратегия 500, добавление товаров 1200, ставки 6000). На чтение
+статистики они не влияют.

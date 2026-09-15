@@ -28,3 +28,6 @@ data/snapshots/
 data/accrual_history/
 knowledge/telegram/*.bak
 knowledge/telegram/_increment_*.json
+
+# сырые ответы списков отправлений для лога статусов (шаги заказов пишут, лог читает)
+data/postings_raw/

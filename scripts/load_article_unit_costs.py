@@ -66,7 +66,7 @@ def text_or_none(value):
     return text if text and text.lower() != "nan" else None
 
 
-def read_snapshot(path, snapshot_date, marketplace_code):
+def read_snapshot(path, snapshot_date, marketplace_code, with_analytics_group=False):
     df = pd.read_excel(path, sheet_name=SHEET, dtype=str)
     source_file = os.path.basename(path)
     stats = {"rows_read": len(df), "offer_ids_seen": 0, "empty_offer_id": 0,
@@ -103,6 +103,9 @@ def read_snapshot(path, snapshot_date, marketplace_code):
                 "discontinued": (text_or_none(row.get("Непроизводится")) or "").lower() == "да",
                 "source_file": source_file,
                 "source_row": int(idx) + 2,
+                # «Аналитическая группа»: колонка добавлена миграцией 20260916_*; без
+                # флага не пишем, чтобы загрузчик не падал на таблице без колонки.
+                **({"analytics_group": text_or_none(row.get("Аналитическая группа"))} if with_analytics_group else {}),
             })
 
     rows, conflicts = [], []
@@ -216,6 +219,7 @@ def main():
     parser.add_argument("--apply", action="store_true", help="писать в БД; без флага — только план, db_writes = 0")
     parser.add_argument("--force", action="store_true", help="писать, даже если строки за этот snapshot_date уже есть")
     parser.add_argument("--check-only", action="store_true", help="не читать файл, только сверить таблицу с заказами")
+    parser.add_argument("--analytics-group", action="store_true", help="писать «Аналитическая группа» (нужна миграция 20260916_add_analytics_group_*)")
     args = parser.parse_args()
     date.fromisoformat(args.snapshot_date)
 
@@ -227,7 +231,7 @@ def main():
         print("db_writes = 0")
         return
 
-    rows, conflicts, stats = read_snapshot(args.file, args.snapshot_date, args.marketplace_code)
+    rows, conflicts, stats = read_snapshot(args.file, args.snapshot_date, args.marketplace_code, args.analytics_group)
     print_plan(rows, conflicts, stats)
 
     if not args.apply:

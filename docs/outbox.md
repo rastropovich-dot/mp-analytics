@@ -93,7 +93,7 @@ venv/bin/python3 scripts/ozon_posting_status_log.py --raw data/postings_raw/fbs_
 **A. Правило записано** в `how-we-work.md` («Источники») и CLAUDE.md §4:
 `code 8 «rate limit per second»` Seller API приходит и на отключённый
 метод — 11.09 представитель Ozon так ответил про
-`/v3/posting/fbs/unfulnfilled/list` («давно отключён»). Сначала сверить
+`/v3/posting/fbs/unfulfilled/list` («давно отключён»). Сначала сверить
 версию эндпоинта со спекой, потом лечить паузами.
 
 **B. Инцидент 09-11 … 09-13** в `ozon_postings_migration.md`: добавлены

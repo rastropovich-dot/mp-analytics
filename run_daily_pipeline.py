@@ -48,6 +48,11 @@ NON_FATAL_STEPS = (
     # send_failure_alert шлёт «Шаг не выполнен» с именем шага, а утренний алерт
     # ставит блокер ozon_fbo_orders_missing, если за вчера нет строк FBO.
     "Ozon: загрузка FBO заказов",
+    # Лог статусов отправлений: пишет переходы из того же сырья, что уже записано
+    # в marketplace_orders. Его отказ (нет таблицы, нет файла) не должен ронять
+    # расходы, рекламу и KPI. Пропуск ночи — потеря одного наблюдения, не данных
+    # заказов. docs/reports_model.md §3.
+    "Ozon: лог статусов отправлений",
 )
 
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
@@ -147,8 +152,12 @@ def build_steps(args=None):
         ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
         ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
         ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
-        ("Ozon: загрузка FBS заказов", "python3 loaders/ozon_fbs_orders_loader.py"),
-        ("Ozon: загрузка FBO заказов", "python3 loaders/ozon_fbo_orders_loader.py"),
+        # Шаги заказов вызывают функции тех же загрузчиков, но через обёртки, которые
+        # кладут сырой ответ в data/postings_raw/ для лога статусов. Загрузчики не
+        # изменены, обращений к API столько же.
+        ("Ozon: загрузка FBS заказов", "python3 scripts/ozon_fbs_orders_step.py"),
+        ("Ozon: загрузка FBO заказов", "python3 scripts/ozon_fbo_orders_step.py"),
+        ("Ozon: лог статусов отправлений", "python3 scripts/ozon_posting_status_log.py --apply"),
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
         ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),

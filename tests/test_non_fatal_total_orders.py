@@ -36,10 +36,12 @@ class NonFatalStepsTests(unittest.TestCase):
             /v3 падает вместо частичной записи; одна ночь добирается окном,
             расходы/реклама/KPI — нет. Решение владельца 2026-09-14,
             tests/test_fbo_step_non_fatal.py
+          - лог статусов отправлений: пишет переходы из уже полученного
+            сырья; отказ — потеря одного наблюдения, не заказов (2026-09-15)
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
-            (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов"),
+            (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов", "Ozon: лог статусов отправлений"),
         )
 
     def test_steps_that_must_stay_fatal(self):

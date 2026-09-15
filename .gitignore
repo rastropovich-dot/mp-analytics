@@ -23,3 +23,8 @@ data/manual_report_*.xlsx
 
 # снимки строк перед необратимыми перезаписями
 data/snapshots/
+
+# сырые начисления по датам для измерителя истории выкупов, в git не кладём
+data/accrual_history/
+knowledge/telegram/*.bak
+knowledge/telegram/_increment_*.json

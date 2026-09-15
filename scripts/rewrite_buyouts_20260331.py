@@ -51,12 +51,17 @@ def D(v):
     return Decimal(str(v or 0)).quantize(Decimal("0.01"))
 
 
+ORDER_BY = {"marketplace_buyouts": "marketplace_sku", "daily_sku_kpi": "marketplace_sku", "daily_marketplace_kpi": "kpi_date"}
+
+
 def fetch_all(sb, table, filters, select="*"):
+    """Постранично и с ORDER BY: range без сортировки у PostgREST отдаёт повторы (урок 2026-09-15)."""
     out, page = [], 0
     while True:
         q = sb.table(table).select(select)
         for op, field, value in filters:
             q = getattr(q, op)(field, value)
+        q = q.order(ORDER_BY[table])
         res = q.range(page * 1000, page * 1000 + 999).execute()
         out.extend(res.data)
         if len(res.data) < 1000:

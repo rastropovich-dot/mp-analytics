@@ -175,8 +175,12 @@ def coverage_check(sb, snapshot_date, marketplace_code, days=90, today=None):
     since = (today - timedelta(days=days)).isoformat()
     keys = defaultdict(lambda: Decimal(0))
     page = 0
+    # ORDER BY обязателен: range без сортировки у PostgREST отдаёт страницы с
+    # повторами и пропусками (поймано 2026-09-15 на реализации — мнимые
+    # расхождения 09-01 и 09-08 при нулевых по SKU).
     query = (sb.table("marketplace_orders").select("marketplace_sku,article,orders_amount_buyer")
-             .eq("marketplace_code", marketplace_code).gte("order_date", since))
+             .eq("marketplace_code", marketplace_code).gte("order_date", since)
+             .order("order_date").order("marketplace_sku").order("order_schema"))
     while True:
         res = query.range(page * 1000, page * 1000 + 999).execute()
         for r in res.data:

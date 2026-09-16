@@ -4,8 +4,10 @@ import requests
 
 try:
     from loaders import http_retry
+    from loaders import ozon_orders_rows as rules
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
+    import ozon_orders_rows as rules
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -100,7 +102,7 @@ def fbo_request(url, payload):
     raise RuntimeError(f"Ozon FBO: 429 не прошёл за {ANTISPAM_MAX_ATTEMPTS} попыток")
 
 
-def get_fbo_postings(days_back=30):
+def get_fbo_postings(days_back=30, since=None, to=None):
     """Заказы FBO через /v3/posting/fbo/list.
 
     /v2/posting/fbo/list помечен на отключение 31.08.2026. Отличия контракта:
@@ -108,11 +110,14 @@ def get_fbo_postings(days_back=30):
     объектом. Сверка старого и нового на четырёх датах: множества
     posting_number совпали в обе стороны, значения полей идентичны.
     См. docs/ozon_postings_migration.md.
+
+    since/to — границы окна (datetime, UTC) для пересборки истории; без них —
+    последние days_back дней, как в ночном прогоне.
     """
     url = "https://api-seller.ozon.ru/v3/posting/fbo/list"
 
-    date_to = datetime.now(timezone.utc)
-    date_from = date_to - timedelta(days=days_back)
+    date_to = to or datetime.now(timezone.utc)
+    date_from = since or (date_to - timedelta(days=days_back))
 
     postings = []
     limit = 100          # потолок метода, спека: maximum 100
@@ -169,63 +174,16 @@ def parse_date(value):
     return to_local_order_date(value)
 
 
-def build_order_rows(postings):
-    grouped = {}
+def build_order_rows(postings, observed_at=None):
+    """Строки к записи по общему правилу обеих схем (loaders/ozon_orders_rows.py).
 
-    skipped_cancelled = 0
-    skipped_no_date = 0
-
-    for posting in postings:
-        status = posting.get("status")
-
-        # Отмененные заказы не считаем как заказы к продаже
-        if status == "cancelled":
-            skipped_cancelled += 1
-            continue
-
-        order_date = parse_date(posting.get("created_at") or posting.get("in_process_at"))
-
-        if not order_date:
-            skipped_no_date += 1
-            continue
-
-        products = posting.get("products", []) or []
-
-        for product in products:
-            sku = str(product.get("sku") or "")
-            offer_id = str(product.get("offer_id") or "")
-            name = product.get("name")
-            qty = float(product.get("quantity") or 0)
-            price = posting_price(product)
-
-            if qty <= 0:
-                continue
-
-            key = (order_date, "ozon", sku, "fbo")
-
-            if key not in grouped:
-                grouped[key] = {
-                    "order_date": order_date,
-                    "marketplace_code": "ozon",
-                    "marketplace_sku": sku,
-                    "article": offer_id,
-                    "product_name": name,
-                    "orders_qty": 0,
-                    "orders_amount_buyer": 0,
-                    "orders_amount_seller": 0,
-                    "order_schema": "fbo",
-                }
-
-            grouped[key]["orders_qty"] += qty
-            grouped[key]["orders_amount_buyer"] += qty * price
-            grouped[key]["orders_amount_seller"] += qty * price
-
-    rows = list(grouped.values())
-
-    print(f"Пропущено cancelled: {skipped_cancelled}")
-    print(f"Пропущено без даты: {skipped_no_date}")
-    print(f"Строк к записи в marketplace_orders FBO: {len(rows)}")
-
+    До 2026-09-16 отменённые здесь выбрасывались, и ключ, у которого отправлений
+    не осталось, жил в таблице навсегда. Теперь отменённые идут в
+    cancelled_orders_*, подтверждённые — в orders_*, каждый ключ окна
+    переписывается целиком.
+    """
+    rows, counters = rules.build_order_rows(postings, "fbo", observed_at=observed_at)
+    rules.print_counters("fbo", counters)
     return rows
 
 

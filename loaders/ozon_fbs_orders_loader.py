@@ -1,12 +1,14 @@
 import os
+import time
 import requests
 
 try:
     from loaders import http_retry
+    from loaders import ozon_orders_rows as rules
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
+    import ozon_orders_rows as rules
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -18,7 +20,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
+
+# Прежнее имя оставлено: его импортируют другие модули.
+to_local_order_date = rules.to_local_order_date
 
 
 def ozon_headers():
@@ -29,134 +33,115 @@ def ozon_headers():
     }
 
 
-def to_local_order_date(value):
-    if not value:
-        return None
+# Те же константы и та же механика, что у FBO на /v3 (loaders/ozon_fbo_orders_loader.py):
+# страница 100 вместо 1000, пауза между страницами, антиспам 429 — 60 с и три
+# попытки, предел страниц с падением вместо частичного результата. Дублируется
+# намеренно: тесты обеих схем подменяют http_retry.post, time.sleep и MAX_PAGES
+# в пространстве своего модуля.
+PAGE_PAUSE_SECONDS = float(os.getenv("OZON_POSTING_PAGE_PAUSE_SECONDS", "1.5"))
+ANTISPAM_PAUSE_SECONDS = 60
+ANTISPAM_MAX_ATTEMPTS = 3
+MAX_PAGES = 400
+# Окно сбора 30 дней, как у FBO: отмены дозревают неделями, 14 дней их не ловили.
+DEFAULT_DAYS_BACK = 30
 
-    normalized = value.replace("Z", "+00:00")
-    dt = datetime.fromisoformat(normalized)
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    return dt.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
-
-
-def get_ozon_fbs_postings(days_back=14):
-    url = "https://api-seller.ozon.ru/v3/posting/fbs/list"
-
-    now = datetime.now(timezone.utc)
-    since = now - timedelta(days=days_back)
-
-    payload = {
-        "dir": "ASC",
-        "filter": {
-            "since": since.isoformat(),
-            "to": now.isoformat()
-        },
-        "limit": 1000,
-        "offset": 0,
-        "with": {
-            "analytics_data": True,
-            "financial_data": True
-        }
-    }
-
-    all_postings = []
-
-    while True:
-        response = http_retry.post(url, label="Ozon FBS orders",
+def fbs_request(url, payload):
+    """Запрос с пересиживанием антиспама."""
+    for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
+        response = http_retry.post(url, label="Ozon FBS postings",
                                    headers=ozon_headers(), json=payload, timeout=120)
-
-        print("Ozon FBS orders HTTP status:", response.status_code)
-
-        if response.status_code != 200:
-            print("Ошибка Ozon FBS orders API:")
-            print(response.text[:3000])
-            return all_postings
-
-        data = response.json()
-        result = data.get("result", {})
-        postings = result.get("postings", [])
-
-        all_postings.extend(postings)
-
-        print(f"Получено отправлений Ozon FBS: {len(all_postings)}")
-
-        if len(postings) < payload["limit"]:
-            break
-
-        payload["offset"] += payload["limit"]
-
-    return all_postings
+        if response.status_code != 429:
+            return response
+        print(f"Ozon FBS: 429, пауза {ANTISPAM_PAUSE_SECONDS} с, "
+              f"попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}")
+        time.sleep(ANTISPAM_PAUSE_SECONDS)
+    raise RuntimeError(f"Ozon FBS: 429 не прошёл за {ANTISPAM_MAX_ATTEMPTS} попыток")
 
 
-def save_ozon_orders(postings):
-    grouped = {}
+def get_ozon_fbs_postings(days_back=DEFAULT_DAYS_BACK, since=None, to=None):
+    """Отправления FBS через /v4/posting/fbs/list.
 
-    for posting in postings:
-        # Для intraday и дневных заказов нужна дата появления заказа,
-        # а не будущая плановая дата отгрузки shipment_date.
-        order_date = to_local_order_date(
-            posting.get("in_process_at") or posting.get("shipment_date")
-        )
+    /v3/posting/fbs/list помечен на отключение 31.08.2026 (спека, deprecated: true).
+    Отличия контракта: offset → cursor, result.postings → postings + cursor +
+    has_next, страница 1000 → 100, цена стала объектом {amount, currency},
+    created_at исчез (дата берётся из in_process_at, как и раньше).
+    Сверка старого и нового на одном окне — scripts/ozon_fbs_v4_parity.py,
+    docs/ozon_orders_one_rule.md.
 
-        if not order_date:
-            continue
+    since/to — границы окна (datetime, UTC); без них — последние days_back дней.
+    """
+    url = "https://api-seller.ozon.ru/v4/posting/fbs/list"
+    date_to = to or datetime.now(timezone.utc)
+    date_from = since or (date_to - timedelta(days=days_back))
 
-        products = posting.get("products", [])
-
-        for product in products:
-            product_id = product.get("sku") or product.get("product_id") or product.get("offer_id")
-            offer_id = product.get("offer_id")
-            name = product.get("name")
-
-            if not product_id:
-                continue
-
-            qty = product.get("quantity", 1) or 1
-            price = float(product.get("price", 0) or 0)
-
-            key = (
-                order_date,
-                "ozon",
-                str(product_id)
+    postings, cursor, pages = [], "", 0
+    limit = 100  # потолок метода, спека: maximum 100
+    while True:
+        pages += 1
+        if pages > MAX_PAGES:
+            raise RuntimeError(
+                f"Ozon FBS: превышен предел {MAX_PAGES} страниц — цикл не сходится"
             )
+        payload = {
+            "sort_dir": "ASC",
+            "filter": {
+                "since": date_from.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "to": date_to.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            },
+            "limit": limit,
+            "with": {
+                "analytics_data": True,
+                "financial_data": True,
+            },
+        }
+        if cursor:
+            payload["cursor"] = cursor
 
-            if key not in grouped:
-                grouped[key] = {
-                    "order_date": order_date,
-                    "marketplace_code": "ozon",
-                "order_schema": "fbs",
-                    "marketplace_sku": str(product_id),
-                    "article": str(offer_id or ""),
-                    "product_name": name,
-                    "orders_qty": 0,
-                    "orders_amount_buyer": 0,
-                    "orders_amount_seller": 0,
-                }
+        time.sleep(PAGE_PAUSE_SECONDS)
+        response = fbs_request(url, payload)
+        print(f"Ozon FBS postings страница {pages} HTTP status: {response.status_code}")
+        if response.status_code != 200:
+            print(response.text[:3000])
+            raise RuntimeError(f"Ozon FBS: HTTP {response.status_code}")
 
-            grouped[key]["orders_qty"] += qty
-            grouped[key]["orders_amount_buyer"] += price * qty
-            grouped[key]["orders_amount_seller"] += price * qty
+        data = response.json() or {}
+        postings.extend(data.get("postings") or [])
+        cursor = data.get("cursor") or ""
+        if not data.get("has_next"):
+            break
+        if not cursor:
+            raise RuntimeError("Ozon FBS: has_next=true, но cursor пуст")
 
-    rows = list(grouped.values())
+    print(f"Получено FBS postings: {len(postings)} за {pages} страниц")
+    return postings
 
+
+def build_order_rows(postings, observed_at=None):
+    """Строки к записи по общему правилу обеих схем (loaders/ozon_orders_rows.py).
+
+    До 2026-09-16 этот загрузчик статус не смотрел: отменённые лежали в
+    orders_* вместе с доставленными (31,6 % по деньгам за 08-17…09-14).
+    """
+    rows, counters = rules.build_order_rows(postings, "fbs", observed_at=observed_at)
+    rules.print_counters("fbs", counters)
+    return rows
+
+
+def save_ozon_orders(postings, observed_at=None):
+    rows = build_order_rows(postings, observed_at=observed_at)
     if not rows:
         print("Нет Ozon FBS заказов для записи")
         return
-
     for i in range(0, len(rows), 500):
-        batch = rows[i:i + 500]
         supabase.table("marketplace_orders").upsert(
-            batch,
+            rows[i:i + 500],
             on_conflict="order_date,marketplace_code,marketplace_sku,order_schema"
         ).execute()
-
     print(f"✅ Ozon FBS заказы записаны в marketplace_orders: {len(rows)} строк")
 
 
 if __name__ == "__main__":
-    postings = get_ozon_fbs_postings(days_back=14)
+    postings = get_ozon_fbs_postings()
     print(f"Итого отправлений Ozon FBS: {len(postings)}")
     save_ozon_orders(postings)

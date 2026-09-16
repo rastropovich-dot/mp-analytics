@@ -1,10 +1,11 @@
 """Шаг «Ozon: загрузка FBS заказов» + сырой ответ для лога статусов.
 
 То же, что loaders/ozon_fbs_orders_loader.py при запуске
-(get_ozon_fbs_postings(days_back=14) → save_ozon_orders), плюс тот же ответ
-/v3/posting/fbs/list кладётся в data/postings_raw/fbs_<UTC>.json для
+(get_ozon_fbs_postings(days_back=30) → save_ozon_orders), плюс тот же ответ
+/v4/posting/fbs/list кладётся в data/postings_raw/fbs_<UTC>.json для
 scripts/ozon_posting_status_log.py. Ни одного дополнительного обращения к API,
-загрузчик не изменён — вызываются его функции. Переход на /v4 — отдельно.
+загрузчик не изменён — вызываются его функции. Окно 30 дней, как у FBO:
+отмены дозревают неделями (loaders/ozon_orders_rows.py).
 
 Порядок важен: шаг ФАТАЛЬНЫЙ, сырьё — вспомогательное. Сначала запись заказов,
 потом сырьё; отказ сохранения сырья печатает предупреждение, шаг не роняет.
@@ -18,7 +19,7 @@ from loaders import ozon_fbs_orders_loader as fbs  # noqa: E402
 from loaders import ozon_posting_status_log as log  # noqa: E402
 
 
-def run(fbs_module=fbs, log_module=log, days_back=14):
+def run(fbs_module=fbs, log_module=log, days_back=fbs.DEFAULT_DAYS_BACK):
     postings = fbs_module.get_ozon_fbs_postings(days_back=days_back)
     fbs_module.save_ozon_orders(postings)
     try:

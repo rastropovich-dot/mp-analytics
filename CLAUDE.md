@@ -54,7 +54,11 @@
   100,5 млн — природа не установлена; `services_amount` 96,8 млн за 31.08 в
   cash-flow-statement против −2,7 млн…+94 тыс на остальных неделях; ДРР — Ozon
   сменил базу на цену после соинвестирования, сходимость с кабинетом под
-  вопросом.
+  вопросом; **логистика 1–9 июля** в ручном отчёте 714 443,99 против наших
+  946 576,29 по дате начисления и 614 607,41 по дате реализации отправления
+  (проверено 2026-09-16 через `accrual/postings`, воспроизведено из сырья
+  второй сессией) — НДС и подмножества типов не сходятся, второй гипотезы
+  нет, `scripts/recheck_logistics_by_realization_date.py`.
 
 ---
 
@@ -440,6 +444,7 @@ scripts/measure_buyouts_history_vs_accrual.py  измеритель истори
 sql/20260915_create_ozon_realization_by_day.sql ← применён 2026-09-14 через MCP; таблица загружена: 7 619 записей, 08-14…09-13
 scripts/rewrite_buyouts_20260331.py       перезапись 03-31 из accrual + витрины за дату; без --apply план
 scripts/load_ozon_realization_by_day.py  сборщик, без --apply не пишет; сырьё в data/ozon_realization_by_day/
+scripts/recheck_logistics_by_realization_date.py  логистика 1–9 июля по дате реализации из сырья, только чтение; сырьё data/accrual_postings/ (вне git)
 docs/ozon_performance_limits.md         ← содержит опровергнутую «половину лимита»
 docs/ozon_finance_migration.md          миграция на accrual API, разрыв ряда, классификация,
                                         соответствие статей разрезу Ozon, правило двух суток

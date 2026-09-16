@@ -31,3 +31,6 @@ knowledge/telegram/_increment_*.json
 
 # сырые ответы списков отправлений для лога статусов (шаги заказов пишут, лог читает)
 data/postings_raw/
+
+# сырые ответы accrual/postings (начисления по номерам отправлений) для проверок отнесения по дате, в git не кладём
+data/accrual_postings/

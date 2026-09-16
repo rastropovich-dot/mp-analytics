@@ -38,10 +38,14 @@ class NonFatalStepsTests(unittest.TestCase):
             tests/test_fbo_step_non_fatal.py
           - лог статусов отправлений: пишет переходы из уже полученного
             сырья; отказ — потеря одного наблюдения, не заказов (2026-09-15)
+          - загрузка FBS заказов: с 2026-09-16 загрузчик на /v4 падает вместо
+            частичного результата, как FBO; та же развилка, то же решение,
+            блокер ozon_fbs_orders_missing. tests/test_fbs_step_non_fatal.py
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
-            (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов", "Ozon: лог статусов отправлений"),
+            (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов",
+             "Ozon: загрузка FBS заказов", "Ozon: лог статусов отправлений"),
         )
 
     def test_steps_that_must_stay_fatal(self):

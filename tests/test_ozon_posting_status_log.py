@@ -81,3 +81,77 @@ class PipelineWiringTests(unittest.TestCase):
         self.assertIn("ozon_fbo_orders_step.py", cmds["Ozon: загрузка FBO заказов"])
         self.assertIn("ozon_fbs_orders_step.py", cmds["Ozon: загрузка FBS заказов"])
         self.assertIn("--apply", cmds["Ozon: лог статусов отправлений"])
+
+
+class OrderStepWrappersTests(unittest.TestCase):
+    """Сырьё для лога — после записи заказов и под защитой: его отказ не роняет фатальный шаг."""
+
+    def _fake_log(self, raise_it):
+        calls = []
+
+        class FakeLog:
+            @staticmethod
+            def dump_raw(postings, schema):
+                calls.append(("dump", schema, len(postings)))
+                if raise_it:
+                    raise OSError("No space left on device")
+                return f"data/postings_raw/{schema}_x.json"
+        return FakeLog, calls
+
+    def test_fbo_orders_are_saved_before_raw_dump_and_dump_failure_does_not_raise(self):
+        from scripts import ozon_fbo_orders_step as step
+        order = []
+
+        class FakeFbo:
+            @staticmethod
+            def get_fbo_postings(days_back):
+                order.append("fetch"); return [{"posting_number": "A-1"}]
+
+            @staticmethod
+            def build_order_rows(postings):
+                order.append("build"); return [{"row": 1}]
+
+            @staticmethod
+            def save_orders(rows):
+                order.append("save")
+        fake_log, calls = self._fake_log(raise_it=True)
+        step.run(fbo_module=FakeFbo, log_module=fake_log)
+        self.assertEqual(order, ["fetch", "build", "save"])
+        self.assertEqual(calls, [("dump", "fbo", 1)])
+
+    def test_fbs_orders_are_saved_before_raw_dump_and_dump_failure_does_not_raise(self):
+        from scripts import ozon_fbs_orders_step as step
+        order = []
+
+        class FakeFbs:
+            @staticmethod
+            def get_ozon_fbs_postings(days_back):
+                order.append("fetch"); return [{"posting_number": "B-1"}]
+
+            @staticmethod
+            def save_ozon_orders(postings):
+                order.append("save")
+        fake_log, calls = self._fake_log(raise_it=True)
+        step.run(fbs_module=FakeFbs, log_module=fake_log)
+        self.assertEqual(order, ["fetch", "save"])
+        self.assertEqual(calls, [("dump", "fbs", 1)])
+
+    def test_dump_happens_after_save_when_it_succeeds(self):
+        from scripts import ozon_fbo_orders_step as step
+        order = []
+
+        class FakeFbo:
+            @staticmethod
+            def get_fbo_postings(days_back): return []
+
+            @staticmethod
+            def build_order_rows(postings): return []
+
+            @staticmethod
+            def save_orders(rows): order.append("save")
+
+        class FakeLog:
+            @staticmethod
+            def dump_raw(postings, schema): order.append("dump"); return "p"
+        step.run(fbo_module=FakeFbo, log_module=FakeLog)
+        self.assertEqual(order, ["save", "dump"])

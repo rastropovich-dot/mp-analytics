@@ -532,7 +532,7 @@ spec/ozon-performance.json   Performance API   47 методов,   97 схем,
 ### `knowledge/telegram/` — чат разработчиков Ozon
 
 ```
-knowledge/telegram/ozon-dev-chat.json   37 863 сообщения, 2022-05-13 … 2026-09-13,
+knowledge/telegram/ozon-dev-chat.json   38 024 сообщения, 2022-05-13 … 2026-09-17,
                                         без пропусков по месяцам, 30 МБ
 knowledge/telegram/README.md            структура, поиск, вложения, обновление
 ```

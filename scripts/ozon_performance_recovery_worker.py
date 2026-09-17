@@ -369,7 +369,7 @@ def resolve_worker_progress_candidate(db_client, client, target_date):
     candidates = []
     for row in result.data or []:
         payload = row.get("payload") or {}
-        if payload.get("date_from") != target_date or payload.get("date_to") != target_date:
+        if not loader.cpc_progress_covers_date(payload, target_date):
             continue
         if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
             continue
@@ -393,6 +393,7 @@ def resolve_worker_progress_candidate(db_client, client, target_date):
 
     candidates.sort(
         key=lambda item: (
+            1 if loader.cpc_progress_is_exact_day(item[1], target_date) else 0,
             int(item[1].get("total_campaigns") or 0),
             int(item[1].get("batch_size") or 0),
             int(item[1].get("pending_batches") or 0),

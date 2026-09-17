@@ -1546,6 +1546,69 @@ def is_supported_cpc_resume_selection_mode(selection_mode):
     return normalize_cpc_resume_selection_mode(selection_mode) in ALLOWED_CPC_RESUME_SELECTION_MODES
 
 
+def cpc_progress_window(progress):
+    """(date_from, date_to) записи прогресса как строки ISO; пустые — None."""
+    progress = progress or {}
+    date_from = str(progress.get("date_from") or "") or None
+    date_to = str(progress.get("date_to") or "") or None
+    return date_from, date_to
+
+
+def cpc_progress_covers_date(progress, target_date):
+    """Окно записи прогресса накрывает дату.
+
+    До 2026-09-17 все читатели требовали date_from == date_to == target_date:
+    прогресс многодневного окна (cpc-backfill с --date-from/--date-to)
+    записывался, но прочитать его для даты внутри окна было нельзя, и
+    recovery-воркер начинал такую дату с batch 0. Сравнение строк ISO-дат
+    корректно лексикографически.
+    """
+    if not target_date:
+        return True
+    date_from, date_to = cpc_progress_window(progress)
+    if not date_from or not date_to:
+        return False
+    return date_from <= str(target_date) <= date_to
+
+
+def cpc_progress_is_exact_day(progress, target_date):
+    date_from, date_to = cpc_progress_window(progress)
+    return bool(target_date) and date_from == date_to == str(target_date)
+
+
+def cpc_progress_window_days(progress):
+    """Все даты окна записи прогресса, ISO, по возрастанию."""
+    date_from, date_to = cpc_progress_window(progress)
+    start, end = parse_iso_date(date_from), parse_iso_date(date_to)
+    if not start or not end or end < start:
+        return []
+    return [(start + timedelta(days=offset)).isoformat() for offset in range((end - start).days + 1)]
+
+
+def adopt_cpc_resume_window(date_from, date_to, requested_target_date, progress, target_dates):
+    """Окно и целевые даты для резюма по ключу.
+
+    Возвращает (date_from, date_to, target_dates, adopted). Если запись прогресса
+    — многодневное окно, а запуск попросили за один день внутри него, отчёты
+    надо отправлять за ОКНО записи (ключ и батчи считались по нему), а писать —
+    только запрошенную дату: запись других дат окна из подмножества батчей
+    затёрла бы их здоровые строки (строка расхода агрегирует кампании по SKU).
+    """
+    record_from, record_to = cpc_progress_window(progress)
+    if not record_from or not record_to or (record_from, record_to) == (date_from, date_to):
+        return date_from, date_to, list(target_dates or []), False
+    if not cpc_progress_covers_date(progress, requested_target_date):
+        raise RuntimeError(
+            f"Progress window {record_from}..{record_to} does not cover target_date={requested_target_date}"
+        )
+    adopted_target_dates = list(target_dates or []) or ([str(requested_target_date)] if requested_target_date else [])
+    if not adopted_target_dates:
+        raise RuntimeError(
+            f"Resuming window progress {record_from}..{record_to} requires --target-dates or a single --date inside the window"
+        )
+    return record_from, record_to, adopted_target_dates, True
+
+
 def validate_cpc_resume_progress(progress, progress_key, *, target_date=None, client=None):
     progress = progress or {}
     selection_mode = normalize_cpc_resume_selection_mode(progress.get("selection_mode"))
@@ -1553,9 +1616,9 @@ def validate_cpc_resume_progress(progress, progress_key, *, target_date=None, cl
         raise RuntimeError(
             f"unsupported CPC progress selection_mode={selection_mode or 'unknown'} for recovery"
         )
-    if target_date and (progress.get("date_from") != target_date or progress.get("date_to") != target_date):
+    if target_date and not cpc_progress_covers_date(progress, target_date):
         raise RuntimeError(
-            f"Progress key {progress_key} does not match target_date={target_date}"
+            f"Progress key {progress_key} window {cpc_progress_window(progress)} does not cover target_date={target_date}"
         )
     if client and str(progress.get("account_signature") or client.account_signature) != str(client.account_signature):
         raise RuntimeError(
@@ -2205,7 +2268,7 @@ def resolve_existing_cpc_backfill_progress(client, target_date):
         progress = client.get_cpc_progress(progress_key)
         if not progress:
             continue
-        if progress.get("date_from") != target_date or progress.get("date_to") != target_date:
+        if not cpc_progress_covers_date(progress, target_date):
             continue
         if not progress.get("pending_batches"):
             continue
@@ -2216,6 +2279,7 @@ def resolve_existing_cpc_backfill_progress(client, target_date):
 
     candidates.sort(
         key=lambda item: (
+            1 if cpc_progress_is_exact_day(item[1], target_date) else 0,
             1 if str(item[1].get("selection_mode") or "") == "complete" else 0,
             int(item[1].get("total_campaigns") or 0),
             int(item[1].get("batch_size") or 0),
@@ -2248,7 +2312,7 @@ def resolve_daily_pending_cpc_progress_from_db(client, target_date):
     candidates = []
     for row in result.data or []:
         payload = row.get("payload") or {}
-        if payload.get("date_from") != target_date or payload.get("date_to") != target_date:
+        if not cpc_progress_covers_date(payload, target_date):
             continue
         if str(payload.get("account_signature") or client.account_signature) != str(client.account_signature):
             continue
@@ -2267,6 +2331,13 @@ def resolve_daily_pending_cpc_progress_from_db(client, target_date):
         progress["pending_batches"] = pending_batches
         candidates.append((logical_key, progress))
 
+    # Точный день важнее окна: у окна свой ключ и свои батчи. Неоднозначность
+    # внутри одного вида — по-прежнему отказ, а не угадывание.
+    exact = [item for item in candidates if cpc_progress_is_exact_day(item[1], target_date)]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None, None
     if len(candidates) != 1:
         return None, None
 
@@ -2319,9 +2390,9 @@ def read_exact_cpc_progress_from_db(client, progress_key, *, target_date=None, m
             progress["updated_at"] = progress.get("updated_at") or row.get("updated_at")
             progress["pending_batch_indexes"] = normalize_batch_indexes(progress.get("pending_batch_indexes"))
             progress["pending_batches"] = int(progress.get("pending_batches") or len(progress["pending_batch_indexes"]) or 0)
-            if target_date and (progress.get("date_from") != target_date or progress.get("date_to") != target_date):
+            if target_date and not cpc_progress_covers_date(progress, target_date):
                 raise RuntimeError(
-                    f"Progress key {progress_key} does not match target_date={target_date}"
+                    f"Progress key {progress_key} window {cpc_progress_window(progress)} does not cover target_date={target_date}"
                 )
             if str(progress.get("account_signature") or client.account_signature) != str(client.account_signature):
                 raise RuntimeError(
@@ -5515,7 +5586,7 @@ def find_cpc_progress_for_date(client, target_date):
         progress = client.get_cpc_progress(progress_key)
         if not progress:
             continue
-        if progress.get("date_from") != target_date or progress.get("date_to") != target_date:
+        if not cpc_progress_covers_date(progress, target_date):
             continue
         candidates.append((progress_key, progress))
 
@@ -5524,6 +5595,7 @@ def find_cpc_progress_for_date(client, target_date):
 
     candidates.sort(
         key=lambda item: (
+            1 if cpc_progress_is_exact_day(item[1], target_date) else 0,
             1 if str(item[1].get("selection_mode") or "") == "complete" else 0,
             1 if int(item[1].get("pending_batches") or 0) == 0 else 0,
             int(item[1].get("completed_batches") or 0),
@@ -7086,6 +7158,24 @@ def run():
             print("Ozon Performance cpc-backfill runtime state result:")
             print(json.dumps(sanitize_value(payload), ensure_ascii=False, indent=2))
             return
+        if exact_backfill_progress:
+            # Запись многодневного окна, а запуск за один день внутри него:
+            # отчёты — за окно записи, запись строк — только за запрошенную дату.
+            requested_target_date = target_date
+            date_from, date_to, adopted_target_dates, adopted = adopt_cpc_resume_window(
+                date_from,
+                date_to,
+                requested_target_date,
+                exact_backfill_progress,
+                parse_target_dates(args.target_dates),
+            )
+            if adopted:
+                args.target_dates = ",".join(adopted_target_dates)
+                target_date = date_to if date_from == date_to else None
+                print(
+                    "Ozon Performance cpc-backfill: прогресс по ключу — многодневное окно "
+                    f"{date_from}..{date_to}; отчёты за окно, запись только за {args.target_dates}"
+                )
 
     if args.mode == "statistics-json-probe":
         if not args.campaign_id:

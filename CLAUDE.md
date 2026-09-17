@@ -566,7 +566,7 @@ spec/ozon-performance.json   Performance API   47 путей / 48 операци
 ### `knowledge/telegram/` — чат разработчиков Ozon
 
 ```
-knowledge/telegram/ozon-dev-chat.json   38 024 сообщения, 2022-05-13 … 2026-09-17,
+knowledge/telegram/ozon-dev-chat.json   38 059 сообщений, 2022-05-13 … 2026-09-17 19:59,
                                         без пропусков по месяцам, 30 МБ
 knowledge/telegram/README.md            структура, поиск, вложения, обновление
 ```

@@ -15,7 +15,7 @@ OpenAPI-спеки, снятые из браузера 2026-09-13/14. `docs.ozon
                              api-seller.ozon.ru
                              заказы, финансы, товары, отчёты, аналитика
 
-    ozon-performance.json     47 методов,   97 схем,  v2.0
+    ozon-performance.json     47 путей / 48 операций, 97 схем, v2.0 (снята 2026-09-17)
                              api-performance.ozon.ru
                              реклама: кампании, ставки, статистика
 

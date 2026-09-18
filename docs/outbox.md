@@ -300,8 +300,8 @@ UTC, ночной прогон в 00:15). Слагаемые: чтение фа�
 
 ### Коммиты
 
-Работа в `main` (скрипты вне ночного прогона, тесты, документы): см.
-`git log -1`. Файлы: `scripts/rebuild_ozon_orders_history.py`,
+Работа в `main`, ветки нет: `102ddf8` — скрипты (вне ночного прогона),
+тесты, документы; номер коммита дописан следующим коммитом. Файлы: `scripts/rebuild_ozon_orders_history.py`,
 `scripts/check_orders_history_plan.py`, `tests/test_rebuild_orders_history.py`,
 `data/orders_history_kpi_stale_keys_20260918.json`, документы.
 

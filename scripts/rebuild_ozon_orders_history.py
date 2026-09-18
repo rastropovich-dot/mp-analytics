@@ -30,8 +30,9 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -75,14 +76,32 @@ def fetch_all(table, filters, select="*", order="id"):
     return out
 
 
-def table_stats(date_from):
-    rows = fetch_all("marketplace_orders", [("eq", "marketplace_code", "ozon"), ("gte", "order_date", date_from)],
+def table_stats(date_from, date_to=None):
+    filters = [("eq", "marketplace_code", "ozon"), ("gte", "order_date", date_from)]
+    if date_to:
+        filters.append(("lte", "order_date", date_to))
+    rows = fetch_all("marketplace_orders", filters,
                      select="order_date,order_schema,marketplace_sku,orders_qty,orders_amount_seller")
     by = defaultdict(lambda: [0, Decimal(0), Decimal(0)])
     for r in rows:
         a = by[(r["order_schema"], r["order_date"][:7])]
         a[0] += 1; a[1] += D(r["orders_qty"]); a[2] += D(r["orders_amount_seller"])
     return rows, by
+
+
+def utc_window(date_from, date_to, now_utc=None):
+    """Границы сбора в UTC для ЛОКАЛЬНЫХ дней date_from … date_to.
+
+    order_date — локальная дата (rules.APP_TIMEZONE), метод фильтрует по UTC-времени
+    заказа. Окно от 00:00 UTC теряло первые три часа локального дня date_from, а
+    --apply переписывает этот день целиком. Конец — не позже «сейчас»: будущее
+    методу не передаём.
+    """
+    tz = ZoneInfo(rules.APP_TIMEZONE)
+    now_utc = now_utc or datetime.now(timezone.utc)
+    start = datetime.combine(date.fromisoformat(date_from), dtime.min, tzinfo=tz).astimezone(timezone.utc)
+    end = datetime.combine(date.fromisoformat(date_to) + timedelta(days=1), dtime.min, tzinfo=tz).astimezone(timezone.utc)
+    return start, min(end, now_utc.replace(microsecond=0))
 
 
 def raw_path(scheme, date_from, date_to):
@@ -153,8 +172,7 @@ def fetch_history(scheme, date_from, date_to):
     else:
         import loaders.ozon_fbs_orders_loader as mod
         get = mod.get_ozon_fbs_postings
-    start = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
-    end = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+    start, end = utc_window(date_from, date_to)
     postings, seen, t0 = [], {}, time.monotonic()
     cur = start
     while cur < end:
@@ -168,7 +186,8 @@ def fetch_history(scheme, date_from, date_to):
     postings = list(seen.values())
     os.makedirs(RAW_DIR, exist_ok=True)
     json.dump({"schema": scheme, "fetched_at": datetime.now(timezone.utc).isoformat(),
-               "window": {"since": date_from, "to": date_to}, "postings": postings}, open(path, "w"), ensure_ascii=False)
+               "window": {"since": date_from, "to": date_to, "since_utc": start.isoformat(), "to_utc": end.isoformat()},
+               "postings": postings}, open(path, "w"), ensure_ascii=False)
     print(f"{scheme}: {len(postings)} уникальных отправлений, обращений {calls['n']}, 429 — {calls['429']}, {time.monotonic() - t0:.0f} с → {path}")
     return postings
 
@@ -179,9 +198,11 @@ def plan(date_from, date_to, apply=False):
         postings = fetch_history(scheme, date_from, date_to)
         rows, c = rules.build_order_rows(postings, scheme)
         rules.print_counters(scheme, c)
-        rows_by_scheme[scheme] = [r for r in rows if r["order_date"] >= date_from]
+        # Обе границы: сбор кончается в date_to, и delete ниже обязан кончаться там же.
+        # Без верхней границы --date-to в прошлом стёр бы всё до сегодня, а записал до date_to.
+        rows_by_scheme[scheme] = [r for r in rows if date_from <= r["order_date"] <= date_to]
         counters[scheme] = c
-    table, by = table_stats(date_from)
+    table, by = table_stats(date_from, date_to)
     new_by = defaultdict(lambda: [0, Decimal(0), Decimal(0), Decimal(0), Decimal(0)])
     for scheme, rows in rows_by_scheme.items():
         for r in rows:
@@ -199,17 +220,22 @@ def plan(date_from, date_to, apply=False):
     os.makedirs(SNAP_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     snap = os.path.join(SNAP_DIR, f"orders_rewrite_{stamp}.json")
-    json.dump({"date_from": date_from, "date_to": date_to, "rows": table}, open(snap, "w"), ensure_ascii=False)
-    print(f"снимок {len(table)} строк → {snap}")
+    # Снимок — полные строки: table выше читается пятью колонками для статистики, и
+    # восстановить по нему таблицу было бы нельзя (нет article, product_name, *_buyer, cancelled_*, observed_at).
+    full = fetch_all("marketplace_orders", [("eq", "marketplace_code", "ozon"), ("gte", "order_date", date_from), ("lte", "order_date", date_to)])
+    if len(full) != len(table):
+        raise SystemExit(f"снимок: {len(full)} строк против {len(table)} в статистике — таблица меняется под руками, стоп до записи")
+    json.dump({"date_from": date_from, "date_to": date_to, "rows": full}, open(snap, "w"), ensure_ascii=False)
+    print(f"снимок {len(full)} строк (все колонки) → {snap}")
     for scheme, rows in rows_by_scheme.items():
-        before = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).limit(1).execute().count
-        sb().table("marketplace_orders").delete().eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).execute()
-        left = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).limit(1).execute().count
+        before = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
+        sb().table("marketplace_orders").delete().eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).execute()
+        left = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
         if left:
             raise SystemExit(f"{scheme}: после delete осталось {left} строк — стоп, запись не начата")
         for i in range(0, len(rows), BATCH):
             sb().table("marketplace_orders").upsert(rows[i:i + BATCH], on_conflict="order_date,marketplace_code,marketplace_sku,order_schema").execute()
-        after = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).limit(1).execute().count
+        after = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
         print(f"{scheme}: было {before}, удалено, записано {len(rows)}, в таблице {after} {'=' if after == len(rows) else '≠ ОШИБКА'}")
     print("готово; витрины за окно пересоберёт ночной KPI, ключи витрин без заказов — удалить отдельно")
 

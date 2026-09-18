@@ -1,0 +1,2881 @@
+{
+"made": "2026-09-18",
+"source": "scripts/check_orders_history_plan.py --date-from 2026-03-28 --date-to 2026-09-18, раздел E",
+"meaning": "ключи daily_sku_kpi (ozon): заказы в таблице есть сейчас, после пересборки строки заказов не останется, выкупов/расходов/органики у ключа нет — ночной KPI ключ не перестроит",
+"keys": [
+{
+"kpi_date": "2026-04-02",
+"marketplace_sku": "3214720332",
+"orders_qty": "1.0",
+"orders_amount_seller": "12009.0"
+},
+{
+"kpi_date": "2026-04-02",
+"marketplace_sku": "3543927637",
+"orders_qty": "1.0",
+"orders_amount_seller": "5360.0"
+},
+{
+"kpi_date": "2026-04-03",
+"marketplace_sku": "2574029918",
+"orders_qty": "1.0",
+"orders_amount_seller": "80701.0"
+},
+{
+"kpi_date": "2026-04-03",
+"marketplace_sku": "3256173810",
+"orders_qty": "1.0",
+"orders_amount_seller": "16656.0"
+},
+{
+"kpi_date": "2026-04-04",
+"marketplace_sku": "1066709084",
+"orders_qty": "1.0",
+"orders_amount_seller": "41704.0"
+},
+{
+"kpi_date": "2026-04-04",
+"marketplace_sku": "1175227677",
+"orders_qty": "1.0",
+"orders_amount_seller": "18819.0"
+},
+{
+"kpi_date": "2026-04-05",
+"marketplace_sku": "1502337353",
+"orders_qty": "1.0",
+"orders_amount_seller": "62616.0"
+},
+{
+"kpi_date": "2026-04-06",
+"marketplace_sku": "3537197941",
+"orders_qty": "1.0",
+"orders_amount_seller": "1096.0"
+},
+{
+"kpi_date": "2026-04-06",
+"marketplace_sku": "997195889",
+"orders_qty": "1.0",
+"orders_amount_seller": "11468.0"
+},
+{
+"kpi_date": "2026-04-07",
+"marketplace_sku": "1154332598",
+"orders_qty": "1.0",
+"orders_amount_seller": "17568.0"
+},
+{
+"kpi_date": "2026-04-07",
+"marketplace_sku": "1502336117",
+"orders_qty": "1.0",
+"orders_amount_seller": "24241.0"
+},
+{
+"kpi_date": "2026-04-08",
+"marketplace_sku": "2531294765",
+"orders_qty": "1.0",
+"orders_amount_seller": "11138.0"
+},
+{
+"kpi_date": "2026-04-08",
+"marketplace_sku": "3537197950",
+"orders_qty": "1.0",
+"orders_amount_seller": "1208.0"
+},
+{
+"kpi_date": "2026-04-08",
+"marketplace_sku": "3537198235",
+"orders_qty": "1.0",
+"orders_amount_seller": "1129.0"
+},
+{
+"kpi_date": "2026-04-08",
+"marketplace_sku": "997206094",
+"orders_qty": "1.0",
+"orders_amount_seller": "23105.0"
+},
+{
+"kpi_date": "2026-04-09",
+"marketplace_sku": "3149328381",
+"orders_qty": "1.0",
+"orders_amount_seller": "10642.0"
+},
+{
+"kpi_date": "2026-04-09",
+"marketplace_sku": "3542397668",
+"orders_qty": "1.0",
+"orders_amount_seller": "2711.0"
+},
+{
+"kpi_date": "2026-04-11",
+"marketplace_sku": "1665275391",
+"orders_qty": "1.0",
+"orders_amount_seller": "104483.0"
+},
+{
+"kpi_date": "2026-04-11",
+"marketplace_sku": "3537197871",
+"orders_qty": "1.0",
+"orders_amount_seller": "1159.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1058566513",
+"orders_qty": "1.0",
+"orders_amount_seller": "43793.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1165670674",
+"orders_qty": "1.0",
+"orders_amount_seller": "7021.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1202108741",
+"orders_qty": "1.0",
+"orders_amount_seller": "77503.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1469294257",
+"orders_qty": "1.0",
+"orders_amount_seller": "46467.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1505970424",
+"orders_qty": "1.0",
+"orders_amount_seller": "32970.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "1505970606",
+"orders_qty": "1.0",
+"orders_amount_seller": "32772.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3118764333",
+"orders_qty": "1.0",
+"orders_amount_seller": "4986.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3118764376",
+"orders_qty": "1.0",
+"orders_amount_seller": "2668.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3119095131",
+"orders_qty": "1.0",
+"orders_amount_seller": "21942.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3119095242",
+"orders_qty": "1.0",
+"orders_amount_seller": "73662.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3119095266",
+"orders_qty": "1.0",
+"orders_amount_seller": "31664.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3230091251",
+"orders_qty": "1.0",
+"orders_amount_seller": "26533.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3543927343",
+"orders_qty": "1.0",
+"orders_amount_seller": "7544.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3543927383",
+"orders_qty": "1.0",
+"orders_amount_seller": "12324.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3543927400",
+"orders_qty": "1.0",
+"orders_amount_seller": "13098.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3543927542",
+"orders_qty": "1.0",
+"orders_amount_seller": "18336.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3543927572",
+"orders_qty": "1.0",
+"orders_amount_seller": "21069.0"
+},
+{
+"kpi_date": "2026-04-13",
+"marketplace_sku": "3545632413",
+"orders_qty": "1.0",
+"orders_amount_seller": "25604.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "1539253271",
+"orders_qty": "1.0",
+"orders_amount_seller": "62299.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "1627223627",
+"orders_qty": "1.0",
+"orders_amount_seller": "171952.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "1680926524",
+"orders_qty": "1.0",
+"orders_amount_seller": "22808.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "2839124233",
+"orders_qty": "1.0",
+"orders_amount_seller": "143399.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "3119094728",
+"orders_qty": "1.0",
+"orders_amount_seller": "17164.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "3543927272",
+"orders_qty": "1.0",
+"orders_amount_seller": "7323.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "3543927677",
+"orders_qty": "1.0",
+"orders_amount_seller": "12664.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "3543927738",
+"orders_qty": "1.0",
+"orders_amount_seller": "69954.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "3545632409",
+"orders_qty": "1.0",
+"orders_amount_seller": "34794.0"
+},
+{
+"kpi_date": "2026-04-14",
+"marketplace_sku": "994008672",
+"orders_qty": "1.0",
+"orders_amount_seller": "15488.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1219891272",
+"orders_qty": "1.0",
+"orders_amount_seller": "44847.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1325114822",
+"orders_qty": "1.0",
+"orders_amount_seller": "48675.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1543281558",
+"orders_qty": "1.0",
+"orders_amount_seller": "32491.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1652858831",
+"orders_qty": "1.0",
+"orders_amount_seller": "13283.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1704936244",
+"orders_qty": "1.0",
+"orders_amount_seller": "20371.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "1747858269",
+"orders_qty": "1.0",
+"orders_amount_seller": "4771.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "2673632301",
+"orders_qty": "1.0",
+"orders_amount_seller": "29975.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "3119093912",
+"orders_qty": "1.0",
+"orders_amount_seller": "5944.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "3119095082",
+"orders_qty": "1.0",
+"orders_amount_seller": "6234.0"
+},
+{
+"kpi_date": "2026-04-15",
+"marketplace_sku": "3545632393",
+"orders_qty": "1.0",
+"orders_amount_seller": "16974.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1017342792",
+"orders_qty": "2.0",
+"orders_amount_seller": "51714.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1543281031",
+"orders_qty": "1.0",
+"orders_amount_seller": "53412.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1549381090",
+"orders_qty": "1.0",
+"orders_amount_seller": "169179.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1557196274",
+"orders_qty": "1.0",
+"orders_amount_seller": "48050.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1680229598",
+"orders_qty": "1.0",
+"orders_amount_seller": "43551.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "1680229917",
+"orders_qty": "1.0",
+"orders_amount_seller": "49363.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "2568755736",
+"orders_qty": "1.0",
+"orders_amount_seller": "14567.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "3537197668",
+"orders_qty": "1.0",
+"orders_amount_seller": "1467.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "3543927340",
+"orders_qty": "1.0",
+"orders_amount_seller": "12960.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "3557069006",
+"orders_qty": "1.0",
+"orders_amount_seller": "7787.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "3560250647",
+"orders_qty": "1.0",
+"orders_amount_seller": "30627.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "3560260828",
+"orders_qty": "1.0",
+"orders_amount_seller": "10768.0"
+},
+{
+"kpi_date": "2026-04-16",
+"marketplace_sku": "985882209",
+"orders_qty": "1.0",
+"orders_amount_seller": "25184.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "1218451343",
+"orders_qty": "1.0",
+"orders_amount_seller": "85305.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "1469273919",
+"orders_qty": "1.0",
+"orders_amount_seller": "57937.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "1940530154",
+"orders_qty": "1.0",
+"orders_amount_seller": "43151.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "1940531317",
+"orders_qty": "1.0",
+"orders_amount_seller": "44719.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "2516703993",
+"orders_qty": "1.0",
+"orders_amount_seller": "25478.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "2948247147",
+"orders_qty": "1.0",
+"orders_amount_seller": "19976.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "3119093970",
+"orders_qty": "1.0",
+"orders_amount_seller": "29182.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "3255894776",
+"orders_qty": "1.0",
+"orders_amount_seller": "14712.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "3543927271",
+"orders_qty": "1.0",
+"orders_amount_seller": "10789.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "3560258928",
+"orders_qty": "1.0",
+"orders_amount_seller": "25411.0"
+},
+{
+"kpi_date": "2026-04-17",
+"marketplace_sku": "3589066265",
+"orders_qty": "1.0",
+"orders_amount_seller": "11643.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "1012621870",
+"orders_qty": "1.0",
+"orders_amount_seller": "43319.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "1538676137",
+"orders_qty": "1.0",
+"orders_amount_seller": "399999.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "1680926962",
+"orders_qty": "1.0",
+"orders_amount_seller": "46967.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "1756751797",
+"orders_qty": "1.0",
+"orders_amount_seller": "130556.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "1828760990",
+"orders_qty": "1.0",
+"orders_amount_seller": "84024.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "2948246977",
+"orders_qty": "1.0",
+"orders_amount_seller": "40085.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3118764406",
+"orders_qty": "1.0",
+"orders_amount_seller": "54721.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3119094976",
+"orders_qty": "1.0",
+"orders_amount_seller": "13609.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3119096052",
+"orders_qty": "1.0",
+"orders_amount_seller": "6642.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3436658288",
+"orders_qty": "1.0",
+"orders_amount_seller": "9158.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3436658638",
+"orders_qty": "1.0",
+"orders_amount_seller": "12349.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3537197947",
+"orders_qty": "1.0",
+"orders_amount_seller": "1571.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3542228748",
+"orders_qty": "1.0",
+"orders_amount_seller": "7554.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3543927354",
+"orders_qty": "1.0",
+"orders_amount_seller": "13760.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3543927409",
+"orders_qty": "18.0",
+"orders_amount_seller": "194206.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3543927442",
+"orders_qty": "1.0",
+"orders_amount_seller": "8349.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3543927666",
+"orders_qty": "1.0",
+"orders_amount_seller": "10912.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3545632396",
+"orders_qty": "1.0",
+"orders_amount_seller": "5738.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3556987318",
+"orders_qty": "1.0",
+"orders_amount_seller": "13289.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "3560250647",
+"orders_qty": "1.0",
+"orders_amount_seller": "27557.0"
+},
+{
+"kpi_date": "2026-04-18",
+"marketplace_sku": "991772014",
+"orders_qty": "1.0",
+"orders_amount_seller": "18288.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "1068853543",
+"orders_qty": "1.0",
+"orders_amount_seller": "85549.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "1466846833",
+"orders_qty": "1.0",
+"orders_amount_seller": "4099.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "1680229849",
+"orders_qty": "1.0",
+"orders_amount_seller": "60518.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "2719323011",
+"orders_qty": "2.0",
+"orders_amount_seller": "141612.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "2859752190",
+"orders_qty": "1.0",
+"orders_amount_seller": "11547.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "2948247606",
+"orders_qty": "1.0",
+"orders_amount_seller": "16846.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3119094146",
+"orders_qty": "1.0",
+"orders_amount_seller": "30798.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3149220971",
+"orders_qty": "1.0",
+"orders_amount_seller": "13737.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3214760981",
+"orders_qty": "1.0",
+"orders_amount_seller": "6840.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3424015769",
+"orders_qty": "1.0",
+"orders_amount_seller": "12327.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3543927450",
+"orders_qty": "1.0",
+"orders_amount_seller": "24519.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3543927582",
+"orders_qty": "1.0",
+"orders_amount_seller": "24280.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3544004711",
+"orders_qty": "1.0",
+"orders_amount_seller": "778.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3548534358",
+"orders_qty": "1.0",
+"orders_amount_seller": "902.0"
+},
+{
+"kpi_date": "2026-04-19",
+"marketplace_sku": "3800977978",
+"orders_qty": "1.0",
+"orders_amount_seller": "686.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1116114577",
+"orders_qty": "1.0",
+"orders_amount_seller": "174468.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1219855847",
+"orders_qty": "1.0",
+"orders_amount_seller": "80614.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1316790194",
+"orders_qty": "1.0",
+"orders_amount_seller": "51068.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1543281442",
+"orders_qty": "1.0",
+"orders_amount_seller": "29362.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1549381105",
+"orders_qty": "1.0",
+"orders_amount_seller": "25607.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1626402073",
+"orders_qty": "1.0",
+"orders_amount_seller": "112055.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1678972150",
+"orders_qty": "1.0",
+"orders_amount_seller": "61050.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "1756751797",
+"orders_qty": "1.0",
+"orders_amount_seller": "127215.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "2948247297",
+"orders_qty": "1.0",
+"orders_amount_seller": "64927.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3118764252",
+"orders_qty": "1.0",
+"orders_amount_seller": "36439.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3118764416",
+"orders_qty": "1.0",
+"orders_amount_seller": "14602.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3119094550",
+"orders_qty": "1.0",
+"orders_amount_seller": "19571.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3119094728",
+"orders_qty": "1.0",
+"orders_amount_seller": "17164.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3119095133",
+"orders_qty": "1.0",
+"orders_amount_seller": "2930.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3255894552",
+"orders_qty": "1.0",
+"orders_amount_seller": "12678.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3430045444",
+"orders_qty": "1.0",
+"orders_amount_seller": "18308.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927271",
+"orders_qty": "1.0",
+"orders_amount_seller": "10233.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927332",
+"orders_qty": "1.0",
+"orders_amount_seller": "12093.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927384",
+"orders_qty": "1.0",
+"orders_amount_seller": "8643.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927534",
+"orders_qty": "1.0",
+"orders_amount_seller": "61147.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927627",
+"orders_qty": "1.0",
+"orders_amount_seller": "9621.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927655",
+"orders_qty": "1.0",
+"orders_amount_seller": "10282.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3543927866",
+"orders_qty": "1.0",
+"orders_amount_seller": "18491.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3545414612",
+"orders_qty": "2.0",
+"orders_amount_seller": "211624.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3545632396",
+"orders_qty": "1.0",
+"orders_amount_seller": "5738.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3545632402",
+"orders_qty": "1.0",
+"orders_amount_seller": "3978.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3545632481",
+"orders_qty": "1.0",
+"orders_amount_seller": "15271.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3790064303",
+"orders_qty": "1.0",
+"orders_amount_seller": "9945.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "3800976636",
+"orders_qty": "1.0",
+"orders_amount_seller": "7373.0"
+},
+{
+"kpi_date": "2026-04-20",
+"marketplace_sku": "997206239",
+"orders_qty": "1.0",
+"orders_amount_seller": "146538.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1335434586",
+"orders_qty": "1.0",
+"orders_amount_seller": "47286.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1557196023",
+"orders_qty": "1.0",
+"orders_amount_seller": "66772.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1620587018",
+"orders_qty": "1.0",
+"orders_amount_seller": "38491.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1680229522",
+"orders_qty": "1.0",
+"orders_amount_seller": "51650.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1680229781",
+"orders_qty": "1.0",
+"orders_amount_seller": "66522.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1680229910",
+"orders_qty": "1.0",
+"orders_amount_seller": "61385.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1680230038",
+"orders_qty": "1.0",
+"orders_amount_seller": "81011.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "1869692265",
+"orders_qty": "1.0",
+"orders_amount_seller": "81436.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "2679366812",
+"orders_qty": "1.0",
+"orders_amount_seller": "52947.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "2719323011",
+"orders_qty": "1.0",
+"orders_amount_seller": "70806.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3118763874",
+"orders_qty": "1.0",
+"orders_amount_seller": "2787.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3118764085",
+"orders_qty": "1.0",
+"orders_amount_seller": "43368.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3119094976",
+"orders_qty": "1.0",
+"orders_amount_seller": "13609.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3119095052",
+"orders_qty": "1.0",
+"orders_amount_seller": "5953.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3210677007",
+"orders_qty": "1.0",
+"orders_amount_seller": "59123.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3255894705",
+"orders_qty": "1.0",
+"orders_amount_seller": "35322.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3462776545",
+"orders_qty": "1.0",
+"orders_amount_seller": "9956.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927302",
+"orders_qty": "2.0",
+"orders_amount_seller": "51618.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927400",
+"orders_qty": "1.0",
+"orders_amount_seller": "12215.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927409",
+"orders_qty": "1.0",
+"orders_amount_seller": "11696.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927450",
+"orders_qty": "1.0",
+"orders_amount_seller": "24519.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927458",
+"orders_qty": "1.0",
+"orders_amount_seller": "7662.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927523",
+"orders_qty": "1.0",
+"orders_amount_seller": "15899.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3543927677",
+"orders_qty": "1.0",
+"orders_amount_seller": "13947.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3545632405",
+"orders_qty": "1.0",
+"orders_amount_seller": "11752.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3560268777",
+"orders_qty": "1.0",
+"orders_amount_seller": "10341.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3565029668",
+"orders_qty": "1.0",
+"orders_amount_seller": "15961.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3825052939",
+"orders_qty": "1.0",
+"orders_amount_seller": "12368.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "3825053474",
+"orders_qty": "1.0",
+"orders_amount_seller": "11417.0"
+},
+{
+"kpi_date": "2026-04-21",
+"marketplace_sku": "997204446",
+"orders_qty": "1.0",
+"orders_amount_seller": "48674.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1116114917",
+"orders_qty": "1.0",
+"orders_amount_seller": "85712.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1469326735",
+"orders_qty": "1.0",
+"orders_amount_seller": "42544.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1549381385",
+"orders_qty": "1.0",
+"orders_amount_seller": "30507.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1555929865",
+"orders_qty": "1.0",
+"orders_amount_seller": "26498.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1620587102",
+"orders_qty": "1.0",
+"orders_amount_seller": "41064.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1620655448",
+"orders_qty": "1.0",
+"orders_amount_seller": "152381.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1628689267",
+"orders_qty": "1.0",
+"orders_amount_seller": "33099.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1648573309",
+"orders_qty": "1.0",
+"orders_amount_seller": "41696.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1739860418",
+"orders_qty": "1.0",
+"orders_amount_seller": "26700.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1828760990",
+"orders_qty": "1.0",
+"orders_amount_seller": "84024.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "1967220580",
+"orders_qty": "1.0",
+"orders_amount_seller": "49800.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "2633238968",
+"orders_qty": "2.0",
+"orders_amount_seller": "101300.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "2948247609",
+"orders_qty": "1.0",
+"orders_amount_seller": "40837.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3119094174",
+"orders_qty": "1.0",
+"orders_amount_seller": "32591.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3430038238",
+"orders_qty": "1.0",
+"orders_amount_seller": "42892.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3543927445",
+"orders_qty": "1.0",
+"orders_amount_seller": "32362.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3543927612",
+"orders_qty": "2.0",
+"orders_amount_seller": "19800.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3543927646",
+"orders_qty": "2.0",
+"orders_amount_seller": "20210.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3543927655",
+"orders_qty": "1.0",
+"orders_amount_seller": "10282.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3545414688",
+"orders_qty": "1.0",
+"orders_amount_seller": "46836.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3545632353",
+"orders_qty": "2.0",
+"orders_amount_seller": "10732.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3560218253",
+"orders_qty": "1.0",
+"orders_amount_seller": "49624.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3560587635",
+"orders_qty": "1.0",
+"orders_amount_seller": "113702.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3693197490",
+"orders_qty": "1.0",
+"orders_amount_seller": "2980.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3790067208",
+"orders_qty": "1.0",
+"orders_amount_seller": "7373.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3800976636",
+"orders_qty": "2.0",
+"orders_amount_seller": "14746.0"
+},
+{
+"kpi_date": "2026-04-22",
+"marketplace_sku": "3971732578",
+"orders_qty": "1.0",
+"orders_amount_seller": "32325.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1066707237",
+"orders_qty": "1.0",
+"orders_amount_seller": "35946.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1068731825",
+"orders_qty": "1.0",
+"orders_amount_seller": "77626.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1205197773",
+"orders_qty": "1.0",
+"orders_amount_seller": "38643.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1293981397",
+"orders_qty": "1.0",
+"orders_amount_seller": "49556.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1549380867",
+"orders_qty": "1.0",
+"orders_amount_seller": "111816.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1549380999",
+"orders_qty": "1.0",
+"orders_amount_seller": "198154.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1620587035",
+"orders_qty": "1.0",
+"orders_amount_seller": "41055.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1646871829",
+"orders_qty": "1.0",
+"orders_amount_seller": "377677.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "1680087546",
+"orders_qty": "1.0",
+"orders_amount_seller": "116816.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "2673631521",
+"orders_qty": "1.0",
+"orders_amount_seller": "45889.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "2673631699",
+"orders_qty": "1.0",
+"orders_amount_seller": "39755.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3118764085",
+"orders_qty": "1.0",
+"orders_amount_seller": "43368.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3118764333",
+"orders_qty": "1.0",
+"orders_amount_seller": "4986.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3118764562",
+"orders_qty": "1.0",
+"orders_amount_seller": "35340.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3228193243",
+"orders_qty": "2.0",
+"orders_amount_seller": "147044.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3424015469",
+"orders_qty": "1.0",
+"orders_amount_seller": "10844.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3424016357",
+"orders_qty": "1.0",
+"orders_amount_seller": "12774.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927400",
+"orders_qty": "1.0",
+"orders_amount_seller": "13286.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927409",
+"orders_qty": "1.0",
+"orders_amount_seller": "12446.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927431",
+"orders_qty": "1.0",
+"orders_amount_seller": "10282.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927540",
+"orders_qty": "2.0",
+"orders_amount_seller": "9674.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927573",
+"orders_qty": "1.0",
+"orders_amount_seller": "58693.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927628",
+"orders_qty": "1.0",
+"orders_amount_seller": "10459.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3543927637",
+"orders_qty": "2.0",
+"orders_amount_seller": "9810.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3557064722",
+"orders_qty": "2.0",
+"orders_amount_seller": "107912.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3560270864",
+"orders_qty": "1.0",
+"orders_amount_seller": "22322.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3693196962",
+"orders_qty": "1.0",
+"orders_amount_seller": "2073.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3800976811",
+"orders_qty": "1.0",
+"orders_amount_seller": "8955.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3825052799",
+"orders_qty": "1.0",
+"orders_amount_seller": "19345.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3825053474",
+"orders_qty": "2.0",
+"orders_amount_seller": "22834.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "3825053869",
+"orders_qty": "1.0",
+"orders_amount_seller": "15806.0"
+},
+{
+"kpi_date": "2026-04-23",
+"marketplace_sku": "997204402",
+"orders_qty": "1.0",
+"orders_amount_seller": "43055.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1059426657",
+"orders_qty": "1.0",
+"orders_amount_seller": "207509.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1061063855",
+"orders_qty": "1.0",
+"orders_amount_seller": "62352.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1204935613",
+"orders_qty": "1.0",
+"orders_amount_seller": "82012.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1464840782",
+"orders_qty": "1.0",
+"orders_amount_seller": "34117.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1678972328",
+"orders_qty": "1.0",
+"orders_amount_seller": "71816.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1713909383",
+"orders_qty": "1.0",
+"orders_amount_seller": "10647.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1747188196",
+"orders_qty": "1.0",
+"orders_amount_seller": "28474.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "1774701453",
+"orders_qty": "1.0",
+"orders_amount_seller": "23930.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "2948247438",
+"orders_qty": "1.0",
+"orders_amount_seller": "63759.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "2948378620",
+"orders_qty": "1.0",
+"orders_amount_seller": "66214.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3118764406",
+"orders_qty": "1.0",
+"orders_amount_seller": "54721.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3119093970",
+"orders_qty": "1.0",
+"orders_amount_seller": "29182.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3119094926",
+"orders_qty": "1.0",
+"orders_amount_seller": "3749.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3119094962",
+"orders_qty": "1.0",
+"orders_amount_seller": "16969.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3214729722",
+"orders_qty": "1.0",
+"orders_amount_seller": "17091.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3256136483",
+"orders_qty": "1.0",
+"orders_amount_seller": "7267.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543507584",
+"orders_qty": "1.0",
+"orders_amount_seller": "10293.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927340",
+"orders_qty": "2.0",
+"orders_amount_seller": "25352.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927517",
+"orders_qty": "1.0",
+"orders_amount_seller": "9869.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927548",
+"orders_qty": "1.0",
+"orders_amount_seller": "25096.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927577",
+"orders_qty": "1.0",
+"orders_amount_seller": "8038.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927612",
+"orders_qty": "1.0",
+"orders_amount_seller": "9900.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3543927642",
+"orders_qty": "1.0",
+"orders_amount_seller": "13114.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3545632399",
+"orders_qty": "1.0",
+"orders_amount_seller": "4543.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3564120580",
+"orders_qty": "1.0",
+"orders_amount_seller": "11529.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3790063524",
+"orders_qty": "1.0",
+"orders_amount_seller": "819.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3790067208",
+"orders_qty": "2.0",
+"orders_amount_seller": "14746.0"
+},
+{
+"kpi_date": "2026-04-24",
+"marketplace_sku": "3825058385",
+"orders_qty": "1.0",
+"orders_amount_seller": "1157.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1012621870",
+"orders_qty": "1.0",
+"orders_amount_seller": "43319.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1012621991",
+"orders_qty": "1.0",
+"orders_amount_seller": "41598.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1116114572",
+"orders_qty": "2.0",
+"orders_amount_seller": "299002.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1125076623",
+"orders_qty": "1.0",
+"orders_amount_seller": "22086.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1469289879",
+"orders_qty": "1.0",
+"orders_amount_seller": "40977.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1538675768",
+"orders_qty": "1.0",
+"orders_amount_seller": "122440.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1539253217",
+"orders_qty": "1.0",
+"orders_amount_seller": "56135.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1543280977",
+"orders_qty": "1.0",
+"orders_amount_seller": "28730.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1543281320",
+"orders_qty": "1.0",
+"orders_amount_seller": "27021.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1627517783",
+"orders_qty": "1.0",
+"orders_amount_seller": "25775.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1645212349",
+"orders_qty": "1.0",
+"orders_amount_seller": "58812.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1648572654",
+"orders_qty": "2.0",
+"orders_amount_seller": "84962.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1680229849",
+"orders_qty": "1.0",
+"orders_amount_seller": "60518.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1711226020",
+"orders_qty": "3.0",
+"orders_amount_seller": "163326.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1747858269",
+"orders_qty": "2.0",
+"orders_amount_seller": "9256.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "1756751709",
+"orders_qty": "1.0",
+"orders_amount_seller": "19605.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2624313276",
+"orders_qty": "1.0",
+"orders_amount_seller": "12306.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2673632447",
+"orders_qty": "1.0",
+"orders_amount_seller": "50815.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2673633638",
+"orders_qty": "1.0",
+"orders_amount_seller": "46789.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2855269609",
+"orders_qty": "1.0",
+"orders_amount_seller": "14985.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2859752000",
+"orders_qty": "1.0",
+"orders_amount_seller": "9735.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2948246773",
+"orders_qty": "1.0",
+"orders_amount_seller": "43150.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "2974965032",
+"orders_qty": "1.0",
+"orders_amount_seller": "29714.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3119095052",
+"orders_qty": "1.0",
+"orders_amount_seller": "5953.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3210871856",
+"orders_qty": "1.0",
+"orders_amount_seller": "14325.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3214760981",
+"orders_qty": "1.0",
+"orders_amount_seller": "6840.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927271",
+"orders_qty": "2.0",
+"orders_amount_seller": "21301.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927358",
+"orders_qty": "1.0",
+"orders_amount_seller": "12226.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927361",
+"orders_qty": "1.0",
+"orders_amount_seller": "10268.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927502",
+"orders_qty": "1.0",
+"orders_amount_seller": "25571.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927542",
+"orders_qty": "1.0",
+"orders_amount_seller": "16869.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3543927622",
+"orders_qty": "1.0",
+"orders_amount_seller": "12499.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3545414612",
+"orders_qty": "1.0",
+"orders_amount_seller": "105812.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3545414688",
+"orders_qty": "1.0",
+"orders_amount_seller": "46836.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3545632440",
+"orders_qty": "1.0",
+"orders_amount_seller": "15604.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3556190782",
+"orders_qty": "1.0",
+"orders_amount_seller": "29159.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3557064722",
+"orders_qty": "1.0",
+"orders_amount_seller": "53956.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3589192126",
+"orders_qty": "1.0",
+"orders_amount_seller": "10112.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3790060799",
+"orders_qty": "1.0",
+"orders_amount_seller": "31903.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3790064303",
+"orders_qty": "1.0",
+"orders_amount_seller": "9945.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3800975337",
+"orders_qty": "1.0",
+"orders_amount_seller": "13887.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3825053659",
+"orders_qty": "1.0",
+"orders_amount_seller": "15042.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3825053903",
+"orders_qty": "1.0",
+"orders_amount_seller": "11531.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3825054613",
+"orders_qty": "1.0",
+"orders_amount_seller": "12120.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3825056919",
+"orders_qty": "1.0",
+"orders_amount_seller": "14970.0"
+},
+{
+"kpi_date": "2026-04-25",
+"marketplace_sku": "3855865485",
+"orders_qty": "1.0",
+"orders_amount_seller": "47728.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1004775137",
+"orders_qty": "1.0",
+"orders_amount_seller": "12386.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1116114582",
+"orders_qty": "1.0",
+"orders_amount_seller": "159606.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1116114819",
+"orders_qty": "1.0",
+"orders_amount_seller": "20833.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1165683763",
+"orders_qty": "2.0",
+"orders_amount_seller": "14466.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1269179893",
+"orders_qty": "1.0",
+"orders_amount_seller": "10301.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1543281301",
+"orders_qty": "2.0",
+"orders_amount_seller": "170612.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1543281442",
+"orders_qty": "1.0",
+"orders_amount_seller": "29362.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1549380999",
+"orders_qty": "1.0",
+"orders_amount_seller": "198154.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1549381105",
+"orders_qty": "1.0",
+"orders_amount_seller": "25607.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "1620655576",
+"orders_qty": "1.0",
+"orders_amount_seller": "64279.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "2523784447",
+"orders_qty": "1.0",
+"orders_amount_seller": "14922.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "2568755848",
+"orders_qty": "1.0",
+"orders_amount_seller": "31380.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "2953637400",
+"orders_qty": "1.0",
+"orders_amount_seller": "23904.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "2974967985",
+"orders_qty": "1.0",
+"orders_amount_seller": "42144.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3094711018",
+"orders_qty": "2.0",
+"orders_amount_seller": "17256.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3118764624",
+"orders_qty": "1.0",
+"orders_amount_seller": "6412.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3119093982",
+"orders_qty": "1.0",
+"orders_amount_seller": "19242.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3210871992",
+"orders_qty": "1.0",
+"orders_amount_seller": "19470.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3214760578",
+"orders_qty": "1.0",
+"orders_amount_seller": "20758.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3255894759",
+"orders_qty": "1.0",
+"orders_amount_seller": "14629.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3256157406",
+"orders_qty": "2.0",
+"orders_amount_seller": "23776.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3256176520",
+"orders_qty": "1.0",
+"orders_amount_seller": "15808.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3424016357",
+"orders_qty": "1.0",
+"orders_amount_seller": "13457.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3462801050",
+"orders_qty": "1.0",
+"orders_amount_seller": "11341.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3543927344",
+"orders_qty": "1.0",
+"orders_amount_seller": "17656.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3543927447",
+"orders_qty": "1.0",
+"orders_amount_seller": "14504.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3543927792",
+"orders_qty": "1.0",
+"orders_amount_seller": "11727.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3544004711",
+"orders_qty": "1.0",
+"orders_amount_seller": "778.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3545632411",
+"orders_qty": "1.0",
+"orders_amount_seller": "5532.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3547424069",
+"orders_qty": "1.0",
+"orders_amount_seller": "820.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3553359740",
+"orders_qty": "1.0",
+"orders_amount_seller": "881.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3559566292",
+"orders_qty": "1.0",
+"orders_amount_seller": "19326.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3790061016",
+"orders_qty": "2.0",
+"orders_amount_seller": "74779.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3790063132",
+"orders_qty": "1.0",
+"orders_amount_seller": "19361.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3790063563",
+"orders_qty": "1.0",
+"orders_amount_seller": "36279.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3800976229",
+"orders_qty": "1.0",
+"orders_amount_seller": "12714.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825052659",
+"orders_qty": "1.0",
+"orders_amount_seller": "10996.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825053349",
+"orders_qty": "1.0",
+"orders_amount_seller": "16349.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825053379",
+"orders_qty": "1.0",
+"orders_amount_seller": "21269.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825054056",
+"orders_qty": "1.0",
+"orders_amount_seller": "14128.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825054179",
+"orders_qty": "1.0",
+"orders_amount_seller": "13400.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825054887",
+"orders_qty": "1.0",
+"orders_amount_seller": "16366.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3825055251",
+"orders_qty": "1.0",
+"orders_amount_seller": "23616.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3855866327",
+"orders_qty": "1.0",
+"orders_amount_seller": "23850.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "3971725789",
+"orders_qty": "1.0",
+"orders_amount_seller": "28903.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "967688989",
+"orders_qty": "1.0",
+"orders_amount_seller": "13853.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "991772014",
+"orders_qty": "1.0",
+"orders_amount_seller": "15194.0"
+},
+{
+"kpi_date": "2026-04-26",
+"marketplace_sku": "997206323",
+"orders_qty": "1.0",
+"orders_amount_seller": "35918.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1011774198",
+"orders_qty": "1.0",
+"orders_amount_seller": "9434.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1030866148",
+"orders_qty": "1.0",
+"orders_amount_seller": "12287.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1116091714",
+"orders_qty": "1.0",
+"orders_amount_seller": "25639.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1116114917",
+"orders_qty": "1.0",
+"orders_amount_seller": "85712.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1543281558",
+"orders_qty": "1.0",
+"orders_amount_seller": "29677.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1555040446",
+"orders_qty": "1.0",
+"orders_amount_seller": "9448.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1657831529",
+"orders_qty": "1.0",
+"orders_amount_seller": "13042.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1680926524",
+"orders_qty": "1.0",
+"orders_amount_seller": "22566.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "1680926941",
+"orders_qty": "1.0",
+"orders_amount_seller": "118519.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2568725253",
+"orders_qty": "1.0",
+"orders_amount_seller": "36343.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2624314132",
+"orders_qty": "1.0",
+"orders_amount_seller": "80897.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2673631292",
+"orders_qty": "1.0",
+"orders_amount_seller": "44348.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2673631335",
+"orders_qty": "1.0",
+"orders_amount_seller": "51301.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2839124233",
+"orders_qty": "2.0",
+"orders_amount_seller": "285634.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2855269293",
+"orders_qty": "1.0",
+"orders_amount_seller": "22246.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2855269398",
+"orders_qty": "1.0",
+"orders_amount_seller": "34108.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2855269479",
+"orders_qty": "1.0",
+"orders_amount_seller": "14309.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2855269572",
+"orders_qty": "1.0",
+"orders_amount_seller": "19488.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2948247686",
+"orders_qty": "1.0",
+"orders_amount_seller": "10720.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2948408014",
+"orders_qty": "1.0",
+"orders_amount_seller": "18684.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "2996103122",
+"orders_qty": "1.0",
+"orders_amount_seller": "16071.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3119094590",
+"orders_qty": "1.0",
+"orders_amount_seller": "7183.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3256136483",
+"orders_qty": "1.0",
+"orders_amount_seller": "7267.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3424065614",
+"orders_qty": "1.0",
+"orders_amount_seller": "5930.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3430029823",
+"orders_qty": "2.0",
+"orders_amount_seller": "16092.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3537197727",
+"orders_qty": "1.0",
+"orders_amount_seller": "958.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927383",
+"orders_qty": "1.0",
+"orders_amount_seller": "11401.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927506",
+"orders_qty": "1.0",
+"orders_amount_seller": "19090.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927544",
+"orders_qty": "1.0",
+"orders_amount_seller": "8239.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927627",
+"orders_qty": "1.0",
+"orders_amount_seller": "9777.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927661",
+"orders_qty": "1.0",
+"orders_amount_seller": "26284.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927682",
+"orders_qty": "2.0",
+"orders_amount_seller": "32732.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927709",
+"orders_qty": "1.0",
+"orders_amount_seller": "25557.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927728",
+"orders_qty": "1.0",
+"orders_amount_seller": "14672.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3543927821",
+"orders_qty": "1.0",
+"orders_amount_seller": "15741.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3545632378",
+"orders_qty": "1.0",
+"orders_amount_seller": "12198.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3545632402",
+"orders_qty": "2.0",
+"orders_amount_seller": "8336.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3556190782",
+"orders_qty": "1.0",
+"orders_amount_seller": "29159.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3557064722",
+"orders_qty": "1.0",
+"orders_amount_seller": "53956.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3563925689",
+"orders_qty": "1.0",
+"orders_amount_seller": "40391.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3724586470",
+"orders_qty": "2.0",
+"orders_amount_seller": "25310.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790060188",
+"orders_qty": "1.0",
+"orders_amount_seller": "30680.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790060650",
+"orders_qty": "1.0",
+"orders_amount_seller": "22455.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790062360",
+"orders_qty": "3.0",
+"orders_amount_seller": "56043.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790064289",
+"orders_qty": "1.0",
+"orders_amount_seller": "23366.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790066365",
+"orders_qty": "1.0",
+"orders_amount_seller": "2325.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3790067255",
+"orders_qty": "1.0",
+"orders_amount_seller": "25017.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800976090",
+"orders_qty": "1.0",
+"orders_amount_seller": "591.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800976358",
+"orders_qty": "1.0",
+"orders_amount_seller": "895.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800976659",
+"orders_qty": "1.0",
+"orders_amount_seller": "924.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800976660",
+"orders_qty": "1.0",
+"orders_amount_seller": "836.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800976811",
+"orders_qty": "1.0",
+"orders_amount_seller": "8656.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3800977569",
+"orders_qty": "1.0",
+"orders_amount_seller": "6572.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825052551",
+"orders_qty": "1.0",
+"orders_amount_seller": "21837.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825052558",
+"orders_qty": "1.0",
+"orders_amount_seller": "11271.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825052794",
+"orders_qty": "1.0",
+"orders_amount_seller": "14910.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053125",
+"orders_qty": "1.0",
+"orders_amount_seller": "17006.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053400",
+"orders_qty": "1.0",
+"orders_amount_seller": "12841.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053624",
+"orders_qty": "1.0",
+"orders_amount_seller": "9187.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053766",
+"orders_qty": "2.0",
+"orders_amount_seller": "18450.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053803",
+"orders_qty": "2.0",
+"orders_amount_seller": "18778.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053903",
+"orders_qty": "1.0",
+"orders_amount_seller": "12743.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825053998",
+"orders_qty": "1.0",
+"orders_amount_seller": "13541.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825054059",
+"orders_qty": "1.0",
+"orders_amount_seller": "19105.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825054262",
+"orders_qty": "1.0",
+"orders_amount_seller": "11626.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3825058509",
+"orders_qty": "1.0",
+"orders_amount_seller": "12587.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "3857834974",
+"orders_qty": "1.0",
+"orders_amount_seller": "20247.0"
+},
+{
+"kpi_date": "2026-04-27",
+"marketplace_sku": "997203281",
+"orders_qty": "1.0",
+"orders_amount_seller": "34148.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1004775137",
+"orders_qty": "1.0",
+"orders_amount_seller": "12386.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1011466949",
+"orders_qty": "2.0",
+"orders_amount_seller": "72156.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1116114577",
+"orders_qty": "1.0",
+"orders_amount_seller": "173553.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1117024427",
+"orders_qty": "1.0",
+"orders_amount_seller": "36091.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1123267674",
+"orders_qty": "1.0",
+"orders_amount_seller": "55410.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1218450903",
+"orders_qty": "1.0",
+"orders_amount_seller": "49759.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1547642786",
+"orders_qty": "1.0",
+"orders_amount_seller": "30869.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1556635717",
+"orders_qty": "1.0",
+"orders_amount_seller": "45314.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1680230819",
+"orders_qty": "1.0",
+"orders_amount_seller": "34216.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1680230963",
+"orders_qty": "1.0",
+"orders_amount_seller": "36643.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "1680926504",
+"orders_qty": "1.0",
+"orders_amount_seller": "24804.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2046829999",
+"orders_qty": "1.0",
+"orders_amount_seller": "69041.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2624315296",
+"orders_qty": "1.0",
+"orders_amount_seller": "9953.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2673631119",
+"orders_qty": "1.0",
+"orders_amount_seller": "29302.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2953496329",
+"orders_qty": "1.0",
+"orders_amount_seller": "19180.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2996102451",
+"orders_qty": "1.0",
+"orders_amount_seller": "16885.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "2996672651",
+"orders_qty": "1.0",
+"orders_amount_seller": "30837.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3088671507",
+"orders_qty": "1.0",
+"orders_amount_seller": "32156.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3088671524",
+"orders_qty": "1.0",
+"orders_amount_seller": "30750.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3118764187",
+"orders_qty": "1.0",
+"orders_amount_seller": "51619.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3118764638",
+"orders_qty": "1.0",
+"orders_amount_seller": "41885.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3210871919",
+"orders_qty": "1.0",
+"orders_amount_seller": "56931.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3210872033",
+"orders_qty": "1.0",
+"orders_amount_seller": "16028.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3214718933",
+"orders_qty": "1.0",
+"orders_amount_seller": "11292.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3215839496",
+"orders_qty": "1.0",
+"orders_amount_seller": "52140.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3255894759",
+"orders_qty": "1.0",
+"orders_amount_seller": "14536.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3256179959",
+"orders_qty": "1.0",
+"orders_amount_seller": "14586.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3424014408",
+"orders_qty": "3.0",
+"orders_amount_seller": "36363.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3424014824",
+"orders_qty": "1.0",
+"orders_amount_seller": "12435.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3543927350",
+"orders_qty": "1.0",
+"orders_amount_seller": "26931.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3543927655",
+"orders_qty": "1.0",
+"orders_amount_seller": "10282.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3545414512",
+"orders_qty": "2.0",
+"orders_amount_seller": "64382.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3545632393",
+"orders_qty": "3.0",
+"orders_amount_seller": "46557.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3545632413",
+"orders_qty": "1.0",
+"orders_amount_seller": "24483.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3545632442",
+"orders_qty": "1.0",
+"orders_amount_seller": "4574.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3548534358",
+"orders_qty": "1.0",
+"orders_amount_seller": "902.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3725247502",
+"orders_qty": "1.0",
+"orders_amount_seller": "22489.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3790058063",
+"orders_qty": "1.0",
+"orders_amount_seller": "23789.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3790064303",
+"orders_qty": "1.0",
+"orders_amount_seller": "8123.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3790066806",
+"orders_qty": "1.0",
+"orders_amount_seller": "28014.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3790074434",
+"orders_qty": "1.0",
+"orders_amount_seller": "26369.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3800976229",
+"orders_qty": "1.0",
+"orders_amount_seller": "13394.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3800976380",
+"orders_qty": "1.0",
+"orders_amount_seller": "1273.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3800976564",
+"orders_qty": "1.0",
+"orders_amount_seller": "4491.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3800976636",
+"orders_qty": "2.0",
+"orders_amount_seller": "13070.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825052051",
+"orders_qty": "1.0",
+"orders_amount_seller": "1490.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825052117",
+"orders_qty": "1.0",
+"orders_amount_seller": "10794.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825052615",
+"orders_qty": "1.0",
+"orders_amount_seller": "9403.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825052665",
+"orders_qty": "1.0",
+"orders_amount_seller": "9757.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825053791",
+"orders_qty": "1.0",
+"orders_amount_seller": "11667.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825053966",
+"orders_qty": "1.0",
+"orders_amount_seller": "9584.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825054504",
+"orders_qty": "1.0",
+"orders_amount_seller": "22283.0"
+},
+{
+"kpi_date": "2026-04-28",
+"marketplace_sku": "3825054616",
+"orders_qty": "1.0",
+"orders_amount_seller": "8337.0"
+}
+]
+}

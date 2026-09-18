@@ -49,6 +49,7 @@ PAGE = 100
 SECONDS_PER_CALL = 2.05       # замер 2026-09-14, FBO /v3, пауза 1,5 с (docs/ozon_postings_migration.md)
 NIGHT_WINDOW = ((0, 15), (3, 15))
 BATCH = 500
+FETCHED_AT = {}               # схема -> момент сбора сырья (ISO, UTC); пишется в observed_at строк
 D = lambda v: Decimal(str(v or 0))  # noqa: E731
 
 
@@ -152,7 +153,8 @@ def fetch_history(scheme, date_from, date_to):
     path = raw_path(scheme, date_from, date_to)
     if os.path.exists(path):
         data = json.load(open(path))
-        print(f"{scheme}: сырьё из файла {path}: {len(data['postings'])} отправлений")
+        FETCHED_AT[scheme] = data.get("fetched_at")
+        print(f"{scheme}: сырьё из файла {path}: {len(data['postings'])} отправлений, снято {data.get('fetched_at')}")
         return data["postings"]
     if in_night_window(datetime.now(timezone.utc)):
         raise SystemExit("окно ночного прогона 00:15…03:15 UTC — не стартую")
@@ -185,18 +187,31 @@ def fetch_history(scheme, date_from, date_to):
     http_retry.post = orig
     postings = list(seen.values())
     os.makedirs(RAW_DIR, exist_ok=True)
-    json.dump({"schema": scheme, "fetched_at": datetime.now(timezone.utc).isoformat(),
+    FETCHED_AT[scheme] = datetime.now(timezone.utc).isoformat()
+    json.dump({"schema": scheme, "fetched_at": FETCHED_AT[scheme],
                "window": {"since": date_from, "to": date_to, "since_utc": start.isoformat(), "to_utc": end.isoformat()},
                "postings": postings}, open(path, "w"), ensure_ascii=False)
     print(f"{scheme}: {len(postings)} уникальных отправлений, обращений {calls['n']}, 429 — {calls['429']}, {time.monotonic() - t0:.0f} с → {path}")
     return postings
 
 
-def plan(date_from, date_to, apply=False):
+def month_ranges(date_from, date_to):
+    """[(с, по), …] по календарным месяцам внутри date_from … date_to, границы включены."""
+    out, cur, end = [], date.fromisoformat(date_from), date.fromisoformat(date_to)
+    while cur <= end:
+        nxt = (cur.replace(day=1) + timedelta(days=32)).replace(day=1)
+        out.append((cur.isoformat(), min(nxt - timedelta(days=1), end).isoformat()))
+        cur = nxt
+    return out
+
+
+def plan(date_from, date_to, apply=False, delete_by_month=False):
     rows_by_scheme, counters = {}, {}
     for scheme in ("fbo", "fbs"):
         postings = fetch_history(scheme, date_from, date_to)
-        rows, c = rules.build_order_rows(postings, scheme)
+        # observed_at — момент сбора, подтвердившего строку, а не момент запуска --apply:
+        # между ними могут пройти часы, и строка не должна выглядеть свежее своего сырья.
+        rows, c = rules.build_order_rows(postings, scheme, observed_at=FETCHED_AT.get(scheme))
         rules.print_counters(scheme, c)
         # Обе границы: сбор кончается в date_to, и delete ниже обязан кончаться там же.
         # Без верхней границы --date-to в прошлом стёр бы всё до сегодня, а записал до date_to.
@@ -229,12 +244,20 @@ def plan(date_from, date_to, apply=False):
     print(f"снимок {len(full)} строк (все колонки) → {snap}")
     for scheme, rows in rows_by_scheme.items():
         before = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
-        sb().table("marketplace_orders").delete().eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).execute()
+        t0 = time.monotonic()
+        # Один запрос атомарен: не уложился в statement_timeout — откатился целиком, таблица цела.
+        # По месяцам — только запасной путь: отказ посередине оставит дыру до перезапуска (снимок есть).
+        for d1, d2 in (month_ranges(date_from, date_to) if delete_by_month else [(date_from, date_to)]):
+            t1 = time.monotonic()
+            sb().table("marketplace_orders").delete().eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", d1).lte("order_date", d2).execute()
+            print(f"{scheme}: delete {d1} … {d2} — {time.monotonic() - t1:.1f} с", flush=True)
         left = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
         if left:
             raise SystemExit(f"{scheme}: после delete осталось {left} строк — стоп, запись не начата")
+        t2 = time.monotonic()
         for i in range(0, len(rows), BATCH):
             sb().table("marketplace_orders").upsert(rows[i:i + BATCH], on_conflict="order_date,marketplace_code,marketplace_sku,order_schema").execute()
+        print(f"{scheme}: запись {len(rows)} строк пачками по {BATCH} — {time.monotonic() - t2:.1f} с (delete {t2 - t0:.1f} с)", flush=True)
         after = sb().table("marketplace_orders").select("id", count="exact").eq("marketplace_code", "ozon").eq("order_schema", scheme).gte("order_date", date_from).lte("order_date", date_to).limit(1).execute().count
         print(f"{scheme}: было {before}, удалено, записано {len(rows)}, в таблице {after} {'=' if after == len(rows) else '≠ ОШИБКА'}")
     print("готово; витрины за окно пересоберёт ночной KPI, ключи витрин без заказов — удалить отдельно")
@@ -249,6 +272,8 @@ def main():
     g.add_argument("--fetch", action="store_true")
     g.add_argument("--plan", action="store_true")
     g.add_argument("--apply", action="store_true")
+    ap.add_argument("--delete-by-month", action="store_true",
+                    help="с --apply: удалять помесячно — запасной путь, если delete одним запросом не уложился в statement_timeout")
     args = ap.parse_args()
     if args.estimate:
         estimate(args.date_from)
@@ -259,7 +284,7 @@ def main():
     else:
         if args.apply and in_night_window(datetime.now(timezone.utc)):
             raise SystemExit("окно ночного прогона — не стартую")
-        plan(args.date_from, args.date_to, apply=args.apply)
+        plan(args.date_from, args.date_to, apply=args.apply, delete_by_month=args.delete_by_month)
 
 
 if __name__ == "__main__":

@@ -103,6 +103,22 @@ class ApplyBoundsTests(unittest.TestCase):
         written = [r["order_date"] for c in self.client.log if c["op"] == "upsert" for r in c["rows"]]
         self.assertEqual(written, ["2026-04-01"])
 
+    def test_delete_by_month_covers_the_same_window_without_gaps(self):
+        """Запасной путь при statement_timeout: те же границы, месяцы встык, ни дня мимо."""
+        rebuild.plan("2026-03-28", "2026-05-10", apply=True, delete_by_month=True)
+        fbo = [c for c in self.client.log if c["op"] == "delete" and ("eq", "order_schema", "fbo") in c["filters"]]
+        spans = [(next(f[2] for f in c["filters"] if f[0] == "gte"), next(f[2] for f in c["filters"] if f[0] == "lte")) for c in fbo]
+        self.assertEqual(spans, [("2026-03-28", "2026-03-31"), ("2026-04-01", "2026-04-30"), ("2026-05-01", "2026-05-10")])
+
+    def test_observed_at_is_the_fetch_moment(self):
+        rebuild.FETCHED_AT["fbo"] = "2026-09-18T13:51:25+00:00"
+        try:
+            rebuild.plan("2026-03-28", "2026-04-10", apply=True)
+        finally:
+            rebuild.FETCHED_AT.clear()
+        written = [r for c in self.client.log if c["op"] == "upsert" for r in c["rows"]]
+        self.assertEqual({r["observed_at"] for r in written}, {"2026-09-18T13:51:25+00:00"})
+
     def test_snapshot_keeps_full_rows(self):
         rebuild.plan("2026-03-28", "2026-04-10", apply=True)
         snaps = os.listdir(self.tmp.name)

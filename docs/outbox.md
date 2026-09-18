@@ -154,7 +154,8 @@ FBS  delete   одним запросом, 4,4 с     запись 21 123 стр
 
 ### Коммиты
 
-`main`, ветки нет. Номер — следующим коммитом, как в прошлый раз.
+`main`, ветки нет: `b40290d` — скрипты, тест, правило, документы; номер
+дописан следующим коммитом.
 Файлы: `scripts/rebuild_ozon_orders_history.py`, `scripts/delete_stale_kpi_keys.py`
 (новый), `tests/test_rebuild_orders_history.py`, `docs/how-we-work.md`,
 документы. Снимки и сырьё — вне git (`data/snapshots/`, `data/postings_raw/`).

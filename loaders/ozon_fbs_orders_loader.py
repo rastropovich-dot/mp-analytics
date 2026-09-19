@@ -69,11 +69,15 @@ def get_ozon_fbs_postings(days_back=DEFAULT_DAYS_BACK, since=None, to=None):
     Сверка старого и нового на одном окне — scripts/ozon_fbs_v4_parity.py,
     docs/ozon_orders_one_rule.md.
 
-    since/to — границы окна (datetime, UTC); без них — последние days_back дней.
+    since/to — границы окна (datetime, UTC); без них — ночное окно: от локальной
+    полуночи даты (сегодня − days_back) до «сейчас», чтобы первый день окна был
+    целым (rules.nightly_window).
     """
     url = "https://api-seller.ozon.ru/v4/posting/fbs/list"
-    date_to = to or datetime.now(timezone.utc)
-    date_from = since or (date_to - timedelta(days=days_back))
+    night_from, night_to = rules.nightly_window(days_back)
+    date_to = to or night_to
+    date_from = since or night_from
+    print(f"Ozon FBS: окно сбора {date_from.strftime('%Y-%m-%dT%H:%M:%S.000Z')} … {date_to.strftime('%Y-%m-%dT%H:%M:%S.000Z')}")
 
     postings, cursor, pages = [], "", 0
     limit = 100  # потолок метода, спека: maximum 100

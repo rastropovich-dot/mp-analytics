@@ -112,12 +112,15 @@ def get_fbo_postings(days_back=30, since=None, to=None):
     См. docs/ozon_postings_migration.md.
 
     since/to — границы окна (datetime, UTC) для пересборки истории; без них —
-    последние days_back дней, как в ночном прогоне.
+    ночное окно: от локальной полуночи даты (сегодня − days_back) до «сейчас»,
+    чтобы первый день окна был целым (rules.nightly_window).
     """
     url = "https://api-seller.ozon.ru/v3/posting/fbo/list"
 
-    date_to = to or datetime.now(timezone.utc)
-    date_from = since or (date_to - timedelta(days=days_back))
+    night_from, night_to = rules.nightly_window(days_back)
+    date_to = to or night_to
+    date_from = since or night_from
+    print(f"Ozon FBO: окно сбора {date_from.strftime('%Y-%m-%dT%H:%M:%S.000Z')} … {date_to.strftime('%Y-%m-%dT%H:%M:%S.000Z')}")
 
     postings = []
     limit = 100          # потолок метода, спека: maximum 100

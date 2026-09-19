@@ -24,6 +24,9 @@ data/manual_report_*.xlsx
 # снимки строк перед необратимыми перезаписями
 data/snapshots/
 
+# готовые листы отчётов (scripts/report_ozon_month.py) — данные, в git не кладём
+data/reports/
+
 # сырые начисления по датам для измерителя истории выкупов, в git не кладём
 data/accrual_history/
 knowledge/telegram/*.bak

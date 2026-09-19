@@ -34,7 +34,7 @@ FBS — `in_process_at` (`created_at` в `/v4/posting/fbs/list` нет; запо
 вслух — молчаливого else нет.
 """
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 import os
@@ -52,6 +52,43 @@ CONFIRMED_STATUSES = frozenset({
     "arbitration", "client_arbitration", "delivering", "driver_pickup",
     "delivered", "not_accepted", "sent_by_seller",
 })
+
+
+def utc_now():
+    """Текущий момент в UTC. Отдельной функцией, чтобы тесты окна могли зафиксировать «сейчас»."""
+    return datetime.now(timezone.utc)
+
+
+def utc_window(date_from, date_to, now_utc=None):
+    """Границы сбора в UTC для ЛОКАЛЬНЫХ дней date_from … date_to (ISO-строки или date).
+
+    order_date — локальная дата (APP_TIMEZONE), а метод фильтрует по UTC-времени
+    заказа. Окно от 00:00 UTC теряло первые три часа локального дня date_from.
+    Конец — не позже «сейчас»: будущее методу не передаём.
+    """
+    tz = ZoneInfo(APP_TIMEZONE)
+    now_utc = now_utc or utc_now()
+    d1 = date.fromisoformat(date_from) if isinstance(date_from, str) else date_from
+    d2 = date.fromisoformat(date_to) if isinstance(date_to, str) else date_to
+    start = datetime.combine(d1, dtime.min, tzinfo=tz).astimezone(timezone.utc)
+    end = datetime.combine(d2 + timedelta(days=1), dtime.min, tzinfo=tz).astimezone(timezone.utc)
+    return start, min(end, now_utc.replace(microsecond=0))
+
+
+def nightly_window(days_back, now_utc=None):
+    """Окно ночного сбора: от локальной полуночи даты (сегодня по местному − days_back) до «сейчас».
+
+    До 2026-09-19 окно было «сейчас − days_back» в UTC, то есть начиналось в ~03:20 МСК
+    даты D. Строки строятся из отправлений окна, и upsert ЗАМЕЩАЕТ ключ (D, sku): если
+    товар в день D продавался и до 03:20, и после, ранние заказы исчезали из строки
+    навсегда — следующей ночью D уже вне окна. Измерено: ~1,1 % по дате за ночь
+    (FBO 5 079 975 за 05-16 … 08-18), предсказание на 08-20 сбылось до рубля.
+    Первый день окна обязан быть целым, потому что он переписывается целиком.
+    """
+    now_utc = now_utc or utc_now()
+    first_day = now_utc.astimezone(ZoneInfo(APP_TIMEZONE)).date() - timedelta(days=days_back)
+    start, _end = utc_window(first_day, first_day, now_utc)
+    return start, now_utc
 
 
 def to_local_order_date(value):

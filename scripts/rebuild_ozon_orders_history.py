@@ -30,9 +30,8 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -90,19 +89,7 @@ def table_stats(date_from, date_to=None):
     return rows, by
 
 
-def utc_window(date_from, date_to, now_utc=None):
-    """Границы сбора в UTC для ЛОКАЛЬНЫХ дней date_from … date_to.
-
-    order_date — локальная дата (rules.APP_TIMEZONE), метод фильтрует по UTC-времени
-    заказа. Окно от 00:00 UTC теряло первые три часа локального дня date_from, а
-    --apply переписывает этот день целиком. Конец — не позже «сейчас»: будущее
-    методу не передаём.
-    """
-    tz = ZoneInfo(rules.APP_TIMEZONE)
-    now_utc = now_utc or datetime.now(timezone.utc)
-    start = datetime.combine(date.fromisoformat(date_from), dtime.min, tzinfo=tz).astimezone(timezone.utc)
-    end = datetime.combine(date.fromisoformat(date_to) + timedelta(days=1), dtime.min, tzinfo=tz).astimezone(timezone.utc)
-    return start, min(end, now_utc.replace(microsecond=0))
+utc_window = rules.utc_window    # одно правило границ на ночной сбор и на пересборку (loaders/ozon_orders_rows.py)
 
 
 def raw_path(scheme, date_from, date_to):

@@ -104,6 +104,16 @@ class OrderedReadsTests(unittest.TestCase):
         for r in self.client.requests:
             self.assertEqual(r["orders"], ["sale_date", "marketplace_code", "marketplace_sku"])
 
+    def test_marketplace_kpi_reads_the_sku_showcase_by_key_too(self):
+        """Пятое чтение того же класса: витрина площадок строится из daily_sku_kpi."""
+        import reports_daily_marketplace_kpi as mp_kpi
+        self.client.tables["daily_sku_kpi"] = table_with_id(2300)
+        rows = mp_kpi.load_daily_sku_kpi()
+        self.assertEqual(sorted(r["id"] for r in rows), list(range(1, 2301)))
+        mine = [r for r in self.client.requests if r["table"] == "daily_sku_kpi"]
+        self.assertEqual(len(mine), 3)
+        self.assertTrue(all(r["orders"] == ["id"] and r["window"] is None for r in mine))
+
     def test_missing_organic_table_still_degrades_to_empty(self):
         self.client.broken.add("ozon_daily_sku_organic")
         self.assertEqual(kpi.load_ozon_organic(), [])

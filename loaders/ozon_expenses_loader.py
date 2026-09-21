@@ -271,14 +271,27 @@ def save_ozon_expenses(operations):
     print(f"✅ Ozon expenses записаны в marketplace_expenses: {len(rows)} строк")
 
 
-if __name__ == "__main__":
+def save_type_ledger_rows(rows):
+    """Леджер начислений по типам (ozon_accrual_daily_types): upsert по (дата, тип)."""
+    if not rows:
+        print("Леджер типов: строк нет")
+        return
+    for i in range(0, len(rows), 500):
+        supabase.table("ozon_accrual_daily_types").upsert(
+            rows[i:i + 500],
+            on_conflict="accrual_date,type_id",
+        ).execute()
+    print(f"✅ Леджер начислений по типам записан в ozon_accrual_daily_types: {len(rows)} строк")
+
+
+def run(days_back=30):
     # Источник расходов — /v1/finance/accrual/by-day. Разбор построчный по
     # услугам: старое operation_type из новых данных не восстанавливается,
     # доказано перебором (ни одно подмножество type_id не воспроизводит
     # прежние суммы). Поэтому 2026-09-08 — ДАТА РАЗРЫВА РЯДА расходов:
     # до неё логика одна, после другая, и до пересчёта истории периоды
     # несопоставимы. См. docs/ozon_finance_migration.md.
-    accruals = accrual.fetch_window(days_back=30)
+    accruals = accrual.fetch_window(days_back=days_back)
     type_names = accrual.load_accrual_types()
     rows, counters, unknown = accrual.build_expense_rows(accruals, type_names)
 
@@ -292,3 +305,19 @@ if __name__ == "__main__":
             print(f"    unknown_{type_id:<5} {type_names.get(type_id, '?'):<34} {amount:>14,.2f}")
 
     save_expense_rows(rows)
+
+    # Леджер по типам — из ТЕХ ЖЕ начислений, без нового обращения к API. Он вспомогательный:
+    # расходы уже записаны, и отказ леджера (нет таблицы, сеть) не должен ронять шаг и всё,
+    # что идёт после него. Но молчать нельзя — отказ печатается с причиной.
+    try:
+        ledger = accrual.build_type_ledger_rows(accruals, type_names)
+        days = sorted({r["accrual_date"] for r in ledger})
+        print(f"Леджер типов: строк {len(ledger)}, дат {len(days)}" + (f" ({days[0]} … {days[-1]})" if days else "")
+              + f", типов {len({r['type_id'] for r in ledger})}")
+        save_type_ledger_rows(ledger)
+    except Exception as exc:
+        print(f"⚠️  леджер начислений по типам НЕ записан, расходы записаны: {type(exc).__name__}: {exc}", flush=True)
+
+
+if __name__ == "__main__":
+    run()

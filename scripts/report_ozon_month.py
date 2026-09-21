@@ -54,6 +54,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet, type_sums  # noqa: E402
+import ozon_orders_forecast as forecast  # noqa: E402
 
 Z = Decimal(0)
 C = Decimal("0.01")
@@ -412,7 +413,8 @@ def types_differ(a, b):
 
 
 def load_costs(sb, snapshot):
-    orders = fetch(sb, "marketplace_orders", "id,marketplace_sku,article,orders_qty,cancelled_orders_qty",
+    orders = fetch(sb, "marketplace_orders", "id,order_date,order_schema,marketplace_sku,article,orders_qty,orders_amount_seller,"
+                                             "cancelled_orders_qty,cancelled_orders_amount_seller,observed_at",
                    [("eq", "marketplace_code", "ozon"), ("gte", "order_date", "2026-03-28")],
                    ["order_date", "marketplace_code", "marketplace_sku", "order_schema"])
     sku_art = defaultdict(lambda: defaultdict(Decimal))
@@ -430,10 +432,10 @@ def load_costs(sb, snapshot):
     def unit_cost(sku):
         art = sku2art.get(str(sku))
         return cost.get(art.lower()) if art else None
-    return sku2art, unit_cost, len(cost), len(norms)
+    return sku2art, unit_cost, len(cost), len(norms), orders
 
 
-def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None):
+def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None, orders=None, orders_error=None):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -565,9 +567,226 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2.row_dimensions[1].height = 45
     for j, w in enumerate([14, 18, 40] + [15] * (len(cols2) - 3), 1):
         ws2.column_dimensions[get_column_letter(j)].width = w
+    if orders is not None:
+        write_orders_sheets(wb, orders, (money, pct, bold, head_fill, young_fill))
+    elif orders_error:
+        wse = wb.create_sheet("Заказы", 1)
+        wse["A1"] = "Лист «Заказы» НЕ СОБРАН: " + orders_error; wse["A1"].font = bold
     os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
     return tot
+
+
+# ---------- лист «Заказы»: прогноз по кривой дозревания ----------
+
+LOG_TABLE = "ozon_posting_status_log"
+
+
+def other_share_of(ledger_by_day, buyouts):
+    """Доля прочих расходов в обороте выкупов: (логистика + эквайринг + подписка + прочее) с НДС / оборот с НДС.
+
+    Считается по дням, которые есть в леджере: оборот берётся за те же дни, иначе доля занижена днями без начислений.
+    Реклама (41, 54) и компенсации (25, 10) в прочие не входят; незнакомый тип входит И называется вслух.
+    """
+    expense, unknown = Z, set()
+    for ts in ledger_by_day.values():
+        for type_id, v in ts.items():
+            if type_id in accrual.AD_TYPE_IDS or type_id in accrual.UNCLASSIFIED_TYPE_IDS:
+                continue
+            if type_id not in accrual.TYPE_TO_EXPENSE:
+                unknown.add(type_id)
+            expense += v
+    turnover = sum((D(r["buyouts_amount_seller"]) for r in buyouts if r["buyout_date"] in ledger_by_day), Z)
+    return (expense / turnover if turnover else None), expense, turnover, sorted(unknown)
+
+
+def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
+    """Всё для листов «Заказы»: читает лог статусов, выкупы и леджер окна долей; возвращает словарь для записи и печати."""
+    d2 = days[-1]
+    stamps = [r["observed_at"] for r in order_rows if r.get("observed_at")]
+    if not stamps:
+        raise RuntimeError("в marketplace_orders нет ни одной строки Ozon с observed_at — состояние заказов не датировать")
+    obs = max(forecast.parse_ts(v) for v in stamps).astimezone(ZoneInfo(tz_name))
+    obs_date = obs.date().isoformat()
+    log_from = (date.fromisoformat(obs_date) - timedelta(days=forecast.CURVE_NIGHTS + max(forecast.PLATEAU_AGES) + 1)).isoformat()
+    log_rows = fetch(sb, LOG_TABLE, "posting_number,observed_at,schema,order_date,status,amount", [("gte", "order_date", log_from)], ["posting_number", "observed_at"])
+    curve = forecast.build_curve(log_rows, tz_name)
+    w1, w2 = forecast.window_before(d2)
+    buyouts_w = fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_amount_seller,commission_amount",
+                      [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", w1), ("lte", "buyout_date", w2)], ["buyout_date", "marketplace_code", "marketplace_sku"])
+    commission_share, commission_base = forecast.shares_by_platform(buyouts_w, lambda sku: platform_of(sku2art.get(str(sku or ""))))
+    ledger_w = load_types_from_ledger(sb, w1, w2)
+    other_share, other_expense, other_turnover, unknown_types = other_share_of(ledger_w, buyouts_w)
+    ads_by_day = {r["date"]: r.get("ads") for r in daily_rows}
+    blocks, said = forecast.build_orders_daily(days, order_rows, curve, obs_date, commission_share, other_share, ads_by_day, unit_cost, vat_for,
+                                               lambda r: platform_of(r.get("article") or sku2art.get(str(r.get("marketplace_sku") or ""))))
+    young = {r["date"] for r in daily_rows if r.get("young")}
+    totals = {}
+    for key, rows in blocks.items():
+        for r in rows:
+            forecast.add_order_ratios(r)
+            r["young"] = r["date"] in young
+        totals[key] = forecast.orders_total(rows)
+    # сверка плато другим разрезом: доля отмен в самой таблице заказов по дням возраста 21…50 (штуки ТОВАРА, не отправления)
+    table_plateau = {}
+    for schema in forecast.SCHEMAS:
+        acc = defaultdict(Decimal)
+        for r in order_rows:
+            age = (date.fromisoformat(obs_date) - date.fromisoformat(r["order_date"])).days
+            if str(r.get("order_schema") or "").lower() == schema and forecast.MATURE_AGE <= age <= 50:
+                acc["conf_q"] += D(r["orders_qty"]); acc["canc_q"] += D(r.get("cancelled_orders_qty"))
+                acc["conf_a"] += D(r["orders_amount_seller"]); acc["canc_a"] += D(r.get("cancelled_orders_amount_seller"))
+        table_plateau[schema] = (ratio(acc["canc_q"], acc["conf_q"] + acc["canc_q"]), ratio(acc["canc_a"], acc["conf_a"] + acc["canc_a"]))
+    return {"blocks": blocks, "totals": totals, "said": said, "curve": curve, "obs": obs, "obs_date": obs_date, "log_rows": len(log_rows),
+            "window": (w1, w2), "commission_share": commission_share, "commission_base": commission_base,
+            "other_share": other_share, "other_expense": other_expense, "other_turnover": other_turnover, "ledger_days": len(ledger_w),
+            "unknown_types": unknown_types, "table_plateau": table_plateau, "mature": forecast.mature_check(blocks["all"])}
+
+
+def orders_notes(o):
+    """Шапка и подвал листа «Заказы»: чем измерено каждое число, которое у владельца было константой."""
+    pct = lambda v: "—" if v is None else f"{v * 100:.2f} %".replace(".", ",")  # noqa: E731
+    curve, names = o["curve"], {"fbo": "FBO", "fbs": "FBS"}
+    nights = sorted({n for c in curve.values() for n in c["nights"]})
+    head = ("Кривая дозревания: лог статусов отправлений, " + (f"ночи {nights[0]} … {nights[-1]}" if nights else "ночных срезов НЕТ")
+            + "".join(f"; {names[s]} — пар соседних ночей {c['pairs']}, отправлений {c['postings']}" for s, c in curve.items())
+            + f". Состояние заказов — на ночь {o['obs_date']} ({o['obs'].strftime('%d.%m %H:%M')} МСК). День старше {forecast.MATURE_AGE} суток — факт; моложе — "
+              "прогноз: подтверждено сейчас × (1 − доля подтверждённых, которая ещё отменится).")
+    w1, w2 = o["window"]
+    share = o["commission_share"]
+    lines = [f"Комиссия — измеренная доля за {w1} … {w2} из marketplace_buyouts, по площадке товара (в выкупах схемы FBO / FBS нет, а Селект живёт на FBS): "
+             + ", ".join(f"{name} {pct(share.get(name))}" for _p, name in PLATFORMS) + f", все {pct(share.get('все'))}. У владельца — 0,41.",
+             f"Прочие — измеренная доля за то же окно: (логистика + эквайринг + подписка + прочее, с НДС) {o['other_expense']:,.2f} / оборот выкупов "
+             f"{o['other_turnover']:,.2f} = {pct(o['other_share'])} (дней окна в леджере начислений {o['ledger_days']} из 30; компенсации Ozon — доход, сюда не входят). "
+             "У владельца — 2,4 % от выручки.",
+             "Выкупаемость у владельца — 0,65 на все дни. Здесь — по возрасту дня: доля подтверждённых сейчас, которая ещё отменится (по ₽ / по отправлениям): "
+             + "; ".join(f"{names[s]} — 1 сут. {pct(c['r_amt'][1])} / {pct(c['r_cnt'][1])}, 7 сут. {pct(c['r_amt'][7])} / {pct(c['r_cnt'][7])}, 14 сут. {pct(c['r_amt'][14])} / {pct(c['r_cnt'][14])}"
+                         for s, c in curve.items()) + ". Вся кривая — на листе «Кривая дозревания».",
+             "Рублёвая кривая шумит хвостом цен — крупнейшая отмена в переходах: "
+             + "; ".join(f"{names[s]} — {c['biggest_event'][1]:,.0f} ₽ на {c['biggest_event'][0]}-е сутки из {c['events_amt_total']:,.0f} ₽ всех отмен ({pct(ratio(c['biggest_event'][1], c['events_amt_total']))})"
+                         for s, c in curve.items() if c["biggest_event"][0] is not None) + ". С каждой ночью её вес падает.",
+             "Сверка другим разрезом — доля отмен в самой таблице заказов по дням возраста 21…50 суток (штуки товара / ₽): "
+             + "; ".join(f"{names[s]} {pct(q_)} / {pct(a_)}" for s, (q_, a_) in o["table_plateau"].items()) + ".",
+             "Справочные колонки — формулы владельца на его константах 0,65 / 0,59 / 0,024 (июльская книга; в сентябрьской на листе «Заказы» уже 0,58, на «Заказы Standard» — 0,73). "
+             "Реклама в них та же, 41 + 54, чтобы разница показывала константы, а не состав рекламы; себестоимость — по созданным штукам.",
+             "Реклама и фин. рез. — только на общем листе: леджер начислений без схемы. Себестоимость — article_unit_costs × прогноз подтверждённых штук товара.",
+             f"Приёмка: дозревших дней {o['mature'][0]}, прогноз = факту на {o['mature'][1]}" + (f"; НЕ равен: {', '.join(o['mature'][2])}" if o["mature"][2] else "") + "."]
+    if o["unknown_types"]:
+        lines.append(f"ВНИМАНИЕ: в окне долей есть незнакомые типы начислений {o['unknown_types']} — вошли в прочие.")
+    lines.extend("ВНИМАНИЕ: " + x for x in o["said"])
+    return head, lines
+
+
+def write_orders_sheets(wb, o, styles):
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
+    money, pct, bold, head_fill, young_fill = styles
+    head, lines = orders_notes(o)
+    full = [("Дата заказа", "date", None), ("Возраст, сут.", "age", "0"), ("Создано, шт", "created_q", "#,##0"), ("Создано, руб.", "created_a", money),
+            ("Подтверждено сейчас, шт", "conf_q", "#,##0"), ("Подтверждено сейчас, руб.", "conf_a", money), ("Отменено сейчас, шт", "canc_q", "#,##0"),
+            ("Отменено сейчас, руб.", "canc_a", money), ("Отменено сейчас, % руб.", "canc_pct", pct), ("Ожидаемые отмены ещё, руб.", "expected_cancels_a", money),
+            ("Прогноз подтв., шт", "fc_q", "#,##0.0"), ("Прогноз подтв., руб.", "fc_a", money), ("Прогноз отмен всего, % руб.", "fc_canc_pct", pct),
+            ("Комиссия прогноз, руб.", "commission", money), ("Комиссия, %", "commission_pct", pct), ("Выручка прогноз, руб.", "revenue", money),
+            ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
+            ("Реклама (41 + 54), руб.", "ads", money), ("% ДРР от созданного", "drr_created_pct", pct), ("% ДРР от прогноза подтв.", "drr_fc_pct", pct),
+            ("Прочие, руб.", "other", money), ("Фин. рез. прогноз, руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), (None, None, None),
+            ("справочно, формулы владельца: Выручка = создано × 0,59 / НДС", "owner_revenue", money), ("Маржа (созданных)", "owner_margin", money),
+            ("ДРР = Реклама / (Выручка × 0,65 × НДС / 0,59)", "owner_drr_pct", pct), ("Фин. рез. = Маржа × 0,65 − Реклама − Выручка × 0,65 × 0,024", "owner_fin_result", money),
+            ("Наш фин. рез. − владельца", "fin_result_minus_owner", money), ("шт подтв. без себестоимости", "no_cost_q", "#,##0"), ("Примечание", "note", None)]
+    only_total = {"ads", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "owner_revenue", "owner_margin", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner"}
+    for index, (key, title) in enumerate((("all", "Заказы"), ("fbo", "Заказы FBO"), ("fbs", "Заказы FBS")), 1):
+        ws = wb.create_sheet(title, index)
+        cols = [c for c in full if c[1] not in only_total and not (key != "all" and c[0] is None)] if key != "all" else full
+        ws["A1"] = "Заказы Ozon по дню заказа — прогноз по кривой дозревания" + ("" if key == "all" else f", {key.upper()}"); ws["A1"].font = bold
+        ws["A2"] = head
+        for j, (h, _k, _f) in enumerate(cols, 1):
+            if h:
+                c = ws.cell(row=4, column=j, value=h); c.font = bold; c.fill = head_fill
+                c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        rows = o["blocks"][key]
+        for i, r in enumerate(rows + [o["totals"][key]], 5):
+            r = dict(r)
+            if r["date"] != "Итого":
+                left = "; ".join(f"{s.upper()} ещё −{forecast.remaining_share(o['curve'], s, r['age'], 'amt') * 100:.1f} % ₽".replace(".", ",")
+                                 for s in (forecast.SCHEMAS if key == "all" else (key,)) if forecast.remaining_share(o["curve"], s, r["age"], "amt") is not None)
+                r["note"] = "; ".join(x for x in ("факт: день дозрел" if r["mature"] else f"прогноз: {left}" if left else "прогноза нет: кривой нет",
+                                                   "моложе двух суток — реклама доезжает" if r.get("young") and key == "all" else "") if x)
+            for j, (h, k, fmt) in enumerate(cols, 1):
+                if not h:
+                    continue
+                v = r.get(k)
+                if k == "date" and v != "Итого":
+                    v = date.fromisoformat(v)
+                elif isinstance(v, Decimal):
+                    v = float(v)
+                c = ws.cell(row=i, column=j, value=v)
+                if fmt:
+                    c.number_format = fmt
+                if k == "date" and r["date"] != "Итого":
+                    c.number_format = "DD.MM.YYYY"
+                if r["date"] == "Итого":
+                    c.font = bold
+                elif not r["mature"]:
+                    c.fill = young_fill
+        base = 5 + len(rows) + 2
+        ws.cell(row=base, column=1, value="Жёлтым — дни моложе 21 суток: в них прогноз, числа изменятся. Без заливки — факт.")
+        for n, line in enumerate(lines, 1):
+            ws.cell(row=base + n, column=1, value=line)
+        ws.freeze_panes = "B5"; ws.row_dimensions[4].height = 60
+        for j in range(1, len(cols) + 1):
+            ws.column_dimensions[get_column_letter(j)].width = 15
+        ws.column_dimensions[get_column_letter(len(cols))].width = 50
+    wsc = wb.create_sheet("Кривая дозревания")
+    wsc["A1"] = head; wsc["A1"].font = bold
+    wsc["A2"] = ("h — доля живых (не отменённых) возраста k, отменённых к следующей ночи; внутри ведра возрастов доля одна. r — доля подтверждённых сейчас, которая ещё "
+                 "отменится до 21-х суток: 1 − Π (1 − h). «шт» — отправления, не штуки товара. Срез — справочно: c(a) по молодым заказам и плато по старым; в прогноз не идёт.")
+    heads = ["Возраст, сут."]
+    for s in o["curve"]:
+        heads += [f"{s.upper()}: живых", "отменено к след. ночи", "h, отправления", "h, ₽", "r, отправления", "r, ₽", "срез: c(a), отправления", "срез: c(a), ₽", "срез: r, отправления", "срез: r, ₽"]
+    for j, h in enumerate(heads, 1):
+        c = wsc.cell(row=4, column=j, value=h); c.font = bold; c.fill = head_fill
+        c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    for a in range(0, forecast.MATURE_AGE):
+        vals = [a]
+        for s, c in o["curve"].items():
+            vals += [c["alive"].get(a, (0, Z))[0], c["events"].get(a, (0, Z))[0], c["h_cnt"][a], c["h_amt"][a], c["r_cnt"][a], c["r_amt"][a],
+                     c.get("slice_cnt", {}).get(a), c.get("slice_amt", {}).get(a), c.get("slice_r_cnt", {}).get(a), c.get("slice_r_amt", {}).get(a)]
+        for j, v in enumerate(vals, 1):
+            cell = wsc.cell(row=5 + a, column=j, value=float(v) if isinstance(v, Decimal) else v)
+            if j > 1 and (j - 2) % 10 >= 2:
+                cell.number_format = "0.00%"
+    row = 5 + forecast.MATURE_AGE + 1
+    for s, c in o["curve"].items():
+        if "slice_cnt_inf" in c:
+            wsc.cell(row=row, column=1, value=f"{s.upper()}: плато среза (возрасты 21…29) — отправления {c['slice_cnt_inf'] * 100:.2f} %, ₽ {c['slice_amt_inf'] * 100:.2f} %; ночи {c['nights'][0]} … {c['nights'][-1]}".replace(".", ","))
+            row += 1
+    wsc.row_dimensions[4].height = 45
+    for j in range(1, len(heads) + 1):
+        wsc.column_dimensions[get_column_letter(j)].width = 14
+
+
+def print_orders(o, buyout_total):
+    head, lines = orders_notes(o)
+    print(f"\nлист «Заказы» (лог статусов: строк {o['log_rows']}):")
+    print("  " + head)
+    print(f"  {'':8}{'создано ₽':>18}{'подтв. сейчас ₽':>18}{'отменено ₽':>16}{'ещё отменится ₽':>17}{'прогноз подтв. ₽':>18}{'выручка':>16}{'СС':>16}{'маржа':>16}{'прочие':>14}")
+    for key, name in (("fbo", "FBO"), ("fbs", "FBS"), ("all", "итого")):
+        t = o["totals"][key]
+        f = lambda v: "—" if v is None else f"{v:,.2f}"  # noqa: E731
+        print(f"  {name:8}{f(t['created_a']):>18}{f(t['conf_a']):>18}{f(t['canc_a']):>16}{f(t['expected_cancels_a']):>17}{f(t['fc_a']):>18}{f(t['revenue']):>16}{f(t['cogs']):>16}{f(t['margin']):>16}{f(t['other']):>14}")
+    t = o["totals"]["all"]
+    p = lambda v: "—" if v is None else f"{v * 100:.2f} %"  # noqa: E731
+    if t["fin_result"] is not None:
+        print(f"  реклама {t['ads']:,.2f}; ДРР от созданного {p(t['drr_created_pct'])}, от прогноза подтв. {p(t['drr_fc_pct'])}; фин. рез. прогноз {t['fin_result']:,.2f} ({p(t['fin_result_pct'])} выручки)")
+        print(f"  по формулам владельца (0,65 / 0,59 / 0,024): выручка {t['owner_revenue']:,.2f}, ДРР {p(t['owner_drr_pct'])}, фин. рез. {t['owner_fin_result']:,.2f}; "
+              f"наш − владельца {t['fin_result_minus_owner']:+,.2f}")
+        if buyout_total.get("fin_result") is not None:
+            print(f"  рядом — выкупной лист за те же дни: оборот {buyout_total['turnover']:,.2f}, выручка {buyout_total['revenue']:,.2f}, фин. рез. {buyout_total['fin_result']:,.2f} "
+                  f"(заказы − выкупы: фин. рез. {t['fin_result'] - buyout_total['fin_result']:+,.2f} — дата заказа против даты реализации, прочие у заказов долей, у выкупов фактом)")
+    else:
+        print("  реклама за окно неполна (есть дни без типов начислений) — ДРР и фин. рез. в итоге пусты")
+    for line in lines:
+        print("  · " + line)
 
 
 # ---------- приёмка против ручного листа ----------
@@ -643,6 +862,7 @@ def main():
     ap.add_argument("--types-from", choices=("db", "files"), default="db",
                     help="откуда типы начислений: db — леджер ozon_accrual_daily_types (дня нет в леджере — файл, нет файла — API); "
                          "files — только файлы сырья, как до леджера. С --check читаются ОБА источника и обязаны совпасть")
+    ap.add_argument("--no-orders", action="store_true", help="лист «Заказы» не собирать (лог статусов и окно долей не читаются)")
     ap.add_argument("--check", action="store_true", help="сверить с ручным листом (--xlsx, --sheet); код возврата 1, если обязанные колонки не сошлись")
     ap.add_argument("--xlsx"); ap.add_argument("--sheet")
     args = ap.parse_args()
@@ -672,7 +892,7 @@ def main():
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
-    sku2art, unit_cost, cost_found, cost_asked = load_costs(sb, args.snapshot)
+    sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot)
 
     counters, sources, types_by_day = {"requests": 0, "429": 0}, defaultdict(list), {}
     ledger = load_types_from_ledger(sb, d1, d2) if (args.types_from == "db" or args.check) else {}
@@ -706,6 +926,13 @@ def main():
     platforms = build_platform_daily(days, buyouts, expenses, kpi, sku2art, unit_cost)
     platform_totals = {name: platform_total(prows) for name, prows in platforms.items()}
     addition = platform_addition(total, platform_totals)
+    # Лист «Заказы» — отдельная беда от выкупного: не собрался — остальные листы выходят, причина пишется в книгу и вслух.
+    orders, orders_error = None, None
+    if not args.no_orders:
+        try:
+            orders = build_orders(sb, days, order_rows, rows, sku2art, unit_cost, os.getenv("APP_TIMEZONE", "Europe/Moscow"))
+        except Exception as exc:  # noqa: BLE001
+            orders_error = f"{type(exc).__name__}: {exc}"
 
     print(f"окно {d1} … {d2} ({len(days)} дн.): выкупов строк {len(buyouts)}, расходов {len(expenses)}, строк витрины {len(kpi)}; "
           f"sku→article {len(sku2art)}, себестоимость найдена у {cost_found} артикулов из {cost_asked} (снимок {args.snapshot}); НДС {vat}")
@@ -759,7 +986,7 @@ def main():
     cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
                  + ("." if units_column else " (колонки marketplace_buyouts.buyouts_units ещё нет — миграция не применена)."))
     notes.insert(1, cogs_note)
-    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition)
+    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error)
     print("  " + cogs_note)
     print(f"\nплощадки (по первой букве артикула):")
     print(f"  {'площадка':14}{'оборот':>18}{'выручка':>18}{'СС':>18}{'маржа':>16}{'логистика':>13}{'прочее+экв.':>14}{'реклама Perf.':>16}{'фин. рез.':>16}")
@@ -776,9 +1003,13 @@ def main():
     if ad_gaps:
         print("       по дням (Performance − начисления, без НДС): " + "; ".join(f"{d} {v:+,.2f}" for d, v in ad_gaps[:8])
               + (f"; ещё {len(ad_gaps) - 8} дн. на {sum((v for _d, v in ad_gaps[8:]), Z):+,.2f}" if len(ad_gaps) > 8 else ""))
+    if orders is not None:
+        print_orders(orders, total)
+    elif orders_error:
+        print(f"\nЛИСТ «ЗАКАЗЫ» НЕ СОБРАН: {orders_error}")
     print(f"записано: {out}")
 
-    code = 0
+    code = 2 if orders_error else 0
     if args.check:
         if not args.xlsx or not args.sheet:
             raise SystemExit("--check требует --xlsx и --sheet")
@@ -793,7 +1024,7 @@ def main():
               + ("" if sources_ok else "   ОБЯЗАНЫ СОВПАСТЬ"))
         failures += 0 if sources_ok else 1
         print(f"приёмка: колонок, обязанных сходиться до копейки, — {len(EXACT)}, плюс совпадение источников; не сошлось {failures}")
-        code = 1 if failures else 0
+        code = 1 if failures else code
     print("db_writes = 0")
     sys.exit(code)
 

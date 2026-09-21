@@ -44,17 +44,24 @@ class NonFatalStepsTests(unittest.TestCase):
           - штуки выкупов: дописывает колонку buyouts_units к уже записанным
             строкам выкупов; отказ оставляет штуки null («не измерено»), деньги
             и KPI от шага не зависят (2026-09-21). tests/test_buyout_units.py
+          - загрузка заказов WB: с правилом Ozon разбор строк строгий (Decimal,
+            пустая цена и не-bool isCancel роняют шаг), а шаг стоит перед
+            расходами, рекламой и KPI обеих площадок; ночь добирается окном
+            записи. Решение советника 2026-09-21,
+            tests/test_wb_orders_step_non_fatal.py
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
             (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов",
              "Ozon: загрузка FBS заказов", "Ozon: лог статусов отправлений",
-             "Ozon: штуки выкупов"),
+             "Ozon: штуки выкупов", "WB: загрузка заказов"),
         )
 
     def test_steps_that_must_stay_fatal(self):
+        # «WB: загрузка заказов» стоял в этом списке до 2026-09-21: тогда загрузчик
+        # падать не умел вовсе. Продажи WB остаются — их правило не менялось.
         for title in ("KPI: расчет SKU", "KPI: расчет маркетплейсов",
-                      "WB: загрузка заказов", "Ozon: загрузка остатков"):
+                      "WB: загрузка продаж/выкупов", "Ozon: загрузка остатков"):
             self.assertNotIn(title, pipeline.NON_FATAL_STEPS, title)
 
 

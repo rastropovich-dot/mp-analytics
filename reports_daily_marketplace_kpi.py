@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 
+from reports_daily_sku_kpi import read_all_by_id
+
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -16,28 +18,12 @@ def chunks(items, size):
 
 
 def load_daily_sku_kpi():
-    all_rows = []
-    start = 0
-    page_size = 1000
+    """Вся витрина SKU страницами по ключу id, с сортировкой — тот же читатель, что у KPI по SKU.
 
-    while True:
-        result = (
-            supabase
-            .table("daily_sku_kpi")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
-    return all_rows
+    Было range() без order(): PostgREST без сортировки не обещает порядка, и сумма по площадке
+    могла собраться из страниц с повторами и пропусками (how-we-work, 15 сентября).
+    """
+    return read_all_by_id("daily_sku_kpi")
 
 
 def build_marketplace_kpi():

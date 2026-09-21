@@ -23,6 +23,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 try:
     from loaders import http_retry
@@ -264,6 +265,48 @@ def build_expense_rows(accruals, type_names=None):
     return rows, dict(counters), {
         int(k): round(v, 2) for k, v in sorted(unknown.items(), key=lambda x: -abs(x[1]))
     }
+
+
+def build_type_ledger_rows(accruals, type_names=None, loaded_at=None):
+    """Леджер по типам: (дата начисления, type_id) → сумма со знаком Ozon и число строк услуг.
+
+    ВСЕ типы, какие отдал Ozon, — включая рекламу 41 / 54 и компенсации 25 / 10,
+    которых в marketplace_expenses нет, и незнакомые. Классификации здесь нет
+    намеренно: тип хранится числом, статья — дело читателя (TYPE_TO_EXPENSE).
+
+    Знак — как у Ozon: списание с продавца < 0, начисление продавцу > 0. В
+    marketplace_expenses он перевёрнут (расход положителен) — не путать.
+    Нулевая сумма пишется: «тип был, но свернулся в ноль» — не то же, что
+    «типа не было». Строки услуг — те же, что у расходов (_service_lines), поэтому
+    Σ леджера по типам статьи со сменой знака обязана равняться статье расходов.
+    Комиссия продажи — не услуга, type_id у неё нет, в леджер не входит.
+    """
+    type_names = type_names or {}
+    loaded_at = loaded_at or datetime.now(timezone.utc).isoformat()
+    sums, lines = defaultdict(Decimal), defaultdict(int)
+    without_date = without_type = 0
+    for accrual in accruals:
+        day = str(accrual.get("date") or "")[:10]
+        if not day:
+            without_date += 1
+            continue
+        for type_id, _sku, amount in _service_lines(accrual):
+            if type_id is None:
+                without_type += 1      # строка услуги без типа: в леджер по типам её положить некуда — называем
+                continue
+            # money() отдаёт float из строки Ozon с двумя знаками; str(float) возвращает её же, Decimal точен
+            sums[(day, int(type_id))] += Decimal(str(amount))
+            lines[(day, int(type_id))] += 1
+    if without_date or without_type:
+        print(f"Леджер типов: начислений без даты {without_date}, строк услуг без type_id {without_type} — в леджер не вошли")
+    return [{
+        "accrual_date": day,
+        "type_id": type_id,
+        "type_name": type_names.get(type_id) or None,
+        "amount": float(amount.quantize(Decimal("0.01"))),
+        "lines": lines[(day, type_id)],
+        "loaded_at": loaded_at,
+    } for (day, type_id), amount in sorted(sums.items())]
 
 
 def build_buyout_rows(accruals):

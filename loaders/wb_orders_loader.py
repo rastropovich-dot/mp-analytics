@@ -3,14 +3,23 @@ import requests
 
 try:
     from loaders import http_retry
+    from loaders.wb_orders_rows import build_order_rows, describe_counters
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
-from datetime import date, timedelta
+    from wb_orders_rows import build_order_rows, describe_counters
+from datetime import date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
 
+# ЧТО ПИШЕМ. Правило одно с Ozon и живёт в loaders/wb_orders_rows.py: orders_* —
+# заказы без отмены, cancelled_orders_* — с isCancel, observed_at — момент сбора.
+# До 2026-09-21 orders_* у WB были «созданные» вместе с отменёнными. На ответе
+# 2026-09-21 внутри окна: создано 1 005 шт / 30 960 564 ₽, из них отменено 426 /
+# 15 387 708 (42,4 % шт, 49,7 % ₽) — на столько orders_* по WB и упадут после
+# выкатки. Это смена базы, как у Ozon 2026-08-19, а не потеря заказов.
+#
 # Окно запроса и окно записи — одно и то же число, и это не совпадение.
 #
 # WB Statistics API с flag=0 отбирает по дате ПОСЛЕДНЕГО ИЗМЕНЕНИЯ, а не по дате
@@ -79,57 +88,13 @@ def get_wb_orders(days_back=DEFAULT_DAYS_BACK, today=None):
     return response.json()
 
 
-def aggregate_orders(items):
-    """Агрегат по (order_date, sku). Логика не менялась — вынесена, чтобы её
-    могли переиспользовать ремонт и восстановление истории."""
-    grouped = {}
+def aggregate_orders(items, observed_at=None):
+    """Агрегат по (order_date, sku) — словарём, как его ждёт scripts/wb_orders_repair.py.
 
-    for item in items:
-        nm_id = item.get("nmId")
-        if not nm_id:
-            continue
-
-        date_raw = item.get("date")
-        if not date_raw:
-            continue
-
-        order_date = date_raw[:10]
-
-        key = (
-            order_date,
-            "wb",
-            str(nm_id)
-        )
-
-        price = item.get("totalPrice", 0) or 0
-        discount_percent = item.get("discountPercent", 0) or 0
-        finished_price = item.get("finishedPrice", 0) or 0
-        price_with_disc = item.get("priceWithDisc", 0) or 0
-
-        # Для WB в разных отчетах могут быть разные поля цен.
-        # Сохраняем максимально близко:
-        # buyer amount = finishedPrice, seller amount = priceWithDisc.
-        buyer_amount = finished_price or price_with_disc or price
-        seller_amount = price_with_disc or finished_price or price
-
-        if key not in grouped:
-            grouped[key] = {
-                "order_date": order_date,
-                "marketplace_code": "wb",
-                "order_schema": "marketplace",
-                "marketplace_sku": str(nm_id),
-                "article": str(item.get("supplierArticle") or ""),
-                "product_name": item.get("subject"),
-                "orders_qty": 0,
-                "orders_amount_buyer": 0,
-                "orders_amount_seller": 0,
-            }
-
-        grouped[key]["orders_qty"] += 1
-        grouped[key]["orders_amount_buyer"] += buyer_amount
-        grouped[key]["orders_amount_seller"] += seller_amount
-
-    return grouped
+    Само правило живёт в loaders/wb_orders_rows.py и одно на загрузчик, ремонт и
+    восстановление: orders_* — без отмены, cancelled_orders_* — с isCancel."""
+    rows, _counters = build_order_rows(items, observed_at)
+    return {(row["order_date"], row["marketplace_code"], row["marketplace_sku"]): row for row in rows}
 
 
 def split_by_write_window(rows, window_start):
@@ -147,7 +112,8 @@ def describe_held(held):
         return "Старше окна записи ничего не пришло."
 
     dates = sorted({str(r["order_date"]) for r in held})
-    qty = sum(float(r["orders_qty"] or 0) for r in held)
+    # Созданные = без отмены + отменённые: придержанное считаем целиком.
+    qty = sum(float(r["orders_qty"] or 0) + float(r.get("cancelled_orders_qty") or 0) for r in held)
     return (
         f"Не записано (старше окна записи, ответ по ним неполон): "
         f"{len(dates)} дат, {len(held)} строк агрегата, {qty:.0f} заказов. "
@@ -156,10 +122,12 @@ def describe_held(held):
     )
 
 
-def save_wb_orders(items, days_back=DEFAULT_DAYS_BACK, today=None):
-    grouped = aggregate_orders(items)
+def save_wb_orders(items, days_back=DEFAULT_DAYS_BACK, today=None, observed_at=None):
+    observed_at = observed_at or datetime.now(timezone.utc).isoformat()
+    all_rows, counters = build_order_rows(items, observed_at)
+    print(describe_counters(counters))
     window_start = write_window_start(days_back, today)
-    rows, held = split_by_write_window(list(grouped.values()), window_start)
+    rows, held = split_by_write_window(all_rows, window_start)
 
     print(f"Окно записи: с {window_start.isoformat()} (последние {days_back} дней)")
     print(describe_held(held))

@@ -11,7 +11,7 @@ import loaders.wb_orders_loader as wb_orders
 import loaders.wb_sales_loader as wb_sales
 
 
-def order(day, nm_id=1, price=1000, last_change=None):
+def order(day, nm_id=1, price=1000, last_change=None, cancelled=False):
     return {
         "date": f"{day}T12:00:00",
         "lastChangeDate": f"{last_change or day}T13:00:00",
@@ -22,6 +22,9 @@ def order(day, nm_id=1, price=1000, last_change=None):
         "finishedPrice": price,
         "priceWithDisc": price,
         "discountPercent": 0,
+        "isCancel": cancelled,
+        "cancelDate": f"{day}T00:00:00" if cancelled else "0001-01-01T00:00:00",
+        "srid": f"srid-{day}-{nm_id}-{price}",
     }
 
 
@@ -82,7 +85,7 @@ class WindowBoundaryTests(unittest.TestCase):
 
 
 class AggregationUnchangedTests(unittest.TestCase):
-    """Агрегация вынесена в функцию, но считать должна ровно как раньше."""
+    """Группировка по (дата, SKU) прежняя. Само правило — tests/test_wb_orders_rows.py."""
 
     def test_orders_group_by_date_and_sku(self):
         grouped = wb_orders.aggregate_orders([
@@ -139,6 +142,29 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(written[0]["order_date"], "2026-08-20")
         self.assertEqual(summary["rows_written"], 1)
         self.assertEqual(summary["held_rows"], 1)
+
+    def test_written_rows_follow_the_ozon_rule(self):
+        """Внутри окна отмена перекладывает заказ в cancelled_*, а не выбрасывает его."""
+        items = [
+            order("2026-08-20", nm_id=1, price=1000),
+            order("2026-08-20", nm_id=1, price=700, cancelled=True),
+            order("2026-07-21", nm_id=1, price=500, cancelled=True, last_change="2026-09-01"),
+        ]
+
+        summary = wb_orders.save_wb_orders(items, days_back=30, today=date(2026, 9, 3),
+                                           observed_at="2026-09-03T00:20:00+00:00")
+
+        written = [row for write in self.fake.writes for row in write["rows"]]
+        self.assertEqual(len(written), 1)
+        row = written[0]
+        self.assertEqual((row["orders_qty"], row["orders_amount_seller"]), (1, 1000))
+        self.assertEqual((row["cancelled_orders_qty"], row["cancelled_orders_amount_seller"]), (1, 700))
+        self.assertEqual(row["observed_at"], "2026-09-03T00:20:00+00:00")
+        self.assertEqual(summary["held_rows"], 1)
+
+    def test_held_count_includes_cancelled_orders(self):
+        held = [{"order_date": "2026-07-21", "orders_qty": 0.0, "cancelled_orders_qty": 2.0}]
+        self.assertIn("2 заказов", wb_orders.describe_held(held))
 
     def test_old_only_response_writes_nothing_at_all(self):
         """Ночь, в которую из старых дат пришли огрызки, не должна ничего писать."""

@@ -13,7 +13,7 @@ from unittest import mock
 import scripts.wb_orders_repair as repair
 
 
-def order(day, nm_id=1, price=1000):
+def order(day, nm_id=1, price=1000, cancelled=False):
     return {
         "date": f"{day}T10:00:00",
         "lastChangeDate": f"{day}T11:00:00",
@@ -24,6 +24,9 @@ def order(day, nm_id=1, price=1000):
         "finishedPrice": price,
         "priceWithDisc": price,
         "discountPercent": 0,
+        "isCancel": cancelled,
+        "cancelDate": f"{day}T00:00:00" if cancelled else "0001-01-01T00:00:00",
+        "srid": f"srid-{day}-{nm_id}-{price}",
     }
 
 

@@ -9,6 +9,10 @@
 
 Повторов нет, на первом не-200 — стоп. Уже снятые даты пропускаются.
 
+Ночное окно 00:15–03:15 UTC занято пайплайном: он ходит в тот же statistics-api
+с тем же лимитом ~1 запрос в минуту. В окне скрипт не стартует, а дойдя до него —
+останавливается; следующий запуск продолжит с места обрыва.
+
 Запуск:
     python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --dates 2026-03-16 2026-03-18
     python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --date-from 2026-03-15 --date-to 2026-04-30
@@ -28,6 +32,14 @@ load_dotenv()
 
 WB_API_KEY = os.getenv("WB_API_KEY")
 ORDERS_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
+
+NIGHT_WINDOW_START = (0, 15)
+NIGHT_WINDOW_END = (3, 15)
+
+
+def in_night_window(now_utc):
+    """Идёт ли ночной прогон: 00:15 <= время UTC < 03:15."""
+    return NIGHT_WINDOW_START <= (now_utc.hour, now_utc.minute) < NIGHT_WINDOW_END
 
 
 def main(argv=None):
@@ -60,6 +72,11 @@ def main(argv=None):
         if calls:
             time.sleep(args.sleep_seconds)
 
+        if in_night_window(datetime.now(timezone.utc)):
+            print(f"{day}: ночное окно 00:15–03:15 UTC — остановка, обращений в этом запуске {calls}. "
+                  f"Повторный запуск продолжит с этой даты.", flush=True)
+            return 3
+
         started = datetime.now(timezone.utc)
         response = requests.get(ORDERS_URL, headers={"Authorization": WB_API_KEY},
                                 params={"dateFrom": day, "flag": 1}, timeout=180)
@@ -75,6 +92,9 @@ def main(argv=None):
             if rows and not foreign:
                 with open(path, "wb") as handle:
                     handle.write(response.content)
+            else:
+                print(f"{day}: ОТКАЗ — {'пустой ответ' if not rows else 'чужие даты'}, файл не записан. "
+                      f"Пустой день при заказах в базе — не истина «ноль».", flush=True)
 
         ledger.append({"name": f"orders_flag1_{day}", "at_utc": started.isoformat(), "status": response.status_code,
                        "bytes": len(response.content), "rows": rows, "foreign_dates": foreign})

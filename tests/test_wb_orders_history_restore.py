@@ -176,5 +176,82 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(fetch_day.call_count, 2)
 
 
+class FakeQuery:
+    """PostgREST-цепочка: помнит, чем её сортировали, и отдаёт страницы по range()."""
+
+    def __init__(self, rows, log):
+        self.rows = rows
+        self.log = log
+        self.ordered_by = []
+
+    def select(self, *_):
+        return self
+
+    def eq(self, *_):
+        return self
+
+    def lt(self, *_):
+        return self
+
+    def order(self, column):
+        self.ordered_by.append(column)
+        return self
+
+    def range(self, start, end):
+        self.log.append(list(self.ordered_by))
+        self.page = self.rows[start:end + 1]
+        return self
+
+    def execute(self):
+        return mock.Mock(data=self.page)
+
+
+def stored_row(day, sku, qty="1", amount="1000.10"):
+    return {"order_date": day, "marketplace_sku": str(sku), "order_schema": "marketplace",
+            "orders_qty": qty, "orders_amount_seller": amount}
+
+
+class StoredDatesTests(unittest.TestCase):
+    def fake_supabase(self, rows, log):
+        supabase = mock.Mock()
+        supabase.table.side_effect = lambda _: FakeQuery(rows, log)
+        return supabase
+
+    def test_every_page_is_read_in_key_order(self):
+        rows = [stored_row("2026-07-21", sku) for sku in range(2500)]
+        log = []
+
+        with mock.patch.object(restore, "supabase", self.fake_supabase(rows, log)):
+            per_date = restore.stored_dates("2026-08-22")
+
+        self.assertEqual(len(log), 3)
+        for ordered_by in log:
+            self.assertEqual(ordered_by, ["order_date", "marketplace_sku", "order_schema"])
+        self.assertEqual(per_date["2026-07-21"]["rows"], 2500)
+        self.assertEqual(per_date["2026-07-21"]["qty"], 2500)
+
+    def test_money_is_summed_without_float_tails(self):
+        rows = [stored_row("2026-07-21", sku, amount="0.10") for sku in range(3)]
+
+        with mock.patch.object(restore, "supabase", self.fake_supabase(rows, [])):
+            per_date = restore.stored_dates("2026-08-22")
+
+        self.assertEqual(str(per_date["2026-07-21"]["amount"]), "0.30")
+
+    def test_key_repeated_across_pages_is_a_failure_not_a_double_count(self):
+        rows = [stored_row("2026-07-21", sku) for sku in range(1000)] + [stored_row("2026-07-21", 0)]
+
+        with mock.patch.object(restore, "supabase", self.fake_supabase(rows, [])):
+            with self.assertRaises(RuntimeError):
+                restore.stored_dates("2026-08-22")
+
+    def test_empty_amount_is_a_failure_not_a_zero(self):
+        rows = [stored_row("2026-07-21", 1, amount=None)]
+
+        with mock.patch.object(restore, "supabase", self.fake_supabase(rows, [])):
+            with self.assertRaises(ValueError):
+                restore.stored_dates("2026-08-22")
+
+
 if __name__ == "__main__":
     unittest.main()

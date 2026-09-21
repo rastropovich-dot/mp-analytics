@@ -46,6 +46,7 @@ import os
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 sys.path.insert(0, ".")
 
@@ -63,6 +64,7 @@ STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
 PROGRESS_PATH = "logs/wb_orders_history_restore_progress.json"
 SNAPSHOT_DIR = "snapshots"
 DEFAULT_SLEEP_SECONDS = 65
+PAGE_SIZE = 1000  # PostgREST отдаёт не больше 1000 строк на ответ, просить больше бессмысленно
 
 # Глубина, на которой flag=1 ещё отдаёт данные. Проверено 2026-03-01 → 362 строки
 # (186 дней). Заявленные вторичными источниками «90 дней хранения» практикой не
@@ -91,15 +93,30 @@ def save_progress(path, progress):
     os.replace(tmp, path)
 
 
+def _decimal(value):
+    """Деньги и штуки — только Decimal. None не превращаем в ноль: у WB в
+    marketplace_orders пустых qty и сумм нет (23 814 строк, 2026-09-21), и если
+    появится — это повод упасть, а не тихо занизить базу."""
+    if value is None:
+        raise ValueError("Пустое количество или сумма в marketplace_orders (WB)")
+    return Decimal(str(value))
+
+
 def stored_dates(cutoff, date_from=None, date_to=None):
-    """Даты WB старше окна записи, по которым в базе что-то лежит."""
+    """Даты WB старше окна записи, по которым в базе что-то лежит.
+
+    Чтение постраничное, поэтому с явной сортировкой по полному ключу: range()
+    у PostgREST без order() отдаёт страницы с повторами и пропусками, и сумма
+    23 тыс. строк выходит другой (docs/how-we-work.md, 2026-09-15). Повтор ключа
+    между страницами — отказ, а не молчаливое задвоение."""
     per_date = {}
+    seen = set()
     start = 0
     while True:
         query = (
             supabase
             .table("marketplace_orders")
-            .select("order_date,orders_qty,orders_amount_seller")
+            .select("order_date,marketplace_sku,order_schema,orders_qty,orders_amount_seller")
             .eq("marketplace_code", "wb")
             .lt("order_date", cutoff)
         )
@@ -108,16 +125,31 @@ def stored_dates(cutoff, date_from=None, date_to=None):
         if date_to:
             query = query.lte("order_date", date_to)
 
-        batch = query.range(start, start + 999).execute().data or []
+        batch = (
+            query
+            .order("order_date")
+            .order("marketplace_sku")
+            .order("order_schema")
+            .range(start, start + PAGE_SIZE - 1)
+            .execute()
+            .data
+            or []
+        )
         for row in batch:
             day = str(row["order_date"])
-            cell = per_date.setdefault(day, {"qty": 0.0, "amount": 0.0})
-            cell["qty"] += float(row["orders_qty"] or 0)
-            cell["amount"] += float(row["orders_amount_seller"] or 0)
+            key = (day, str(row["marketplace_sku"]), str(row["order_schema"]))
+            if key in seen:
+                raise RuntimeError(f"Ключ {key} пришёл дважды — постраничное чтение разошлось")
+            seen.add(key)
 
-        if len(batch) < 1000:
+            cell = per_date.setdefault(day, {"qty": Decimal(0), "amount": Decimal(0), "rows": 0})
+            cell["qty"] += _decimal(row["orders_qty"])
+            cell["amount"] += _decimal(row["orders_amount_seller"])
+            cell["rows"] += 1
+
+        if len(batch) < PAGE_SIZE:
             break
-        start += 1000
+        start += PAGE_SIZE
 
     return dict(sorted(per_date.items()))
 
@@ -129,9 +161,14 @@ def snapshot_dates(days):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     path = os.path.join(SNAPSHOT_DIR, f"marketplace_orders_wb_before_restore_{stamp}.csv.gz")
 
+    # cancelled_orders_* и observed_at появились в main 2026-09-17 (одно правило
+    # записи для Ozon). У WB они пусты (2026-09-21: 0 строк с observed_at, 0 с
+    # отменами), но снимок — это «к чему вернуться», он обязан быть полным.
     columns = [
         "order_date", "marketplace_code", "order_schema", "marketplace_sku",
         "article", "product_name", "orders_qty", "orders_amount_buyer", "orders_amount_seller",
+        "cancelled_orders_qty", "cancelled_orders_amount_buyer", "cancelled_orders_amount_seller",
+        "observed_at", "created_at",
     ]
 
     rows_written = 0
@@ -145,10 +182,16 @@ def snapshot_dates(days):
                 .select(",".join(columns))
                 .eq("marketplace_code", "wb")
                 .eq("order_date", day)
+                .order("marketplace_sku")
+                .order("order_schema")
                 .execute()
                 .data
                 or []
             )
+            if len(rows) >= PAGE_SIZE:
+                # День WB — 1–306 строк (2026-09-21); тысяча означает, что ответ обрезан, и
+                # снимок с дырой хуже, чем отказ.
+                raise RuntimeError(f"{day}: в снимок пришло {len(rows)} строк — страница PostgREST обрезана")
             for row in rows:
                 writer.writerow([row.get(column) for column in columns])
                 rows_written += 1
@@ -203,11 +246,11 @@ def restore_day(day, stored, write_allowed):
         return None, error
 
     rows = list(aggregate_orders(items).values())
-    truth_qty = sum(float(r["orders_qty"]) for r in rows)
-    truth_amount = sum(float(r["orders_amount_seller"]) for r in rows)
+    truth_qty = sum((_decimal(r["orders_qty"]) for r in rows), Decimal(0))
+    truth_amount = sum((_decimal(r["orders_amount_seller"]) for r in rows), Decimal(0))
 
-    stored_qty = stored.get("qty", 0.0)
-    stored_amount = stored.get("amount", 0.0)
+    stored_qty = _decimal(stored.get("qty", 0))
+    stored_amount = _decimal(stored.get("amount", 0))
 
     if not items and stored_qty > 0:
         # Пустой ответ там, где в базе что-то лежит, — это не «истина ноль».
@@ -294,8 +337,11 @@ def main(argv=None):
     print(f"В очередь этого прогона: {len(queue)} дат "
           f"≈ {len(queue) * args.sleep_seconds // 60} мин при паузе {args.sleep_seconds} с")
     if too_deep:
+        deep_qty = sum(per_date[d]["qty"] for d in too_deep)
+        deep_amount = sum(per_date[d]["amount"] for d in too_deep)
         print(f"⚠️  Глубже проверенных {KNOWN_GOOD_DEPTH_DAYS} дней: {len(too_deep)} дат "
-              f"({too_deep[0]}…{too_deep[-1]}). Пустой ответ по ним — вероятно, предел хранения, а не потеря.")
+              f"({too_deep[0]}…{too_deep[-1]}), в базе по ним {deep_qty:,.0f} заказов / {deep_amount:,.0f} ₽. "
+              f"Пустой ответ по ним — вероятно, предел хранения, а не потеря.")
 
     if args.plan or not queue:
         if not queue:
@@ -310,8 +356,8 @@ def main(argv=None):
     elif write_allowed and args.skip_snapshot and not progress.get("snapshot"):
         print("⚠️  Снимок пропущен по --skip-snapshot. Откатиться будет нечем.")
 
-    qty_gain = 0.0
-    amount_gain = 0.0
+    qty_gain = Decimal(0)
+    amount_gain = Decimal(0)
 
     for index, day in enumerate(queue):
         if index:
@@ -337,7 +383,9 @@ def main(argv=None):
         )
 
         if result["written"]:
-            progress["done"][day] = {k: result[k] for k in ("rows", "qty_truth", "qty_delta", "amount_delta")}
+            progress["done"][day] = {"rows": result["rows"]}
+            for field in ("qty_truth", "qty_delta", "amount_delta"):
+                progress["done"][day][field] = str(result[field])  # Decimal в JSON — строкой, без потери копеек
             progress["done"][day]["at"] = datetime.now(timezone.utc).isoformat()
             progress["failed"].pop(day, None)
             save_progress(args.progress_path, progress)

@@ -137,6 +137,53 @@ def load_ozon_organic():
     return all_rows
 
 
+def build_article_map(orders):
+    """(площадка, sku) → (артикул, название) по строкам заказов.
+
+    Артикул в витрину приносит только строка заказа: у выкупов и расходов он пуст, поэтому ключ, у
+    которого в этот день заказа не было (выкуп приходит через неделю после заказа, расход — когда
+    угодно), оставался без артикула — 30,6 % выручки выкупов со строкой, у которой article непустой
+    (замер 2026-09-21). Карта берёт артикул по SKU, а не по дню.
+
+    Другие источники проверены и не годятся: в sku_catalog.marketplace_sku лежит product_id, а не SKU;
+    у ozon_product_identity SKU заполнен в 108 строках из 16 577. Заказы покрывают 100,00 % выручки.
+    Если у SKU в заказах встречалось несколько артикулов — берётся тот, по которому больше создано
+    заказов (подтверждённые + отменённые), при равенстве — меньший по алфавиту: выбор не должен
+    зависеть от порядка чтения.
+    """
+    weights = defaultdict(lambda: defaultdict(float))
+    names = {}
+    for row in orders:
+        article = str(row.get("article") or "").strip()
+        if not article:
+            continue
+        key = (row["marketplace_code"], str(row["marketplace_sku"]))
+        weights[key][article] += float(row.get("orders_qty") or 0) + float(row.get("cancelled_orders_qty") or 0)
+        if row.get("product_name") and (key, article) not in names:
+            names[(key, article)] = row["product_name"]
+    out = {}
+    for key, by_article in weights.items():
+        article = sorted(by_article.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        out[key] = (article, names.get((key, article)))
+    return out
+
+
+def fill_articles(grouped, article_map):
+    """Дописывает article (и название, если пусто) там, где строка-источник его не принесла. Суммы не трогает."""
+    filled = 0
+    for (kpi_date, marketplace_code, marketplace_sku), row in grouped.items():
+        if str(row.get("article") or "").strip():
+            continue
+        found = article_map.get((marketplace_code, str(marketplace_sku)))
+        if not found:
+            continue
+        row["article"] = found[0]
+        if not row.get("product_name") and found[1]:
+            row["product_name"] = found[1]
+        filled += 1
+    return filled
+
+
 def build_kpi():
     orders = load_orders()
     buyouts = load_buyouts()
@@ -240,6 +287,10 @@ def build_kpi():
             grouped[key]["article"] = row.get("article")
         if not grouped[key].get("product_name") and row.get("product_name"):
             grouped[key]["product_name"] = row.get("product_name")
+
+    filled = fill_articles(grouped, build_article_map(orders))
+    with_article = sum(1 for row in grouped.values() if str(row.get("article") or "").strip())
+    print(f"Артикул: дописан по карте sku → article из заказов у {filled} строк; с артикулом {with_article} из {len(grouped)}")
 
     rows = []
 

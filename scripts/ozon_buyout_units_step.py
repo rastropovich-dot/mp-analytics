@@ -39,7 +39,7 @@ def run(supabase, days_back=30, dry_run=False, accrual_module=accrual, units_mod
     counters = {"requests": 0, "429": 0}
     postings = units_module.fetch_postings(numbers, counters)
     got = {p.get("posting_number") for p in postings}
-    units, c, unmatched, _positions = units_module.units_by_key(accruals, postings)
+    units, c, unmatched, positions = units_module.units_by_key(accruals, postings)
     print(f"  accrual/postings: обращений {counters['requests']} (оценка {expected_calls}), пауз 429 — {counters['429']}; "
           f"спросили {len(numbers)}, в ответе {len(got)}, нет в ответе {len([n for n in numbers if n not in got])}")
     print(f"  строк by-day {c.get('rows', 0)}, сведено {c.get('matched_rows', 0)}, не сведено {c.get('unmatched_rows', 0)}; "
@@ -53,9 +53,12 @@ def run(supabase, days_back=30, dry_run=False, accrual_module=accrual, units_mod
         return 0
     existing = units_module.read_existing_keys(supabase, days[0], days[-1])
     to_write, same, units_without_row, rows_without_units = units_module.plan_update(units, existing)
+    # «Штуки без строки» бывают двух родов. Нулевые (продажа и возврат одного SKU в один день) — норма: загрузчик
+    # выкупов такую строку не пишет. Ненулевые — строка выкупа не записана или ещё не доехала: это и есть сигнал.
+    real_without_row = [k for k in units_without_row if units[k] or positions.get(k)]
     print(f"  строк выкупов в окне {len(existing)}; к записи {len(to_write)}, уже стоят верные штуки у {same}; "
-          f"штуки без строки выкупа {len(units_without_row)}, строки выкупа без штук {len(rows_without_units)}")
-    for label, keys in (("штуки без строки", units_without_row), ("строки без штук", rows_without_units)):
+          f"штуки без строки выкупа {len(units_without_row)} (из них НЕНУЛЕВЫХ {len(real_without_row)}), строки выкупа без штук {len(rows_without_units)}")
+    for label, keys in (("штуки без строки, ненулевые", real_without_row), ("строки без штук (в ответе Ozon их нет — застрявшие)", rows_without_units)):
         if keys:
             print(f"    {label}: " + ", ".join(f"{d} sku {s}" for d, s in keys[:8]) + (" …" if len(keys) > 8 else ""))
     if dry_run:

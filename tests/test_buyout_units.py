@@ -86,6 +86,25 @@ class UnitsTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in sleep.call_args_list if c.args[0] == 60), 3)
 
 
+class StepTests(unittest.TestCase):
+    def test_dry_run_writes_nothing_and_tells_zero_keys_from_real_ones(self):
+        import importlib.util, os
+        spec = importlib.util.spec_from_file_location("units_step", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "ozon_buyout_units_step.py"))
+        step = importlib.util.module_from_spec(spec); spec.loader.exec_module(step)
+        zero_pair = [byday("Z-1", 20, "100.00", "-40.00"), byday("Z-2", 20, "-100.00", "40.00")]        # продажа и возврат в один день
+        postings = POSTINGS + [{"posting_number": "Z-1", "accruals": [line69(20, "100.00", 1, "-40.00")]}, {"posting_number": "Z-2", "accruals": [line69(20, "-100.00", 1, "40.00")]}]
+        fake_accrual = type("A", (), {"fetch_window": staticmethod(lambda days_back=30: ACCRUALS + zero_pair)})
+        fake_units = type("U", (), {"CHUNK": 200, "sold_postings": staticmethod(bu.sold_postings), "units_by_key": staticmethod(bu.units_by_key),
+                                    "plan_update": staticmethod(bu.plan_update), "fetch_postings": staticmethod(lambda numbers, counters: postings),
+                                    "read_existing_keys": staticmethod(lambda sb, d1, d2: {(DAY, "11"): None}),
+                                    "write_units": staticmethod(lambda sb, rows: self.fail("сухой прогон не пишет"))})
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(step.run(None, dry_run=True, accrual_module=fake_accrual, units_module=fake_units), 0)
+        text = "\n".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("штуки без строки выкупа 2 (из них НЕНУЛЕВЫХ 1)", text)     # (день, 12) — настоящий, (день, 20) — свернулся в ноль
+        self.assertIn("db_writes = 0", text)
+
+
 class PipelineTests(unittest.TestCase):
     def test_step_runs_right_after_buyouts_and_is_non_fatal(self):
         titles = [t for t, _cmd in pipeline.build_steps()] if hasattr(pipeline, "build_steps") else None

@@ -63,6 +63,11 @@ NON_FATAL_STEPS = (
     # расходы, рекламу и KPI. Пропуск ночи — потеря одного наблюдения, не данных
     # заказов. docs/reports_model.md §3.
     "Ozon: лог статусов отправлений",
+    # Штуки выкупов: шаг дописывает одну колонку (buyouts_units) к строкам, которые уже
+    # записал шаг выкупов. Его отказ (нет колонки, 429, сеть) оставляет штуки «не
+    # измеренными» (null) — читатель берёт позиции и говорит об этом; выкупы, расходы,
+    # реклама и KPI от него не зависят. 2026-09-21, tests/test_buyout_units.py.
+    "Ozon: штуки выкупов",
 )
 
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
@@ -169,6 +174,7 @@ def build_steps(args=None):
         ("Ozon: загрузка FBO заказов", "python3 scripts/ozon_fbo_orders_step.py"),
         ("Ozon: лог статусов отправлений", "python3 scripts/ozon_posting_status_log.py --apply"),
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
+        ("Ozon: штуки выкупов", "python3 scripts/ozon_buyout_units_step.py"),
         ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
         (

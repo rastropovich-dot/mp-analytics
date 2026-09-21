@@ -41,11 +41,15 @@ class NonFatalStepsTests(unittest.TestCase):
           - загрузка FBS заказов: с 2026-09-16 загрузчик на /v4 падает вместо
             частичного результата, как FBO; та же развилка, то же решение,
             блокер ozon_fbs_orders_missing. tests/test_fbs_step_non_fatal.py
+          - штуки выкупов: дописывает колонку buyouts_units к уже записанным
+            строкам выкупов; отказ оставляет штуки null («не измерено»), деньги
+            и KPI от шага не зависят (2026-09-21). tests/test_buyout_units.py
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
             (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов",
-             "Ozon: загрузка FBS заказов", "Ozon: лог статусов отправлений"),
+             "Ozon: загрузка FBS заказов", "Ozon: лог статусов отправлений",
+             "Ozon: штуки выкупов"),
         )
 
     def test_steps_that_must_stay_fatal(self):

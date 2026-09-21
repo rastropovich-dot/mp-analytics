@@ -471,9 +471,16 @@ def plan_from_files(directory, per_date, queue, whole_plateau=True):
     amount_gain = plateau["amount_truth"] - plateau["amount_stored"]
     in_corridor = (PLATEAU_QTY_CORRIDOR[0] <= qty_gain <= PLATEAU_QTY_CORRIDOR[1]
                    and PLATEAU_AMOUNT_CORRIDOR[0] <= amount_gain <= PLATEAU_AMOUNT_CORRIDOR[1])
+    refused_plateau = [d for d in refused if d <= PLATEAU_END]
     if not whole_plateau:
         in_corridor = True
         print("\nКоридор не проверяется: в очереди не всё плато (границы дат, --max-dates или продолжение).")
+    elif refused_plateau:
+        # Прирост по неполному плато с коридором не сравнить, а писать «что есть»
+        # значит молча принять дыру. Отказ; даты названы ниже.
+        in_corridor = False
+        print(f"\nКоридор не проверить: {len(refused_plateau)} дат плато без годного сырья "
+              f"({refused_plateau[0]} … {refused_plateau[-1]}) — запись отказана, пока они не сняты или не приняты.")
     elif plateau["dates"]:
         print(f"\nКоридор плато (созданные): шт {PLATEAU_QTY_CORRIDOR[0]:,} … {PLATEAU_QTY_CORRIDOR[1]:,}, "
               f"₽ {PLATEAU_AMOUNT_CORRIDOR[0]:,} … {PLATEAU_AMOUNT_CORRIDOR[1]:,} → "

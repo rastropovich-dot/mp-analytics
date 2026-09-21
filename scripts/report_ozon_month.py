@@ -11,10 +11,12 @@
     Комиссия          marketplace_buyouts.commission_amount (sale_commission начислений), с НДС
     Выручка           (Оборот − Комиссия) / НДС
     Себестоимость     article_unit_costs (снимок 1С, --snapshot) × ПОЗИЦИИ выкупов; sku → article по заказам
-    Логистика         статья logistics из marketplace_expenses / НДС
-    Эквайринг         тип 1 из сырья accrual by-day / НДС (в базе он внутри статьи other)
+    Логистика, Прочее, Подписка — типы начислений, свёрнутые в статьи через TYPE_TO_EXPENSE (классификация у читателя)
+    Эквайринг         тип 1 / НДС (в marketplace_expenses он внутри статьи other)
     Подписка          статья subscription (типы 51, 52, 74) / НДС
-    Реклама           типы 41 + 54 из сырья accrual by-day / НДС — «на круг», решение владельца 5 от 2026-09-19
+    Реклама           типы 41 + 54 / НДС — «на круг», решение владельца 5 от 2026-09-19
+    Компенсации       типы 25 + 10, ДОХОД: «+» — деньги нам; в расходы и в «Прочее» не входят (решение 8 от 2026-09-21)
+    Фин. рез. с компенсациями   справочно; сопоставим с «Фин. рез.» владельца, у которого компенсации внутри «Прочего»
     ДРР %             Реклама / (Оборот / НДС) — формула ручного листа, «от ТО»
     Прочее            (статьи other + external_promo − тип 1) / НДС; незнакомая статья — сюда же И называется вслух
     Фин. рез.         Маржа − Логистика − Эквайринг − Подписка − Реклама − Прочее
@@ -25,10 +27,14 @@
 Лист 2 «По SKU» — daily_sku_kpi за месяц; реклама там из Performance API (решение 5), поэтому итог
 рекламы двух листов различается — разница и причина написаны внизу листа.
 
+Типы начислений — из базы: леджер ozon_accrual_daily_types (ночной шаг расходов пишет его из того же
+ответа by-day). Дня в леджере нет — запасной путь: файл data/accrual_history/<день>.json, нет файла —
+один сбор дня из API (1–3 обращения), для дат моложе двух суток файл НЕ сохраняется. --types-from files
+возвращает прежний путь целиком; --check читает ОБА источника и требует совпадения по каждому типу и дате.
+marketplace_expenses в лист не идёт — только в сверку по статьям: расхождение называется по дням.
+
 НДС — параметр с датой действия (VAT_RATES), не константа в формуле. Даты моложе двух суток
-помечаются: начисления доезжают. Сырьё by-day: data/accrual_history/<день>.json; нет файла — один
-сбор дня из API (1–3 обращения, метод листает по last_id), для дат моложе двух суток файл НЕ
-сохраняется, иначе недоехавший день застыл бы на диске. В окне 00:15…03:15 UTC в API не идёт.
+помечаются: начисления доезжают. В окне 00:15…03:15 UTC в API не идёт.
 В БД не пишет: db_writes = 0.
 """
 import argparse
@@ -125,7 +131,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         if t.startswith("advertising") or t == "commission":
             continue            # реклама Performance живёт на листе «По SKU»; комиссия уже взята из выкупов
         if t not in KNOWN_ARTICLES:
-            unknown[t] += v     # незнакомая статья идёт в прочее И называется вслух
+            unknown[t] += v     # незнакомая статья базы: в запасном пути (нет типов) идёт в прочее И называется вслух
             t = "other"
         acc[d]["exp_" + t] += v
 
@@ -139,39 +145,51 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         row["revenue"] = (a["turnover"] - a["commission"]) / vat
         row["cogs"] = a["cogs"]
         row["margin"] = row["revenue"] - row["cogs"]
-        row["logistics"] = a["exp_logistics"] / vat
-        row["subscription"] = a["exp_subscription"] / vat
-        other_gross = a["exp_other"] + a["exp_external_promo"]
         if ts is None:
-            # без сырья эквайринг от прочего не отделить, рекламы из начислений нет — не ноль, а пусто
-            row["acquiring"] = row["ads"] = row["ads_like_manual"] = row["log_other_like_manual"] = None
-            row["other"] = other_gross / vat
-        else:
-            acq = ts.get(ACQUIRING_TYPE, Z)
-            ads = sum((ts.get(t, Z) for t in accrual.AD_TYPE_IDS), Z)
-            row["acquiring"] = acq / vat
-            row["ads"] = ads / vat
-            row["other"] = (other_gross - acq) / vat
-            row["ads_like_manual"] = (ads + ts.get(PREMIUM_TYPE, Z) + ts.get(REVIEWS_TYPE, Z)) / vat
-            row["log_other_like_manual"] = (a["exp_logistics"] + a["exp_other"] - acq - ts.get(REVIEWS_TYPE, Z)) / vat
-            # Два источника на одной строке: статьи — из базы (ночь обновляет окно 30 дней), типы 1 / 41 / 54 — из файла
-            # сырья, застывшего в день сбора. Начисления доезжают неделями, поэтому расхождение называется вслух:
-            # эквайринг и реклама такого дня могут быть неполны, а «Прочее» — завышено на ту же сумму.
-            raw_articles = defaultdict(Decimal)
-            for type_id, v in ts.items():
-                article = accrual.TYPE_TO_EXPENSE.get(type_id)
-                if article:
-                    raw_articles[article] += v
-            row["db_minus_raw"] = {art: q(a["exp_" + art] - raw_articles[art]) for art in ("logistics", "other", "subscription", "external_promo")
-                                   if q(a["exp_" + art]) != q(raw_articles[art])}
-        row["fin_result"] = None if ts is None else (
-            row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["other"])
+            # Типов за день нет ни в леджере, ни в файле: статьи берём из marketplace_expenses, но эквайринг от
+            # прочего не отделить, рекламы из начислений и компенсаций нет — не ноль, а пусто.
+            row["logistics"] = a["exp_logistics"] / vat
+            row["subscription"] = a["exp_subscription"] / vat
+            row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
+            for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp"):
+                row[k] = None
+            rows.append(row)
+            continue
+        # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
+        articles = defaultdict(Decimal)
+        for type_id, v in ts.items():
+            if type_id in accrual.AD_TYPE_IDS or type_id in accrual.UNCLASSIFIED_TYPE_IDS:
+                continue
+            article = accrual.TYPE_TO_EXPENSE.get(type_id)
+            if article is None:
+                unknown[f"тип {type_id}"] += v      # незнакомый тип идёт в прочее И называется вслух
+                article = "other"
+            articles[article] += v
+        acq = ts.get(ACQUIRING_TYPE, Z)
+        ads = sum((ts.get(t, Z) for t in accrual.AD_TYPE_IDS), Z)
+        # types_by_day держит расход положительным; компенсация — деньги НАМ, в леджере она > 0, здесь < 0
+        comp = -sum((ts.get(t, Z) for t in accrual.UNCLASSIFIED_TYPE_IDS), Z)
+        row["logistics"] = articles["logistics"] / vat
+        row["subscription"] = articles["subscription"] / vat
+        row["acquiring"] = acq / vat
+        row["ads"] = ads / vat
+        row["other"] = (articles["other"] + articles["external_promo"] - acq) / vat
+        row["compensations"] = comp / vat
+        row["ads_like_manual"] = (ads + ts.get(PREMIUM_TYPE, Z) + ts.get(REVIEWS_TYPE, Z)) / vat
+        row["log_other_like_manual"] = (articles["logistics"] + articles["other"] - acq - ts.get(REVIEWS_TYPE, Z)) / vat
+        row["fin_result"] = row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["other"]
+        row["fin_result_with_comp"] = row["fin_result"] + row["compensations"]
+        # Сверка двух таблиц одной базы: статья из типов против той же статьи в marketplace_expenses. Расходятся —
+        # называем: upsert расходов строк не удаляет, и начисление, которое Ozon убрал, застревает в базе
+        # (найдено 2026-09-21: 09-11, 09-12, 09-15, 09-19 — по одной строке). Лист считает по типам.
+        row["db_minus_raw"] = {art: q(a["exp_" + art] - articles[art]) for art in ("logistics", "other", "subscription", "external_promo")
+                               if q(a["exp_" + art]) != q(articles[art])}
         rows.append(row)
     return rows, dict(unknown)
 
 
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
-         "fin_result", "ads_like_manual", "log_other_like_manual", "positions"]
+         "fin_result", "compensations", "fin_result_with_comp", "ads_like_manual", "log_other_like_manual", "positions"]
 
 
 def add_ratios(row):
@@ -182,6 +200,7 @@ def add_ratios(row):
     row["acquiring_pct"] = None if row.get("acquiring") is None else ratio(row["acquiring"], rev)
     row["drr_pct"] = None if row.get("ads") is None else ratio(row["ads"], row["turnover"] / row["vat"]) if row["turnover"] else None
     row["fin_result_pct"] = None if row.get("fin_result") is None else ratio(row["fin_result"], rev)
+    row["fin_result_with_comp_pct"] = None if row.get("fin_result_with_comp") is None else ratio(row["fin_result_with_comp"], rev)
     return row
 
 
@@ -274,6 +293,27 @@ def load_day_raw(day, today, allow_fetch, counters):
     return accruals, "API → файл"
 
 
+LEDGER = "ozon_accrual_daily_types"
+
+
+def load_types_from_ledger(sb, d1, d2):
+    """{день: {type_id: расход, положителен при списании}} из леджера начислений по типам.
+
+    В леджере знак Ozon (списание < 0). Внутри листа типы держатся расходом с плюсом — как type_sums()
+    по файлам сырья, — поэтому знак переворачивается здесь, один раз, на входе.
+    """
+    rows = fetch(sb, LEDGER, "accrual_date,type_id,amount", [("gte", "accrual_date", d1), ("lte", "accrual_date", d2)], ["accrual_date", "type_id"])
+    out = defaultdict(dict)
+    for r in rows:
+        out[r["accrual_date"]][int(r["type_id"])] = -D(r["amount"])
+    return dict(out)
+
+
+def types_differ(a, b):
+    """Типы двух источников за один день: {type_id: (a, b)} там, где суммы разные. Нулевая сумма = отсутствию типа."""
+    return {t: (a.get(t, Z), b.get(t, Z)) for t in sorted(set(a) | set(b)) if q(a.get(t, Z)) != q(b.get(t, Z))}
+
+
 def load_costs(sb, snapshot):
     orders = fetch(sb, "marketplace_orders", "id,marketplace_sku,article,orders_qty,cancelled_orders_qty",
                    [("eq", "marketplace_code", "ozon"), ("gte", "order_date", "2026-03-28")],
@@ -312,6 +352,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
             ("Логистика, руб.", "logistics", money), ("% Логистики", "logistics_pct", pct), ("Эквайринг, руб.", "acquiring", money), ("% Эквайринга", "acquiring_pct", pct),
             ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от ТО)", "drr_pct", pct), ("Прочее, руб.", "other", money),
             ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), (None, None, None),
+            ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
+            ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
             ("Позиций выкупов", "positions", "#,##0"), ("из них без себестоимости", "no_cost_positions", "#,##0"), ("Примечание", "note", None)]
     for j, (head, _k, _f) in enumerate(cols, 1):
@@ -322,9 +364,9 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
         r = dict(r)
         drift = r.get("db_minus_raw") or {}
         r["note"] = "; ".join(x for x in ("моложе двух суток — начисления доезжают" if r.get("young") else "",
-                                           ("база и файл сырья расходятся (база − файл): " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items())
-                                            + " (с НДС) — эквайринг и реклама дня могут быть неполны") if drift else "",
-                                           "" if r.get("has_raw") else ("нет сырья начислений — эквайринг внутри прочего, рекламы нет" if r["date"] != "Итого" else "есть дни без сырья — итог неполон")) if x)
+                                           ("marketplace_expenses расходится с типами начислений (расходы − типы, с НДС): " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items())
+                                            + " — лист считает по типам") if drift else "",
+                                           "" if r.get("has_raw") else ("нет типов начислений (ни в леджере, ни в файле) — эквайринг внутри прочего, рекламы и компенсаций нет" if r["date"] != "Итого" else "есть дни без типов начислений — итог неполон")) if x)
         for j, (head, k, fmt) in enumerate(cols, 1):
             if not head:
                 continue
@@ -419,11 +461,16 @@ def check(rows, manual):
     g = lambda k: (lambda m: None if m.get(k) is None else D(m[k]))  # noqa: E731
     for title, ours_k, theirs_k in EXACT:
         line(title, lambda r, k=ours_k: r.get(k), g(theirs_k), True)
-    line("Логистика + Прочее по образцу = их Логистика + Прочее", lambda r: r.get("log_other_like_manual"),
-         lambda m: None if m.get("logistics") is None or m.get("other") is None else D(m["logistics"]) + D(m["other"]), False,
-         "граница между их двумя строками проведена не по type_id; тип 25 ItemCompensation у них внутри прочего, у нас вне расходов")
+    their_lo = lambda m: None if m.get("logistics") is None or m.get("other") is None else D(m["logistics"]) + D(m["other"])  # noqa: E731
+    line("Л + П по образцу − Компенсации = их Логистика + Прочее",
+         lambda r: None if r.get("log_other_like_manual") is None else r["log_other_like_manual"] - r["compensations"], their_lo, False,
+         "у владельца компенсации (типы 25, 10) сидят внутри «Прочего» расходом с обратным знаком; у нас — отдельной строкой дохода (решение 8)")
+    line("   то же без компенсаций: Л + П по образцу = их Л + П", lambda r: r.get("log_other_like_manual"), their_lo, False,
+         "разница — компенсации дня")
     line("Себестоимость (наш снимок 1С против их цен)", lambda r: r.get("cogs"), g("cogs"), False,
          "решение 4 от 2026-09-19: остаёмся на снимке 05-20, расхождение принимается как известное")
+    line("Фин. рез. с компенсациями против их «Фин. рез.»", lambda r: r.get("fin_result_with_comp"), g("fin_result"), False,
+         "остаток = разница себестоимости (решение 4) и 09-01; подписка у них внутри рекламы — на итог не влияет")
     line("Логистика (наша статья против их строки)", lambda r: r.get("logistics"), g("logistics"), False, "границу не повторяем — решение 7")
     line("Прочее (наше без эквайринга против их строки)", lambda r: r.get("other"), g("other"), False, "границу не повторяем — решение 7")
     line("Реклама (41 + 54) против их «Рекламы»", lambda r: r.get("ads"), g("ads"), False, "у них в рекламе ещё подписка Premium (51) и сбор отзывов (96)")
@@ -449,7 +496,10 @@ def main():
     ap.add_argument("--date-to", help="последний день листа; по умолчанию — вчера по местному времени: сегодняшний день ночь ещё не грузила")
     ap.add_argument("--out")
     ap.add_argument("--snapshot", default=SNAP)
-    ap.add_argument("--no-fetch", action="store_true", help="сырьё только из файлов, в API не ходить")
+    ap.add_argument("--no-fetch", action="store_true", help="в API не ходить ни за чем")
+    ap.add_argument("--types-from", choices=("db", "files"), default="db",
+                    help="откуда типы начислений: db — леджер ozon_accrual_daily_types (дня нет в леджере — файл, нет файла — API); "
+                         "files — только файлы сырья, как до леджера. С --check читаются ОБА источника и обязаны совпасть")
     ap.add_argument("--check", action="store_true", help="сверить с ручным листом (--xlsx, --sheet); код возврата 1, если обязанные колонки не сошлись")
     ap.add_argument("--xlsx"); ap.add_argument("--sheet")
     args = ap.parse_args()
@@ -475,11 +525,27 @@ def main():
     sku2art, unit_cost, cost_found, cost_asked = load_costs(sb, args.snapshot)
 
     counters, sources, types_by_day = {"requests": 0, "429": 0}, defaultdict(list), {}
+    ledger = load_types_from_ledger(sb, d1, d2) if (args.types_from == "db" or args.check) else {}
+    file_types = {}
     for d in days:
-        accruals, where = load_day_raw(d, today, not args.no_fetch, counters)
-        sources[where].append(d)
+        if args.types_from == "db" and d in ledger and not args.check:
+            types_by_day[d] = ledger[d]
+            sources["леджер"].append(d)
+            continue
+        # дня нет в леджере (моложе посева и ещё не записан ночью), либо источник — файлы, либо --check сверяет оба
+        in_file = os.path.exists(os.path.join(RAW_DIR, f"{d}.json"))
+        accruals, where = load_day_raw(d, today, not args.no_fetch and not (args.check and d in ledger and not in_file), counters)
         if accruals is not None:
-            types_by_day[d] = type_sums(accruals)
+            file_types[d] = type_sums(accruals)
+        if args.types_from == "db" and d in ledger:
+            types_by_day[d] = ledger[d]
+            sources["леджер"].append(d)
+        else:
+            sources[where].append(d)
+            if accruals is not None:
+                types_by_day[d] = file_types[d]
+    source_mismatch = {d: types_differ(ledger[d], file_types[d]) for d in days if d in ledger and d in file_types and types_differ(ledger[d], file_types[d])}
+    both = [d for d in days if d in ledger and d in file_types]
 
     rows, unknown = build_daily(days, buyouts, expenses, types_by_day, unit_cost, today)
     for r in rows:
@@ -491,14 +557,19 @@ def main():
     print(f"окно {d1} … {d2} ({len(days)} дн.): выкупов строк {len(buyouts)}, расходов {len(expenses)}, строк витрины {len(kpi)}; "
           f"sku→article {len(sku2art)}, себестоимость найдена у {cost_found} артикулов из {cost_asked} (снимок {args.snapshot}); НДС {vat}")
     for where, ds in sources.items():
-        print(f"  сырьё by-day — {where}: {len(ds)} дн." + (f" ({ds[0]} … {ds[-1]})" if len(ds) > 1 else f" ({ds[0]})"))
+        print(f"  типы начислений — {where}: {len(ds)} дн." + (f" ({ds[0]} … {ds[-1]})" if len(ds) > 1 else f" ({ds[0]})"))
     print(f"  обращений к Seller API {counters['requests']}, 429 — {counters['429']}")
     if unknown:
         print("ВНИМАНИЕ: незнакомые статьи расходов, учтены в «Прочем»:", {k: f"{v:,.2f}" for k, v in unknown.items()})
+    if args.check or args.types_from == "files":
+        print(f"  два источника типов (леджер и файлы сырья): дат с обоими {len(both)}, совпали до копейки по каждому типу {len(both) - len(source_mismatch)}"
+              + (f", в леджере нет {len([d for d in days if d not in ledger])} дн." if any(d not in ledger for d in days) else ""))
+        for d, diff in source_mismatch.items():
+            print(f"      {d}: " + ", ".join(f"тип {t}: леджер {a:,.2f} / файл {b:,.2f}" for t, (a, b) in diff.items()))
     drifted = [(r["date"], r["db_minus_raw"]) for r in rows if r.get("db_minus_raw")]
     if drifted:
-        print("  база и файлы сырья расходятся по статьям (статьи — из базы на момент ночи, типы — из файла на момент его сбора; начисления доезжают,\n"
-              "  поэтому эквайринг и реклама этих дней могут быть неполны; «+» — в базе больше, чем в файле):")
+        print("  marketplace_expenses расходится с типами начислений по статьям («+» — в расходах больше). Лист считает по типам; в расходах\n"
+              "  застревают строки начислений, которые Ozon потом убрал, — upsert их не удаляет:")
         for d, drift in drifted:
             print(f"      {d}: " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items()))
     young = [r["date"] for r in rows if r["young"]]
@@ -526,7 +597,8 @@ def main():
                  ("Разница по дням (Performance − начисления, без НДС): " + "; ".join(f"{d} {v:+,.2f}" for d, v in ad_gaps[:8])
                   + (f"; ещё {len(ad_gaps) - 8} дн. на {sum((v for _d, v in ad_gaps[8:]), Z):+,.2f}" if len(ad_gaps) > 8 else "")) if ad_gaps else "По дням реклама двух источников сходится до рубля.",
                  "Прочее здесь — other_expenses_amount витрины: эквайринг, подписка и внешнее продвижение внутри; строка «(без SKU)» — расходы без товара."]
-    notes = [f"Источники: marketplace_buyouts, marketplace_expenses, article_unit_costs (снимок {args.snapshot}, позиции выкупов), сырьё accrual by-day (типы 1, 41, 54, 51, 96). НДС {vat}.",
+    notes = [f"Источники: marketplace_buyouts, ozon_accrual_daily_types (типы начислений; статьи — свёрткой типов), article_unit_costs (снимок {args.snapshot}, позиции выкупов). НДС {vat}.",
+             "Компенсации Ozon (типы 25 и 10) — отдельной строкой дохода, в расходы не входят; «Фин. рез. с компенсациями» сопоставим с «Фин. рез.» ручного листа.",
              "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 51 + 96) / НДС — так считал ручной лист. «Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
@@ -549,7 +621,14 @@ def main():
         manual = {d: {k: (None if v is None else Decimal(v)) for k, v in row.items()} for d, row in read_manual_sheet(args.xlsx, args.sheet).items()}
         table, failures = check(rows, manual)
         print_check(table)
-        print(f"\nприёмка: колонок, обязанных сходиться до копейки, — {len(EXACT)}, не сошлось {failures}")
+        missing_in_ledger = [d for d in days if d not in ledger]
+        no_file = [d for d in days if d not in file_types]
+        sources_ok = not source_mismatch and not missing_in_ledger and not no_file
+        print(f"\nисточники типов: леджер против файлов сырья — дат {len(days)}, с обоими источниками {len(both)}, совпали по каждому типу {len(both) - len(source_mismatch)}"
+              + (f"; нет в леджере: {missing_in_ledger}" if missing_in_ledger else "") + (f"; нет файла: {no_file}" if no_file else "")
+              + ("" if sources_ok else "   ОБЯЗАНЫ СОВПАСТЬ"))
+        failures += 0 if sources_ok else 1
+        print(f"приёмка: колонок, обязанных сходиться до копейки, — {len(EXACT)}, плюс совпадение источников; не сошлось {failures}")
         code = 1 if failures else 0
     print("db_writes = 0")
     sys.exit(code)

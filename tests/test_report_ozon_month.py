@@ -28,7 +28,8 @@ def expense(kind, amount, day=DAY):
     return {"expense_date": day, "expense_type": kind, "expense_amount": amount}
 
 
-TYPES = {1: D("12.2"), 41: D("61"), 54: D("61"), 51: D("24.4"), 96: D("12.2"), 32: D("122")}
+# расход положителен, как внутри листа: 32 — логистика; 1, 96, 38 — статья other; 51 — подписка; 25 — компенсация нам (в леджере +61)
+TYPES = {1: D("12.2"), 41: D("61"), 54: D("61"), 51: D("24.4"), 96: D("12.2"), 38: D("12.2"), 32: D("122"), 25: D("-61")}
 EXPENSES = [expense("logistics", "122"), expense("other", "36.6"), expense("subscription", "24.4"),
             expense("advertising_clicks", "999"), expense("commission", "777")]
 
@@ -58,6 +59,8 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertEqual(r["ads"], D("100"))                       # 41 + 54, без 51 и 96
         self.assertEqual(r["other"], D("20"))                      # (other − тип 1) / НДС
         self.assertEqual(r["fin_result"], D("700") - 100 - 10 - 20 - 100 - 20)
+        self.assertEqual(r["compensations"], D("50"))              # типы 25 + 10: доход, «+» — деньги нам
+        self.assertEqual(r["fin_result_with_comp"], r["fin_result"] + 50)
         self.assertEqual(r["drr_pct"], D("0.1"))                   # реклама / (оборот / НДС)
         self.assertEqual(r["margin_pct"], D("0.7"))
 
@@ -65,6 +68,8 @@ class DailyFormulaTests(unittest.TestCase):
         r, _ = one_day()
         self.assertEqual(r["ads_like_manual"], D("130"))           # (41 + 54 + 51 + 96) / НДС
         self.assertEqual(r["log_other_like_manual"], D("110"))     # (logistics + other − тип 1 − тип 96) / НДС
+        # у владельца компенсация сидит внутри «Прочего» расходом с обратным знаком: их Л + П = наше − компенсации
+        self.assertEqual(r["log_other_like_manual"] - r["compensations"], D("60"))
 
     def test_performance_ads_and_commission_expenses_stay_out_of_sheet_one(self):
         with_extra, _ = one_day()
@@ -76,15 +81,24 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertEqual(r["revenue"], D("800"))
         self.assertEqual(r["commission_pct"], D("0.2"))
 
-    def test_unknown_article_goes_to_other_and_is_named(self):
-        r, unknown = one_day(expenses=EXPENSES + [expense("unknown_77", "12.2")])
-        self.assertEqual(unknown, {"unknown_77": D("12.2")})
+    def test_unknown_type_goes_to_other_and_is_named(self):
+        r, unknown = one_day(types={**TYPES, 777: D("12.2")})
+        self.assertEqual(unknown, {"тип 777": D("12.2")})
         self.assertEqual(r["other"], D("30"))
 
-    def test_no_raw_means_empty_not_zero(self):
+    def test_expense_columns_come_from_accrual_types_not_from_the_expenses_table(self):
+        """В marketplace_expenses застревают строки, которые Ozon убрал: лист считает по типам, базу только сверяет."""
+        clean, _ = one_day()
+        stale, _ = one_day(expenses=EXPENSES + [expense("other", "841.77")])
+        self.assertEqual((stale["other"], stale["fin_result"]), (clean["other"], clean["fin_result"]))
+        self.assertEqual(stale["db_minus_raw"], {"other": D("841.77")})
+        self.assertEqual(clean["db_minus_raw"], {})
+
+    def test_no_types_means_empty_not_zero(self):
         r, _ = one_day(types=None)
-        self.assertIsNone(r["acquiring"]); self.assertIsNone(r["ads"]); self.assertIsNone(r["fin_result"]); self.assertIsNone(r["drr_pct"])
-        self.assertEqual(r["other"], D("30"))                      # эквайринг не отделить — остаётся внутри прочего
+        for k in ("acquiring", "ads", "compensations", "fin_result", "fin_result_with_comp", "drr_pct"):
+            self.assertIsNone(r[k], k)
+        self.assertEqual(r["other"], D("30"))                      # запасной путь — статья из расходов; эквайринг не отделить
         self.assertIsNone(rep.total_row([r])["fin_result"])        # итог неполон, и это видно
 
     def test_position_without_cost_is_counted_not_priced_at_zero(self):
@@ -95,10 +109,21 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertTrue(one_day(today="2026-09-11")[0]["young"])
         self.assertFalse(one_day(today="2026-09-12")[0]["young"])
 
-    def test_database_ahead_of_the_raw_file_is_named(self):
-        """Статьи из базы, типы из файла сырья: если начисления доехали после сбора файла — сказать."""
-        r, _ = one_day(expenses=[expense("logistics", "122"), expense("other", "86.6"), expense("subscription", "24.4")], types=TYPES)
-        self.assertEqual(r["db_minus_raw"], {"other": D("62.20")})   # в сырье other = типы 1 + 96 = 24.4
+    def test_ledger_types_are_flipped_to_expense_positive_once(self):
+        class Q:
+            def __init__(self, rows): self.rows = rows
+            def select(self, *_a): return self
+            def gte(self, *_a): return self
+            def lte(self, *_a): return self
+            def order(self, *_a): return self
+            def range(self, *_a): return self
+            def execute(self): return type("R", (), {"data": self.rows})()
+        sb = type("SB", (), {"table": lambda self, name: Q([{"accrual_date": DAY, "type_id": 41, "amount": -61.0}, {"accrual_date": DAY, "type_id": 25, "amount": 61.0}])})()
+        self.assertEqual(rep.load_types_from_ledger(sb, DAY, DAY), {DAY: {41: D("61.0"), 25: D("-61.0")}})
+
+    def test_two_sources_are_compared_type_by_type(self):
+        self.assertEqual(rep.types_differ({1: D("10"), 38: D("0")}, {1: D("10.004")}), {})          # ноль = отсутствию, копейки — по округлению
+        self.assertEqual(rep.types_differ({1: D("10")}, {1: D("10.01"), 96: D("5")}), {1: (D("10"), D("10.01")), 96: (D("0"), D("5"))})
 
 
 class TotalsTests(unittest.TestCase):
@@ -119,13 +144,14 @@ class CheckTests(unittest.TestCase):
     def setUp(self):
         self.row, _ = one_day()
         self.manual = {DAY: {"turnover": D("1220"), "commission": D("0"), "revenue": D("1000"), "acquiring": D("10"), "ads": D("130"),
-                             "logistics": D("95"), "other": D("15"), "cogs": D("350")}}
+                             "logistics": D("95"), "other": D("-35"), "cogs": D("350"), "fin_result": D("450")}}
 
     def test_exact_columns_pass_and_known_boundaries_do_not_fail_the_check(self):
         table, failures = rep.check([self.row], self.manual)
         self.assertEqual(failures, 0)
         by = {t["title"]: t for t in table}
-        self.assertEqual(by["Логистика + Прочее по образцу = их Логистика + Прочее"]["diff"], D("0.00"))   # 110 против 95 + 15
+        self.assertEqual(by["Л + П по образцу − Компенсации = их Логистика + Прочее"]["diff"], D("0.00"))   # 110 − 50 против 95 − 35
+        self.assertEqual(by["   то же без компенсаций: Л + П по образцу = их Л + П"]["diff"], D("50.00"))
         self.assertEqual(by["Себестоимость (наш снимок 1С против их цен)"]["diff"], D("-50.00"))
         self.assertEqual(by["Логистика (наша статья против их строки)"]["diff"], D("5.00"))               # границу не повторяем — не провал
 
@@ -155,7 +181,10 @@ class WorkbookTests(unittest.TestCase):
             ws = wb["Ozon - сентябрь"]
             self.assertEqual(ws["A5"].value, "Итого")
             self.assertEqual(ws["B4"].value, 1220)
-            self.assertIn("моложе двух суток", ws.cell(row=4, column=24).value)
+            heads = {c.value: c.column for c in ws[3] if c.value}
+            self.assertIn("моложе двух суток", ws.cell(row=4, column=heads["Примечание"]).value)
+            self.assertEqual(ws.cell(row=4, column=heads["Компенсации Ozon (доход), руб."]).value, 50)
+            self.assertEqual(ws.cell(row=4, column=heads["справочно: Фин. рез. с компенсациями"]).value, 500)
             sku = wb["По SKU"]
             self.assertEqual((sku["A2"].value, sku["B2"].value, sku["K2"].value), ("11", "F11", 100))
             self.assertEqual(sku["A3"].value, "Итого")

@@ -1,0 +1,1025 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Flex API",
+    "version": "1.1.0"
+  },
+  "servers": [
+    {
+      "url": "//flex-api.stg.a.o3.ru:80"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Introduction",
+        "Process",
+        "News"
+      ]
+    },
+    {
+      "name": "Методы API",
+      "tags": [
+        "CourierAPI"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Introduction",
+      "x-displayName": "Введение",
+      "description": "Flex API — программный интерфейс для обмена данными с партнёрами в системе Flex.\n\nC помощью Flex API можно:\n- передавать заявки на подключение курьеров;\n- получать информацию о курьерах;\n- получать и загружать информацию о транзакциях по курьерам."
+    },
+    {
+      "name": "Process",
+      "x-displayName": "Порядок работы с методами",
+      "description": "1. Передайте заявку на подключение курьера к приложению: [/courier/info/add](#operation/CourierAPI_AddInfo).\n2. Получите информацию о курьере и его балансе: [/courier/info/get](#operation/CourierAPI_GetInfo).\n3. Добавьте информацию о транзакциях курьеру, в том числе суммы и комментарий к ним: [/courier/payment/add](#operation/CourierAPI_AddPayment).\n4. Получите информацию о выплатах и списаниях по курьеру: [v2/courier/payment/get](#operation/CourierAPI_GetPaymentV2)."
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 26 декабря 2025\n\n| Метод                                                              | Что изменилось                                                         |\n|--------------------------------------------------------------------|------------------------------------------------------------------------|\n| [POST /courier/payment/get](#operation/CourierAPI_GetPayment)      | Обновили описание параметра `payments.operation_type` в ответе метода. |\n| [POST /v2/courier/payment/get](#operation/CourierAPI_GetPaymentV2) | Обновили описание параметра `data.operation_type` в ответе метода.     |\n| [POST /courier/payment/add](#operation/CourierAPI_AddPayment)      | Обновили описание метода.                                              |\n\n## 8 июля 2025\n\n| Метод                                                                  | Что изменилось                                                                                                    |\n|------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|\n| [POST /courier/info/get](#operation/CourierAPI_GetInfo)                | Обновили описание параметров `couriers.is_contract_signed` и `couriers.is_self_employed_actual` в ответе метода.\t |\n| [POST /courier/info/update](#operation/CourierAPI_CourierInfoUpdate)   | Обновили описание параметров `is_contract_signed` и `is_self_employed_actual` в запросе метода.                   |\n\n## 22 мая 2025\n\n| Метод                     | Что изменилось                                                                                                                                                |\n|---------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| [POST /courier/info/update](#operation/CourierAPI_CourierInfoUpdate) |  Добавили метод для обновления информации о курьере.                                                                                                          |\n| [POST /courier/info/get](#operation/CourierAPI_GetInfo)    | Обновили описание параметра `filter` в запросе метода.<br>Добавили параметры `couriers.is_contract_signed` и `couriers.is_self_employed_actual` в ответ метода. |\n"
+    },
+    {
+      "name": "CourierAPI",
+      "x-displayName": "Методы"
+    }
+  ],
+  "paths": {
+    "/courier/info/add": {
+      "post": {
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_AddInfo",
+        "summary": "Добавление информации о курьере",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiAddInfoRequest"
+              },
+              "example": {
+                "couriers": [
+                  {
+                    "first_name": "Тест",
+                    "patronymic": "Тестович",
+                    "phone_number": "+01234567890",
+                    "surname": "Тестовый"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Курьер добавлен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/courier_apiAddInfoResponse"
+                },
+                "example": {
+                  "couriers": [
+                    {
+                      "id": "12345",
+                      "phoneNumber": "+01234567890"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/courier/info/get": {
+      "post": {
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_GetInfo",
+        "summary": "Получение информации о курьере",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiGetInfoRequest"
+              },
+              "example": {
+                "filter": {
+                  "courier_ids": [
+                    "12345"
+                  ],
+                  "phone_numbers": [
+                    "+01234567890"
+                  ]
+                },
+                "offset_id": "12345"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Информация о курьере",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/courier_apiGetInfoResponse"
+                },
+                "example": {
+                  "couriers": [
+                    {
+                      "active": true,
+                      "balance": "100",
+                      "courierId": "12345",
+                      "first_name": "Тест",
+                      "id": "12345",
+                      "is_contract_signed": true,
+                      "is_self_employed_actual": true,
+                      "patronymic": "Тестович",
+                      "phone_number": "+01234567890",
+                      "registered": true,
+                      "surname": "Тестовый"
+                    }
+                  ],
+                  "next_offset_id": "12345"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/courier/info/update": {
+      "post": {
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_CourierInfoUpdate",
+        "summary": "Обновление информации о курьере",
+        "description": "Используйте метод, чтобы обновить информацию о самозанятости курьера и подписанном им договоре.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiCourierInfoUpdateRequest"
+              },
+              "example": {
+                "courier_id": "12345",
+                "is_contract_signed": true,
+                "is_self_employed_actual": true
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Данные обновлены"
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/courier/payment/add": {
+      "post": {
+        "summary": "Добавление информации о транзакциях курьерам",
+        "description": "Используйте метод, чтобы указать суммы выплат или начислений, которые надо списать или начислить курьерам.\n\nТранзакции с `value < 0` получат `operation_type = external_call`.\n\nТранзакции с `value > 0`:\n- если `comment = Отмена транзакции%`, получат `operation_type = external_call`;\n- если `comment ≠ Отмена транзакции%`, получат `operation_type = partner_bonus`.\n",
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_AddPayment",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiAddPaymentRequest"
+              },
+              "example": {
+                "payments": [
+                  {
+                    "comment": "Выплата",
+                    "courier_id": "12345",
+                    "request_uid": "6f93109f-1ab0-11f0-9693-de248909bba9",
+                    "value": "-1234,56"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Уникальный идентификатор запроса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/courier_apiAddPaymentResponse"
+                },
+                "example": {
+                  "request_uid": "1034d3c8-1ab0-11f0-9693-de248909bba9"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/courier/payment/get": {
+      "post": {
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_GetPayment",
+        "summary": "Получение информации о транзакциях",
+        "deprecated": true,
+        "description": "\n<aside class=\"warning\">\nВ будущем метод будет отключён. Переключитесь на <a href=\"#operation/CourierAPI_GetPaymentV2\">/v2/courier/payment/get</a>.\n</aside>\n\nИспользуйте метод, чтобы получить информацию о выплатах и списаниях по курьеру.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiGetPaymentRequest"
+              },
+              "example": {
+                "filter": {
+                  "date": {
+                    "day": 17,
+                    "month": 4,
+                    "year": 2025
+                  },
+                  "task_ids": [
+                    "111111",
+                    "222222"
+                  ]
+                },
+                "offset_id": "12345",
+                "phone_number": "+01234567890"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Информация о транзакциях",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/courier_apiGetPaymentResponse"
+                },
+                "example": {
+                  "next_offset_id": "12345",
+                  "payments": [
+                    {
+                      "comment": "Выплата",
+                      "date": "2025-04-17T19:27:13.533894Z",
+                      "operation_type": "DROP",
+                      "payout": "558.62",
+                      "task_id": "111111",
+                      "value": "607.20"
+                    },
+                    {
+                      "comment": "Выплата",
+                      "date": "2025-04-17T12:56:50.326281Z",
+                      "operation_type": "DROP",
+                      "payout": "657.98",
+                      "task_id": "222222",
+                      "value": "715.20"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/courier/payment/get": {
+      "post": {
+        "tags": [
+          "CourierAPI"
+        ],
+        "operationId": "CourierAPI_GetPaymentV2",
+        "summary": "Получение информации о транзакциях (версия 2)",
+        "description": "Используйте метод, чтобы получить информацию о выплатах и списаниях по курьеру.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Client-Id"
+          },
+          {
+            "$ref": "#/components/parameters/Api-Key"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/courier_apiGetPaymentRequestV2"
+              },
+              "example": {
+                "filter": {
+                  "courier_ids": [
+                    "213373",
+                    "151436"
+                  ],
+                  "date_from": "2025-03-09T12:00:00.000Z",
+                  "date_to": "2025-04-18T12:00:00.000Z",
+                  "task_ids": [
+                    "111111",
+                    "222222",
+                    "333333"
+                  ]
+                },
+                "offset_id": "12345"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Информация о транзакциях",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/courier_apiGetPaymentResponseV2"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "comment": "Выплата",
+                      "courier_id": "151436",
+                      "date": "2025-04-11T12:14:27.702784Z",
+                      "operation_type": "DROP",
+                      "partner_percent": 8,
+                      "payout": "25052.54",
+                      "task_id": "111111",
+                      "value": "470.23"
+                    },
+                    {
+                      "comment": "Выплата",
+                      "courier_id": "151436",
+                      "date": "2025-04-11T11:30:14.307433Z",
+                      "operation_type": "DROP",
+                      "partner_percent": 8,
+                      "payout": "40590.65",
+                      "task_id": "222222",
+                      "value": "9679.42"
+                    },
+                    {
+                      "comment": "Выплата",
+                      "courier_id": "151436",
+                      "date": "2025-04-11T10:51:20.789091Z",
+                      "operation_type": "DROP",
+                      "partner_percent": 8,
+                      "payout": "53757.87",
+                      "task_id": "333333",
+                      "value": "418.54"
+                    }
+                  ],
+                  "next_offset_id": "12345"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Client-Id": {
+        "description": "Идентификатор клиента.",
+        "in": "header",
+        "name": "Client-Id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Api-Key": {
+        "description": "API-ключ.",
+        "in": "header",
+        "name": "Api-Key",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "courier_apiAddInfoRequestCourier": {
+        "required": [
+          "first_name",
+          "phone_number",
+          "surname"
+        ],
+        "type": "object",
+        "properties": {
+          "first_name": {
+            "description": "Имя курьера.",
+            "type": "string"
+          },
+          "patronymic": {
+            "description": "Отчество курьера.",
+            "type": "string"
+          },
+          "phone_number": {
+            "description": "Номер телефона курьера.",
+            "type": "string"
+          },
+          "surname": {
+            "description": "Фамилия курьера.",
+            "type": "string"
+          }
+        }
+      },
+      "courier_apiAddInfoRequest": {
+        "type": "object",
+        "properties": {
+          "couriers": {
+            "description": "Информация о курьере.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/courier_apiAddInfoRequestCourier"
+            }
+          }
+        }
+      },
+      "protobufAny": {
+        "type": "object",
+        "properties": {
+          "@type": {
+            "type": "string",
+            "description": "Тип протокола передачи данных."
+          }
+        },
+        "additionalProperties": false
+      },
+      "rpcStatus": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/protobufAny"
+            },
+            "description": "Дополнительная информация об ошибке."
+          },
+          "message": {
+            "type": "string",
+            "description": "Описание ошибки."
+          }
+        }
+      },
+      "AddInfoResponseEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Идентификатор заявки.",
+            "type": "string",
+            "format": "int64"
+          },
+          "phoneNumber": {
+            "description": "Номер телефона курьера.",
+            "type": "string"
+          }
+        }
+      },
+      "courier_apiAddInfoResponse": {
+        "type": "object",
+        "properties": {
+          "couriers": {
+            "description": "Информация о курьерах.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AddInfoResponseEntry"
+            }
+          }
+        }
+      },
+      "courier_apiGetInfoRequestFilter": {
+        "description": "Список фильтров. Передайте только 1 параметр: `courier_ids` или `phone_numbers`.\n",
+        "type": "object",
+        "properties": {
+          "courier_ids": {
+            "description": "Список идентификаторов курьеров.",
+            "type": "array",
+            "minimum": 1,
+            "maximum": 100,
+            "items": {
+              "type": "string",
+              "format": "int64"
+            }
+          },
+          "phone_numbers": {
+            "description": "Список телефонов курьеров.",
+            "type": "array",
+            "minimum": 1,
+            "maximum": 100,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "courier_apiGetInfoRequest": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/courier_apiGetInfoRequestFilter"
+          },
+          "offset_id": {
+            "description": "Указатель из предыдущего ответа для постраничной загрузки данных.",
+            "type": "string",
+            "format": "int64"
+          }
+        }
+      },
+      "courier_apiGetInfoResponseCourier": {
+        "description": "Информация о курьере.",
+        "type": "object",
+        "properties": {
+          "active": {
+            "description": "Признак, что курьер активен в приложении.\n \n Значения:\n- `true` — курьер активен.\n- `false` — курьер удалён.\n",
+            "type": "boolean"
+          },
+          "balance": {
+            "description": "Текущий баланс курьера.",
+            "type": "string"
+          },
+          "courierId": {
+            "description": "Идентификатор курьера.",
+            "type": "string",
+            "format": "int64"
+          },
+          "first_name": {
+            "description": "Имя.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Идентификатор заявки курьера на подключение.",
+            "type": "string",
+            "format": "int64"
+          },
+          "patronymic": {
+            "description": "Отчество.",
+            "type": "string"
+          },
+          "phone_number": {
+            "description": "Номер телефона.",
+            "type": "string"
+          },
+          "registered": {
+            "description": "Признак, что курьер зарегистрирован в приложении. \n\nЗначения:\n- `true` — зарегистрирован.\n- `false` — не зарегистрирован.\n",
+            "type": "boolean"
+          },
+          "is_contract_signed": {
+            "type": "boolean",
+            "description": "Признак, что договор подписан. \n\nЗначения:\n- `true` — подписан.\n- `false` — не подписан.\n"
+          },
+          "is_self_employed_actual": {
+            "type": "boolean",
+            "description": "Признак, что статус самозанятого у курьера актуален. \n\nЗначения:\n- `true` — актуален.\n- `false` — неактуален.\n"
+          },
+          "surname": {
+            "description": "Фамилия.",
+            "type": "string"
+          }
+        }
+      },
+      "courier_apiGetInfoResponse": {
+        "type": "object",
+        "properties": {
+          "couriers": {
+            "description": "Информация о курьере.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/courier_apiGetInfoResponseCourier"
+            }
+          },
+          "next_offset_id": {
+            "description": "Указатель для следующего запроса.",
+            "type": "string",
+            "format": "int64"
+          }
+        }
+      },
+      "courier_apiCourierInfoUpdateRequest": {
+        "oneOf": [
+          {
+            "title": "is_contract_signed",
+            "required": [
+              "is_contract_signed"
+            ]
+          },
+          {
+            "title": "is_self_employed_actual",
+            "required": [
+              "is_self_employed_actual"
+            ]
+          }
+        ],
+        "type": "object",
+        "properties": {
+          "courier_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Идентификатор курьера."
+          },
+          "is_contract_signed": {
+            "type": "boolean",
+            "description": "Признак, что договор подписан. \n\nЗначения:\n- `true` — подписан.\n- `false` — не подписан.\n"
+          },
+          "is_self_employed_actual": {
+            "type": "boolean",
+            "description": "Признак, что статус самозанятого у курьера актуален. \n\nЗначения:\n- `true` — актуален.\n- `false` — неактуален.\n"
+          }
+        },
+        "required": [
+          "courier_id"
+        ]
+      },
+      "courier_apiAddPaymentRequestPayment": {
+        "required": [
+          "value",
+          "comment",
+          "courier_id"
+        ],
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "Комментарий к транзакции."
+          },
+          "courier_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Идентификатор курьера."
+          },
+          "phone_number": {
+            "type": "string",
+            "description": "Номер телефона курьера.\n\nОбязательный параметр, если не передан `courier_id`. Для безопасного обмена данными передавайте `courier_id`, а не `phone_number`.\n",
+            "deprecated": true
+          },
+          "request_uid": {
+            "type": "string",
+            "description": "Уникальный идентификатор транзакции."
+          },
+          "value": {
+            "type": "string",
+            "description": "Сумма транзакции."
+          }
+        }
+      },
+      "courier_apiAddPaymentRequest": {
+        "type": "object",
+        "properties": {
+          "payments": {
+            "type": "array",
+            "description": "Данные о транзакциях.",
+            "items": {
+              "$ref": "#/components/schemas/courier_apiAddPaymentRequestPayment"
+            }
+          }
+        }
+      },
+      "courier_apiAddPaymentResponse": {
+        "type": "object",
+        "properties": {
+          "request_uid": {
+            "type": "string",
+            "description": "Уникальный идентификатор запроса."
+          }
+        }
+      },
+      "typeDate": {
+        "type": "object",
+        "description": "Дата транзакции.",
+        "properties": {
+          "day": {
+            "type": "integer",
+            "format": "int32",
+            "description": "День."
+          },
+          "month": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Месяц."
+          },
+          "year": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Год."
+          }
+        }
+      },
+      "courier_apiGetPaymentRequestFilter": {
+        "type": "object",
+        "description": "Список фильтров.",
+        "properties": {
+          "date": {
+            "$ref": "#/components/schemas/typeDate"
+          },
+          "task_ids": {
+            "type": "array",
+            "description": "Список идентификаторов заданий.",
+            "items": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        }
+      },
+      "courier_apiGetPaymentRequest": {
+        "type": "object",
+        "required": [
+          "phone_number"
+        ],
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/courier_apiGetPaymentRequestFilter"
+          },
+          "offset_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Указатель из предыдущего ответа для постраничной загрузки данных."
+          },
+          "phone_number": {
+            "type": "string",
+            "description": "Номер телефона курьера."
+          }
+        }
+      },
+      "courier_apiGetPaymentResponsePayment": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "Комментарий к транзакции."
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата транзакции."
+          },
+          "operation_type": {
+            "type": "string",
+            "description": "Тип транзакции:\n- `DROP` — задание по прямому потоку;\n- `RETURN` — задание по возвратному потоку;\n- `external_call` — операции по выводу денег со стороны партнёра;\n- `promo_bonus` — бонус за выполнение акций;\n- `order_surge` — повышенный тариф за заказ;\n- `partner_bonus` — бонус партнёра;\n- `additional_drop` — бонус за доставку заказа;\n- `additional_return` — бонус за возврат заказа;\n- `additional_surge` — бонус за повышенный тариф.\n"
+          },
+          "payout": {
+            "type": "string",
+            "description": "Сумма транзакции после вычета комиссии."
+          },
+          "task_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Идентификатор задания."
+          },
+          "value": {
+            "type": "string",
+            "description": "Сумма транзакции до вычета комиссии."
+          }
+        }
+      },
+      "courier_apiGetPaymentResponse": {
+        "type": "object",
+        "properties": {
+          "next_offset_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Указатель для следующего запроса."
+          },
+          "payments": {
+            "type": "array",
+            "description": "Информация о транзакциях.",
+            "items": {
+              "$ref": "#/components/schemas/courier_apiGetPaymentResponsePayment"
+            }
+          }
+        }
+      },
+      "courier_apiGetPaymentRequestV2Filter": {
+        "type": "object",
+        "description": "Список фильтров.",
+        "required": [
+          "courier_ids"
+        ],
+        "properties": {
+          "courier_ids": {
+            "type": "array",
+            "description": "Список идентификаторов курьеров.",
+            "maximum": 100,
+            "items": {
+              "type": "string",
+              "format": "int64"
+            }
+          },
+          "date": {
+            "$ref": "#/components/schemas/typeDate"
+          },
+          "date_from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата начала периода, по которому нужно получить транзакции. Не передавать, если запрос по конкретной дате."
+          },
+          "date_to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата конца периода, по которому нужно получить транзакции. Не передавать, если запрос по конкретной дате.\n\nМаксимальный период — 90 дней.\n"
+          },
+          "task_ids": {
+            "type": "array",
+            "description": "Список идентификаторов заданий.",
+            "items": {
+              "type": "string",
+              "format": "int64"
+            }
+          }
+        }
+      },
+      "courier_apiGetPaymentRequestV2": {
+        "type": "object",
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/courier_apiGetPaymentRequestV2Filter"
+          },
+          "offset_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Указатель из предыдущего ответа для постраничной загрузки данных."
+          }
+        }
+      },
+      "GetPaymentResponseV2Data": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "Комментарий к транзакции."
+          },
+          "courier_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Идентификатор курьера."
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Дата транзакции."
+          },
+          "operation_type": {
+            "type": "string",
+            "description": "Тип транзакции:\n- `DROP` — задание по прямому потоку;\n- `RETURN` — задание по возвратному потоку;\n- `external_call` — операции по выводу денег со стороны партнёра;\n- `promo_bonus` — бонус за выполнение акций;\n- `order_surge` — повышенный тариф за заказ;\n- `partner_bonus` — бонус партнёра;\n- `additional_drop` — бонус за доставку заказа;\n- `additional_return` — бонус за возврат заказа;\n- `additional_surge` — бонус за повышенный тариф.\n"
+          },
+          "partner_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Размер комиссии партнёра."
+          },
+          "payout": {
+            "type": "string",
+            "description": "Сумма транзакции после вычета комиссии."
+          },
+          "task_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Идентификатор задания."
+          },
+          "value": {
+            "type": "string",
+            "description": "Сумма транзакции до вычета комиссии."
+          }
+        }
+      },
+      "courier_apiGetPaymentResponseV2": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Информация о транзакциях.",
+            "items": {
+              "$ref": "#/components/schemas/GetPaymentResponseV2Data"
+            }
+          },
+          "next_offset_id": {
+            "type": "string",
+            "format": "int64",
+            "description": "Указатель для следующего запроса."
+          }
+        }
+      }
+    }
+  }
+}

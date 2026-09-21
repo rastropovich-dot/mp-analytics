@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -8,6 +9,23 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+
+# Явный список: что в него не входит, попадает в прочее И поднимается в отчёте.
+# Тип, который не должен попадать в группу, не должен начинаться с её префикса —
+# пять мест берут рекламу по startswith("advertising"), поэтому внешнее
+# продвижение называется external_promo, а не advertising_external.
+EXPENSE_TYPE_BUCKETS = {
+    "commission": "commission_amount",
+    "logistics": "logistics_amount",
+    "advertising_clicks": "ad_spend",
+    "advertising_order_5": "ad_spend",
+    "advertising_order_selected_cpo": "ad_spend",
+    "advertising_other": "ad_spend",
+    "other": "other_expenses_amount",
+    "subscription": "other_expenses_amount",
+    "external_promo": "other_expenses_amount",
+}
 
 
 def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", product_name=None):
@@ -37,114 +55,83 @@ def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", produ
     }
 
 
-def load_orders():
-    all_rows = []
-    start = 0
-    page_size = 1000
+PAGE_SIZE = 1000
 
+
+def read_all_by_id(table):
+    """Вся таблица страницами: сортировка по id, следующая страница — id больше последнего.
+
+    Было range() без order(): PostgREST без сортировки не обещает порядка, и страницы могут
+    прийти с повторами и пропусками (how-we-work, 15 сентября — так сумма из 7 619 строк
+    вышла другой). Страница по ключу, а не по смещению, ещё и не дрейфует, если в таблицу
+    пишут во время чтения, и стоит одинаково на первой и на трёхсотой странице.
+    """
+    rows, last_id = [], None
     while True:
-        result = (
-            supabase
-            .table("marketplace_orders")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
+        query = supabase.table(table).select("*").order("id").limit(PAGE_SIZE)
+        if last_id is not None:
+            query = query.gt("id", last_id)
+        page = query.execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
             break
+        last_id = page[-1]["id"]
+    ids = [row["id"] for row in rows]
+    if len(set(ids)) != len(ids):
+        # Невозможно при чтении по ключу; если случилось — чтение сломано, и молча считать KPI из него нельзя.
+        raise RuntimeError(f"{table}: {len(ids) - len(set(ids))} повторов id в постраничном чтении")
+    return rows
 
-        start += page_size
 
+def read_all_by_key(table, key_columns):
+    """Таблица без id: range() с сортировкой по ПОЛНОМУ первичному ключу — порядок однозначен."""
+    rows, start = [], 0
+    while True:
+        query = supabase.table(table).select("*")
+        for column in key_columns:
+            query = query.order(column)
+        page = query.range(start, start + PAGE_SIZE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    keys = [tuple(row.get(column) for column in key_columns) for row in rows]
+    if len(set(keys)) != len(keys):
+        raise RuntimeError(f"{table}: {len(keys) - len(set(keys))} повторов ключа {key_columns} в постраничном чтении")
+    return rows
+
+
+def load_orders():
+    all_rows = read_all_by_id("marketplace_orders")
     print(f"Загружено заказов: {len(all_rows)}")
     return all_rows
 
 
 def load_buyouts():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        result = (
-            supabase
-            .table("marketplace_buyouts")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
+    all_rows = read_all_by_id("marketplace_buyouts")
     print(f"Загружено выкупов: {len(all_rows)}")
     return all_rows
 
 
-
 def load_expenses():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        result = (
-            supabase
-            .table("marketplace_expenses")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
+    all_rows = read_all_by_id("marketplace_expenses")
     print(f"Загружено расходов: {len(all_rows)}")
     return all_rows
 
 
 def load_ozon_organic():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        try:
-            result = (
-                supabase
-                .table("ozon_daily_sku_organic")
-                .select("*")
-                .range(start, start + page_size - 1)
-                .execute()
-            )
-        except Exception as e:
-            print(
-                "Не удалось загрузить ozon_daily_sku_organic. "
-                "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
-                f"Ошибка: {e}"
-            )
-            return []
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
+    try:
+        # id у таблицы нет; первичный ключ — (sale_date, marketplace_code, marketplace_sku)
+        all_rows = read_all_by_key("ozon_daily_sku_organic", ("sale_date", "marketplace_code", "marketplace_sku"))
+    except RuntimeError:
+        raise
+    except Exception as e:
+        print(
+            "Не удалось загрузить ozon_daily_sku_organic. "
+            "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
+            f"Ошибка: {e}"
+        )
+        return []
 
     print(f"Загружено Ozon organic строк: {len(all_rows)}")
     return all_rows
@@ -157,6 +144,8 @@ def build_kpi():
     ozon_organic = load_ozon_organic()
 
     grouped = {}
+
+    unknown_expense_types = defaultdict(float)
 
     for row in orders:
         key = (
@@ -212,17 +201,19 @@ def build_kpi():
                 None,
             )
 
-        expense_type = row.get("expense_type")
+        expense_type = str(row.get("expense_type") or "")
         amount = float(row.get("expense_amount") or 0)
 
-        if expense_type == "commission":
-            grouped[key]["commission_amount"] += amount
-        elif expense_type == "logistics":
-            grouped[key]["logistics_amount"] += amount
-        elif str(expense_type or "").startswith("advertising"):
-            grouped[key]["ad_spend"] += amount
-        else:
-            grouped[key]["other_expenses_amount"] += amount
+        bucket = EXPENSE_TYPE_BUCKETS.get(expense_type)
+        if bucket is None:
+            # Молчаливого поглощения больше нет. Прежний else забирал ЛЮБОЙ
+            # незнакомый тип в прочие расходы, и так туда вошли unknown_* —
+            # витрина их считала, а мы три дня докладывали, что не считает.
+            # Незнакомый тип по-прежнему попадает в прочее (деньги не теряем),
+            # но теперь он называется вслух.
+            unknown_expense_types[expense_type] += amount
+            bucket = "other_expenses_amount"
+        grouped[key][bucket] += amount
 
     for row in ozon_organic:
         key = (
@@ -282,6 +273,13 @@ def build_kpi():
             row["roas"] = 0
 
         rows.append(row)
+
+    if unknown_expense_types:
+        print("⚠️  НЕЗНАКОМЫЕ ТИПЫ РАСХОДА (учтены в прочих, но не классифицированы):")
+        for name, amount in sorted(unknown_expense_types.items(), key=lambda x: -abs(x[1])):
+            print(f"    {name:<28}{amount:>16,.2f}")
+        print(f"    итого {sum(unknown_expense_types.values()):,.2f} — "
+              "классификация ждёт в docs/ozon_finance_migration.md")
 
     return rows
 

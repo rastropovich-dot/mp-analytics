@@ -195,6 +195,25 @@ def get_ozon_report_completeness(target_date):
         ],
     )
     ads_present = ads_in_expenses or ads_in_attribution
+    # Заказы за день — база KPI. Шаг FBO нефатальный с 2026-09-14, а до того
+    # загрузчик четыре ночи молча писал частичное с кодом 0, и никто не заметил:
+    # ни один блокер не спрашивал, есть ли заказы. Теперь спрашивает, по схемам.
+    fbo_orders_present = table_has_rows(
+        "marketplace_orders",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("order_schema", "eq", "fbo"),
+            ("order_date", "eq", target_date),
+        ],
+    )
+    fbs_orders_present = table_has_rows(
+        "marketplace_orders",
+        [
+            ("marketplace_code", "eq", "ozon"),
+            ("order_schema", "eq", "fbs"),
+            ("order_date", "eq", target_date),
+        ],
+    )
     performance_status = get_latest_ozon_performance_status(target_date)
 
     blockers = []
@@ -206,6 +225,10 @@ def get_ozon_report_completeness(target_date):
         blockers.append("ozon_daily_sku_organic_missing")
     if not ads_present:
         blockers.append("ozon_ads_layer_missing")
+    if not fbo_orders_present:
+        blockers.append("ozon_fbo_orders_missing")
+    if not fbs_orders_present:
+        blockers.append("ozon_fbs_orders_missing")
 
     performance_status_present = bool(performance_status)
     if performance_status_present:
@@ -239,6 +262,8 @@ def get_ozon_report_completeness(target_date):
         "daily_sku_kpi_present": daily_sku_kpi_present,
         "organic_present": organic_present,
         "ads_present": ads_present,
+        "fbo_orders_present": fbo_orders_present,
+        "fbs_orders_present": fbs_orders_present,
         "performance_status_present": performance_status_present,
         "performance_run_status": (performance_status or {}).get("run_status"),
         "performance_cpc_status": (performance_status or {}).get("cpc_status"),

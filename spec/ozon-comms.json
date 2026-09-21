@@ -1,0 +1,282 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Документация Ozon Comms API",
+    "version": "1.1",
+    "x-logo": {
+      "url": "https://ir.ozone.ru/s3/helppartners/ozon-logo-for-api-referral.svg",
+      "backgroundColor": null,
+      "altText": "Ozon logo"
+    },
+    "description": "В документе описаны методы Comms API для отправки писем и СМС.\n\nВы можете использовать Comms API по HTTP из внешней сети.\n"
+  },
+  "servers": [
+    {
+      "url": "https://xapi.ozon.ru/proxy.comms"
+    }
+  ],
+  "tags": [
+    {
+      "name": "CommsApi",
+      "x-displayName": "Методы CommsApi"
+    }
+  ],
+  "paths": {
+    "/v1/mail-send": {
+      "post": {
+        "tags": [
+          "CommsApi"
+        ],
+        "operationId": "mail-send",
+        "summary": "Отправка писем",
+        "description": "Пример запроса:\n\n```json\ncurl -s -X POST \"https://xapi.ozon.ru/proxy.comms/v1/mail-send\" -H \"x-o3-app-name: partner_name\" -H \"Authorization: Basic user:pass\" -H  \"accept: application/json\" -H  \"Content-Type: application/json\" -d \"{  \\\"address\\\": \\\"test@ozon.ru\\\",  \\\"commId\\\": 1, \\\"extId\\\": \\\"123321\\\",  \\\"fromAddress\\\": \\\"noreply@ozon.ru\\\",  \\\"fromName\\\": \\\"Ozon\\\",  \\\"userId\\\": \\\"123321\\\",  \\\"data\\\": { \\\"Link\\\": \\\"www.ozon.ru\\\"  }}\"\n```\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/commsapiMailSendData"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Запрос выполнен успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/commsapiMessageId"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Сообщение об ошибке",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sms-send": {
+      "post": {
+        "tags": [
+          "CommsApi"
+        ],
+        "operationId": "sms-send",
+        "summary": "Отправка СМС",
+        "description": "Пример запроса:\n\n```json\ncurl -X POST \"https://xapi.ozon.ru/proxy.comms/v1/sms-send\" -H \"x-o3-app-name: parter_name\" -H \"Authorization: Basic user:pass\" -H  \"accept: application/json\" -H  \"Content-Type: application/json\" -d \"{  \\\"commId\\\": 1,  \\\"data\\\": {    \\\"Link\\\": \\\"www.ozon.ru\\\"   },  \\\"extId\\\": \\\"order-123\\\",  \\\"phone\\\": \\\"74952321000\\\",  \\\"sourceEventName\\\": \\\"partner_name\\\",  \\\"sourceSendTs\\\": \\\"1638026109\\\",  \\\"userId\\\": \\\"123321\\\"}\"\n```\n",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/commsapiSmsSendData"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Запрос выполнен успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/commsapiMessageId"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Сообщение об ошибке",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/rpcStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "commsapiAttachment": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "format": "byte",
+            "description": "Тело файла. Передаётся в бинарном виде по стандарту base64."
+          },
+          "name": {
+            "type": "string",
+            "description": "Имя файла."
+          },
+          "type": {
+            "type": "string",
+            "description": "Тип файла."
+          }
+        }
+      },
+      "commsapiMailSendData": {
+        "type": "object",
+        "properties": {
+          "Attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/commsapiAttachment"
+            },
+            "description": "Список файлов, вложенных в письмо. Можно прикрепить не больше 10 файлов общим объёмом до 7 МБ.\n\nДопустимые расширения файлов:\n  - .vnd.ms-excel\n  - .vnd.openxmlformats-officedocument.spreadsheetml.sheet\n  - .msword\n  - .vnd.openxmlformats-officedocument.wordprocessingml.document\n  - .rtf\n  - .zip\n  - .gzip\n  - .pdf\n\nДопустимые расширения изображений:\n  - .gif\n  - .jpeg\n  - .png\n"
+          },
+          "address": {
+            "type": "string",
+            "description": "Адрес электронной почты, на который будет отправлено письмо."
+          },
+          "commId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор коммуникации. Его необходимо получить у менеджера."
+          },
+          "data": {
+            "type": "object",
+            "description": "Структура динамических данных, передаваемых в шаблоне.",
+            "additionalProperties": {
+              "type": "string",
+              "description": "Список параметров. Зависит от содержания шаблона."
+            }
+          },
+          "extId": {
+            "type": "string",
+            "description": "Произвольная строка длиной до 100 символов. Значение сохраняется в логах отправки.\n\nПараметр необязательный.\n"
+          },
+          "fromAddress": {
+            "type": "string",
+            "description": "Адрес отправителя."
+          },
+          "fromName": {
+            "type": "string",
+            "description": "Имя отправителя."
+          },
+          "sendAfterTs": {
+            "type": "string",
+            "format": "int64",
+            "description": "Задержка перед отправкой в секундах.\n\nПараметр необязательный.\n"
+          },
+          "sourceEventName": {
+            "type": "string",
+            "description": "Название источника события."
+          },
+          "sourceSendTs": {
+            "type": "string",
+            "format": "int64",
+            "description": "Время отправки в формате Unix Timestamp. Например: 1493183052.\n"
+          },
+          "userId": {
+            "type": "string",
+            "format": "uint64",
+            "description": "Идентификатор получателя письма в виде целого числа или любой другой идентификатор отправки."
+          }
+        }
+      },
+      "protobufAny": {
+        "type": "object",
+        "properties": {
+          "typeUrl": {
+            "type": "string",
+            "description": "Тип ресурса."
+          },
+          "value": {
+            "type": "string",
+            "format": "byte",
+            "description": "Значение ресурса."
+          }
+        }
+      },
+      "rpcStatus": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Код ошибки."
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/protobufAny"
+            },
+            "description": "Информация об ошибке."
+          },
+          "message": {
+            "type": "string",
+            "description": "Сообщение ошибки."
+          }
+        }
+      },
+      "commsapiMessageId": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "format": "uint64",
+            "description": "Идентификатор выполненной отправки."
+          }
+        }
+      },
+      "commsapiSmsSendData": {
+        "type": "object",
+        "properties": {
+          "commId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Идентификатор коммуникации."
+          },
+          "data": {
+            "type": "object",
+            "description": "Структура динамических данных, передаваемых в шаблоне. Аналог __DataStruct__ в панели администратора.",
+            "additionalProperties": {
+              "type": "string",
+              "description": "Список параметров. Зависит от содержания шаблона."
+            }
+          },
+          "extId": {
+            "type": "string",
+            "description": "Произвольная строка длиной до 100 символов. Значение сохраняется в логах отправки.\n\nПараметр необязательный.\n"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Номер телефона, на который нужно отправить СМС. Указывается в международном формате, например, +79250240477."
+          },
+          "sendAfterTs": {
+            "type": "string",
+            "format": "int64",
+            "description": "Задержка перед отправкой в секундах."
+          },
+          "sourceEventName": {
+            "type": "string",
+            "description": "Название источника события."
+          },
+          "sourceSendTs": {
+            "type": "string",
+            "format": "int64",
+            "description": "Время отправки в формате Unix Timestamp. Например, 1493183052."
+          },
+          "userId": {
+            "type": "string",
+            "format": "uint64",
+            "description": "Идентификатор получателя СМС в виде целого числа или любой другой идентификатор отправки."
+          }
+        }
+      }
+    }
+  }
+}

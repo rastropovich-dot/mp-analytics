@@ -135,7 +135,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
             "manual_or_default",
             article_costs={},
         )
-        self.assertEqual(cost, 32963.0)
+        self.assertEqual(cost, 29390.06)
         self.assertEqual(source, "known_sku_cogs")
         self.assertIsNone(warning)
 

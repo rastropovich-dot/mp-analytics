@@ -19,6 +19,52 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Держим значение рядом с воркером: менять его надо в одном месте.
 HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 
+# Шаги, чей сбой не должен уносить с собой остальной день.
+#
+# «Ozon: total orders analytics по SKU» ходит в Seller API за SKU-слоем, и тот
+# отвечает 429 code 8 на ПЕРВОМ же запросе шага — при том, что предыдущее
+# обращение к api-seller.ozon.ru было за 2 ч 39 мин до него (ночи на 2026-09-03
+# и 2026-09-04). То есть отказ не связан с нашей частотой, ретраи его не
+# изживают, а шаг роняет всё, что идёт после: остатки, KPI, decision, excel.
+#
+# Питает он единственную таблицу ozon_daily_sku_total_orders, которую читает
+# только расчёт органики — а тот выключен флагом --skip-organic до сбора
+# Selected CPO. Терять из-за него витрину нечем.
+NON_FATAL_STEPS = (
+    "Ozon: total orders analytics по SKU",
+    # Выкупы: загрузчик ходит в /v3/finance/transaction/list, отключённый Ozon
+    # 2026-09-08. Переводить его на accrual/by-day наспех нельзя — это база
+    # расчёта прибыли, а форма продаж и возвратов в новой модели пока не
+    # разобрана. Шаг стоит ПЕРЕД сбором рекламы, поэтому фатальным он уносил бы
+    # исправную рекламу, органику, KPI и витрину вместе с собой.
+    # Данные не теряются: загрузчик добирает окном в 30 дней, как только будет
+    # переведён. См. docs/ozon_finance_migration.md, раздел «Что НЕ мигрировано».
+    "Ozon: дневные финоперации",
+    # Заказы FBO: с 2026-09-11 шаг ловит 429 rate_limit_per_second, и загрузчик
+    # на /v3 теперь ПАДАЕТ вместо частичной записи (2026-09-14). Цена отказа —
+    # одна ночь заказов, которую 30-дневное окно доберёт следующей ночью. Цена
+    # фатального шага — расходы, реклама и KPI не соберутся вовсе; это дороже на
+    # порядок, та же причина, что у выкупов выше. Отказ обязан быть громким:
+    # send_failure_alert шлёт «Шаг не выполнен» с именем шага, а утренний алерт
+    # ставит блокер ozon_fbo_orders_missing, если за вчера нет строк FBO.
+    "Ozon: загрузка FBO заказов",
+    # Заказы FBS: с 2026-09-16 загрузчик на /v4 (страница 100, паузы) ПАДАЕТ
+    # вместо частичного результата, как FBO, — то есть фатальный шаг стал падать
+    # чаще, а стоит он перед расходами, рекламой и KPI. Развилка та же, что у FBO
+    # 2026-09-14, решение то же: цена отказа — одна ночь заказов, которую
+    # 30-дневное окно доберёт следующей ночью; цена фатального шага — не соберётся
+    # ничего после него. Молчание закрыто: send_failure_alert шлёт «Шаг не
+    # выполнен, прогон продолжен» с именем шага, утренний алерт ставит блокер
+    # ozon_fbs_orders_missing, если за вчера нет строк FBS (проверено сухим
+    # прогоном на живой БД 2026-09-16: за 04-01 горит, за 09-15 нет).
+    "Ozon: загрузка FBS заказов",
+    # Лог статусов отправлений: пишет переходы из того же сырья, что уже записано
+    # в marketplace_orders. Его отказ (нет таблицы, нет файла) не должен ронять
+    # расходы, рекламу и KPI. Пропуск ночи — потеря одного наблюдения, не данных
+    # заказов. docs/reports_model.md §3.
+    "Ozon: лог статусов отправлений",
+)
+
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
 CURRENT_DAY_TAIL_MAX_BATCHES = 2
 
@@ -116,8 +162,12 @@ def build_steps(args=None):
         ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
         ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
         ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
-        ("Ozon: загрузка FBS заказов", "python3 loaders/ozon_fbs_orders_loader.py"),
-        ("Ozon: загрузка FBO заказов", "python3 loaders/ozon_fbo_orders_loader.py"),
+        # Шаги заказов вызывают функции тех же загрузчиков, но через обёртки, которые
+        # кладут сырой ответ в data/postings_raw/ для лога статусов. Загрузчики не
+        # изменены, обращений к API столько же.
+        ("Ozon: загрузка FBS заказов", "python3 scripts/ozon_fbs_orders_step.py"),
+        ("Ozon: загрузка FBO заказов", "python3 scripts/ozon_fbo_orders_step.py"),
+        ("Ozon: лог статусов отправлений", "python3 scripts/ozon_posting_status_log.py --apply"),
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
         ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
@@ -150,6 +200,17 @@ def parse_args():
         "--skip-excel",
         action="store_true",
         help="Skip Excel export step. Useful as a temporary mitigation if export causes memory pressure.",
+    )
+    parser.add_argument(
+        "--skip-organic",
+        action="store_true",
+        help=(
+            "Skip the Ozon organic sales step. organic = total_orders - ad_attributed, and Selected "
+            "CPO has not been collected since 2026-05-21, so the result would be overstated by "
+            "roughly a quarter and the first write since May would clear the "
+            "ozon_daily_sku_organic_missing blocker in the morning alert. Keep this flag on until "
+            "Selected CPO is backfilled; drop it in the same change that starts collecting it."
+        ),
     )
     parser.add_argument(
         "--skip-decision",
@@ -202,7 +263,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def send_failure_alert(title, returncode, tail_lines):
+def send_failure_alert(title, returncode, tail_lines, fatal=True):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
@@ -210,11 +271,20 @@ def send_failure_alert(title, returncode, tail_lines):
     if len(tail_text) > 3500:
         tail_text = tail_text[-3500:]
 
-    message = (
-        "❌ <b>Пайплайн MP Analytics упал</b>\n"
-        f"Шаг: {html.escape(title)}\n"
-        f"Код ошибки: {returncode}\n"
-    )
+    # Ложная тревога дороже молчания: падение ОДНОГО известного нефатального
+    # шага — это не крах прогона, и сообщать о нём так нельзя.
+    if fatal:
+        message = (
+            "❌ <b>Пайплайн MP Analytics упал</b>\n"
+            f"Шаг: {html.escape(title)}\n"
+            f"Код ошибки: {returncode}\n"
+        )
+    else:
+        message = (
+            "⚠️ <b>Шаг не выполнен, прогон продолжен</b>\n"
+            f"Шаг: {html.escape(title)}\n"
+            f"Код ошибки: {returncode}\n"
+        )
 
     if tail_text:
         message += f"\n<pre>{html.escape(tail_text)}</pre>"
@@ -332,6 +402,14 @@ def should_skip_pipeline_step(title, args, ozon_downstream_allowed, yesterday_cp
         return True, f"⏭️ Пропускаем шаг: {title}"
     if args.skip_decision and title == "Decision: SKU daily input":
         return True, f"⏭️ Пропускаем шаг: {title}"
+    if getattr(args, "skip_organic", False) and is_ozon_organic_step(title):
+        # Выключение намеренное и названное, а не побочный эффект гейта
+        # ozon_downstream_allowed: тот закрывается лишь когда у дневного сбора
+        # остался хвост, то есть по случайности. Снимать вместе со сбором Selected CPO.
+        return True, (
+            f"⏭️ Пропускаем шаг: {title} "
+            "(Selected CPO не собран, органика была бы завышена примерно на четверть)"
+        )
     if args.skip_telegram and title.startswith("Telegram:"):
         return True, f"⏭️ Пропускаем шаг: {title}"
     if ozon_downstream_allowed is False and is_ozon_organic_step(title):
@@ -371,8 +449,9 @@ def run_step(title, command, fatal=True, nonfatal_returncodes=()):
     if returncode != 0:
         print(f"❌ Ошибка на шаге: {title}")
         print(f"Код ошибки: {returncode}")
-        send_failure_alert(title, returncode, list(tail_lines))
-        if fatal and returncode not in set(nonfatal_returncodes or ()):
+        step_is_fatal = fatal and returncode not in set(nonfatal_returncodes or ())
+        send_failure_alert(title, returncode, list(tail_lines), fatal=step_is_fatal)
+        if step_is_fatal:
             sys.exit(returncode)
         return {
             "failed": True,
@@ -423,13 +502,18 @@ def main():
         step_result = run_step(
             title,
             command,
-            fatal=(title != "Ozon: реклама Performance API"),
+            fatal=(title != "Ozon: реклама Performance API" and title not in NON_FATAL_STEPS),
             # Сбой бэкфилла ИСТОРИЧЕСКОЙ даты (код 2) не должен уносить с собой
             # текущий день: после этого шага строятся total orders, органика,
             # остатки, KPI, decision, excel и Telegram. Сбой сбора за вчера
             # приходит кодом 1 и остаётся фатальным.
             nonfatal_returncodes=(HISTORICAL_BACKFILL_FAILURE_EXIT_CODE,) if is_recovery_step(title) else (),
         )
+        if step_result.get("failed") and title in NON_FATAL_STEPS:
+            print(
+                f"⚠️  {title}: шаг не удался (код {step_result.get('returncode')}). "
+                "Шаг помечен нефатальным по известной причине — витрину строим дальше."
+            )
         if step_result.get("failed") and is_recovery_step(title):
             print(
                 f"⚠️  {title}: сорван бэкфилл исторической даты "

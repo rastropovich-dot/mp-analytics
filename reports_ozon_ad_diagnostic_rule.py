@@ -46,8 +46,11 @@ KNOWN_CAMPAIGN_HINTS = {
 
 KNOWN_PARTIAL_DATES = {"2026-05-12"}
 LOOKBACK_WINDOWS = (3, 5, 7, 14)
+# Файл себестоимости 1С на 2026-05-20, колонка «Себестоимость» (решение владельца
+# 2026-09-14). Прежние 32 963 в файле отсутствуют — это сумма составляющих первой
+# строки файла, другого товара. См. docs/cost_of_goods.md.
 KNOWN_SKU_COGS = {
-    "1300079194": 32963.0,
+    "1300079194": 29390.06,
 }
 
 
@@ -211,18 +214,29 @@ def discover_campaign_ids(marketplace_code: str, sku: str, target_date: str, loo
 
 
 def load_article_unit_costs(marketplace_code: str, articles: Iterable[str], as_of_date: str):
+    """Себестоимость по offer_id из article_unit_costs (снимки 1С).
+
+    Схема: sql/20260914_create_article_unit_costs.sql, ключ (offer_id_norm, snapshot_date).
+    Стыковка регистронезависимая: у Ozon «-Изгт», в 1С «-ИЗгт».
+    Выбор снимка: последний со snapshot_date <= as_of_date; если все снимки новее
+    даты (пока снимок один, 2026-05-20, а проект с 03-28) — берётся самый ранний, и
+    это называется вслух предупреждением cost_snapshot_newer_than_date, а не
+    прячется за пустым результатом.
+    """
     article_list = sorted({str(article or "").strip() for article in articles if str(article or "").strip()})
     if not article_list:
         return {}, None
+    by_norm = {}
+    for article in article_list:
+        by_norm.setdefault(article.lower(), article)
 
     query = (
         supabase
         .table("article_unit_costs")
-        .select("*")
+        .select("offer_id_norm,snapshot_date,unit_cost")
         .eq("marketplace_code", marketplace_code)
-        .in_("article", article_list)
-        .lte("valid_from", as_of_date)
-        .order("valid_from", desc=True)
+        .in_("offer_id_norm", sorted(by_norm))
+        .order("snapshot_date", desc=True)
     )
 
     try:
@@ -231,23 +245,32 @@ def load_article_unit_costs(marketplace_code: str, articles: Iterable[str], as_o
             label=f"ad-diagnostic:article_unit_costs:{marketplace_code}:{as_of_date}",
         )
     except APIError as exc:
-        if str(getattr(exc, "message", "")) or "PGRST205" in str(exc):
-            if "PGRST205" in str(exc) or "article_unit_costs" in str(exc):
-                return {}, "article_unit_costs_table_missing"
+        if "PGRST205" in str(exc) or "article_unit_costs" in str(exc):
+            return {}, "article_unit_costs_table_missing"
         raise
 
     rows = result.data or []
-    resolved = {}
+    resolved: Dict[str, float] = {}
+    fallback_newer: Dict[str, tuple] = {}
     for row in rows:
-        article = str(row.get("article") or "").strip()
+        norm = str(row.get("offer_id_norm") or "").strip()
+        article = by_norm.get(norm)
         if not article or article in resolved:
             continue
-        valid_to = str(row.get("valid_to") or "").strip()
-        if valid_to and valid_to < as_of_date:
+        snapshot_date = str(row.get("snapshot_date") or "")
+        unit_cost = float(row.get("unit_cost") or 0)
+        if snapshot_date <= as_of_date:
+            resolved[article] = unit_cost
             continue
-        resolved[article] = float(row.get("unit_cost") or 0)
+        # строки идут по snapshot_date убыванию, последняя увиденная — самая ранняя
+        fallback_newer[article] = (snapshot_date, unit_cost)
 
-    return resolved, None
+    warning = None
+    for article, (_, unit_cost) in fallback_newer.items():
+        if article not in resolved:
+            resolved[article] = unit_cost
+            warning = "cost_snapshot_newer_than_date"
+    return resolved, warning
 
 
 def resolve_cogs_for_sku(

@@ -10,3 +10,31 @@ logs/
 *.log
 wb_sales_funnel_*.json
 test_wb_sales_funnel*.py
+
+# промежуточный архив экспорта чата, распакованный JSON лежит рядом
+knowledge/telegram/*.gz
+
+# закупочные цены — держим вне репозитория
+data/cost_*.xlsx
+
+# сырые ответы realization/by-day — 32 дня глубины, снимаем в файлы, в git не кладём
+data/ozon_realization_by_day/
+data/manual_report_*.xlsx
+
+# снимки строк перед необратимыми перезаписями
+data/snapshots/
+
+# готовые листы отчётов (scripts/report_ozon_month.py) — данные, в git не кладём
+data/reports/
+
+# сырые начисления по датам для измерителя истории выкупов, в git не кладём
+data/accrual_history/
+knowledge/telegram/*.bak
+knowledge/telegram/_increment_*.json
+
+# сырые ответы списков отправлений для лога статусов (шаги заказов пишут, лог читает)
+data/postings_raw/
+
+# сырые ответы accrual/postings (начисления по номерам отправлений) для проверок отнесения по дате, в git не кладём
+data/accrual_postings/
+data/ozon_orders_*.csv

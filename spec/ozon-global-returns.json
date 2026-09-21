@@ -1,0 +1,1904 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "API возвратов Ozon Global",
+    "version": "1.0.0",
+    "x-logo": {
+      "url": "https://ir.ozone.ru/s3/helppartners/ozon-logo-for-api-referral.svg",
+      "backgroundColor": null,
+      "altText": "Ozon logo"
+    },
+    "description": "В документе описаны методы Ozon Global Returns API.\n\n> Информационная платформа и сообщество разработчиков [Ozon for Dev](https://dev.ozon.ru/)\n\n**Окружения**:\n- Тестовая среда: https://api-global-returns.ozonru.me\n- Рабочая среда: https://api-global-returns.ozonpartners.ru\n"
+  },
+  "servers": [
+    {
+      "url": "https://api-global-returns.ozon.ru/"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Общее описание",
+      "tags": [
+        "Intro",
+        "Process",
+        "News"
+      ]
+    },
+    {
+      "name": "Методы API",
+      "tags": [
+        "Authorization",
+        "Posting",
+        "Cancel",
+        "ReturnEvent",
+        "Carriages"
+      ]
+    },
+    {
+      "name": "Приложения",
+      "tags": [
+        "StatusModel",
+        "ErrorCodes"
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "Intro",
+      "x-displayName": "Введение",
+      "description": "Ozon Global Returns API — программный интерфейс для интеграции логистических компаний (3PL-R, где R — returns) с\nвозвратной логистической платформой Ozon.\n\nС помощью API можно:\n- получить списки возвратных отправлений и информацию о них;\n- зарегистрировать возвратные отправления;\n- получить манифесты по составу палет и акты приёма-передачи;\n- отследить возвратные отправления, передать информацию об их состоянии и способах обработки;\n- отменить зарегистрированные возвратные отправления."
+    },
+    {
+      "name": "News",
+      "x-displayName": "Обновления",
+      "description": "## 1 ноября 2025\n\n| Метод                                      | Изменение                                             |\n|--------------------------------------------|------------------------------------------------------------|\n| [/v1/Manifests](#operation/get_manifests)  | Обновили описание параметра `manifestId` в запросе метода. |\n\n## 24 сентября 2025\n\n| Метод                                                     | Изменение                                                                                                 |\n|-----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|\n| [/v1/Manifests](#operation/get_manifests) <br> [/v1/ManifestPackages](#operation/get_packages) <br> [/v1/ManifestPostings](#operation/get_postings) <br> [/v1/ManifestResponse](#operation/manifest_response)                                                      | Добавили методы для работы с манифестами. |\n\n## 16 июня 2025\n\n| Метод                                                | Изменение                                                                                                          |\n|------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|\n| —                                                    | Добавили статусы `106`, `107`, `108` и `206` в раздел [**Описание статусов возвратных отправлений**](#tag/StatusModel). |\n| [/v1/ReturnAttributes](#operation/return-attributes) | Обновили описание параметра `handlingMethodBySeller` в запросе метода.                                                  |\n\n## 5 июня 2025\n\n| Метод                                                     | Изменение                                                                                                 |\n|-----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|\n| —                                                         | В разделе [**Описание статусов возвратных отправлений**](#tag/StatusModel) добавили порядок отправки статусов. |\n\n## 7 мая 2025\n\n| Метод                                                     | Изменение                                                                                                                     |\n|-----------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|\n| [POST /v1/ReturnEvents](#operation/post-return-events)    | Обновили описание параметров `returnPostingNumber` и `returnTrackingNumber` в запросе метода.                                      |\n| [POST /v1/ReturnAttributes](#operation/return-attributes) | Обновили описание параметра `handlingMethodBySeller` в запросе метода.                                                             |\n| —                                                         | В разделе [**Порядок работы с возвратными отправлениями**](#tag/Process) обновили схему получения возвратных отправлений.          |\n| —                                                         | В разделе [**Описание статусов возвратных отправлений**](#tag/StatusModel) обновили описание статусов `104`, `105`, `205` и `301`. |\n\n## 25 марта 2025\n\n| Метод                                                                                                  | Изменение                                 |\n|--------------------------------------------------------------------------------------------------------|------------------------------------------------|\n| [GET /v1/ReturnsToRegister](#operation/returns-to-register) <br> [GET /v1/Returns](#operation/returns) | Добавили параметр `items.url` в ответ методов. |\n\n## 5 марта 2025\n\n| Метод                                                                                                  | Изменение                                                                                                                                                                     |\n|--------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|\n| [GET /v1/ReturnsToRegister](#operation/returns-to-register) <br> [GET /v1/Returns](#operation/returns) | Добавили примеры запросов. <br> Обновили описание параметра `includeLanguages` в запросах методов. <br> Перенесли параметр `invoiceLink` из массива `postings.items` в `postings`. |\n\n## 4 марта 2025\n\n| Метод                                                                           | Изменение                                                                                                                 |\n|--------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|\n| —                                                                              | В раздел [**Порядок работы с возвратными отправлениями**](#tag/Process) добавили описание автоматической регистрации продавца. |\n\n## 14 января 2025\n\n| Метод                                                                          | Изменение                                                                                                      |\n|--------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|\n| [GET /v1/ReturnsToRegister](#operation/returns-to-register )                   | Добавили параметры `directFlowTrackingNumber` и `items.invoiceLink` в ответ метода.                                 |\n| [POST /v1/ReturnRegistrationResponse](#operation/return-registration-response) | Добавили параметры `SellerRegistrationStatus` и `SellerRegistrationLink` в запрос метода.                           |\n| —                                                                              | В раздел [**Описание статусов возвратных отправлений**](#tag/StatusModel) добавили описание статусов `104` и `105`. |"
+    },
+    {
+      "name": "Process",
+      "x-displayName": "Порядок работы с возвратными отправлениями",
+      "description": "## Регистрация\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/registration_1733481821.png\" width=\"1000\" >\n\n### Регистрация возвратных отправлений\n\n1. Покупатель создаёт заявку на возврат товара.\n2. Продавец либо отказывает в возврате, и тогда процесс завершается, либо согласовывает возврат.\n3. 3PL-R регулярно запрашивает список возвратов методом [GET /v1/ReturnsToRegister](#operation/returns-to-register).\n4. 3PL-R может получить фото возвратов методом [GET /v1/ReturnPhotos](#operation/return-photos).\n5. 3PL-R согласовывает или отклоняет регистрацию возвратных отправлений методом [POST /v1/ReturnRegistrationResponse](#operation/return-registration-response).<br>\n   Чтобы согласовать регистрацию, 3PL-R должен указать трек-номер.\n6. 3PL-R может в любой момент получить информацию по возвратному отправлению методом [GET /v1/Returns](#operation/returns).\n\n## Автоматическая регистрация продавца\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/autoregistration_1739970456.png\" width=\"1000\" >\n\n1. 3PL-R получает список возвратов с помощью метода [GET /v1/ReturnsToRegister](#operation/returns-to-register).\n2. 3PL-R проверяет в своей базе регистрацию продавца в его системе по `seller_id`. \n3. С помощью метода [POST /v1/ReturnRegistrationResponse](#operation/return-registration-response) 3PL-R присылает статус регистрации продавца в системе 3PL-R. Если продавец не зарегистрирован, 3PL-R присылает ссылку на регистрацию для продавца. \n4. Ozon проверяет информацию о статусе регистрации продавца и наличие ссылки на регистрацию. Если статус «Не зарегистрирован» и есть ссылка для регистрации, Ozon отправляет продавцу ссылку для регистрации. \n5. Продавец получает 2 ссылки для регистрации: от 3PL-R и от Ozon.\n\n## Получение\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/receiving-text-2564_1745914838.png\" width=\"1000\" >\n\n### Получение возвратных отправлений\n\n1. После регистрации возвратного отправления Ozon доставляет возврат на склад консолидации.<br>\n   Среднее время доставки возврата до склада консолидации — 7 дней с момента регистрации возвратного отправления.\n2. Когда возврат поступает на склад консолидации, Ozon формирует и передаёт 3PL-R возвратное отправление, манифест и акт приёма-передачи по палете.\n3. 3PL-R физически получает возвратные отправления со склада консолидации.\n4. 3PL-R может получить манифест методом [GET /v1/Carriage](#operation/carriage).\n5. 3PL-R получает акт приёма-передачи методом [GET /v1/TransferDocuments](#operation/transfer-documents).\n6. 3PL-R подтверждает получение акта приёма-передачи методом [POST /v1/AcknowledgeTransferDocument](#operation/acknowledge-transfer-document).\n\n## Обработка\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/processing_1732118281.png\" width=\"800\" >\n\n### Обработка возвратных отправлений\n\n1. После физического получения палеты 3PL-R передаёт актуальные статусы обработки возвратных отправлений методом [POST /v1/ReturnEvents](#operation/post-return-events).<br>\n   Список статусов возвратного отправления можно получить методом [GET /v1/ReturnEvents](#operation/get-return-events).\n2. Когда 3PL-R передаст статус 101 «Принят провайдером»,\n   у продавца появится возможность выбрать способ обработки возвратного отправления в его личном кабинете у 3PL-R.\n3. 3PL-R передаёт Ozon информацию о состоянии возврата и способе обработки методом [POST /v1/ReturnAttributes](#operation/return-attributes).\n\n## Отмена\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/cancellation_1731925127.png\" width=\"800\" >\n\n### Отмена зарегистрированных возвратных отправлений\n\n1. Ozon формирует список возвратных отправлений на отмену.\n2. 3PL-R в любой момент получает список отменяемых возвратных отправлений методом [GET /v1/ReturnsToCancel](#operation/returns-to-cancel).\n3. 3PL-R подтверждает отмену методом [POST /v1/ReturnCancelResponse](#operation/return-cancel-response)."
+    },
+    {
+      "name": "Authorization",
+      "x-displayName": "Токен для доступа"
+    },
+    {
+      "name": "Posting",
+      "x-displayName": "Информация о возвратных отправлениях"
+    },
+    {
+      "name": "Cancel",
+      "x-displayName": "Отмены"
+    },
+    {
+      "name": "ReturnEvent",
+      "x-displayName": "Трекинг"
+    },
+    {
+      "name": "Carriages",
+      "x-displayName": "Информация о перевозках"
+    },
+    {
+      "name": "StatusModel",
+      "x-displayName": "Описание статусов возвратных отправлений",
+      "description": "| Статус                                                     | Название                 | Описание                                                               |\n|------------------------------------------------------------|--------------------------|------------------------------------------------------------------------|\n| 101 <sup style=\"color:red; font-size:12px;\">required</sup> | Picked up by provider    | Провайдер принял возвратное отправление на складе.                     |\n| 102 <sup style=\"color:red; font-size:12px;\">required</sup> | Awaiting processing      | Ожидает обработки по способу, который выбрал продавец.                 |\n| 103 <sup style=\"color:red; font-size:12px;\">required</sup> | In-processing            | Обрабатывается по способу, который выбрал продавец.                    |\n| 104                                                        | Quantitative discrepancy | Возвратного отправления нет в палете.                                  |\n| 105                                                        | Qualitative discrepancy  | Возвратное отправление есть в палете, но есть повреждение или подмена. |\n| 106                                                        | To FBP delivery          | Продавец хочет поставить на склад FBP, выполнены необходимые условия.  |\n| 107                                                        | FBP delivering           | В процессе поставки на склад FBP.                                      |\n| 108                                                        | FBP stocked              | Возврат поставили на склад FBP.                                        |\n\n## Терминальные статусы\n\n| Статус | Название                            | Описание                                                |\n|--------|-------------------------------------|---------------------------------------------------------|\n| 201    | Returned to seller                  | Возвращено продавцу в его страну.                       |\n| 202    | Self-delivery by the seller         | Продавец забрал возвратное отправление самостоятельно.  |\n| 203    | Return to seller within Russia      | Возвращено продавцу в России.                           |\n| 204    | Processed by provider               | Обработано провайдером.                                 |\n| 205    | Disposed of at the seller's request | Утилизировано по запросу продавца.                      |\n| 206    | FBP sold                            | Возврат продан со склада FBP.                           |\n| 301    | Disposed of as unprocessed          | Утилизировано, так как истёк срок хранения по договору. |\n| 302    | Lost                                | Утеряно провайдером.                                    |\n| 303    | Damaged                             | Повреждено провайдером.                                 |\n\n## Порядок отправки статусов\n\n<img src=\"https://cdn.ozone.ru/s3/ozon-disk-api/techdoc/api-global-returns/scheme-sending-statuses_1749029356.png\" width=\"1000\" >\n\nВы можете передать статус:\n\n- `104` — если при приёмке провайдер не находит экземпляр на палете. \n- `105` — если экземпляр есть на палете, но с повреждением или подменой.\n\n3PL-R может передать любой [терминальный статус](#section/Terminalnye-statusy) после передачи статуса `103`.\n<br> Если терминальный статус уже отправлен, следующая передача не будет обрабатываться."
+    },
+    {
+      "name": "ErrorCodes",
+      "x-displayName": "Коды ошибок",
+      "description": "| Код | Текст сообщения\t                     | Описание                                                                                                                     |\n|-----|--------------------------------------|------------------------------------------------------------------------------------------------------------------------------|\n| 500 | Operation failed. [Описание ошибки]  | Операция не выполнена.                                                                                                       |\n| 404 | Data not found.\t                     | Данные по запросу не найдены.                                                                                                |\n| 401 | Access denied.  [Описание ошибки]    | Доступ запрещён. Например, неправильно указан логин или пароль.                                                              |\n| 400 | Validation error. [Описание ошибки]  | Неверный входящий параметр. Ошибка возвращается, если обязательный параметр не заполнен или заполнен некорректным значением. |\n| 403 | Permission denied. [Описание ошибки] | У пользователя нет прав, чтобы выполнить операцию. Обратитесь к своему менеджеру Ozon или в чат поддержки.                   | "
+    }
+  ],
+  "paths": {
+    "/GetAuthToken": {
+      "post": {
+        "summary": "Получить токены авторизации",
+        "operationId": "get-auth-token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTokenModel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Токен создан",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Authorization"
+        ]
+      }
+    },
+    "/v1/ReturnsToRegister": {
+      "get": {
+        "x-code-samples": [
+          {
+            "lang": "JSON",
+            "source": "GET /v1/ReturnsToRegister?includeLanguages=Tr&includeLanguages=En\n"
+          }
+        ],
+        "summary": "Получить информацию о новых возвратных отправлениях",
+        "tags": [
+          "Posting"
+        ],
+        "operationId": "returns-to-register",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "includeLanguages",
+            "description": "Коды языков ответа по ISO 639-1:\n- `Ru` — русский;\n- `En` — английский;\n- `Zh` — китайский;\n- `Tr` — турецкий.\n",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/LanguageIso"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о новых возвратных отправлениях",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetReturnsToRegisterResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnRegistrationResponse": {
+      "post": {
+        "summary": "Зарегистрировать возвратное отправление",
+        "tags": [
+          "Posting"
+        ],
+        "operationId": "return-registration-response",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterReturnRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Возвратное отправление зарегистрировано",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterReturnResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Returns": {
+      "get": {
+        "x-code-samples": [
+          {
+            "lang": "JSON",
+            "source": "GET /v1/Returns?includeLanguages=Tr&includeLanguages=En&returnPostingNumbers=abc\n"
+          }
+        ],
+        "summary": "Получить информацию о возвратных отправлениях",
+        "tags": [
+          "Posting"
+        ],
+        "operationId": "returns",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumbers",
+            "required": true,
+            "description": "Список номеров отправлений. Не передавайте значение, если указали значение в параметре `returnTrackingNumbers`.",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "returnTrackingNumbers",
+            "required": true,
+            "description": "Список трек-номеров отправлений. Не передавайте значение, если указали значение в параметре `returnPostingNumbers`.",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "includeLanguages",
+            "description": "Коды языков ответа по ISO 639-1:\n- `Ru` — русский;\n- `En` — английский;\n- `Zh` — китайский;\n- `Tr` — турецкий.\n",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/LanguageIso"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация получена",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetReturnsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnAttributes": {
+      "post": {
+        "summary": "Передать провайдеру дополнительные параметры по возвратному отправлению",
+        "tags": [
+          "Posting"
+        ],
+        "operationId": "return-attributes",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReturnAttributesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Дополнительные параметры переданы",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetReturnAttributesResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnPhotos": {
+      "get": {
+        "summary": "Получить фотографии возвратного отправления",
+        "tags": [
+          "Photo",
+          "Posting"
+        ],
+        "operationId": "return-photos",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumber",
+            "description": "Номер возвратного отправления. Не передавайте значение, если указали значение в параметре `returnTrackingNumbers`.",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTrackingNumber",
+            "description": "Трек-номер возвратного отправления. Не передавайте значение, если указали значение в параметре `returnPostingNumbers`.",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Фотографии получены",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPhotosResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnsToCancel": {
+      "get": {
+        "summary": "Получить список отменённых возвратных отправлений",
+        "tags": [
+          "Cancel"
+        ],
+        "operationId": "returns-to-cancel",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список отменённых возвратных отправлений",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnsToCancelResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnCancelResponse": {
+      "post": {
+        "summary": "Подтвердить отмену возвратных отправлений",
+        "tags": [
+          "Cancel"
+        ],
+        "operationId": "return-cancel-response",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnCancelResponseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Возвратные отправления отменены",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ReturnEvents": {
+      "get": {
+        "summary": "Получить список событий по возвратному отправлению",
+        "tags": [
+          "ReturnEvent"
+        ],
+        "operationId": "get-return-events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumber",
+            "required": true,
+            "description": "Номер возвратного отправления.",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTrackingNumber",
+            "required": true,
+            "description": "Трек-номер возвратного отправления.",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Список событий",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetReturnEventsResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Установить статус возвратного отправления",
+        "tags": [
+          "ReturnEvent"
+        ],
+        "operationId": "post-return-events",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddReturnEventsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Информация о движении возвратных отправлений",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/Carriage": {
+      "get": {
+        "summary": "Получить информацию о составе палеты",
+        "operationId": "carriage",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumber",
+            "in": "query",
+            "description": "Номер возвратного отправления.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTrackingNumber",
+            "required": true,
+            "in": "query",
+            "description": "Трек-номер возвратного отправления.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "packageId",
+            "in": "query",
+            "description": "Идентификатор палеты.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Информация о составе палеты",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetCarriageResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/TransferDocuments": {
+      "get": {
+        "summary": "Получить акты приёма-передачи",
+        "operationId": "transfer-documents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumber",
+            "in": "query",
+            "description": "Номер возвратного отправления.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTrackingNumber",
+            "in": "query",
+            "description": "Трек-номер возвратного отправления.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "packageId",
+            "in": "query",
+            "description": "Идентификатор палеты.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Акты приёма-передачи",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetTransferDocumentResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/AcknowledgeTransferDocument": {
+      "post": {
+        "summary": "Подтвердить получение актов приёма-передачи",
+        "operationId": "acknowledge-transfer-document",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Authorization"
+          },
+          {
+            "name": "returnPostingNumber",
+            "in": "query",
+            "description": "Номер возвратного отправления.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTrackingNumber",
+            "in": "query",
+            "description": "Трек-номер возвратного отправления.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "packageId",
+            "in": "query",
+            "description": "Идентификатор палеты.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Получение подтверждено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/Manifests": {
+      "get": {
+        "summary": "Получить информацию о манифестах",
+        "operationId": "get_manifests",
+        "parameters": [
+          {
+            "name": "manifestId",
+            "in": "query",
+            "description": "Идентификатор манифеста.<br><br>При указании параметра возвращается информация по конкретному рейсу. При отсутствии — по всем непринятым перевозчиком манифестам.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/ManifestPackages": {
+      "get": {
+        "summary": "Получить информацию о палетах внутри манифеста",
+        "operationId": "get_packages",
+        "parameters": [
+          {
+            "name": "manifestId",
+            "in": "query",
+            "description": "Идентификатор манифеста.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestPackageResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/ManifestPostings": {
+      "get": {
+        "summary": "Получить информацию об отправлениях внутри манифеста",
+        "operationId": "get_postings",
+        "parameters": [
+          {
+            "name": "manifestId",
+            "in": "query",
+            "description": "Идентификатор манифеста.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestPostingResponseResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    },
+    "/v1/ManifestResponse": {
+      "post": {
+        "summary": "Принять или отклонить манифест",
+        "operationId": "manifest_response",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManifestResponseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешно",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Carriages"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GetTokenModel": {
+        "required": [
+          "ClientId",
+          "ClientSecret"
+        ],
+        "type": "object",
+        "properties": {
+          "ClientId": {
+            "description": "Логин.",
+            "type": "string"
+          },
+          "ClientSecret": {
+            "description": "Пароль.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "ErrorCode": {
+            "type": "integer",
+            "description": "Код ошибки.",
+            "format": "int32"
+          },
+          "Entity": {
+            "type": "string",
+            "description": "Идентификатор объекта, для которого возникла ошибка.\n\nПоле может быть пустым для ошибок, которые не относятся к конкретному объекту. Например, для ошибок авторизации.\n",
+            "nullable": true
+          },
+          "Message": {
+            "type": "string",
+            "description": "Текст ошибки."
+          },
+          "Details": {
+            "type": "string",
+            "description": "Подробное описание ошибки.\n\nПоле может быть пустым.\n",
+            "nullable": true
+          },
+          "Value": {
+            "type": "string",
+            "description": "Значение c ошибкой.\n\nПоле может быть пустым.\n",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Response": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "Errors": {
+            "description": "Информация об ошибках.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StringResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "type": "string",
+            "description": "Токен для доступа в API.",
+            "nullable": true
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "LanguageIso": {
+        "enum": [
+          "Ru",
+          "En",
+          "Zh",
+          "Tr"
+        ],
+        "type": "string"
+      },
+      "PostingTranslation": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "$ref": "#/components/schemas/LanguageIso"
+          },
+          "returnReason": {
+            "description": "Перевод причины возврата.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostingSellerContact": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "name": {
+            "description": "Тип связи.",
+            "type": "string"
+          },
+          "value": {
+            "description": "Значение контакта.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostingSeller": {
+        "type": "object",
+        "title": "object",
+        "description": "Информация о продавце.",
+        "properties": {
+          "ozonSellerId": {
+            "description": "Идентификатор продавца.",
+            "type": "string"
+          },
+          "sellerBusinessLicense": {
+            "description": "Номер лицензии продавца.",
+            "type": "string",
+            "nullable": true
+          },
+          "warehouseAddress": {
+            "description": "Адрес склада прямого потока продавца, с которого покупатель заказал товар.",
+            "type": "string",
+            "nullable": true
+          },
+          "returnWarehouseAddress": {
+            "description": "Адрес возвратного склада продавца.",
+            "type": "string",
+            "nullable": true
+          },
+          "companyName": {
+            "description": "Название компании.",
+            "type": "string",
+            "nullable": true
+          },
+          "contacts": {
+            "description": "Контакты.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostingSellerContact"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostingItemTranslation": {
+        "title": "object",
+        "type": "object",
+        "properties": {
+          "language": {
+            "$ref": "#/components/schemas/LanguageIso"
+          },
+          "itemTitle": {
+            "description": "Перевод названия товара на выбранный язык.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PostingItem": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "ozonSkuId": {
+            "description": "Идентификатор товара в системе Ozon — SKU.",
+            "type": "string"
+          },
+          "itemTitle": {
+            "description": "Название товара на русском языке.",
+            "type": "string"
+          },
+          "quantity": {
+            "description": "Количество товаров, которые возвращает покупатель.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "price": {
+            "description": "Цена товара в рублях, за которую покупатель купил товар.",
+            "type": "number",
+            "format": "double"
+          },
+          "currency": {
+            "description": "Идентификатор валюты.",
+            "type": "string"
+          },
+          "weightGm": {
+            "description": "Вес товара в граммах.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "lengthMm": {
+            "description": "Длина товара в миллиметрах.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "widthMm": {
+            "description": "Ширина товара в миллиметрах.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "heightMm": {
+            "description": "Высота товара в миллиметрах.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "hasBattery": {
+            "description": "Признак, что к товару прилагаются батарейки, или товар электрический.",
+            "type": "boolean",
+            "nullable": true
+          },
+          "url": {
+            "description": "Ссылка на карточку товара.",
+            "type": "string"
+          },
+          "translation": {
+            "description": "Перевод названия товара.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostingItemTranslation"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Posting": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "returnPostingNumber": {
+            "description": "Номер возвратного отправления.",
+            "type": "string"
+          },
+          "returnOrderNumber": {
+            "description": "Номер заявки на возврат.",
+            "type": "string",
+            "nullable": true
+          },
+          "returnLabelBarcodes": {
+            "description": "Список штрихкодов возвратного отправления.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "customsDeclaration": {
+            "description": "Номер таможенной декларации с прямого потока.",
+            "type": "string",
+            "nullable": true
+          },
+          "weightGm": {
+            "description": "Общий вес отправления в граммах.",
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "returnReasonCode": {
+            "description": "Идентификатор причины возврата.",
+            "type": "string",
+            "nullable": true
+          },
+          "returnReason": {
+            "description": "Причина возврата.",
+            "type": "string",
+            "nullable": true
+          },
+          "customerComment": {
+            "description": "Комментарий покупателя.",
+            "type": "string",
+            "nullable": true
+          },
+          "isCheckNeeded": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "`true`, если товар в упаковке нужно проверить.\n"
+          },
+          "directFlowTrackingNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Трек-номер прямого потока."
+          },
+          "invoiceLink": {
+            "type": "string",
+            "nullable": true,
+            "description": "Ссылка на счёт-фактуру."
+          },
+          "translation": {
+            "description": "Перевод причины возврата.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostingTranslation"
+            },
+            "nullable": true
+          },
+          "seller": {
+            "$ref": "#/components/schemas/PostingSeller"
+          },
+          "items": {
+            "description": "Информация о товарах в возврате.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostingItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetReturnsToRegisterResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "postings": {
+            "description": "Информация о возвратных отправлениях.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Posting"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegistrationStatus": {
+        "enum": [
+          "Ok",
+          "Declined"
+        ],
+        "type": "string",
+        "title": "object",
+        "description": "Статус регистрации отправления: \n- `Ok` — подтверждено, \n- `Declined` — отменено.\n\nЕсли регистрация отклонена, трек-номер присылать не нужно.\n"
+      },
+      "SellerRegistrationStatus": {
+        "enum": [
+          "Registered",
+          "NotRegistered",
+          "Blocked"
+        ],
+        "type": "string",
+        "description": "Статус регистрации продавца:\n- `1` — зарегистрирован,\n- `2` — не зарегистрирован, \n- `3` — заблокирован.\n"
+      },
+      "RegisterReturnRequest": {
+        "required": [
+          "RegistrationStatus",
+          "ReturnPostingNumber"
+        ],
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "ReturnPostingNumber": {
+            "description": "Номер возвратного отправления.",
+            "type": "string",
+            "nullable": true
+          },
+          "ReturnTrackingNumber": {
+            "description": "Трек-номер возвратного отправления. Передайте значение, если в параметре `registrationStatus` указали `Оk`.\n",
+            "type": "string",
+            "nullable": true
+          },
+          "RegistrationStatus": {
+            "$ref": "#/components/schemas/RegistrationStatus"
+          },
+          "RegistrationCancelReason": {
+            "description": "Причина отклонения регистрации. Передайте значение, если в параметре `registrationStatus` указали `Declined`.",
+            "type": "string",
+            "nullable": true
+          },
+          "SellerRegistrationStatus": {
+            "$ref": "#/components/schemas/SellerRegistrationStatus"
+          },
+          "SellerRegistrationLink": {
+            "description": "Ссылка для регистрации продавца.",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisterReturnResponse": {
+        "type": "object",
+        "title": "object",
+        "description": "Информация об ошибках.",
+        "properties": {
+          "errors": {
+            "description": "Отчёт об ошибках.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisterReturnResponseResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/RegisterReturnResponse"
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetReturnsResponse": {
+        "title": "object",
+        "type": "object",
+        "properties": {
+          "postings": {
+            "description": "Информация о возвратных отправлениях.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Posting"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ItemCondition": {
+        "enum": [
+          "inactGoods",
+          "semiDefective",
+          "defective",
+          "wrongVersion"
+        ],
+        "type": "string",
+        "title": "object",
+        "description": "Состояния товара при проверке. Передавайте по отправлениям с `isCheckNeeded = true`:\n- `inactGoods` — целый или исправный товар;\n- `semiDefective` — товар частично повреждён;\n- `defective` — товар неисправен;\n- `wrongVersion` — подмена.\n"
+      },
+      "HandlingMethod": {
+        "enum": [
+          "returnSellerCountry",
+          "pickup",
+          "returnSellerRussia",
+          "processing",
+          "utilization",
+          "deliverToFbp"
+        ],
+        "type": "string",
+        "title": "object",
+        "description": "Способ обработки товара:\n- `returnSellerCountry` — вернуть в страну продавца;\n- `pickup` — самовывоз;\n- `returnSellerRussia` — вернуть продавцу в Россию;\n- `processing` — обработать провайдером;\n- `utilization` — утилизировать;\n- `deliverToFbp` — поставить на склад FBP.\n"
+      },
+      "SetReturnAttributesRequest": {
+        "required": [
+          "returnPostingNumber"
+        ],
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "returnPostingNumber": {
+            "type": "string",
+            "description": "Номер возвратного отправления."
+          },
+          "itemCondition": {
+            "$ref": "#/components/schemas/ItemCondition"
+          },
+          "handlingMethodBySeller": {
+            "$ref": "#/components/schemas/HandlingMethod"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetReturnAttributesResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/RegisterReturnResponse"
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetPhotosResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "productPhotos": {
+            "description": "Фотографии возвратного отправления в формате Base64.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CancelledPosting": {
+        "type": "object",
+        "title": "object",
+        "description": "Информация об отменённом возвратном отправлении.",
+        "properties": {
+          "returnPostingNumber": {
+            "type": "string",
+            "description": "Номер возвратного отправления."
+          },
+          "returnTrackingNumber": {
+            "type": "string",
+            "description": "Трек-номер возвратного отправления."
+          },
+          "cancelCreatedAt": {
+            "type": "string",
+            "description": "Дата и время отмены.",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReturnsToCancelResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "returnsToCancel": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CancelledPosting"
+            },
+            "description": "Список отменённых возвратных отправлений."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Информация об отменённых возвратных отправлениях."
+      },
+      "ReturnCancelResponseRequest": {
+        "required": [
+          "returnsAcknowledged"
+        ],
+        "type": "object",
+        "title": "object",
+        "description": "Информация об отменённых возвратных отправлениях, которые подтверждает 3PL-провайдер.",
+        "properties": {
+          "returnsAcknowledged": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Список возвратных отправлений, которые подтверждает 3PL-провайдер."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReturnEvent": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "eventId": {
+            "description": "Идентификатор события.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "eventName": {
+            "description": "Краткое название события на английском языке.",
+            "type": "string"
+          },
+          "eventDescriptionRu": {
+            "description": "Описание события на русском языке.",
+            "type": "string"
+          },
+          "eventDescriptionEng": {
+            "description": "Описание события на английском языке.",
+            "type": "string"
+          },
+          "moment": {
+            "description": "Дата и время события.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "providerEventCode": {
+            "description": "Идентификатор события у 3PL-провайдера.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetReturnEventsResponse": {
+        "type": "object",
+        "title": "object",
+        "description": "Информация о событиях по возвратному отправлению.",
+        "properties": {
+          "returnPostingNumber": {
+            "description": "Номер возвратного отправления.",
+            "type": "string"
+          },
+          "returnTrackingNumber": {
+            "description": "Трек-номер возвратного отправления.",
+            "type": "string"
+          },
+          "isActive": {
+            "description": "Признак активного трекинга: \n- `1` — активен,\n- `2` — неактивен.\n",
+            "type": "boolean"
+          },
+          "events": {
+            "description": "Список событий трекинга.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReturnEvent"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetReturnEventsResponseResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/GetReturnEventsResponse"
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReturnEventToAdd": {
+        "required": [
+          "eventId",
+          "guid",
+          "moment",
+          "providerEventCode"
+        ],
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "guid": {
+            "description": "Уникальный идентификатор события.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "eventId": {
+            "description": "Идентификатор события.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "providerEventCode": {
+            "description": "Код события в системе провайдера.",
+            "type": "string"
+          },
+          "eventComment": {
+            "description": "Комментарий провайдера к статусу.",
+            "type": "string",
+            "nullable": true
+          },
+          "moment": {
+            "description": "Дата и время возникновения события.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AddReturnEventsRequest": {
+        "required": [
+          "data",
+          "returnPostingNumber",
+          "returnTrackingNumber"
+        ],
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "returnPostingNumber": {
+            "description": "Номер заказа.",
+            "type": "string"
+          },
+          "returnTrackingNumber": {
+            "description": "Трек-номер заказа.",
+            "type": "string"
+          },
+          "data": {
+            "description": "Список событий по заказу.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReturnEventToAdd"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PackageDetail": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "returnPostingNumber": {
+            "description": "Номер возвратного отправления.",
+            "type": "string"
+          },
+          "returnTrackingNumber": {
+            "description": "Трек-номер возвратного отправления.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetCarriageResponse": {
+        "type": "object",
+        "title": "object",
+        "properties": {
+          "packageId": {
+            "description": "Идентификатор палеты.",
+            "type": "string"
+          },
+          "packageBarcode": {
+            "description": "Штрихкод палеты.",
+            "type": "string"
+          },
+          "packageDetail": {
+            "description": "Состав палеты.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageDetail"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetTransferDocumentResponse": {
+        "type": "object",
+        "description": "Список актов приёма-передачи.",
+        "properties": {
+          "transferDocument": {
+            "description": "Акт приёма-передачи в формате Base64.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetTransferDocumentResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/GetTransferDocumentResponse"
+          },
+          "Errors": {
+            "description": "Ошибки.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponseData": {
+        "type": "object",
+        "properties": {
+          "manifestId": {
+            "description": "Идентификатор манифеста.",
+            "type": "string"
+          },
+          "providerId": {
+            "description": "Идентификатор провайдера.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "manifestStatus": {
+            "description": "Статус манифеста.",
+            "type": "string"
+          },
+          "sendTime": {
+            "description": "Дата и время отправки манифеста.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponse": {
+        "type": "object",
+        "description": "Информация о манифестах.",
+        "properties": {
+          "manifests": {
+            "type": "array",
+            "description": "Манифесты.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestResponseData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ManifestResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPackageData": {
+        "type": "object",
+        "properties": {
+          "packageId": {
+            "description": "Идентификатор палеты.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "packageBarcode": {
+            "description": "Штрихкод палеты.",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPackageResponse": {
+        "type": "object",
+        "description": "Информация о палетах внутри манифеста.",
+        "properties": {
+          "packages": {
+            "type": "array",
+            "description": "Палеты.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestPackageData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPackageResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ManifestPackageResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPostingData": {
+        "type": "object",
+        "properties": {
+          "postingId": {
+            "description": "Идентификатор отправления.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "postingNumber": {
+            "description": "Номер отправления.",
+            "type": "string"
+          },
+          "postingBarcode": {
+            "description": "Штрихкод отправления.",
+            "type": "string",
+            "nullable": true
+          },
+          "packageId": {
+            "description": "Идентификатор палеты.",
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPostingResponse": {
+        "type": "object",
+        "description": "Информация об отправлениях внутри манифеста.",
+        "properties": {
+          "postings": {
+            "type": "array",
+            "description": "Отправления.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestPostingData"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestPostingResponseResponse": {
+        "type": "object",
+        "properties": {
+          "Data": {
+            "$ref": "#/components/schemas/ManifestPostingResponse"
+          },
+          "Errors": {
+            "type": "array",
+            "description": "Информация об ошибках.",
+            "items": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestStatus": {
+        "description": "Статус манифеста:\n- `New` — новый;\n- `Ok` — принят;\n- `Declined` — отклонён.\n",
+        "enum": [
+          "New",
+          "Ok",
+          "Declined"
+        ],
+        "type": "string"
+      },
+      "ManifestResponseRequest": {
+        "required": [
+          "manifestId",
+          "manifestStatus"
+        ],
+        "type": "object",
+        "properties": {
+          "manifestId": {
+            "type": "string",
+            "description": "Идентификатор манифеста."
+          },
+          "manifestStatus": {
+            "$ref": "#/components/schemas/ManifestStatus"
+          },
+          "manifestDeclineReason": {
+            "type": "string",
+            "description": "Причина отклонения.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "parameters": {
+      "Authorization": {
+        "description": "Bearer API-токен.",
+        "in": "header",
+        "name": "Authorization",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -55,114 +55,83 @@ def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", produ
     }
 
 
-def load_orders():
-    all_rows = []
-    start = 0
-    page_size = 1000
+PAGE_SIZE = 1000
 
+
+def read_all_by_id(table):
+    """Вся таблица страницами: сортировка по id, следующая страница — id больше последнего.
+
+    Было range() без order(): PostgREST без сортировки не обещает порядка, и страницы могут
+    прийти с повторами и пропусками (how-we-work, 15 сентября — так сумма из 7 619 строк
+    вышла другой). Страница по ключу, а не по смещению, ещё и не дрейфует, если в таблицу
+    пишут во время чтения, и стоит одинаково на первой и на трёхсотой странице.
+    """
+    rows, last_id = [], None
     while True:
-        result = (
-            supabase
-            .table("marketplace_orders")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
+        query = supabase.table(table).select("*").order("id").limit(PAGE_SIZE)
+        if last_id is not None:
+            query = query.gt("id", last_id)
+        page = query.execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
             break
+        last_id = page[-1]["id"]
+    ids = [row["id"] for row in rows]
+    if len(set(ids)) != len(ids):
+        # Невозможно при чтении по ключу; если случилось — чтение сломано, и молча считать KPI из него нельзя.
+        raise RuntimeError(f"{table}: {len(ids) - len(set(ids))} повторов id в постраничном чтении")
+    return rows
 
-        start += page_size
 
+def read_all_by_key(table, key_columns):
+    """Таблица без id: range() с сортировкой по ПОЛНОМУ первичному ключу — порядок однозначен."""
+    rows, start = [], 0
+    while True:
+        query = supabase.table(table).select("*")
+        for column in key_columns:
+            query = query.order(column)
+        page = query.range(start, start + PAGE_SIZE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    keys = [tuple(row.get(column) for column in key_columns) for row in rows]
+    if len(set(keys)) != len(keys):
+        raise RuntimeError(f"{table}: {len(keys) - len(set(keys))} повторов ключа {key_columns} в постраничном чтении")
+    return rows
+
+
+def load_orders():
+    all_rows = read_all_by_id("marketplace_orders")
     print(f"Загружено заказов: {len(all_rows)}")
     return all_rows
 
 
 def load_buyouts():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        result = (
-            supabase
-            .table("marketplace_buyouts")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
+    all_rows = read_all_by_id("marketplace_buyouts")
     print(f"Загружено выкупов: {len(all_rows)}")
     return all_rows
 
 
-
 def load_expenses():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        result = (
-            supabase
-            .table("marketplace_expenses")
-            .select("*")
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
+    all_rows = read_all_by_id("marketplace_expenses")
     print(f"Загружено расходов: {len(all_rows)}")
     return all_rows
 
 
 def load_ozon_organic():
-    all_rows = []
-    start = 0
-    page_size = 1000
-
-    while True:
-        try:
-            result = (
-                supabase
-                .table("ozon_daily_sku_organic")
-                .select("*")
-                .range(start, start + page_size - 1)
-                .execute()
-            )
-        except Exception as e:
-            print(
-                "Не удалось загрузить ozon_daily_sku_organic. "
-                "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
-                f"Ошибка: {e}"
-            )
-            return []
-
-        rows = result.data or []
-        all_rows.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
+    try:
+        # id у таблицы нет; первичный ключ — (sale_date, marketplace_code, marketplace_sku)
+        all_rows = read_all_by_key("ozon_daily_sku_organic", ("sale_date", "marketplace_code", "marketplace_sku"))
+    except RuntimeError:
+        raise
+    except Exception as e:
+        print(
+            "Не удалось загрузить ozon_daily_sku_organic. "
+            "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
+            f"Ошибка: {e}"
+        )
+        return []
 
     print(f"Загружено Ozon organic строк: {len(all_rows)}")
     return all_rows

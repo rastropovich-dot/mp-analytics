@@ -1017,6 +1017,7 @@ def send_month_sheet(no_send):
     """Нефатальный шаг: книга «Ozon - <месяц>» файлом в тот же чат. Отдельным процессом и ПОСЛЕ алерта — его отказ,
     зависание или нехватка памяти алерт не трогают. Процесс умер, не успев сказать сам, — говорим за него."""
     cmd = [sys.executable, MONTH_SHEET_SCRIPT] + (["--no-send"] if no_send else [])
+    sys.stdout.flush()              # иначе в логе Render вывод шага встанет выше вывода самого алерта
     try:
         outcome = subprocess.run(cmd, timeout=MONTH_SHEET_TIMEOUT).returncode
     except Exception as exc:  # noqa: BLE001

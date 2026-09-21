@@ -207,6 +207,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
 
     orders            [{order_date, order_schema, marketplace_sku, article, orders_qty, orders_amount_seller,
                         cancelled_orders_qty, cancelled_orders_amount_seller}]
+    obs_date          ночь, на которую снято состояние заказов: "YYYY-MM-DD" или {схема: "YYYY-MM-DD"}
     commission_share  {площадка: доля} с ключом "все" — запасная доля для площадки без выкупов в окне
     other_share       доля прочих расходов (с НДС) в обороте выкупов (с НДС); None — не измерена
     ads_by_day        {день: реклама без НДС | None}
@@ -214,6 +215,12 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
     """
     blocks = {k: {d: defaultdict(Decimal) for d in days} for k in SCHEMAS + ("all",)}
     said = set()
+    # Состояние схем может быть разной свежести: ночью упал шаг одной из них — её заказы на сутки старше, и возраст у них свой.
+    obs = obs_date if isinstance(obs_date, dict) else {k: obs_date for k in SCHEMAS}
+    obs = {**obs, "all": min(obs.values())}        # общий лист зовёт день дозревшим, только когда он дозрел у обеих схем
+    if len({obs[k] for k in SCHEMAS if k in obs}) > 1:
+        said.add("состояние заказов по схемам разной свежести: " + ", ".join(f"{k.upper()} — на ночь {obs[k]}" for k in SCHEMAS if k in obs)
+                 + "; возраст дня на общем листе — по более старому состоянию")
     for r in orders:
         d, schema = r["order_date"], str(r.get("order_schema") or "").lower()
         if d not in blocks["all"]:
@@ -221,7 +228,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         if schema not in SCHEMAS:
             said.add(f"строка заказов со схемой {schema!r} — в лист не вошла")
             continue
-        age = (date.fromisoformat(obs_date) - date.fromisoformat(d)).days
+        age = (date.fromisoformat(obs.get(schema, obs["all"])) - date.fromisoformat(d)).days
         conf_q, conf_a = D(r["orders_qty"]), D(r["orders_amount_seller"])
         canc_q, canc_a = D(r.get("cancelled_orders_qty")), D(r.get("cancelled_orders_amount_seller"))
         r_cnt, r_amt = remaining_share(curve, schema, age, "cnt"), remaining_share(curve, schema, age, "amt")
@@ -255,7 +262,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         rows = []
         for d in days:
             a, vat = per_day[d], vat_for(d)
-            age = (date.fromisoformat(obs_date) - date.fromisoformat(d)).days
+            age = (date.fromisoformat(obs.get(key, obs["all"])) - date.fromisoformat(d)).days
             ok = not a["no_forecast"]
             row = {"date": d, "vat": vat, "age": age, "mature": age >= MATURE_AGE,
                    "created_q": a["created_q"], "created_a": a["created_a"], "conf_q": a["conf_q"], "conf_a": a["conf_a"],

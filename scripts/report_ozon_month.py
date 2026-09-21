@@ -603,11 +603,17 @@ def other_share_of(ledger_by_day, buyouts):
 def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     """Всё для листов «Заказы»: читает лог статусов, выкупы и леджер окна долей; возвращает словарь для записи и печати."""
     d2 = days[-1]
-    stamps = [r["observed_at"] for r in order_rows if r.get("observed_at")]
-    if not stamps:
+    stamps = defaultdict(list)
+    for r in order_rows:
+        if r.get("observed_at"):
+            stamps[str(r.get("order_schema") or "").lower()].append(r["observed_at"])
+    if not any(stamps.get(s) for s in forecast.SCHEMAS):
         raise RuntimeError("в marketplace_orders нет ни одной строки Ozon с observed_at — состояние заказов не датировать")
-    obs = max(forecast.parse_ts(v) for v in stamps).astimezone(ZoneInfo(tz_name))
+    # свежесть — по схеме: упал ночью шаг FBS — его заказы на сутки старше, и возраст у них свой
+    obs_by_schema = {s: max(forecast.parse_ts(v) for v in set(stamps[s])).astimezone(ZoneInfo(tz_name)) for s in forecast.SCHEMAS if stamps.get(s)}
+    obs = max(obs_by_schema.values())
     obs_date = obs.date().isoformat()
+    obs_dates = {s: v.date().isoformat() for s, v in obs_by_schema.items()}
     log_from = (date.fromisoformat(obs_date) - timedelta(days=forecast.CURVE_NIGHTS + max(forecast.PLATEAU_AGES) + 1)).isoformat()
     log_rows = fetch(sb, LOG_TABLE, "posting_number,observed_at,schema,order_date,status,amount", [("gte", "order_date", log_from)], ["posting_number", "observed_at"])
     curve = forecast.build_curve(log_rows, tz_name)
@@ -618,7 +624,7 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     ledger_w = load_types_from_ledger(sb, w1, w2)
     other_share, other_expense, other_turnover, unknown_types = other_share_of(ledger_w, buyouts_w)
     ads_by_day = {r["date"]: r.get("ads") for r in daily_rows}
-    blocks, said = forecast.build_orders_daily(days, order_rows, curve, obs_date, commission_share, other_share, ads_by_day, unit_cost, vat_for,
+    blocks, said = forecast.build_orders_daily(days, order_rows, curve, obs_dates, commission_share, other_share, ads_by_day, unit_cost, vat_for,
                                                lambda r: platform_of(r.get("article") or sku2art.get(str(r.get("marketplace_sku") or ""))))
     young = {r["date"] for r in daily_rows if r.get("young")}
     totals = {}

@@ -145,6 +145,18 @@ class OrdersSheet(unittest.TestCase):
         blocks, _ = self.build([order("2026-09-20")], ["2026-09-20"], ads={"2026-09-20": D(50)})
         self.assertEqual(blocks["all"][0]["ads"], D(50)); self.assertIsNone(blocks["fbo"][0]["ads"]); self.assertIsNone(blocks["fbo"][0]["fin_result"])
 
+    def test_stale_schema_gets_its_own_age_and_is_named(self):
+        # ночью упал шаг FBS: его состояние на сутки старше, день 08-31 для него ещё не дозрел (20 суток), а для FBO дозрел
+        curve = {**self.CURVE, "fbs": self.CURVE["fbo"]}
+        blocks, said = fc.build_orders_daily(["2026-08-31"], [order("2026-08-31"), order("2026-08-31", schema="fbs")], curve,
+                                             {"fbo": "2026-09-21", "fbs": "2026-09-20"}, {"Основная": D("0.4"), "все": D("0.3")}, D("0.05"), {},
+                                             lambda sku: D(300), self.VAT, lambda r: "Основная")
+        self.assertEqual((blocks["fbo"][0]["age"], blocks["fbo"][0]["fc_a"]), (21, D(1000)))
+        self.assertEqual((blocks["fbs"][0]["age"], blocks["fbs"][0]["fc_a"]), (20, D(900)))
+        self.assertTrue(any("разной свежести" in x for x in said))
+        self.assertFalse(blocks["all"][0]["mature"])                          # дозрел не у обеих — на общем листе это ещё прогноз
+        self.assertEqual(fc.mature_check(blocks["all"]), (0, 0, []))
+
     def test_total_sums_money_and_takes_percents_from_sums(self):
         blocks, _ = self.build([order("2026-09-19", conf_a="1000"), order("2026-09-20", conf_a="3000")], ["2026-09-19", "2026-09-20"],
                                ads={"2026-09-19": D(10), "2026-09-20": D(30)})

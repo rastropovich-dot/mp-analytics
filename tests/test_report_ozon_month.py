@@ -126,6 +126,54 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertEqual(rep.types_differ({1: D("10")}, {1: D("10.01"), 96: D("5")}), {1: (D("10"), D("10.01")), 96: (D("0"), D("5"))})
 
 
+class UnitsCogsTests(unittest.TestCase):
+    def test_cogs_uses_units_where_measured_and_positions_where_not(self):
+        rows, _ = rep.build_daily([DAY], [dict(buyout(qty=1, sku="a"), buyouts_units=3), dict(buyout(qty=2, sku="b"), buyouts_units=None), buyout(qty=1, sku="c")],
+                                  [], {DAY: TYPES}, lambda sku: D("100"), "2026-09-19")
+        r = rows[0]
+        self.assertEqual(r["cogs"], D("600"))                       # 3 штуки + 2 позиции + 1 позиция
+        self.assertEqual((r["rows_by_units"], r["rows_by_positions"], r["positions"], r["units"]), (1, 2, D("4"), D("6")))
+
+    def test_zero_units_is_a_measured_zero_not_a_fallback_to_positions(self):
+        rows, _ = rep.build_daily([DAY], [dict(buyout(qty=1), buyouts_units=0)], [], {DAY: TYPES}, lambda sku: D("100"), "2026-09-19")
+        self.assertEqual((rows[0]["cogs"], rows[0]["rows_by_units"]), (D("0"), 1))
+
+
+class PlatformTests(unittest.TestCase):
+    def setUp(self):
+        self.sku2art = {"1": "F001", "2": "S002", "3": "T003", "4": "X004"}
+        self.buyouts = [buyout("1220", "122", sku="1"), buyout("2440", "0", sku="2"), buyout("610", "0", sku="3"), buyout("122", "0", sku="4"), buyout("244", "0", sku="5")]
+        self.expenses = [dict(expense("logistics", "122"), marketplace_sku="1"), dict(expense("other", "61"), marketplace_sku="2"),
+                         dict(expense("other", "12.2"), marketplace_sku=""), dict(expense("subscription", "24.4"), marketplace_sku=""),
+                         dict(expense("advertising_clicks", "999"), marketplace_sku="1"), dict(expense("commission", "777"), marketplace_sku="1")]
+        self.kpi = [{"kpi_date": DAY, "marketplace_sku": "1", "ad_spend": "122"}, {"kpi_date": DAY, "marketplace_sku": "9", "ad_spend": "12.2"}]
+        self.platforms = rep.build_platform_daily([DAY], self.buyouts, self.expenses, self.kpi, self.sku2art, lambda sku: D("100"))
+
+    def test_platform_is_the_first_letter_of_the_article(self):
+        self.assertEqual([rep.platform_of(a) for a in ("F000283615", "s-1", "T9", "X1", "", None)],
+                         ["Основная", "Селект", "Дискаунтер", "Без площадки", "Без площадки", "Без площадки"])
+
+    def test_rows_land_on_their_platform_and_the_rest_is_kept_not_dropped(self):
+        t = {n: rep.platform_total(r) for n, r in self.platforms.items()}
+        self.assertEqual([t[n]["turnover"] for n in ("Основная", "Селект", "Дискаунтер", "Без площадки")], [D("1220"), D("2440"), D("610"), D("366")])
+        self.assertEqual((t["Основная"]["revenue"], t["Основная"]["logistics"], t["Основная"]["ads_perf"]), (D("900"), D("100"), D("100")))
+        self.assertEqual((t["Селект"]["other_with_acq"], t["Без площадки"]["other_with_acq"], t["Без площадки"]["subscription"]), (D("50"), D("10"), D("20")))
+        self.assertEqual(t["Без площадки"]["ads_perf"], D("10"))      # реклама SKU, которого нет в заказах, не теряется
+
+    def test_platform_sheets_add_up_to_the_general_sheet(self):
+        types = {32: D("122"), 38: D("61"), 96: D("12.2"), 51: D("24.4"), 41: D("200")}
+        rows, _ = rep.build_daily([DAY], self.buyouts, self.expenses, {DAY: types}, lambda sku: D("100"), "2026-09-19")
+        total = rep.total_row([rep.add_ratios(r) for r in rows])
+        add = {title: (diff, why) for title, _a, _b, diff, why in rep.platform_addition(total, {n: rep.platform_total(r) for n, r in self.platforms.items()})}
+        for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка", "Прочее + Эквайринг"):
+            self.assertEqual(add[title][0], D("0.00"), title)
+        self.assertEqual(add["Реклама"][0], q_(D("110") - D("200") / D("1.22")))   # Performance против начислений — источники разные
+
+
+def q_(v):
+    return v.quantize(D("0.01"))
+
+
 class TotalsTests(unittest.TestCase):
     def test_total_percentages_are_computed_from_sums(self):
         days = ["2026-09-10", "2026-09-11"]

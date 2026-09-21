@@ -119,11 +119,17 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         acc[d]["positions"] += qty
         acc[d]["turnover"] += D(r["buyouts_amount_seller"])
         acc[d]["commission"] += D(r["commission_amount"])
+        # Себестоимость — по ШТУКАМ, где они измерены (buyouts_units не null), иначе по позициям. null — «не
+        # измерено», а не ноль: 0 штук (продажа и возврат в один день) — измеренный ноль и даёт нулевую СС.
+        units = r.get("buyouts_units")
+        base = qty if units is None else D(units)
+        acc[d]["rows_by_units" if units is not None else "rows_by_positions"] += 1
+        acc[d]["units"] += base
         uc = unit_cost(r["marketplace_sku"])
         if uc is None:
             no_cost[d] += int(qty)
         else:
-            acc[d]["cogs"] += qty * uc
+            acc[d]["cogs"] += base * uc
     for r in expenses:
         d, t, v = r["expense_date"], str(r["expense_type"] or ""), D(r["expense_amount"])
         if d not in acc:
@@ -140,7 +146,8 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         a, vat, ts = acc[d], vat_for(d), types_by_day.get(d)
         row = {"date": d, "vat": vat, "has_raw": ts is not None,
                "young": (date.fromisoformat(today) - date.fromisoformat(d)).days < YOUNG_DAYS,
-               "positions": a["positions"], "no_cost_positions": no_cost.get(d, 0)}
+               "positions": a["positions"], "no_cost_positions": no_cost.get(d, 0), "units": a["units"],
+               "rows_by_units": int(a["rows_by_units"]), "rows_by_positions": int(a["rows_by_positions"])}
         row["turnover"], row["commission"] = a["turnover"], a["commission"]
         row["revenue"] = (a["turnover"] - a["commission"]) / vat
         row["cogs"] = a["cogs"]
@@ -189,7 +196,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
 
 
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
-         "fin_result", "compensations", "fin_result_with_comp", "ads_like_manual", "log_other_like_manual", "positions"]
+         "fin_result", "compensations", "fin_result_with_comp", "ads_like_manual", "log_other_like_manual", "positions", "units"]
 
 
 def add_ratios(row):
@@ -207,7 +214,8 @@ def add_ratios(row):
 def total_row(rows):
     """«Итого»: деньги — суммой, проценты — от сумм. Колонка пуста хоть за один день — в итоге она неполна, и это видно."""
     t = {"date": "Итого", "vat": rows[-1]["vat"] if rows else vat_for("2026-01-01"), "young": False, "has_raw": all(r["has_raw"] for r in rows),
-         "no_cost_positions": sum(r["no_cost_positions"] for r in rows)}
+         "no_cost_positions": sum(r["no_cost_positions"] for r in rows),
+         "rows_by_units": sum(r.get("rows_by_units", 0) for r in rows), "rows_by_positions": sum(r.get("rows_by_positions", 0) for r in rows)}
     for k in MONEY:
         vals = [r.get(k) for r in rows]
         t[k] = None if any(v is None for v in vals) else sum(vals, Z)
@@ -216,6 +224,95 @@ def total_row(rows):
     add_ratios(t)
     t["drr_pct"] = None if t["ads"] is None else ratio(t["ads"], t["_turnover_net"])
     return t
+
+
+PLATFORMS = (("F", "Основная"), ("S", "Селект"), ("T", "Дискаунтер"))
+NO_PLATFORM = "Без площадки"
+
+
+def platform_of(article):
+    """Площадка — по первой букве артикула: F — основная, S — Селект, T — Дискаунтер (reports_model.md §6)."""
+    first = (str(article or "").strip()[:1]).upper()
+    return dict(PLATFORMS).get(first, NO_PLATFORM)
+
+
+def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost):
+    """{площадка: [строки по дням]} — то, что делится по SKU из базы.
+
+    Оборот, комиссия, выручка, СС, маржа — из выкупов по SKU: делятся точно. Логистика, подписка и «прочее
+    с эквайрингом» — из marketplace_expenses по SKU (леджер начислений без SKU и по площадкам не делится,
+    поэтому эквайринг здесь НЕ отделён от прочего, а компенсаций нет вовсе). Реклама — Performance по SKU
+    (ad_spend витрины, решение 5). Расход без SKU и SKU без артикула — отдельная «площадка» «Без площадки»,
+    чтобы сумма площадок равнялась целому, а не тихо теряла остаток.
+    """
+    names = [n for _p, n in PLATFORMS] + [NO_PLATFORM]
+    acc = {n: {d: defaultdict(Decimal) for d in days} for n in names}
+    where = lambda sku: platform_of(sku2art.get(str(sku or ""))) if str(sku or "") else NO_PLATFORM  # noqa: E731
+    for r in buyouts:
+        d = r["buyout_date"]
+        if d not in acc[NO_PLATFORM]:
+            continue
+        a = acc[where(r["marketplace_sku"])][d]
+        qty, units = D(r["buyouts_qty"]), r.get("buyouts_units")
+        a["positions"] += qty
+        a["turnover"] += D(r["buyouts_amount_seller"]); a["commission"] += D(r["commission_amount"])
+        uc = unit_cost(r["marketplace_sku"])
+        if uc is not None:
+            a["cogs"] += (qty if units is None else D(units)) * uc
+    for r in expenses:
+        d, t = r["expense_date"], str(r["expense_type"] or "")
+        if d not in acc[NO_PLATFORM] or t == "commission" or t.startswith("advertising"):
+            continue
+        a = acc[where(r.get("marketplace_sku"))][d]
+        a["logistics" if t == "logistics" else "subscription" if t == "subscription" else "other_with_acq"] += D(r["expense_amount"])
+    for r in kpi_rows:
+        d = r["kpi_date"]
+        if d in acc[NO_PLATFORM]:
+            acc[where(r.get("marketplace_sku"))][d]["ads_perf"] += D(r.get("ad_spend"))
+    out = {}
+    for name in names:
+        rows = []
+        for d in days:
+            a, vat = acc[name][d], vat_for(d)
+            row = {"date": d, "vat": vat, "positions": a["positions"], "turnover": a["turnover"], "commission": a["commission"],
+                   "revenue": (a["turnover"] - a["commission"]) / vat, "cogs": a["cogs"],
+                   "logistics": a["logistics"] / vat, "subscription": a["subscription"] / vat, "other_with_acq": a["other_with_acq"] / vat,
+                   "ads_perf": a["ads_perf"] / vat}
+            row["margin"] = row["revenue"] - row["cogs"]
+            row["fin_result"] = row["margin"] - row["logistics"] - row["subscription"] - row["other_with_acq"] - row["ads_perf"]
+            row["margin_pct"] = ratio(row["margin"], row["revenue"])
+            row["drr_pct"] = ratio(row["ads_perf"], row["turnover"] / vat) if row["turnover"] else None
+            row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
+            rows.append(row)
+        out[name] = rows
+    return out
+
+
+PLATFORM_MONEY = ("turnover", "commission", "revenue", "cogs", "margin", "logistics", "subscription", "other_with_acq", "ads_perf", "fin_result", "positions")
+
+
+def platform_total(rows):
+    t = {"date": "Итого"}
+    for k in PLATFORM_MONEY:
+        t[k] = sum((r[k] for r in rows), Z)
+    net = sum((r["turnover"] / r["vat"] for r in rows), Z)
+    t["margin_pct"], t["fin_result_pct"] = ratio(t["margin"], t["revenue"]), ratio(t["fin_result"], t["revenue"])
+    t["drr_pct"] = ratio(t["ads_perf"], net)
+    return t
+
+
+def platform_addition(total, platform_totals):
+    """Сложение площадок в общий лист: [(колонка, Σ площадок, общий лист, разница, объяснение)]."""
+    s = lambda k: sum((t[k] for t in platform_totals.values()), Z)  # noqa: E731
+    exact = [("Оборот", "turnover"), ("Комиссия", "commission"), ("Выручка", "revenue"), ("Себестоимость", "cogs"), ("Маржа", "margin")]
+    out = [(title, s(k), total[k], "те же строки выкупов — обязана быть 0,00") for title, k in exact]
+    same_source = "площадки — marketplace_expenses по SKU, общий лист — типы начислений; разница = строки, застрявшие в расходах (upsert не удаляет)"
+    out.append(("Логистика", s("logistics"), total["logistics"], same_source))
+    out.append(("Подписка", s("subscription"), total["subscription"], same_source))
+    both = None if total.get("acquiring") is None else total["other"] + total["acquiring"]
+    out.append(("Прочее + Эквайринг", s("other_with_acq"), both, same_source + "; по площадкам эквайринг от прочего не отделён — леджер без SKU"))
+    out.append(("Реклама", s("ads_perf"), total.get("ads"), "площадки — Performance по SKU, общий лист — начисления 41 + 54: источники разные по решению 5, разница названа на листе «По SKU»"))
+    return [(title, a, b, None if b is None else q(a - b), why) for title, a, b, why in out]
 
 
 def build_sku(kpi_rows, sku2art, unit_cost, vat):
@@ -336,7 +433,7 @@ def load_costs(sb, snapshot):
     return sku2art, unit_cost, len(cost), len(norms)
 
 
-def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
+def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -355,7 +452,9 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
             ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
-            ("Позиций выкупов", "positions", "#,##0"), ("из них без себестоимости", "no_cost_positions", "#,##0"), ("Примечание", "note", None)]
+            ("Позиций выкупов", "positions", "#,##0"), ("Штук (где не измерены — позиции)", "units", "#,##0"),
+            ("строк СС по штукам", "rows_by_units", "#,##0"), ("строк СС по позициям", "rows_by_positions", "#,##0"),
+            ("позиций без себестоимости", "no_cost_positions", "#,##0"), ("Примечание", "note", None)]
     for j, (head, _k, _f) in enumerate(cols, 1):
         if head:
             c = ws.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
@@ -392,6 +491,50 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
     for j in range(1, len(cols) + 1):
         ws.column_dimensions[get_column_letter(j)].width = 14 if j > 1 else 16
     ws.column_dimensions[get_column_letter(len(cols))].width = 60
+
+    for name, prows in (platforms or {}).items():
+        ptotal = platform_total(prows)
+        if name == NO_PLATFORM and not any(ptotal[k] for k in PLATFORM_MONEY):
+            continue
+        wsp = wb.create_sheet(name)
+        wsp["A1"] = f"Выкупы Ozon — {name}"; wsp["A1"].font = bold
+        pcols = [("Дата реализации", "date", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС), руб.", "commission", money), ("Выручка, руб.", "revenue", money),
+                 ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct), ("Логистика, руб.", "logistics", money),
+                 ("Подписка, руб.", "subscription", money), ("Реклама (Performance), руб.", "ads_perf", money), ("% ДРР (от ТО)", "drr_pct", pct),
+                 ("Прочее с эквайрингом, руб.", "other_with_acq", money), ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), ("Позиций", "positions", "#,##0")]
+        for j, (head, _k, _f) in enumerate(pcols, 1):
+            c = wsp.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
+            c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        for i, r in enumerate(prows + [ptotal], 4):
+            for j, (_head, k, fmt) in enumerate(pcols, 1):
+                v = r.get(k)
+                if k == "date" and v != "Итого":
+                    v = date.fromisoformat(v)
+                elif isinstance(v, Decimal):
+                    v = float(v)
+                c = wsp.cell(row=i, column=j, value=v)
+                if fmt:
+                    c.number_format = fmt
+                if k == "date" and r["date"] != "Итого":
+                    c.number_format = "DD.MM.YYYY"
+                if r["date"] == "Итого":
+                    c.font = bold
+        wsp.cell(row=len(prows) + 7, column=1, value="Площадка — по первой букве артикула (F / S / T). Логистика, подписка и прочее — marketplace_expenses по SKU; эквайринг от прочего не отделён, "
+                                                     "компенсаций нет: леджер начислений без SKU. Реклама — Performance по SKU.")
+        wsp.freeze_panes = "B4"; wsp.row_dimensions[3].height = 45
+        for j in range(1, len(pcols) + 1):
+            wsp.column_dimensions[get_column_letter(j)].width = 15
+    if addition:
+        wsa = wb.create_sheet("Сложение площадок")
+        for j, head in enumerate(("Колонка", "Σ листов площадок", "Общий лист", "Разница", "Чем объясняется"), 1):
+            c = wsa.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
+        for i, (title, a, b, diff, why) in enumerate(addition, 2):
+            for j, v in enumerate((title, a, b, diff, why), 1):
+                c = wsa.cell(row=i, column=j, value=float(v) if isinstance(v, Decimal) else v)
+                if j in (2, 3, 4):
+                    c.number_format = money
+        for j, w in enumerate((22, 20, 20, 16, 120), 1):
+            wsa.column_dimensions[get_column_letter(j)].width = w
 
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
@@ -516,9 +659,16 @@ def main():
     import loaders.ozon_fbo_orders_loader as fbo
     sb = fbo.supabase
     flt = lambda col: [("eq", "marketplace_code", "ozon"), ("gte", col, d1), ("lte", col, d2)]  # noqa: E731
-    buyouts = fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_amount_seller,commission_amount", flt("buyout_date"),
-                    ["buyout_date", "marketplace_code", "marketplace_sku"])
-    expenses = fetch(sb, "marketplace_expenses", "id,expense_date,expense_type,expense_amount", flt("expense_date"),
+    buyout_cols = "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_amount_seller,commission_amount"
+    try:
+        buyouts = fetch(sb, "marketplace_buyouts", buyout_cols + ",buyouts_units", flt("buyout_date"), ["buyout_date", "marketplace_code", "marketplace_sku"])
+        units_column = True
+    except Exception as exc:
+        if "buyouts_units" not in str(exc):
+            raise
+        buyouts = fetch(sb, "marketplace_buyouts", buyout_cols, flt("buyout_date"), ["buyout_date", "marketplace_code", "marketplace_sku"])
+        units_column = False
+    expenses = fetch(sb, "marketplace_expenses", "id,expense_date,marketplace_sku,expense_type,expense_amount", flt("expense_date"),
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
@@ -553,6 +703,9 @@ def main():
     total = total_row(rows)
     vat = vat_for(d1)
     sku_rows = build_sku(kpi, sku2art, unit_cost, vat)
+    platforms = build_platform_daily(days, buyouts, expenses, kpi, sku2art, unit_cost)
+    platform_totals = {name: platform_total(prows) for name, prows in platforms.items()}
+    addition = platform_addition(total, platform_totals)
 
     print(f"окно {d1} … {d2} ({len(days)} дн.): выкупов строк {len(buyouts)}, расходов {len(expenses)}, строк витрины {len(kpi)}; "
           f"sku→article {len(sku2art)}, себестоимость найдена у {cost_found} артикулов из {cost_asked} (снимок {args.snapshot}); НДС {vat}")
@@ -603,7 +756,18 @@ def main():
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
     out = args.out or os.path.join(OUT_DIR, f"ozon_{args.month}.xlsx")
-    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes)
+    cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
+                 + ("." if units_column else " (колонки marketplace_buyouts.buyouts_units ещё нет — миграция не применена)."))
+    notes.insert(1, cogs_note)
+    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition)
+    print("  " + cogs_note)
+    print(f"\nплощадки (по первой букве артикула):")
+    print(f"  {'площадка':14}{'оборот':>18}{'выручка':>18}{'СС':>18}{'маржа':>16}{'логистика':>13}{'прочее+экв.':>14}{'реклама Perf.':>16}{'фин. рез.':>16}")
+    for name, t in platform_totals.items():
+        print(f"  {name:14}{t['turnover']:>18,.2f}{t['revenue']:>18,.2f}{t['cogs']:>18,.2f}{t['margin']:>16,.2f}{t['logistics']:>13,.2f}{t['other_with_acq']:>14,.2f}{t['ads_perf']:>16,.2f}{t['fin_result']:>16,.2f}")
+    print(f"  сложение площадок в общий лист:")
+    for title, a, b, diff, why in addition:
+        print(f"    {title:20}{a:>18,.2f}{('—' if b is None else f'{b:,.2f}'):>18}{('—' if diff is None else f'{diff:,.2f}'):>14}" + (f"   {why}" if diff else ""))
     print(f"\nитого: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f}, выручка {total['revenue']:,.2f}, СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}")
     if total["fin_result"] is not None:
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "

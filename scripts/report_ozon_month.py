@@ -624,6 +624,11 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     log_from = (date.fromisoformat(obs_date) - timedelta(days=forecast.CURVE_NIGHTS + max(forecast.PLATEAU_AGES) + 1)).isoformat()
     log_rows = fetch(sb, LOG_TABLE, "posting_number,observed_at,schema,order_date,status,amount", [("gte", "order_date", log_from)], ["posting_number", "observed_at"])
     curve = forecast.build_curve(log_rows, tz_name)
+    # Чувствительность рублёвой кривой к одной отмене: та же кривая без крупнейшей отмены каждой схемы. Прогноз считается
+    # по полной кривой — выбрасывать наблюдение нельзя, — но читатель обязан видеть, сколько на нём держится.
+    biggest = {c["biggest_event"][2] for c in curve.values() if c["biggest_event"][2]}
+    curve_wo = forecast.build_curve([r for r in log_rows if r["posting_number"] not in biggest], tz_name) if biggest else {}
+    sensitivity = {s: {a: (c["r_amt"][a], curve_wo[s]["r_amt"][a]) for a in (1, 7, 14)} for s, c in curve.items() if s in curve_wo}
     w1, w2 = forecast.window_before(d2)
     buyouts_w = fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_amount_seller,commission_amount",
                       [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", w1), ("lte", "buyout_date", w2)], ["buyout_date", "marketplace_code", "marketplace_sku"])
@@ -653,7 +658,7 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     return {"blocks": blocks, "totals": totals, "said": said, "curve": curve, "obs": obs, "obs_date": obs_date, "log_rows": len(log_rows),
             "window": (w1, w2), "commission_share": commission_share, "commission_base": commission_base,
             "other_share": other_share, "other_expense": other_expense, "other_turnover": other_turnover, "ledger_days": len(ledger_w),
-            "unknown_types": unknown_types, "table_plateau": table_plateau, "mature": forecast.mature_check(blocks["all"])}
+            "unknown_types": unknown_types, "table_plateau": table_plateau, "sensitivity": sensitivity, "mature": forecast.mature_check(blocks["all"])}
 
 
 def orders_notes(o):
@@ -677,7 +682,10 @@ def orders_notes(o):
                          for s, c in curve.items()) + ". Вся кривая — на листе «Кривая дозревания».",
              "Рублёвая кривая шумит хвостом цен — крупнейшая отмена в переходах: "
              + "; ".join(f"{names[s]} — {c['biggest_event'][1]:,.0f} ₽ на {c['biggest_event'][0]}-е сутки из {c['events_amt_total']:,.0f} ₽ всех отмен ({pct(ratio(c['biggest_event'][1], c['events_amt_total']))})"
-                         for s, c in curve.items() if c["biggest_event"][0] is not None) + ". С каждой ночью её вес падает.",
+                         for s, c in curve.items() if c["biggest_event"][0] is not None)
+             + ". Без неё доля «ещё отменится» по ₽ была бы: "
+             + "; ".join(f"{names[s]} — " + ", ".join(f"{a} сут. {pct(wo)} вместо {pct(w)}" for a, (w, wo) in sorted(v.items())) for s, v in o["sensitivity"].items())
+             + ". Прогноз считается по полной кривой; с каждой ночью вес одной отмены падает.",
              "Сверка другим разрезом — доля отмен в самой таблице заказов по дням возраста 21…50 суток (штуки товара / ₽): "
              + "; ".join(f"{names[s]} {pct(q_)} / {pct(a_)}" for s, (q_, a_) in o["table_plateau"].items()) + ".",
              "Справочные колонки — формулы владельца на его константах 0,65 / 0,59 / 0,024 (июльская книга; в сентябрьской на листе «Заказы» уже 0,58, на «Заказы Standard» — 0,73). "
@@ -1039,6 +1047,14 @@ def main():
                                  "curve_nights": f"{nights[0]} … {nights[-1]}" if nights else "нет", "mature_days": orders["mature"][0],
                                  "forecast_days": len(days) - orders["mature"][0]}
             summary["warnings"] += list(orders["said"])
+            for sch, c in orders["curve"].items():
+                share = ratio(c["biggest_event"][1], c["events_amt_total"])
+                if share is not None and share >= Decimal("0.10") and sch in orders["sensitivity"]:
+                    w, wo = orders["sensitivity"][sch][7]
+                    rub = f"{c['biggest_event'][1]:,.0f}".replace(",", " ")
+                    p1 = lambda v: f"{v * 100:.1f} %".replace(".", ",")  # noqa: E731
+                    summary["warnings"].append(f"кривая {sch.upper()} по ₽ держится на одной отмене {rub} ₽ ({p1(share)} всех отмен в переходах): "
+                                               f"на 7-е сутки «ещё отменится» {p1(w)} против {p1(wo)} без неё — прогноз {sch.upper()} пессимистичен")
         json.dump(summary, open(args.summary_json, "w"), ensure_ascii=False, indent=1)
 
     code = 2 if orders_error else 0

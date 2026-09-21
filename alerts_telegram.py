@@ -1,5 +1,7 @@
 import argparse
 import os
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -1006,6 +1008,27 @@ def build_message(target_date=None, skip_snapshot=False):
     return "\n\n".join(lines)
 
 
+MONTH_SHEET_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "send_ozon_month_report.py")
+MONTH_SHEET_TIMEOUT = 1200
+MONTH_SHEET_ALREADY_REPORTED = 1   # шаг сам сказал в Telegram, что книга не ушла; второй раз не повторяем
+
+
+def send_month_sheet(no_send):
+    """Нефатальный шаг: книга «Ozon - <месяц>» файлом в тот же чат. Отдельным процессом и ПОСЛЕ алерта — его отказ,
+    зависание или нехватка памяти алерт не трогают. Процесс умер, не успев сказать сам, — говорим за него."""
+    cmd = [sys.executable, MONTH_SHEET_SCRIPT] + (["--no-send"] if no_send else [])
+    sys.stdout.flush()              # иначе в логе Render вывод шага встанет выше вывода самого алерта
+    try:
+        outcome = subprocess.run(cmd, timeout=MONTH_SHEET_TIMEOUT).returncode
+    except Exception as exc:  # noqa: BLE001
+        outcome = f"{type(exc).__name__}: {exc}"
+    if outcome not in (0, MONTH_SHEET_ALREADY_REPORTED):
+        print(f"Шаг «лист Ozon» не выполнен: {outcome}. Алерт отправлен как обычно.")
+        if not no_send:
+            send_telegram(f"⚠️ Лист Ozon не отправлен: шаг завершился с «{outcome}». Алерт выше от этого не зависит.")
+    return outcome
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Build or send MP Analytics Telegram alert.")
     parser.add_argument("--dry-run", action="store_true", help="Build message and print to stdout without sending.")
@@ -1013,6 +1036,8 @@ def parse_args(argv=None):
     parser.add_argument("--preview", action="store_true", help="Alias for --dry-run.")
     parser.add_argument("--skip-snapshot", action="store_true", help="Do not write intraday_snapshots during this run.")
     parser.add_argument("--target-date", help="Override yesterday date for completed-day sections, format YYYY-MM-DD.")
+    parser.add_argument("--skip-sheet", action="store_true", help="Do not build and send the monthly Ozon workbook after the alert.")
+    parser.add_argument("--with-sheet", action="store_true", help="With --no-send / --dry-run: also build the monthly Ozon workbook (nothing is sent).")
     return parser.parse_args(argv)
 
 
@@ -1032,9 +1057,14 @@ def main(argv=None):
 
     if no_send:
         print(message)
+        # в сухом прогоне книга собирается только по просьбе: это минута чтения базы, алерту она не нужна
+        if args.with_sheet and not args.skip_sheet:
+            send_month_sheet(no_send=True)
         return message
 
     send_telegram(message)
+    if not args.skip_sheet:
+        send_month_sheet(no_send=False)
     return message
 
 

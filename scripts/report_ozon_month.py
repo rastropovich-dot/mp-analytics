@@ -862,6 +862,7 @@ def main():
     ap.add_argument("--types-from", choices=("db", "files"), default="db",
                     help="откуда типы начислений: db — леджер ozon_accrual_daily_types (дня нет в леджере — файл, нет файла — API); "
                          "files — только файлы сырья, как до леджера. С --check читаются ОБА источника и обязаны совпасть")
+    ap.add_argument("--summary-json", help="положить сюда итоги книги (для подписи к файлу в Telegram)")
     ap.add_argument("--no-orders", action="store_true", help="лист «Заказы» не собирать (лог статусов и окно долей не читаются)")
     ap.add_argument("--check", action="store_true", help="сверить с ручным листом (--xlsx, --sheet); код возврата 1, если обязанные колонки не сошлись")
     ap.add_argument("--xlsx"); ap.add_argument("--sheet")
@@ -1008,6 +1009,24 @@ def main():
     elif orders_error:
         print(f"\nЛИСТ «ЗАКАЗЫ» НЕ СОБРАН: {orders_error}")
     print(f"записано: {out}")
+
+    if args.summary_json:
+        import json
+        num = lambda v: None if v is None else str(q(v))  # noqa: E731
+        no_types = [r["date"] for r in rows if not r["has_raw"]]
+        summary = {"month": args.month, "date_from": d1, "date_to": d2,
+                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result")},
+                   "warnings": ([f"нет типов начислений за {', '.join(no_types)} — реклама, эквайринг и фин. рез. за эти дни пусты, итог неполон"] if no_types else [])
+                               + ([f"лист «Заказы» не собран: {orders_error}"] if orders_error else [])}
+        if orders is not None:
+            t, nights = orders["totals"]["all"], sorted({n for c in orders["curve"].values() for n in c["nights"]})
+            summary["orders"] = {"created": num(t["created_a"]), "forecast_confirmed": num(t["fc_a"]), "fin_result": num(t["fin_result"]),
+                                 "drr_created": None if t["drr_created_pct"] is None else str(t["drr_created_pct"].quantize(Decimal("0.0001"))),
+                                 "drr_forecast": None if t["drr_fc_pct"] is None else str(t["drr_fc_pct"].quantize(Decimal("0.0001"))),
+                                 "curve_nights": f"{nights[0]} … {nights[-1]}" if nights else "нет", "mature_days": orders["mature"][0],
+                                 "forecast_days": len(days) - orders["mature"][0]}
+            summary["warnings"] += list(orders["said"])
+        json.dump(summary, open(args.summary_json, "w"), ensure_ascii=False, indent=1)
 
     code = 2 if orders_error else 0
     if args.check:

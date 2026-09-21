@@ -322,7 +322,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes):
         r = dict(r)
         drift = r.get("db_minus_raw") or {}
         r["note"] = "; ".join(x for x in ("моложе двух суток — начисления доезжают" if r.get("young") else "",
-                                           ("в базе начислений больше, чем в файле сырья: " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items())
+                                           ("база и файл сырья расходятся (база − файл): " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items())
                                             + " (с НДС) — эквайринг и реклама дня могут быть неполны") if drift else "",
                                            "" if r.get("has_raw") else ("нет сырья начислений — эквайринг внутри прочего, рекламы нет" if r["date"] != "Итого" else "есть дни без сырья — итог неполон")) if x)
         for j, (head, k, fmt) in enumerate(cols, 1):
@@ -497,7 +497,8 @@ def main():
         print("ВНИМАНИЕ: незнакомые статьи расходов, учтены в «Прочем»:", {k: f"{v:,.2f}" for k, v in unknown.items()})
     drifted = [(r["date"], r["db_minus_raw"]) for r in rows if r.get("db_minus_raw")]
     if drifted:
-        print("  база ушла вперёд от файлов сырья (начисления доехали после сбора файла; эквайринг и реклама этих дней могут быть неполны):")
+        print("  база и файлы сырья расходятся по статьям (статьи — из базы на момент ночи, типы — из файла на момент его сбора; начисления доезжают,\n"
+              "  поэтому эквайринг и реклама этих дней могут быть неполны; «+» — в базе больше, чем в файле):")
         for d, drift in drifted:
             print(f"      {d}: " + ", ".join(f"{k} {v:+,.2f}" for k, v in drift.items()))
     young = [r["date"] for r in rows if r["young"]]

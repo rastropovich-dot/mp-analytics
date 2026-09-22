@@ -95,6 +95,20 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(http_get.call_count, 1)
 
+    def test_sales_source_hits_sales_and_names_files_by_source(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(capture, "in_night_window", return_value=False), \
+             mock.patch.object(capture.requests, "get", return_value=response([row("2026-03-20")])) as http_get:
+            code = capture.main(["--out", tmp, "--source", "sales", "--dates", "2026-03-20"])
+            files = sorted(name for name in os.listdir(tmp) if name.endswith(".json"))
+            with open(os.path.join(tmp, "capture_calls.json"), encoding="utf-8") as handle:
+                ledger = json.load(handle)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(http_get.call_args.args[0].endswith("/supplier/sales"))
+        self.assertEqual(files, ["capture_calls.json", "sales_flag1_2026-03-20.json"])
+        self.assertEqual(ledger[0]["name"], "sales_flag1_2026-03-20")
+
     def test_captured_days_are_skipped_on_rerun(self):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "orders_flag1_2026-03-20.json"), "w", encoding="utf-8") as handle:

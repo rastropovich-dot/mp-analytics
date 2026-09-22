@@ -15,9 +15,14 @@
 04:04). В окне скрипт не стартует, а дойдя до него — останавливается; следующий
 запуск продолжит с места обрыва.
 
+Продажи (--source sales) снимаются так же, в файлы sales_flag1_<дата>.json того
+же каталога: горизонт у supplier/sales не доказан (03-14 пусто одним обращением
+09-21), а день в сутки уходит. В базу продажи из этих файлов не пишутся.
+
 Запуск:
     python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --dates 2026-03-16 2026-03-18
     python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --date-from 2026-03-15 --date-to 2026-04-30
+    python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --source sales --date-from 2026-03-15 --date-to 2026-03-25
 """
 
 import argparse
@@ -37,7 +42,9 @@ from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: 
 load_dotenv()
 
 WB_API_KEY = os.getenv("WB_API_KEY")
-ORDERS_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
+STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1/supplier"
+SOURCES = {"orders": "orders", "sales": "sales"}
+ORDERS_URL = f"{STATISTICS_API}/orders"  # оставлено для читателей журнала первого съёма
 
 
 def in_night_window(now_utc):
@@ -52,7 +59,11 @@ def main(argv=None):
     parser.add_argument("--date-from")
     parser.add_argument("--date-to")
     parser.add_argument("--sleep-seconds", type=int, default=65)
+    parser.add_argument("--source", choices=sorted(SOURCES), default="orders",
+                        help="orders — supplier/orders (по умолчанию), sales — supplier/sales.")
     args = parser.parse_args(argv)
+    url = f"{STATISTICS_API}/{SOURCES[args.source]}"
+    prefix = f"{args.source}_flag1_"
 
     days = list(args.dates)
     if args.date_from and args.date_to:
@@ -68,7 +79,7 @@ def main(argv=None):
     calls = 0
 
     for day in days:
-        path = os.path.join(args.out, f"orders_flag1_{day}.json")
+        path = os.path.join(args.out, f"{prefix}{day}.json")
         if os.path.exists(path):
             print(f"{day}: уже снято, пропуск", flush=True)
             continue
@@ -81,7 +92,7 @@ def main(argv=None):
             return 3
 
         started = datetime.now(timezone.utc)
-        response = requests.get(ORDERS_URL, headers={"Authorization": WB_API_KEY},
+        response = requests.get(url, headers={"Authorization": WB_API_KEY},
                                 params={"dateFrom": day, "flag": 1}, timeout=180)
         calls += 1
 
@@ -99,7 +110,7 @@ def main(argv=None):
                 print(f"{day}: ОТКАЗ — {'пустой ответ' if not rows else 'чужие даты'}, файл не записан. "
                       f"Пустой день при заказах в базе — не истина «ноль».", flush=True)
 
-        ledger.append({"name": f"orders_flag1_{day}", "at_utc": started.isoformat(), "status": response.status_code,
+        ledger.append({"name": f"{prefix}{day}", "at_utc": started.isoformat(), "status": response.status_code,
                        "bytes": len(response.content), "rows": rows, "foreign_dates": foreign})
         with open(ledger_path, "w", encoding="utf-8") as handle:
             json.dump(ledger, handle, ensure_ascii=False, indent=2)

@@ -15,7 +15,7 @@ _spec.loader.exec_module(send)
 
 import alerts_telegram as alerts  # noqa: E402
 
-SUMMARY = {"buyouts": {"turnover": "87054208.00", "revenue": "39531311.99", "fin_result": "9000000.00"},
+SUMMARY = {"buyouts": {"turnover": "87054208.00", "revenue": "39531311.99", "fin_result": "9000000.00", "fin_result_index": "5500000.00"},
            "orders": {"created": "162480180.00", "forecast_confirmed": "98467177.97", "fin_result": "10011574.23", "drr_created": "0.0554",
                       "drr_forecast": "0.0918", "curve_nights": "2026-09-17 … 2026-09-21", "mature_days": 0, "forecast_days": 20},
            "warnings": []}
@@ -44,6 +44,7 @@ class Caption(unittest.TestCase):
         text = send.build_caption("2026-09", "2026-09-20", SUMMARY, False)
         self.assertIn("Ozon — сентябрь 2026, по 20 сентября", text)
         self.assertIn("оборот 87,1 млн", text)
+        self.assertIn("фин. рез. по индексу СС 5,5 млн", text)
         self.assertIn("прогноз подтв. 98,5 млн", text)
         self.assertIn("ДРР 5,5 % от созданного / 9,2 % от прогноза", text)
         self.assertNotIn("⚠️", text)

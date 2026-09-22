@@ -68,3 +68,46 @@ class CheckOrders(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CostIndexAndUtc(unittest.TestCase):
+    def test_cost_index_has_an_effective_date_and_reference_columns(self):
+        self.assertIsNone(rep.cost_index_for("2026-08-31")); self.assertEqual(rep.cost_index_for("2026-09-01"), D("1.150"))
+        day = "2026-09-10"
+        rows, _ = rep.build_daily([day], [{"buyout_date": day, "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
+                                  {day: {41: D("61"), 32: D("122")}}, lambda sku: D(300), "2026-09-25")
+        r = rows[0]
+        self.assertEqual(r["cogs_index"], D(300) * D("1.150"))
+        self.assertEqual(r["fin_result_index"], r["fin_result"] - D(300) * D("0.150"))          # разница только в СС
+        self.assertEqual(r["ebitda_index"], r["fin_result_index"] - D("311527.00"))
+        old = rep.build_daily(["2026-08-31"], [{"buyout_date": "2026-08-31", "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
+                              {"2026-08-31": {32: D("122")}}, lambda sku: D(300), "2026-09-25")[0][0]
+        self.assertIsNone(old["cogs_index"]); self.assertIsNone(old["fin_result_index"])
+
+    def test_check_reports_the_cost_index_by_day_and_flags_a_stale_parameter(self):
+        rows = [dict(date="2026-09-10", cogs=D(1000), turnover=D(0), commission=D(0), revenue=D(0), acquiring=D(0), ads_like_manual=D(0), compensations=D(0),
+                     log_other_like_manual=None, fin_result_with_comp=None, ebitda_with_comp=None, logistics=None, other=None, ads=None),
+                dict(date="2026-09-11", cogs=D(1000), turnover=D(0), commission=D(0), revenue=D(0), acquiring=D(0), ads_like_manual=D(0), compensations=D(0),
+                     log_other_like_manual=None, fin_result_with_comp=None, ebitda_with_comp=None, logistics=None, other=None, ads=None)]
+        manual = {d: {"turnover": D(0), "commission": D(0), "revenue": D(0), "acquiring": D(0), "ads": D(0), "cogs": c, "logistics": None, "other": None, "fin_result": None, "ebitda": None}
+                  for d, c in (("2026-09-10", D(1175)), ("2026-09-11", D(1125)))}
+        table, _f = rep.check(rows, manual)
+        cogs = next(t for t in table if t["title"].startswith("Себестоимость"))
+        self.assertEqual(cogs["index_days"], [("2026-09-10", D("1.175")), ("2026-09-11", D("1.125"))])
+        self.assertEqual((cogs["index_total"], cogs["index_param"], cogs["index_stale"]), (D("1.150"), D("1.150"), False))
+        manual["2026-09-11"]["cogs"] = D(1300)                                                         # итог 1,2375 — дальше 3 % от 1,150
+        cogs = next(t for t in rep.check(rows, manual)[0] if t["title"].startswith("Себестоимость"))
+        self.assertTrue(cogs["index_stale"])
+
+    def test_utc_day_table_uses_raw_postings_and_the_owner_multiplier(self):
+        postings = {"fbo": [{"created_at": "2026-09-10T22:30:00Z", "products": [{"offer_id": "F1", "price": "1220", "quantity": 1}]},      # 22:30 UTC = 11-е по МСК, 10-е по UTC
+                            {"created_at": "2026-09-10T10:00:00Z", "products": [{"offer_id": "T2", "price": "1000", "quantity": 2}]}],
+                    "fbs": [{"in_process_at": "2026-09-10T12:00:00Z", "products": [{"offer_id": "S3", "price": "500", "quantity": 1}]}]}
+        created = rep.created_by_utc_day(postings)
+        self.assertEqual(created, {("2026-09-10", "Основная"): D(1220), ("2026-09-10", "Дискаунтер"): D(2000), ("2026-09-10", "Селект"): D(500)})
+        manual = {"Основная": {"2026-09-10": {"revenue": D(1220) * D("0.53") / D("1.22")}}, "Селект": {"2026-09-10": {"revenue": D(500) * D("0.90") / D("1.22")}},
+                  "Дискаунтер": {"2026-09-10": {"revenue": D(2000) * D("0.60") / D("1.22")}}}
+        rows = rep.check_orders_utc(manual, created, ["2026-09-10"])
+        by = {name: (r, exp) for name, _d, _b, _c, r, exp in rows}
+        self.assertEqual(by["Основная"], (D("0.530"), D("0.53"))); self.assertEqual(by["Селект"], (D("0.900"), D("0.90")))
+        self.assertEqual(by["Дискаунтер"], (D("0.600"), D("0.53")))                                       # отклонение — печатается как отклонение

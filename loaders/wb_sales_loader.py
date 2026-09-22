@@ -11,6 +11,23 @@ from supabase import create_client
 
 load_dotenv()
 
+# Тот же заряженный дефект, что и в wb_orders_loader: flag=0 отбирает по дате
+# последнего изменения, а upsert замещает агрегат дня. Разница — в частоте
+# выстрела: продажа терминальна и меняется редко.
+#
+# Замер 2026-09-03 (flag=1 по трём датам разного возраста, 331 строка):
+#   2026-08-01 (33 дн): API 159 / 1 887 755 ₽ = база, расхождение 0;
+#   2026-06-20 (75 дн): API  75 /   812 733 ₽ = база, расхождение 0;
+#   2026-05-10 (116 дн): API 95 / 1 198 360 ₽, в базе 91 / 1 169 859 ₽.
+#
+# На 2026-05-10 дефект ВЫСТРЕЛИЛ: у sku 17641480 продажа S23234165356 от 10 мая
+# изменилась 22 мая, всплыла в flag=0 одна, и агрегат (дата, sku) переписался
+# с 5 продаж на 1. Записей с lastChangeDate позже даты продажи — 4 из 331 (1,2 %),
+# ущерб наносит та, у которой в этот день у sku была не одна продажа.
+#
+# Поэтому окно записи ставится и здесь: цена нулевая, а выстрел редкий, но реальный.
+DEFAULT_DAYS_BACK = 30
+
 WB_API_KEY = os.getenv("WB_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -18,7 +35,12 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
-def get_wb_sales(days_back=30):
+def write_window_start(days_back=DEFAULT_DAYS_BACK, today=None):
+    """Первая дата, которую ответ flag=0 отдаёт целиком, а значит можно писать."""
+    return (today or date.today()) - timedelta(days=days_back)
+
+
+def get_wb_sales(days_back=DEFAULT_DAYS_BACK, today=None):
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
 
     headers = {
@@ -26,7 +48,7 @@ def get_wb_sales(days_back=30):
     }
 
     params = {
-        "dateFrom": (date.today() - timedelta(days=days_back)).isoformat(),
+        "dateFrom": write_window_start(days_back, today).isoformat(),
         "flag": 0
     }
 
@@ -43,7 +65,9 @@ def get_wb_sales(days_back=30):
     return response.json()
 
 
-def save_wb_sales(items):
+def aggregate_sales(items):
+    """Агрегат по (buyout_date, sku). Логика не менялась — вынесена, чтобы её
+    могли переиспользовать ремонт и восстановление истории."""
     grouped = {}
 
     for item in items:
@@ -95,11 +119,42 @@ def save_wb_sales(items):
         grouped[key]["buyouts_amount_buyer"] += buyer_amount
         grouped[key]["buyouts_amount_seller"] += seller_amount
 
-    rows = list(grouped.values())
+    return grouped
+
+
+def split_by_write_window(rows, window_start):
+    """(что пишем, что придержали) по дате выкупа."""
+    boundary = window_start.isoformat()
+    writable = [r for r in rows if str(r["buyout_date"]) >= boundary]
+    held = [r for r in rows if str(r["buyout_date"]) < boundary]
+    return writable, held
+
+
+def describe_held(held):
+    if not held:
+        return "Старше окна записи ничего не пришло."
+
+    dates = sorted({str(r["buyout_date"]) for r in held})
+    qty = sum(float(r["buyouts_qty"] or 0) for r in held)
+    return (
+        f"Не записано (старше окна записи, ответ по ним неполон): "
+        f"{len(dates)} дат, {len(held)} строк агрегата, {qty:.0f} выкупов. "
+        f"Даты: {dates[0]}…{dates[-1]}. "
+        f"Их чинит scripts/wb_orders_repair.py --source sales (flag=1)."
+    )
+
+
+def save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=None):
+    grouped = aggregate_sales(items)
+    window_start = write_window_start(days_back, today)
+    rows, held = split_by_write_window(list(grouped.values()), window_start)
+
+    print(f"Окно записи: с {window_start.isoformat()} (последние {days_back} дней)")
+    print(describe_held(held))
 
     if not rows:
         print("Нет WB продаж/выкупов для записи")
-        return
+        return {"rows_written": 0, "held_rows": len(held), "window_start": window_start.isoformat()}
 
     for i in range(0, len(rows), 500):
         batch = rows[i:i + 500]
@@ -110,8 +165,11 @@ def save_wb_sales(items):
 
     print(f"✅ WB выкупы/продажи записаны в marketplace_buyouts: {len(rows)} строк")
 
+    return {"rows_written": len(rows), "held_rows": len(held), "window_start": window_start.isoformat()}
+
 
 if __name__ == "__main__":
-    items = get_wb_sales(days_back=30)
+    run_date = date.today()
+    items = get_wb_sales(days_back=DEFAULT_DAYS_BACK, today=run_date)
     print(f"Получено строк WB sales: {len(items)}")
-    save_wb_sales(items)
+    save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=run_date)

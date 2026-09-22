@@ -57,6 +57,18 @@ class Caption(unittest.TestCase):
         self.assertLessEqual(len(text), 1024)
 
 
+class GeneratorCall(unittest.TestCase):
+    def test_book_is_built_into_data_reports_with_live_young_days(self):
+        with mock.patch.object(send.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")) as run, \
+                mock.patch.object(send.os.path, "exists", return_value=False), mock.patch("builtins.print"):
+            path, summary, code, _tail = send.generate("2026-09", "2026-09-21", send.REPORTS_DIR)
+        cmd = run.call_args[0][0]
+        self.assertIn("--fetch", cmd); self.assertEqual(cmd[cmd.index("--fetch") + 1], "young")
+        self.assertNotIn("--no-fetch", cmd)
+        self.assertTrue(cmd[cmd.index("--out") + 1].endswith(os.path.join("data", "reports", "ozon_2026-09_to_2026-09-21.xlsx")))
+        self.assertTrue(send.REPORTS_DIR.endswith(os.path.join("data", "reports")))
+
+
 class Delivery(unittest.TestCase):
     def run_main(self, argv, generated, sent=(True, "HTTP 200, ok=True")):
         with mock.patch.dict(os.environ, ENV), mock.patch.object(send, "generate", return_value=generated) as gen, \

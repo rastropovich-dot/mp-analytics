@@ -66,7 +66,7 @@ class DailyFormulaTests(unittest.TestCase):
 
     def test_reference_columns_reproduce_the_manual_grouping(self):
         r, _ = one_day()
-        self.assertEqual(r["ads_like_manual"], D("130"))           # (41 + 54 + 51 + 96) / НДС
+        self.assertEqual(r["ads_like_manual"], D("130"))           # (41 + 54 + 96 + вся подписка) / НДС
         self.assertEqual(r["log_other_like_manual"], D("110"))     # (logistics + other − тип 1 − тип 96) / НДС
         # у владельца компенсация сидит внутри «Прочего» расходом с обратным знаком: их Л + П = наше − компенсации
         self.assertEqual(r["log_other_like_manual"] - r["compensations"], D("60"))
@@ -240,3 +240,46 @@ class WorkbookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualSheetSeptember22(unittest.TestCase):
+    """Свежий ручной лист 1–21 сентября (2026-09-22): в «Рекламе» вся статья подписки, Ebitda = Фин. рез. − накладные."""
+
+    def build(self, types, day="2026-09-10"):
+        rows, _ = rep.build_daily([day], [buyout(day=day)], [], {day: types}, lambda sku: None, "2026-09-25")
+        return rep.add_ratios(rows[0])
+
+    def test_reference_ads_include_every_subscription_type_not_only_premium(self):
+        # 09-20: их «Реклама» − наша справочная = 24 990,00 / 1,22 — тип 52 (PremiumSubscription) сверх типа 51
+        r = self.build({41: D("61"), 54: D("61"), 51: D("24.4"), 52: D("24990"), 74: D("12.2"), 96: D("12.2")})
+        self.assertEqual(r["ads_like_manual"], (D("61") + D("61") + D("24.4") + D("24990") + D("12.2") + D("12.2")) / D("1.22"))
+        self.assertEqual(r["subscription"], (D("24.4") + D("24990") + D("12.2")) / D("1.22"))
+        self.assertEqual(r["ads"], D("100"))                       # основная реклама — только 41 + 54
+
+    def test_ebitda_is_fin_result_minus_daily_overhead_with_an_effective_date(self):
+        r = self.build({41: D("61")}, day="2026-09-01")
+        self.assertEqual(r["overhead"], D("311527.00"))
+        self.assertEqual(r["ebitda"], r["fin_result"] - D("311527.00"))
+        self.assertEqual(r["ebitda_with_comp"], r["fin_result_with_comp"] - D("311527.00"))
+        self.assertEqual(r["ebitda_pct"], r["ebitda"] / r["revenue"])
+        before = self.build({41: D("61")}, day="2026-08-31")
+        self.assertIsNone(before["overhead"]); self.assertIsNone(before["ebitda"])     # до даты действия — пусто, не ноль
+        self.assertIsNone(rep.overhead_for("2026-08-31")); self.assertEqual(rep.overhead_for("2026-10-05"), D("311527.00"))
+
+    def test_total_ebitda_sums_days_and_is_empty_if_any_day_has_no_rate(self):
+        rows = [self.build({41: D("61")}, day="2026-09-01"), self.build({41: D("61")}, day="2026-09-02")]
+        t = rep.total_row(rows)
+        self.assertEqual(t["overhead"], D("623054.00"))
+        self.assertEqual(t["ebitda"], t["fin_result"] - D("623054.00"))
+        mixed = rep.total_row([self.build({41: D("61")}, day="2026-08-31"), rows[0]])
+        self.assertIsNone(mixed["ebitda"])
+
+    def test_check_has_an_ebitda_line_that_does_not_fail_the_acceptance(self):
+        r = self.build({41: D("61")}, day="2026-09-01")
+        manual = {"2026-09-01": {"turnover": r["turnover"], "commission": r["commission"], "revenue": r["revenue"], "acquiring": D(0),
+                                 "ads": r["ads_like_manual"], "ebitda": r["ebitda_with_comp"] - D("100"), "fin_result": r["fin_result_with_comp"] - D("100"),
+                                 "logistics": None, "other": None, "cogs": None}}
+        table, failures = rep.check([r], manual)
+        self.assertEqual(failures, 0)
+        line = next(t for t in table if t["title"].startswith("Ebitda"))
+        self.assertEqual((line["must"], line["diff"]), (False, D("100")))

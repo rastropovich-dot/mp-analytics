@@ -20,7 +20,10 @@
     ДРР %             Реклама / (Оборот / НДС) — формула ручного листа, «от ТО»
     Прочее            (статьи other + external_promo − тип 1) / НДС; незнакомая статья — сюда же И называется вслух
     Фин. рез.         Маржа − Логистика − Эквайринг − Подписка − Реклама − Прочее
-    справочно         «Реклама по образцу» = (41 + 54 + 51 + 96) / НДС — так считает ручной лист;
+    Ebitda            Фин. рез. − накладные в день (OVERHEAD_PER_DAY: параметр с датой действия, как НДС; Ozon с 2026-09-01 —
+                      311 527,00, ячейка T83 ручного листа от 22.09); «Ebitda с компенсациями» сопоставима с «Ebitda» владельца
+    справочно         «Реклама по образцу» = (41 + 54 + 96 + вся статья subscription) / НДС — так считает ручной лист
+                      (проверено 2026-09-22: 09-20 их «Реклама» − наша = 24 990,00 / 1,22 — подписка сверх Premium);
                       «Логистика + Прочее по образцу» = (logistics + other − тип 1 − тип 96) / НДС —
                       у них это две строки одной группы, граница между ними проведена не по type_id
 
@@ -37,7 +40,8 @@
 Типы начислений — из базы: леджер ozon_accrual_daily_types (ночной шаг расходов пишет его из того же
 ответа by-day). Дня в леджере нет — запасной путь: файл data/accrual_history/<день>.json, нет файла —
 один сбор дня из API (1–3 обращения), для дат моложе двух суток файл НЕ сохраняется. --types-from files
-возвращает прежний путь целиком; --check читает ОБА источника и требует совпадения по каждому типу и дате.
+возвращает прежний путь целиком; --check читает ОБА источника и требует совпадения по каждому типу и дате — кроме дат моложе
+двух суток: их лист берёт живым ответом (начисления рекламы за D−1 доезжают после ночного сбора), файл не сохраняется.
 marketplace_expenses в лист не идёт — только в сверку по статьям: расхождение называется по дням.
 
 НДС — параметр с датой действия (VAT_RATES), не константа в формуле. Даты моложе двух суток
@@ -74,6 +78,10 @@ KNOWN_ARTICLES = {"logistics", "other", "subscription", "external_promo", "commi
 
 # НДС с датой действия: (с какой даты, коэффициент). Лист декабря 2025 считался с 1,2.
 VAT_RATES = (("2026-01-01", Decimal("1.22")), ("0001-01-01", Decimal("1.20")))
+# Накладные в день по площадке, с датой действия. Источник — ручной лист владельца от 2026-09-22: на листе
+# «Ozon - сентябрь» R = P − $T$83, T83 = 311 527,00 (у WB своя константа 74 002,00 — здесь не используется).
+# Откуда число и как оно меняется — владелец скажет; до даты действия Ebitda пуста, не ноль.
+OVERHEAD_PER_DAY = {"ozon": (("2026-09-01", Decimal("311527.00")),)}
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
@@ -91,6 +99,14 @@ def vat_for(day):
         if day >= valid_from:
             return rate
     raise ValueError(f"нет ставки НДС для {day}")
+
+
+def overhead_for(day, platform="ozon"):
+    """Накладные в день на дату или None, если ставка на эту дату не задана."""
+    for valid_from, value in OVERHEAD_PER_DAY.get(platform, ()):
+        if day >= valid_from:
+            return value
+    return None
 
 
 def month_days(month, date_to=None):
@@ -166,8 +182,10 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             row["logistics"] = a["exp_logistics"] / vat
             row["subscription"] = a["exp_subscription"] / vat
             row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
-            for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp"):
+            for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
+                      "ebitda", "ebitda_with_comp"):
                 row[k] = None
+            row["overhead"] = overhead_for(d)
             rows.append(row)
             continue
         # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
@@ -190,10 +208,14 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         row["ads"] = ads / vat
         row["other"] = (articles["other"] + articles["external_promo"] - acq) / vat
         row["compensations"] = comp / vat
-        row["ads_like_manual"] = (ads + ts.get(PREMIUM_TYPE, Z) + ts.get(REVIEWS_TYPE, Z)) / vat
+        # у владельца в «Рекламе» — вся статья подписки (51, 52, 74), не только Premium: 2026-09-20 разница ровно 24 990,00 / 1,22
+        row["ads_like_manual"] = (ads + articles["subscription"] + ts.get(REVIEWS_TYPE, Z)) / vat
         row["log_other_like_manual"] = (articles["logistics"] + articles["other"] - acq - ts.get(REVIEWS_TYPE, Z)) / vat
         row["fin_result"] = row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["other"]
         row["fin_result_with_comp"] = row["fin_result"] + row["compensations"]
+        row["overhead"] = overhead_for(d)
+        row["ebitda"] = None if row["overhead"] is None else row["fin_result"] - row["overhead"]
+        row["ebitda_with_comp"] = None if row["overhead"] is None else row["fin_result_with_comp"] - row["overhead"]
         # Сверка двух таблиц одной базы: статья из типов против той же статьи в marketplace_expenses. Расходятся —
         # называем: upsert расходов строк не удаляет, и начисление, которое Ozon убрал, застревает в базе
         # (найдено 2026-09-21: 09-11, 09-12, 09-15, 09-19 — по одной строке). Лист считает по типам.
@@ -204,7 +226,8 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
 
 
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
-         "fin_result", "compensations", "fin_result_with_comp", "ads_like_manual", "log_other_like_manual", "positions", "units"]
+         "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
+         "ads_like_manual", "log_other_like_manual", "positions", "units"]
 
 
 def add_ratios(row):
@@ -216,6 +239,8 @@ def add_ratios(row):
     row["drr_pct"] = None if row.get("ads") is None else ratio(row["ads"], row["turnover"] / row["vat"]) if row["turnover"] else None
     row["fin_result_pct"] = None if row.get("fin_result") is None else ratio(row["fin_result"], rev)
     row["fin_result_with_comp_pct"] = None if row.get("fin_result_with_comp") is None else ratio(row["fin_result_with_comp"], rev)
+    row["ebitda_pct"] = None if row.get("ebitda") is None else ratio(row["ebitda"], rev)
+    row["ebitda_with_comp_pct"] = None if row.get("ebitda_with_comp") is None else ratio(row["ebitda_with_comp"], rev)
     return row
 
 
@@ -442,6 +467,15 @@ def load_costs(sb, snapshot):
     return sku2art, unit_cost, len(cost), len(norms), orders
 
 
+def overhead_note(days):
+    rates = sorted({(overhead_for(d) or Z) for d in days})
+    if rates == [Z]:
+        return "Накладные в день на эти даты не заданы — Ebitda пуста, не ноль (OVERHEAD_PER_DAY)."
+    return ("Ebitda = Фин. рез. − накладные в день; накладные " + ", ".join(f"{v:,.2f}" for v in rates if v)
+            + "/день — из ручного листа за сентябрь (22.09, ячейка T83); откуда число и как оно меняется — владелец скажет. "
+              "«Ebitda с компенсациями» сопоставима с «Ebitda» ручного листа, у которого компенсации внутри «Прочего».")
+
+
 def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None, orders=None, orders_error=None):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -457,9 +491,11 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
             ("Выручка, руб.", "revenue", money), ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
             ("Логистика, руб.", "logistics", money), ("% Логистики", "logistics_pct", pct), ("Эквайринг, руб.", "acquiring", money), ("% Эквайринга", "acquiring_pct", pct),
             ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от ТО)", "drr_pct", pct), ("Прочее, руб.", "other", money),
-            ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), (None, None, None),
+            ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct),
+            ("Накладные в день, руб.", "overhead", money), ("Ebitda, руб.", "ebitda", money), ("% Ebitda", "ebitda_pct", pct), (None, None, None),
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
             ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
+            ("справочно: Ebitda с компенсациями", "ebitda_with_comp", money), ("% Ebitda с компенсациями", "ebitda_with_comp_pct", pct),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
             ("Позиций выкупов", "positions", "#,##0"), ("Штук (где не измерены — позиции)", "units", "#,##0"),
             ("строк СС по штукам", "rows_by_units", "#,##0"), ("строк СС по позициям", "rows_by_positions", "#,##0"),
@@ -854,9 +890,11 @@ def check(rows, manual):
          "решение 4 от 2026-09-19: остаёмся на снимке 05-20, расхождение принимается как известное")
     line("Фин. рез. с компенсациями против их «Фин. рез.»", lambda r: r.get("fin_result_with_comp"), g("fin_result"), False,
          "остаток = разница себестоимости (решение 4) и 09-01; подписка у них внутри рекламы — на итог не влияет")
+    line("Ebitda с компенсациями против их «Ebitda»", lambda r: r.get("ebitda_with_comp"), g("ebitda"), False,
+         "их − наша = разница себестоимости (решение 4) + 209,02 на 09-01, как у фин. реза: накладные в день одни и те же")
     line("Логистика (наша статья против их строки)", lambda r: r.get("logistics"), g("logistics"), False, "границу не повторяем — решение 7")
     line("Прочее (наше без эквайринга против их строки)", lambda r: r.get("other"), g("other"), False, "границу не повторяем — решение 7")
-    line("Реклама (41 + 54) против их «Рекламы»", lambda r: r.get("ads"), g("ads"), False, "у них в рекламе ещё подписка Premium (51) и сбор отзывов (96)")
+    line("Реклама (41 + 54) против их «Рекламы»", lambda r: r.get("ads"), g("ads"), False, "у них в рекламе ещё вся подписка (51, 52, 74) и сбор отзывов (96)")
     return out, failures
 
 
@@ -917,6 +955,7 @@ def main():
     sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot)
 
     counters, sources, types_by_day = {"requests": 0, "429": 0}, defaultdict(list), {}
+    young_days = {d for d in days if (date.fromisoformat(today) - date.fromisoformat(d)).days < YOUNG_DAYS}
     ledger = load_types_from_ledger(sb, d1, d2) if (args.types_from == "db" or args.check) else {}
     file_types = {}
     for d in days:
@@ -924,20 +963,24 @@ def main():
             types_by_day[d] = ledger[d]
             sources["леджер"].append(d)
             continue
-        # дня нет в леджере (моложе посева и ещё не записан ночью), либо источник — файлы, либо --check сверяет оба
-        in_file = os.path.exists(os.path.join(RAW_DIR, f"{d}.json"))
-        accruals, where = load_day_raw(d, today, not args.no_fetch and not (args.check and d in ledger and not in_file), counters)
+        # дня нет в леджере (моложе посева и ещё не записан ночью), либо источник — файлы, либо --check сверяет оба.
+        # Молодой день (моложе двух суток) в леджере лежит ночным снимком, а начисления рекламы за него доезжают к утру
+        # (2026-09-22: 41/54 за 09-21 в 00:27 нет, в 07:07 есть) — в --check его берём живым ответом и не требуем равенства.
+        young = d in young_days
+        accruals, where = load_day_raw(d, today, not args.no_fetch, counters)
         if accruals is not None:
             file_types[d] = type_sums(accruals)
-        if args.types_from == "db" and d in ledger:
+        if args.types_from == "db" and d in ledger and not (young and accruals is not None):
             types_by_day[d] = ledger[d]
             sources["леджер"].append(d)
         else:
-            sources[where].append(d)
+            sources[where + (" — моложе двух суток, живой ответ свежее леджера" if young and d in ledger else "")].append(d)
             if accruals is not None:
                 types_by_day[d] = file_types[d]
-    source_mismatch = {d: types_differ(ledger[d], file_types[d]) for d in days if d in ledger and d in file_types and types_differ(ledger[d], file_types[d])}
-    both = [d for d in days if d in ledger and d in file_types]
+    source_mismatch = {d: types_differ(ledger[d], file_types[d]) for d in days
+                       if d in ledger and d in file_types and d not in young_days and types_differ(ledger[d], file_types[d])}
+    young_drift = {d: types_differ(ledger[d], file_types[d]) for d in days if d in young_days and d in ledger and d in file_types and types_differ(ledger[d], file_types[d])}
+    both = [d for d in days if d in ledger and d in file_types and d not in young_days]
 
     rows, unknown = build_daily(days, buyouts, expenses, types_by_day, unit_cost, today)
     for r in rows:
@@ -968,6 +1011,9 @@ def main():
               + (f", в леджере нет {len([d for d in days if d not in ledger])} дн." if any(d not in ledger for d in days) else ""))
         for d, diff in source_mismatch.items():
             print(f"      {d}: " + ", ".join(f"тип {t}: леджер {a:,.2f} / файл {b:,.2f}" for t, (a, b) in diff.items()))
+        for d, diff in young_drift.items():
+            print(f"      {d} (моложе двух суток, начисления доезжают — не расхождение): "
+                  + ", ".join(f"тип {t}: леджер {a:,.2f} / живой {b:,.2f}" for t, (a, b) in diff.items()))
     drifted = [(r["date"], r["db_minus_raw"]) for r in rows if r.get("db_minus_raw")]
     if drifted:
         print("  marketplace_expenses расходится с типами начислений по статьям («+» — в расходах больше). Лист считает по типам; в расходах\n"
@@ -1001,7 +1047,9 @@ def main():
                  "Прочее здесь — other_expenses_amount витрины: эквайринг, подписка и внешнее продвижение внутри; строка «(без SKU)» — расходы без товара."]
     notes = [f"Источники: marketplace_buyouts, ozon_accrual_daily_types (типы начислений; статьи — свёрткой типов), article_unit_costs (снимок {args.snapshot}, позиции выкупов). НДС {vat}.",
              "Компенсации Ozon (типы 25 и 10) — отдельной строкой дохода, в расходы не входят; «Фин. рез. с компенсациями» сопоставим с «Фин. рез.» ручного листа.",
-             "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 51 + 96) / НДС — так считал ручной лист. «Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
+             "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 96 + вся статья подписки: 51, 52, 74) / НДС — так считает ручной лист. "
+             "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
+             overhead_note(days),
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
     out = args.out or os.path.join(OUT_DIR, f"ozon_{args.month}.xlsx")
@@ -1020,7 +1068,8 @@ def main():
     print(f"\nитого: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f}, выручка {total['revenue']:,.2f}, СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}")
     if total["fin_result"] is not None:
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "
-              f"прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}")
+              f"прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
+              + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total.get("ebitda") is not None else ", Ebitda — (накладные не заданы)"))
     print(f"лист «По SKU»: строк {len(sku_rows)}, реклама Performance {ads_sku:,.2f}" + (f" против начислений {ads_sheet1:,.2f}, разница {ads_sku - ads_sheet1:+,.2f}" if ads_sheet1 is not None else ""))
     if ad_gaps:
         print("       по дням (Performance − начисления, без НДС): " + "; ".join(f"{d} {v:+,.2f}" for d, v in ad_gaps[:8])
@@ -1036,7 +1085,7 @@ def main():
         num = lambda v: None if v is None else str(q(v))  # noqa: E731
         no_types = [r["date"] for r in rows if not r["has_raw"]]
         summary = {"month": args.month, "date_from": d1, "date_to": d2,
-                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result")},
+                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result", "ebitda")},
                    "warnings": ([f"нет типов начислений за {', '.join(no_types)} — реклама, эквайринг и фин. рез. за эти дни пусты, итог неполон"] if no_types else [])
                                + ([f"лист «Заказы» не собран: {orders_error}"] if orders_error else [])}
         if orders is not None:
@@ -1067,7 +1116,9 @@ def main():
         missing_in_ledger = [d for d in days if d not in ledger]
         no_file = [d for d in days if d not in file_types]
         sources_ok = not source_mismatch and not missing_in_ledger and not no_file
-        print(f"\nисточники типов: леджер против файлов сырья — дат {len(days)}, с обоими источниками {len(both)}, совпали по каждому типу {len(both) - len(source_mismatch)}"
+        print(f"\nисточники типов: леджер против файлов сырья — дат {len(days)}, из них моложе двух суток {len(young_days)} (живой ответ, равенства не требую"
+              + (f"; доехало на {sorted(young_drift)}" if young_drift else "; доехавших типов нет") + f"); с обоими источниками {len(both)}, "
+              f"совпали по каждому типу {len(both) - len(source_mismatch)}"
               + (f"; нет в леджере: {missing_in_ledger}" if missing_in_ledger else "") + (f"; нет файла: {no_file}" if no_file else "")
               + ("" if sources_ok else "   ОБЯЗАНЫ СОВПАСТЬ"))
         failures += 0 if sources_ok else 1

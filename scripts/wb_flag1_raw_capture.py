@@ -9,9 +9,11 @@
 
 Повторов нет, на первом не-200 — стоп. Уже снятые даты пропускаются.
 
-Ночное окно 00:15–03:15 UTC занято пайплайном: он ходит в тот же statistics-api
-с тем же лимитом ~1 запрос в минуту. В окне скрипт не стартует, а дойдя до него —
-останавливается; следующий запуск продолжит с места обрыва.
+Ночное окно занято пайплайном: он ходит в тот же statistics-api с тем же лимитом
+~1 запрос в минуту. Границы — общие для всех скриптов, loaders/pipeline_window.py
+(00:15…04:30 UTC с 2026-09-22; прежние свои 00:15…03:15 сняты — ночь 09-21 шла до
+04:04). В окне скрипт не стартует, а дойдя до него — останавливается; следующий
+запуск продолжит с места обрыва.
 
 Запуск:
     python3 scripts/wb_flag1_raw_capture.py --out logs/wb_flag1_raw --dates 2026-03-16 2026-03-18
@@ -28,18 +30,19 @@ from datetime import date, datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
 
+sys.path.insert(0, ".")
+
+from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
+
 load_dotenv()
 
 WB_API_KEY = os.getenv("WB_API_KEY")
 ORDERS_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
 
-NIGHT_WINDOW_START = (0, 15)
-NIGHT_WINDOW_END = (3, 15)
-
 
 def in_night_window(now_utc):
-    """Идёт ли ночной прогон: 00:15 <= время UTC < 03:15."""
-    return NIGHT_WINDOW_START <= (now_utc.hour, now_utc.minute) < NIGHT_WINDOW_END
+    """Идёт ли ночной прогон — по общему окну loaders/pipeline_window.py."""
+    return in_nightly_run_window(now_utc)
 
 
 def main(argv=None):
@@ -73,7 +76,7 @@ def main(argv=None):
             time.sleep(args.sleep_seconds)
 
         if in_night_window(datetime.now(timezone.utc)):
-            print(f"{day}: ночное окно 00:15–03:15 UTC — остановка, обращений в этом запуске {calls}. "
+            print(f"{day}: ночное окно {window_text()} — остановка, обращений в этом запуске {calls}. "
                   f"Повторный запуск продолжит с этой даты.", flush=True)
             return 3
 

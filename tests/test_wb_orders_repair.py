@@ -82,6 +82,39 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(diff["amount_delta"], 3000.0)
         self.assertEqual(diff["stale_skus"], ["9"])
 
+    def test_orders_diff_shows_both_pairs_of_columns(self):
+        """Поздняя отмена под правилом Ozon — это −1 подтверждённый и +1 отменённый,
+        а не −1 заказ; строка пишется целиком, значит и показывать надо обе пары."""
+        rows = [{"marketplace_sku": "1", "orders_qty": 4, "orders_amount_seller": 4000.0,
+                 "cancelled_orders_qty": 1, "cancelled_orders_amount_seller": 1000.0}]
+        stored = {"1": (5.0, 5000.0, 0.0, 0.0)}
+
+        diff = repair.compare("2026-07-21", rows, stored, repair.SOURCES["orders"])
+
+        self.assertEqual((diff["qty_delta"], diff["amount_delta"]), (-1, -1000.0))
+        self.assertEqual((diff["cancelled_qty_delta"], diff["cancelled_amount_delta"]), (1, 1000.0))
+        self.assertEqual(diff["cancelled_qty_truth"], 1)
+
+    def test_sales_diff_has_no_cancelled_pair(self):
+        rows = [{"marketplace_sku": "1", "buyouts_qty": 2, "buyouts_amount_seller": 2000.0}]
+        diff = repair.compare("2026-07-21", rows, {"1": (1.0, 1000.0)}, repair.SOURCES["sales"])
+        self.assertNotIn("cancelled_qty_truth", diff)
+        self.assertEqual(diff["qty_delta"], 1)
+
+    def test_stored_day_reads_both_pairs_for_orders(self):
+        query = mock.MagicMock()
+        query.execute.return_value = mock.Mock(data=[
+            {"marketplace_sku": "1", "orders_qty": 3, "orders_amount_seller": 3000.0,
+             "cancelled_orders_qty": 2, "cancelled_orders_amount_seller": 2000.0}])
+        for name in ("select", "eq", "order"):
+            getattr(query, name).return_value = query
+        with mock.patch.object(repair, "supabase") as supabase:
+            supabase.table.return_value = query
+            stored = repair.stored_day("2026-07-21", repair.SOURCES["orders"])
+
+        self.assertEqual(stored, {"1": (3.0, 3000.0, 2.0, 2000.0)})
+        self.assertIn("cancelled_orders_qty", query.select.call_args.args[0])
+
 
 class DryRunTests(unittest.TestCase):
     def test_dry_run_makes_no_writes(self):

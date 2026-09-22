@@ -1,7 +1,8 @@
 """Съём сырья flag=1: ночное окно, пустые и чужие ответы, продолжение с места.
 
-Ночной прогон ходит в тот же statistics-api с тем же лимитом, поэтому в
-00:15–03:15 UTC скрипт не стартует и останавливается. Пустой или чужой ответ в
+Ночной прогон ходит в тот же statistics-api с тем же лимитом, поэтому в общем
+ночном окне (loaders/pipeline_window.py, 00:15…04:30 UTC) скрипт не стартует и
+останавливается. Пустой или чужой ответ в
 сырьё не кладётся: файл с таким именем потом читался бы как «день снят».
 """
 
@@ -31,11 +32,13 @@ def row(day):
 
 
 class NightWindowTests(unittest.TestCase):
-    def test_window_edges(self):
+    def test_window_is_the_shared_nightly_window(self):
+        """Не своё 00:15…03:15, а общее: ночь 09-21 шла до 04:04 UTC."""
         self.assertFalse(capture.in_night_window(at(0, 14)))
         self.assertTrue(capture.in_night_window(at(0, 15)))
-        self.assertTrue(capture.in_night_window(at(3, 14)))
-        self.assertFalse(capture.in_night_window(at(3, 15)))
+        self.assertTrue(capture.in_night_window(at(3, 15)))
+        self.assertTrue(capture.in_night_window(at(4, 30)))
+        self.assertFalse(capture.in_night_window(at(4, 31)))
         self.assertFalse(capture.in_night_window(at(17, 30)))
 
     def test_no_request_is_made_inside_the_window(self):

@@ -72,6 +72,11 @@ SOURCES = {
         "date_field": "order_date",
         "qty_field": "orders_qty",
         "amount_field": "orders_amount_seller",
+        # Правило Ozon (2026-09-21): строка пишется целиком, обе пары колонок.
+        # Поздняя отмена под ним — не «−1 заказ», а «−1 подтверждённый, +1 отменённый»;
+        # без второй пары диагностика показывала бы только половину.
+        "cancelled_qty_field": "cancelled_orders_qty",
+        "cancelled_amount_field": "cancelled_orders_amount_seller",
         "conflict": "order_date,marketplace_code,marketplace_sku,order_schema",
         "aggregate": aggregate_orders,
         "label": "WB orders",
@@ -127,26 +132,34 @@ def detect_touched_dates(items, window_start, source):
     return dict(sorted(touched.items()))
 
 
+def _measure_fields(source):
+    """Колонки, по которым сравниваем: (qty, amount) и, если у источника есть
+    отмены, ещё (cancelled_qty, cancelled_amount)."""
+    fields = [source["qty_field"], source["amount_field"]]
+    if source.get("cancelled_qty_field"):
+        fields += [source["cancelled_qty_field"], source["cancelled_amount_field"]]
+    return fields
+
+
+def _measures(row, source):
+    return tuple(float(row.get(field) or 0) for field in _measure_fields(source))
+
+
 def stored_day(day, source):
-    """Что лежит в базе по этой дате: {sku: (qty, amount)}."""
+    """Что лежит в базе по этой дате: {sku: (qty, amount[, cancelled_qty, cancelled_amount])}."""
     rows = (
         supabase
         .table(source["table"])
-        .select(f"marketplace_sku,{source['qty_field']},{source['amount_field']}")
+        .select("marketplace_sku," + ",".join(_measure_fields(source)))
         .eq("marketplace_code", "wb")
         .eq(source["date_field"], day)
+        .order("marketplace_sku")
         .execute()
         .data
         or []
     )
 
-    return {
-        str(r["marketplace_sku"]): (
-            float(r.get(source["qty_field"]) or 0),
-            float(r.get(source["amount_field"]) or 0),
-        )
-        for r in rows
-    }
+    return {str(r["marketplace_sku"]): _measures(r, source) for r in rows}
 
 
 def truth_day(day, source):
@@ -166,25 +179,21 @@ def truth_day(day, source):
 
 
 def compare(day, rows, stored, source):
-    """Разница между истиной и базой по дню."""
-    truth = {
-        str(r["marketplace_sku"]): (
-            float(r[source["qty_field"]] or 0),
-            float(r[source["amount_field"]] or 0),
-        )
-        for r in rows
-    }
+    """Разница между истиной и базой по дню. У заказов — обе пары колонок:
+    qty/amount — подтверждённые, cancelled_* — отменённые; строка пишется целиком."""
+    truth = {str(r["marketplace_sku"]): _measures(r, source) for r in rows}
 
-    truth_qty = sum(v[0] for v in truth.values())
-    stored_qty = sum(v[0] for v in stored.values())
-    truth_amount = sum(v[1] for v in truth.values())
-    stored_amount = sum(v[1] for v in stored.values())
+    def total(cells, index):
+        return sum((v[index] if index < len(v) else 0.0) for v in cells.values())
+
+    truth_qty, stored_qty = total(truth, 0), total(stored, 0)
+    truth_amount, stored_amount = total(truth, 1), total(stored, 1)
 
     # SKU, которые есть в базе, но которых нет в истине. upsert их не тронет,
     # они останутся лишними. Удаляем только по явному --delete-stale.
     stale = sorted(set(stored) - set(truth))
 
-    return {
+    result = {
         "date": day,
         "skus_truth": len(truth),
         "skus_stored": len(stored),
@@ -196,6 +205,18 @@ def compare(day, rows, stored, source):
         "amount_delta": truth_amount - stored_amount,
         "stale_skus": stale,
     }
+    if source.get("cancelled_qty_field"):
+        truth_c_qty, stored_c_qty = total(truth, 2), total(stored, 2)
+        truth_c_amount, stored_c_amount = total(truth, 3), total(stored, 3)
+        result.update({
+            "cancelled_qty_truth": truth_c_qty,
+            "cancelled_qty_stored": stored_c_qty,
+            "cancelled_qty_delta": truth_c_qty - stored_c_qty,
+            "cancelled_amount_truth": truth_c_amount,
+            "cancelled_amount_stored": stored_c_amount,
+            "cancelled_amount_delta": truth_c_amount - stored_c_amount,
+        })
+    return result
 
 
 def write_day(rows, source, delete_stale, stale_skus, day):
@@ -291,6 +312,12 @@ def main(argv=None):
             f"в базе {diff['qty_stored']:.0f} / {diff['amount_stored']:,.0f} ₽ | "
             f"разница {diff['qty_delta']:+.0f} шт / {diff['amount_delta']:+,.0f} ₽"
         )
+        if "cancelled_qty_truth" in diff:
+            print(
+                f"   отменённых: истина {diff['cancelled_qty_truth']:.0f} шт / {diff['cancelled_amount_truth']:,.0f} ₽ | "
+                f"в базе {diff['cancelled_qty_stored']:.0f} / {diff['cancelled_amount_stored']:,.0f} ₽ | "
+                f"разница {diff['cancelled_qty_delta']:+.0f} шт / {diff['cancelled_amount_delta']:+,.0f} ₽"
+            )
         if diff["stale_skus"]:
             print(f"   лишних SKU в базе: {len(diff['stale_skus'])} "
                   f"({'удаляем' if args.delete_stale else 'оставляем, нужен --delete-stale'})")

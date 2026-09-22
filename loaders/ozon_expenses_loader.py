@@ -14,6 +14,11 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
+try:
+    from loaders import stale_keys
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import stale_keys
+
 load_dotenv()
 
 OZON_CLIENT_ID = os.getenv("OZON_CLIENT_ID")
@@ -284,18 +289,58 @@ def save_type_ledger_rows(rows):
     print(f"✅ Леджер начислений по типам записан в ozon_accrual_daily_types: {len(rows)} строк")
 
 
-def run(days_back=30):
+# Статьи, которые пишет ЭТОТ загрузчик. Реклама Performance (advertising*) и Selected CPO живут в той же таблице,
+# их строит другой шаг — чистка застрявших ключей их не видит и не трогает никогда.
+OWN_EXPENSE_TYPES = {"commission"} | set(accrual.TYPE_TO_EXPENSE.values())
+
+
+def is_own_expense_type(expense_type):
+    t = str(expense_type or "")
+    return t in OWN_EXPENSE_TYPES or t.startswith("unknown_")
+
+
+def cleanup_stale_expenses(window, rows, apply):
+    """Ключи окна в marketplace_expenses (свои статьи), которых полный сбор не построил, — удалить (stale_keys)."""
+    existing = stale_keys.read_window_rows(
+        supabase, "marketplace_expenses", "id,expense_date,marketplace_sku,expense_type,expense_amount",
+        [("eq", "marketplace_code", "ozon"), ("gte", "expense_date", window["day_from"]), ("lte", "expense_date", window["day_to"])],
+        ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
+    existing = [r for r in existing if is_own_expense_type(r["expense_type"])]
+    key = lambda r: (r["expense_date"], str(r.get("marketplace_sku") or ""), r["expense_type"])  # noqa: E731
+    built_keys, built_days = {key(r) for r in rows}, {r["expense_date"] for r in rows}
+    return stale_keys.cleanup(
+        supabase, "marketplace_expenses", window, existing, built_keys, built_days, key, lambda r: r["expense_date"],
+        lambda r: f"{r['expense_date']} sku {r.get('marketplace_sku') or '—'} {r['expense_type']} {float(r['expense_amount'] or 0):,.2f} (id {r['id']})",
+        lambda sb, stale: stale_keys.delete_by_id(sb, "marketplace_expenses", stale), apply)
+
+
+def cleanup_stale_ledger(window, ledger_rows, apply):
+    """Ключи (дата, тип) окна в ozon_accrual_daily_types, которых полный сбор не построил, — удалить."""
+    existing = stale_keys.read_window_rows(
+        supabase, "ozon_accrual_daily_types", "accrual_date,type_id,type_name,amount",
+        [("gte", "accrual_date", window["day_from"]), ("lte", "accrual_date", window["day_to"])], ["accrual_date", "type_id"])
+    key = lambda r: (r["accrual_date"], int(r["type_id"]))  # noqa: E731
+    built_keys, built_days = {key(r) for r in ledger_rows}, {r["accrual_date"] for r in ledger_rows}
+    return stale_keys.cleanup(
+        supabase, "ozon_accrual_daily_types", window, existing, built_keys, built_days, key, lambda r: r["accrual_date"],
+        lambda r: f"{r['accrual_date']} тип {r['type_id']} {r.get('type_name') or ''} {float(r['amount'] or 0):,.2f}",
+        lambda sb, stale: stale_keys.delete_by_date_and_column(sb, "ozon_accrual_daily_types", stale, "accrual_date", "type_id"), apply)
+
+
+def run(days_back=30, apply=True):
     # Источник расходов — /v1/finance/accrual/by-day. Разбор построчный по
     # услугам: старое operation_type из новых данных не восстанавливается,
     # доказано перебором (ни одно подмножество type_id не воспроизводит
     # прежние суммы). Поэтому 2026-09-08 — ДАТА РАЗРЫВА РЯДА расходов:
     # до неё логика одна, после другая, и до пересчёта истории периоды
     # несопоставимы. См. docs/ozon_finance_migration.md.
-    accruals = accrual.fetch_window(days_back=days_back)
+    accruals, window = accrual.fetch_window_checked(days_back=days_back)
     type_names = accrual.load_accrual_types()
     rows, counters, unknown = accrual.build_expense_rows(accruals, type_names)
 
     print("Расходы Ozon из accrual/by-day:")
+    print(f"  окно {window['day_from']} … {window['day_to']}: страниц {window['pages']}, обращений {window['requests']}, "
+          f"повторов {window['retries']}, отказов {window['failures']} — сбор {'полон' if window['complete'] else 'НЕ полон'}")
     print(f"  начислений получено: {len(accruals)}")
     print(f"  строк к записи: {len(rows)}")
     print(f"  счётчики: {counters}")
@@ -304,7 +349,15 @@ def run(days_back=30):
         for type_id, amount in unknown.items():
             print(f"    unknown_{type_id:<5} {type_names.get(type_id, '?'):<34} {amount:>14,.2f}")
 
-    save_expense_rows(rows)
+    if apply:
+        save_expense_rows(rows)
+    else:
+        print(f"--dry-run: {len(rows)} строк расходов не записаны")
+    # Чистка — ПОСЛЕ записи: ключи окна, которых нет среди построенных строк. Защиты — loaders/stale_keys.py.
+    try:
+        cleanup_stale_expenses(window, rows, apply)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  чистка застрявших ключей marketplace_expenses не выполнена{', расходы записаны' if apply else ''}: {type(exc).__name__}: {exc}", flush=True)
 
     # Леджер по типам — из ТЕХ ЖЕ начислений, без нового обращения к API. Он вспомогательный:
     # расходы уже записаны, и отказ леджера (нет таблицы, сеть) не должен ронять шаг и всё,
@@ -314,10 +367,24 @@ def run(days_back=30):
         days = sorted({r["accrual_date"] for r in ledger})
         print(f"Леджер типов: строк {len(ledger)}, дат {len(days)}" + (f" ({days[0]} … {days[-1]})" if days else "")
               + f", типов {len({r['type_id'] for r in ledger})}")
-        save_type_ledger_rows(ledger)
+        if apply:
+            save_type_ledger_rows(ledger)
+        else:
+            print(f"--dry-run: {len(ledger)} строк леджера не записаны")
     except Exception as exc:
         print(f"⚠️  леджер начислений по типам НЕ записан, расходы записаны: {type(exc).__name__}: {exc}", flush=True)
+        return
+    try:
+        cleanup_stale_ledger(window, ledger, apply)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  чистка застрявших ключей ozon_accrual_daily_types не выполнена{', леджер записан' if apply else ''}: {type(exc).__name__}: {exc}", flush=True)
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    ap = argparse.ArgumentParser(description="Расходы Ozon из accrual/by-day + леджер типов; чистка застрявших ключей окна.")
+    ap.add_argument("--dry-run", action="store_true", help="собрать окно и показать план (в т.ч. какие ключи удалились бы); в БД не писать")
+    args = ap.parse_args()
+    run(apply=not args.dry_run)
+    if args.dry_run:
+        print("db_writes = 0")

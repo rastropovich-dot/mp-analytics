@@ -4,7 +4,7 @@
 /v3/finance/transaction/list; 07-08 уже показал +9 562,00 против accrual.
 Прежде чем переписывать историю, измерить: сколько дат расходится и на сколько.
 
-Запускает владелец руками, не в окне ночного пайплайна (00:15 … 03:15 UTC —
+Запускает владелец руками, не в окне ночного пайплайна (loaders/pipeline_window.py —
 скрипт откажется стартовать). Ничего не пишет в БД: db_writes = 0 всегда.
 Сырые начисления каждой даты кладёт в data/accrual_history/<дата>.json
 (папка в .gitignore) и при повторном запуске читает оттуда, а не из API —
@@ -43,6 +43,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 import requests  # noqa: E402
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
 RAW_DIR = os.path.join("data", "accrual_history")
 DEFAULT_FROM, DEFAULT_TO = "2026-03-28", "2026-08-17"
@@ -50,16 +51,11 @@ PAUSE_SECONDS = 1.5
 ANTISPAM_PAUSE_SECONDS = 60
 ANTISPAM_MAX_ATTEMPTS = 3
 MAX_REQUESTS = 250
-NIGHT_WINDOW = ((0, 15), (3, 15))  # UTC
 
 
 def D(v):
     return Decimal(str(v or 0)).quantize(Decimal("0.01"))
 
-
-def in_night_window(now_utc):
-    minutes = now_utc.hour * 60 + now_utc.minute
-    return NIGHT_WINDOW[0][0] * 60 + NIGHT_WINDOW[0][1] <= minutes <= NIGHT_WINDOW[1][0] * 60 + NIGHT_WINDOW[1][1]
 
 
 def fetch_day_counted(day, counters):
@@ -157,7 +153,7 @@ def main():
 
     now = datetime.now(timezone.utc)
     if in_night_window(now):
-        raise SystemExit(f"сейчас {now:%H:%M} UTC — окно ночного пайплайна 00:15…03:15, запуск отложить")
+        raise SystemExit(f"сейчас {now:%H:%M} UTC — окно ночного пайплайна {window_text()}, запуск отложить")
 
     from supabase import create_client
     sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))

@@ -18,7 +18,7 @@
 Обращения: by-day 1–3 на дату, postings — по 200 номеров за вызов. Пауза
 1,5 с, на 429 — 60 с и до трёх попыток, число пауз печатается. Больше
 --max-requests (по умолчанию 300) — стоп с явной причиной. В окне ночного
-прогона 00:15…03:15 UTC не стартует.
+прогона (loaders/pipeline_window.py) не стартует.
 """
 import argparse
 import json
@@ -34,6 +34,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 import requests  # noqa: E402
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
 BYDAY_DIR = os.path.join("data", "accrual_history")
 POSTINGS_DIR = os.path.join("data", "accrual_postings")
@@ -41,13 +42,6 @@ PAUSE_SECONDS = 1.5
 ANTISPAM_PAUSE_SECONDS = 60
 ANTISPAM_MAX_ATTEMPTS = 3
 CHUNK = 200
-NIGHT_WINDOW = ((0, 15), (3, 15))  # UTC
-
-
-def in_night_window(now_utc):
-    minutes = now_utc.hour * 60 + now_utc.minute
-    return NIGHT_WINDOW[0][0] * 60 + NIGHT_WINDOW[0][1] <= minutes <= NIGHT_WINDOW[1][0] * 60 + NIGHT_WINDOW[1][1]
-
 
 def post(path, body, label, counters, max_requests):
     for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
@@ -117,7 +111,7 @@ def main():
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
     if in_night_window(now):
-        raise SystemExit("окно ночного прогона 00:15…03:15 UTC — не стартую")
+        raise SystemExit(f"окно ночного прогона {window_text()} — не стартую")
     counters = {"requests": 0, "429": 0}
     t0 = time.monotonic()
     d, d_to = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)

@@ -1,0 +1,247 @@
+{
+ "made": "2026-09-22T13:44:49Z",
+ "source": "утро 09-22 (двадцать девятая, §1-3): ключи daily_sku_kpi ozon без строки ни в marketplace_orders, ни в marketplace_buyouts, ни в marketplace_expenses, ни в ozon_daily_sku_organic — SQL по живой базе 2026-09-22 07:0x UTC",
+ "meaning": "40 ключей, все суммы нули, ad_spend Σ 12,75; из-за них «Строк daily_sku_kpi загружено» 209 880 ≠ «обновлена» 209 840",
+ "keys": [
+  {
+   "kpi_date": "2026-04-17",
+   "marketplace_sku": "1538676716",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-04-19",
+   "marketplace_sku": "994055254",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-04-20",
+   "marketplace_sku": "1000456966",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-04-20",
+   "marketplace_sku": "989428623",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-04-26",
+   "marketplace_sku": "1200571799",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-14",
+   "marketplace_sku": "2948408014",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-15",
+   "marketplace_sku": "3790059985",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-21",
+   "marketplace_sku": "1335434586",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-22",
+   "marketplace_sku": "1116114582",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-22",
+   "marketplace_sku": "997195821",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-26",
+   "marketplace_sku": "997195821",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-05-30",
+   "marketplace_sku": "958697848",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-01",
+   "marketplace_sku": "1627197608",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-05",
+   "marketplace_sku": "1293981343",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-05",
+   "marketplace_sku": "994043981",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-06",
+   "marketplace_sku": "1045777866",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-08",
+   "marketplace_sku": "3286683902",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-08",
+   "marketplace_sku": "3790059891",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-16",
+   "marketplace_sku": "2516704607",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-16",
+   "marketplace_sku": "3286683836",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-18",
+   "marketplace_sku": "3543927682",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-20",
+   "marketplace_sku": "1620587018",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-21",
+   "marketplace_sku": "2948246872",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-21",
+   "marketplace_sku": "4452982445",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-22",
+   "marketplace_sku": "3537198072",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-24",
+   "marketplace_sku": "1012622034",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-26",
+   "marketplace_sku": "2948246872",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-28",
+   "marketplace_sku": "4452879262",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-29",
+   "marketplace_sku": "1621530758",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-06-29",
+   "marketplace_sku": "997205968",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-01",
+   "marketplace_sku": "3825054702",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-02",
+   "marketplace_sku": "1623624034",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-03",
+   "marketplace_sku": "997195821",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-06",
+   "marketplace_sku": "1680926734",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-06",
+   "marketplace_sku": "3543927343",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-10",
+   "marketplace_sku": "1620655429",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-10",
+   "marketplace_sku": "1950352487",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-07-10",
+   "marketplace_sku": "4453172927",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-08-02",
+   "marketplace_sku": "4453036403",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  },
+  {
+   "kpi_date": "2026-08-22",
+   "marketplace_sku": "2531295117",
+   "orders_qty": 0,
+   "orders_amount_seller": 0
+  }
+ ]
+}

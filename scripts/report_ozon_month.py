@@ -41,7 +41,7 @@
 marketplace_expenses в лист не идёт — только в сверку по статьям: расхождение называется по дням.
 
 НДС — параметр с датой действия (VAT_RATES), не константа в формуле. Даты моложе двух суток
-помечаются: начисления доезжают. В окне 00:15…03:15 UTC в API не идёт.
+помечаются: начисления доезжают. В окне ночного прогона (loaders/pipeline_window.py) в API не идёт.
 В БД не пишет: db_writes = 0.
 """
 import argparse
@@ -388,7 +388,7 @@ def load_day_raw(day, today, allow_fetch, counters):
         return None, "нет сырья"
     import fetch_accrual_postings_raw as raw
     if raw.in_night_window(datetime.now(timezone.utc)):
-        print(f"  {day}: сырья нет, а сейчас окно ночного прогона 00:15…03:15 UTC — в API не иду")
+        print(f"  {day}: сырья нет, а сейчас окно ночного прогона {raw.window_text()} — в API не иду")
         return None, "нет сырья (ночное окно)"
     accruals = raw.fetch_day(day, counters, 60)
     if (date.fromisoformat(today) - date.fromisoformat(day)).days < YOUNG_DAYS:

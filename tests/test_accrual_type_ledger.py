@@ -135,9 +135,13 @@ class NightlyStepTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()
         self.fetches = []
+        self.window = {"day_from": "2026-08-23", "day_to": "2026-09-22", "days": 31, "pages": 62, "requests": 62, "retries": 0, "failures": 0, "complete": True}
+        self.cleanups = {"expenses": mock.Mock(return_value=0), "ledger": mock.Mock(return_value=0)}
         for target, attr, value in ((loader, "supabase", self.client),
-                                    (accrual, "fetch_window", lambda days_back=30: self.fetches.append(days_back) or ACCRUALS),
-                                    (accrual, "load_accrual_types", lambda: {32: "Logistic"})):
+                                    (accrual, "fetch_window_checked", lambda days_back=30: self.fetches.append(days_back) or (ACCRUALS, self.window)),
+                                    (accrual, "load_accrual_types", lambda: {32: "Logistic"}),
+                                    (loader, "cleanup_stale_expenses", self.cleanups["expenses"]),
+                                    (loader, "cleanup_stale_ledger", self.cleanups["ledger"])):
             p = mock.patch.object(target, attr, value)
             p.start()
             self.addCleanup(p.stop)
@@ -149,6 +153,30 @@ class NightlyStepTests(unittest.TestCase):
         ledger_rows = self.client.written["ozon_accrual_daily_types"]
         self.assertEqual(len(ledger_rows), 11)
         self.assertEqual(self.client.conflict["ozon_accrual_daily_types"], "accrual_date,type_id")
+        # чистка застрявших ключей — после записи, с паспортом того же сбора и построенными строками
+        self.cleanups["expenses"].assert_called_once()
+        window, rows, apply = self.cleanups["expenses"].call_args[0]
+        self.assertEqual((window, len(rows), apply), (self.window, len(self.client.written["marketplace_expenses"]), True))
+        self.cleanups["ledger"].assert_called_once()
+        self.assertEqual((self.cleanups["ledger"].call_args[0][0], len(self.cleanups["ledger"].call_args[0][1]), self.cleanups["ledger"].call_args[0][2]), (self.window, 11, True))
+
+    def test_dry_run_writes_nothing_and_plans_cleanup_without_apply(self):
+        with mock.patch("builtins.print"):
+            loader.run(apply=False)
+        self.assertFalse(self.client.written["marketplace_expenses"])
+        self.assertFalse(self.client.written["ozon_accrual_daily_types"])
+        self.assertEqual(self.cleanups["expenses"].call_args[0][2], False)
+        self.assertEqual(self.cleanups["ledger"].call_args[0][2], False)
+
+    def test_failed_cleanup_does_not_fail_the_step(self):
+        self.cleanups["expenses"].side_effect = RuntimeError("boom")
+        self.cleanups["ledger"].side_effect = RuntimeError("boom")
+        with mock.patch("builtins.print") as printed:
+            loader.run()
+        self.assertTrue(self.client.written["marketplace_expenses"])
+        self.assertTrue(self.client.written["ozon_accrual_daily_types"])
+        self.assertTrue(any("чистка застрявших ключей marketplace_expenses не выполнена" in str(c.args[0]) for c in printed.call_args_list))
+        self.assertTrue(any("чистка застрявших ключей ozon_accrual_daily_types не выполнена" in str(c.args[0]) for c in printed.call_args_list))
 
     def test_a_failing_ledger_write_does_not_stop_the_expenses_step(self):
         self.client.failing.add("ozon_accrual_daily_types")

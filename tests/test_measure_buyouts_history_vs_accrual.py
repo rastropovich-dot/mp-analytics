@@ -61,10 +61,11 @@ class NightWindowTests(unittest.TestCase):
         self.assertTrue(in_night_window(datetime(2026, 9, 16, 0, 15, tzinfo=timezone.utc)))
         self.assertTrue(in_night_window(datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc)))
         self.assertTrue(in_night_window(datetime(2026, 9, 16, 3, 15, tzinfo=timezone.utc)))
+        self.assertTrue(in_night_window(datetime(2026, 9, 16, 4, 30, tzinfo=timezone.utc)))   # ночь 09-21 шла до 04:04
 
     def test_outside_window_allowed(self):
         self.assertFalse(in_night_window(datetime(2026, 9, 16, 0, 14, tzinfo=timezone.utc)))
-        self.assertFalse(in_night_window(datetime(2026, 9, 16, 3, 16, tzinfo=timezone.utc)))
+        self.assertFalse(in_night_window(datetime(2026, 9, 16, 4, 31, tzinfo=timezone.utc)))
         self.assertFalse(in_night_window(datetime(2026, 9, 15, 19, 0, tzinfo=timezone.utc)))
 
 

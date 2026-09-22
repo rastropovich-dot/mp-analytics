@@ -16,8 +16,8 @@ build_buyout_rows.
 
 --apply: снимок всех строк окна (все колонки) → delete помесячно → запись → сверка «таблица = плану»
 по ключам и значениям. Витрины не трогает: их пересоберёт ночной KPI. Штуки (buyouts_units) у
-перезаписанных строк пропадают — посев штук запускать ПОСЛЕ. В окне 00:15 … 03:15 UTC и около
-07:30 UTC не запускать; --date-from и --date-to обязательны.
+перезаписанных строк пропадают — посев штук запускать ПОСЛЕ. В окне ночного прогона и утреннего
+алерта (loaders/pipeline_window.py) не запускать; --date-from и --date-to обязательны.
 
     venv/bin/python3 scripts/rewrite_buyouts_history.py --date-from 2026-03-28 --date-to 2026-08-17
 """
@@ -35,6 +35,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders.pipeline_window import in_morning_alert_window, in_nightly_run_window  # noqa: E402
 
 RAW_DIR = os.path.join("data", "accrual_history")
 SNAP_DIR = os.path.join("data", "snapshots")
@@ -43,9 +44,6 @@ BATCH = 500
 C = Decimal("0.01")
 Z = Decimal(0)
 D = lambda v: Decimal(str(v or 0)).quantize(C)  # noqa: E731
-NIGHT = ((0, 15), (3, 15))
-
-
 def sb():
     import loaders.ozon_fbo_orders_loader as fbo
     return fbo.supabase
@@ -123,8 +121,7 @@ def main():
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
-    minutes = now.hour * 60 + now.minute
-    if args.apply and (NIGHT[0][0] * 60 + NIGHT[0][1] <= minutes <= NIGHT[1][0] * 60 + NIGHT[1][1] or 7 * 60 + 20 <= minutes <= 7 * 60 + 45):
+    if args.apply and (in_nightly_run_window(now) or in_morning_alert_window(now)):
         raise SystemExit("окно ночного прогона или утреннего алерта — не стартую")
     days = days_between(args.date_from, args.date_to)
     new_rows = accrual_rows(days)

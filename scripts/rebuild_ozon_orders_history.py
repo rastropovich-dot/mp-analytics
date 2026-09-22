@@ -17,7 +17,7 @@
 Без --apply в БД не пишет (db_writes = 0). Витрины НЕ трогает: ночной
 reports_daily_sku_kpi строит KPI из всех заказов заново; ключи витрин, у которых
 заказов не останется, надо удалить отдельно (в отчёте). В окне ночного прогона
-00:15…03:15 UTC не стартует.
+(loaders/pipeline_window.py) не стартует.
 
     venv/bin/python3 scripts/rebuild_ozon_orders_history.py --estimate
     venv/bin/python3 scripts/rebuild_ozon_orders_history.py --fetch --date-from 2026-03-28
@@ -40,21 +40,17 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 from loaders import http_retry  # noqa: E402
 from loaders import ozon_orders_rows as rules  # noqa: E402
+from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
 RAW_DIR = os.path.join("data", "postings_raw")
 SNAP_DIR = os.path.join("data", "snapshots")
 CHUNK_DAYS = 30
 PAGE = 100
 SECONDS_PER_CALL = 2.05       # замер 2026-09-14, FBO /v3, пауза 1,5 с (docs/ozon_postings_migration.md)
-NIGHT_WINDOW = ((0, 15), (3, 15))
 BATCH = 500
 FETCHED_AT = {}               # схема -> момент сбора сырья (ISO, UTC); пишется в observed_at строк
 D = lambda v: Decimal(str(v or 0))  # noqa: E731
 
-
-def in_night_window(now_utc):
-    m = now_utc.hour * 60 + now_utc.minute
-    return NIGHT_WINDOW[0][0] * 60 + NIGHT_WINDOW[0][1] <= m <= NIGHT_WINDOW[1][0] * 60 + NIGHT_WINDOW[1][1]
 
 
 def sb():
@@ -144,7 +140,7 @@ def fetch_history(scheme, date_from, date_to):
         print(f"{scheme}: сырьё из файла {path}: {len(data['postings'])} отправлений, снято {data.get('fetched_at')}")
         return data["postings"]
     if in_night_window(datetime.now(timezone.utc)):
-        raise SystemExit("окно ночного прогона 00:15…03:15 UTC — не стартую")
+        raise SystemExit(f"окно ночного прогона {window_text()} — не стартую")
     calls = {"n": 0, "429": 0}
     orig = http_retry.post
 

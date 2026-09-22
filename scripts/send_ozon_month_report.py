@@ -70,7 +70,8 @@ def build_caption(month, date_to, summary, orders_failed):
     lines = [f"Ozon — {MONTHS[last.month - 1]} {last.year}, по {last.day} {MONTHS_GENITIVE[last.month - 1]}"]
     b, o = (summary or {}).get("buyouts") or {}, (summary or {}).get("orders") or {}
     if b:
-        lines.append(f"Выкупы: оборот {mln(b.get('turnover'))}, выручка {mln(b.get('revenue'))}, фин. рез. {mln(b.get('fin_result'))}, Ebitda {mln(b.get('ebitda'))}")
+        lines.append(f"Выкупы: оборот {mln(b.get('turnover'))}, выручка {mln(b.get('revenue'))}, фин. рез. {mln(b.get('fin_result'))}, Ebitda {mln(b.get('ebitda'))}"
+                     + (f", фин. рез. по индексу СС {mln(b.get('fin_result_index'))}" if b.get("fin_result_index") is not None else ""))
     if o:
         lines.append(f"Заказы: создано {mln(o.get('created'))}, прогноз подтв. {mln(o.get('forecast_confirmed'))}, "
                      f"ДРР {pct(o.get('drr_created'))} от созданного / {pct(o.get('drr_forecast'))} от прогноза, фин. рез. прогноз {mln(o.get('fin_result'))}")

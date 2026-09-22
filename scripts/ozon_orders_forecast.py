@@ -43,6 +43,21 @@ CURVE_NIGHTS = 45                  # сколько последних ноче�
 # чтобы разница с измеренным была видна. Они дрейфуют: в сентябрьской книге на листе «Заказы» уже 0,58,
 # на «Заказы Standard» — 0,73.
 OWNER = {"buyout_rate": Decimal("0.65"), "after_commission": Decimal("0.59"), "other_rate": Decimal("0.024")}
+# Множитель «выручки» владельца по площадке, с датой действия. Сентябрьский лист (22.09) проверен сырьём отправлений
+# 09-01 … 09-16: его B = заказы × 0,53 / НДС на Standard и Дискаунтере (комиссия 47 %) и × 0,90 / НДС на Селекте (10 %) —
+# по UTC-суткам, 0,530 / 0,900 / 0,530 без разброса на 16 днях. До 09-01 — 0,59 по подписи июльской книги (не перепроверялось).
+# «*» — площадка, не названная явно (в т. ч. «Без площадки»).
+OWNER_AFTER_COMMISSION = (
+    ("2026-09-01", {"Основная": Decimal("0.53"), "Дискаунтер": Decimal("0.53"), "Селект": Decimal("0.90"), "*": Decimal("0.53")}),
+    ("0001-01-01", {"*": Decimal("0.59")}),
+)
+
+
+def owner_after_commission(day, platform):
+    for valid_from, table in OWNER_AFTER_COMMISSION:
+        if day >= valid_from:
+            return table.get(platform, table["*"])
+    raise ValueError(f"нет множителя владельца для {day}")
 
 
 def D(v):
@@ -255,6 +270,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             a["conf_q"] += conf_q; a["conf_a"] += conf_a
             a["canc_q"] += canc_q; a["canc_a"] += canc_a
             a["cogs_created"] += (conf_q + canc_q) * (uc or Z)
+            a["owner_gross"] += (conf_a + canc_a) * owner_after_commission(d, platform)     # его «выручка» с НДС: создано × множитель площадки
             if uc is None:
                 a["no_cost_q"] += conf_q
             if r_cnt is None or share is None:
@@ -285,7 +301,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             row["fin_result"] = None if None in (row["margin"], row["ads"], row["other"]) else row["margin"] - row["ads"] - row["other"]
             # справочно: формулы владельца на его константах и на ЕГО рекламе («по образцу»: 41 + 54 + 96 + вся подписка) —
             # чтобы его лист «Заказы» и эти колонки сравнивались напрямую (2026-09-22, тридцать первая).
-            row["owner_revenue"] = a["created_a"] * OWNER["after_commission"] / vat
+            row["owner_revenue"] = a["owner_gross"] / vat
             row["owner_margin"] = row["owner_revenue"] - a["cogs_created"]
             row["owner_fin_result"] = None if row["ads_manual"] is None else (row["owner_margin"] * OWNER["buyout_rate"] - row["ads_manual"]
                                                                                - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])

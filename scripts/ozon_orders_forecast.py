@@ -311,7 +311,8 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
 
 
 ORDER_MONEY = ("created_q", "created_a", "conf_q", "conf_a", "canc_q", "canc_a", "fc_q", "fc_a", "expected_cancels_a", "commission", "revenue",
-               "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created")
+               "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "cogs_index", "fin_result_index",
+               "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created")
 
 
 def ratio(a, b):

@@ -785,7 +785,7 @@ def owner_multiplier_note(o):
     days = [r["date"] for r in o["blocks"]["all"]]
     d1, d2 = days[0], days[-1]
     names = [n for _p, n in PLATFORMS] + [NO_PLATFORM]
-    mult = lambda d: ", ".join(f"{n} {forecast.owner_after_commission(d, n)}" for n in names)  # noqa: E731
+    mult = lambda d: ", ".join(f"{n} {str(forecast.owner_after_commission(d, n)).replace('.', ',')}" for n in names)  # noqa: E731
     share = o["commission_share"]
     pct = lambda v: "—" if v is None else f"{v * 100:.1f} %".replace(".", ",")  # noqa: E731
     return (f"Справочная «Выручка» = создано × множитель площадки владельца / НДС; множители по его сентябрьскому листу (проверены сырьём отправлений 09-01 … 09-16 "

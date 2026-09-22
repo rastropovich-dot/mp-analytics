@@ -1,0 +1,8 @@
+{
+  "taken_at_utc": "2026-09-22T19:19:36.302587+00:00",
+  "purpose": "состояние marketplace_orders (WB) до восстановления истории по flag=1",
+  "file": "snapshots/marketplace_orders_wb_before_restore_20260922_191836.csv.gz",
+  "rows": 23102,
+  "dates": 178,
+  "sha256": "d2ee540082adef836f571ea70e7e22d4b894db90c523dc644bef71bec8d61071"
+}

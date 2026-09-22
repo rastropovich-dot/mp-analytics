@@ -237,9 +237,12 @@ def load_catalog():
 # Повторяем только то, что заведомо транзиентно: 429 с code 8 и 5xx. Любой
 # другой ответ — включая 429 с иным кодом — остаётся немедленной ошибкой:
 # неизвестный отказ не должен молча превращаться в серию повторов.
-SELLER_RETRY_MAX_ATTEMPTS = 4
+# Ночь 09-22: три 429 подряд (паузы 1 / 2 / 4 с), прошло с четвёртой попытки из четырёх — запаса не было.
+# Шесть попыток с паузами 1, 2, 4, 8, 16 с (потолок 32) и пауза между страницами, как у загрузчиков заказов.
+SELLER_RETRY_MAX_ATTEMPTS = 6
 SELLER_RETRY_BASE_SLEEP_SECONDS = 1
-SELLER_RETRY_CAP_SLEEP_SECONDS = 10
+SELLER_RETRY_CAP_SLEEP_SECONDS = 32
+SELLER_PAGE_PAUSE_SECONDS = 1.5
 SELLER_RATE_LIMIT_PER_SECOND_CODE = 8
 
 
@@ -368,13 +371,15 @@ def parse_rows(response_data):
     return parsed_rows, int(total or len(parsed_rows))
 
 
-def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_pages=0):
+def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_pages=0, sleep_fn=time.sleep):
     all_rows = []
     page_count = 0
     total_rows_reported = None
 
     while True:
         offset = page_count * page_size
+        if page_count:
+            sleep_fn(SELLER_PAGE_PAUSE_SECONDS)     # антиспам Seller API считает частоту в секунду: между страницами — пауза
         response_data, payload = request_page(date_from, date_to, page_size, offset)
         rows, total_rows_reported = parse_rows(response_data)
         all_rows.extend(rows)

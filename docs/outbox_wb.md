@@ -8,6 +8,123 @@
 
 ---
 
+## 2026-09-22, третья задача WB — в работе (промежуточно, до мержа)
+
+Блок пишется до мержа, как требует п. 2 задачи: предсказание на ночь — здесь, до
+того как код уедет в прод. Итоговый отчёт заменит его.
+
+### 1. Горизонт — скользящий, подтверждено
+
+`logs/wb_horizon_check_20260922/capture_calls.json`: 2026-09-22 03:20:18 UTC,
+`flag=1` за 2026-03-15, HTTP 200, **0 строк** (накануне 16:16 UTC — 218). Ровно
+190 дней; 2026-03-26 выпадет 2026-10-03. Записано в `docs/wb_data_integrity.md`
+§1 на помеченное место (`257492b`). API заново не вызывался.
+
+### 0. Слова владельца — получены в окне сессии 2026-09-22 ~16:00 UTC, дословно
+
+1. «Личное «да» владельца: WB приводим к правилу Ozon до восстановления —
+   orders_* = подтверждённые заказы, отменённые отдельно в cancelled_orders_*,
+   observed_at, Decimal.»
+2. «Слово владельца на мерж wb-fixes в main (--no-ff) после того, как покажешь
+   git log main..wb-fixes и прогон тестов.» — показано ниже, мерж по нему.
+3. Про `isCancel`: «Что такое isCancel у WB (отмена до выдачи или ещё и отказ на
+   ПВЗ) — проверь по spec/wb/ и напиши в отчёт; если по спеке не видно, так и
+   напиши, не угадывай.»
+4. Про запись: «Слово на --apply пока не даю: сначала план из файлов
+   (--from-files --plan) с числами в docs/outbox_wb.md, снимок, и только потом
+   спросишь отдельно.»
+
+**`isCancel` по спеке — не видно.** `spec/wb/12-reports.yaml`, схема ответа
+`/api/v1/supplier/orders`, строки 2298–2305, дословно: `isCancel` — «Отмена
+заказа: `true` — заказ отменен»; `cancelDate` — «Дата и время отмены заказа. Если
+заказ не был отменен, то "0001-01-01T00:00:00". Если часовой пояс не указан, то
+берётся Московское время UTC+3». Описание метода (строки 84–100) про отказ при
+получении не говорит; слов «отказ», «ПВЗ», «невыкуп» в описании заказов нет (в
+файле «ПВЗ» встречается только у возвратов и удержаний). По спеке отмену до
+отгрузки и отказ на ПВЗ не различить — как и по веб-документации 09-21. Там же
+подсказка на будущее: «Чтобы получить все оформленные заказы, используйте Ленту
+заказов» (`11-analytics.yaml`, orderFeed) — возможно, у неё статусы подробнее; не
+проверял, в задачу не входит.
+
+### 2. Мерж — что показано владельцу перед ним
+
+`git merge main` в ветку — третий раз (см. лог), без конфликтов;
+`git log HEAD..main` пуст. Общее окно `loaders/pipeline_window.py` — скрипт сырья
+переведён на него (тест держит 04:30 внутри, 04:31 снаружи).
+
+Тесты: **819 OK** = 727 `main` + 92 `test_wb_*` (`PYTHONPATH=. venv/bin/python3
+-m unittest discover -s tests`).
+
+```
+$ git log --oneline main..wb-fixes
+89e06f0 Interim third WB report: horizon confirmed, owner's words, the night prediction before the merge
+257492b Confirm the sliding flag=1 horizon, adopt the shared nightly window, show cancellations in repair, add WB specs
+b2ff17b Merge branch 'main' into wb-fixes
+d9a39cc Report the second WB task: raw captured, Ozon rule in the loader, plan from files in corridor
+51be775 Merge branch 'main' into wb-fixes
+9ed3f05 Record the from-files restore plan and the one-call sales horizon check
+2c54bd7 Interim WB report: the fatal-step blocker is closed in the branch
+b19653d Make the WB orders step non-fatal: a strict parser must not take the night down
+74f91d6 Merge branch 'main' into wb-fixes
+dcde9bd Interim WB report: rule answered, capture running, fatal-step blocker named
+ac7ed2e Rewrite WB docs for the 190-day horizon, the Ozon rule and the from-files path
+daf8723 Bring WB orders to the Ozon rule and restore history from captured files
+e00ff9c Ask the owner about the WB orders rule before touching the loader
+2332a91 Report the first WB task: merge, re-measurement, restore plan, manual sheets
+6fd1c7f Re-measure WB erosion after 18 days and make the restore plan trustworthy
+426ed29 Merge branch 'main' into wb-fixes
+c1b8a5c Stop WB order history from eroding and prepare the repair path
+```
+
+Diff `main..wb-fixes` по коду: `loaders/wb_orders_rows.py` (+172, новый),
+`loaders/wb_orders_loader.py` (+97/−55), `loaders/wb_sales_loader.py` (окно
+записи), `loaders/wb_stocks_loader.py` (новый эндпоинт), `run_daily_pipeline.py`
+(+11, шаг заказов WB нефатальный), `scripts/wb_*` (6 файлов), `tests/test_wb_*`
+(8 файлов), `spec/wb/` (17 файлов), `docs/wb_*` (6 файлов) + `inbox_wb`/`outbox_wb`.
+
+### Предсказание на ночь 09-23 (прогон 00:15 UTC, `today` = 09-23, окно с 2026-08-24)
+
+Лог Render, шаг «WB: загрузка заказов», строки в таком порядке (числа — порядок
+по ответу 09-21 16:03 UTC: 1 812 строк, 34 даты старше окна):
+
+```
+WB orders HTTP status: 200
+Получено строк WB orders: ~1 800
+WB orders: заказов без отмены ~780, отменённых ~1 040; строк агрегата ~1 360
+Окно записи: с 2026-08-24 (последние 30 дней)
+Не записано (старше окна записи, ответ по ним неполон): ~34 дат, ~580 строк агрегата, ~800 заказов. Даты: 2026-07-0x…2026-08-23. Их чинит scripts/wb_orders_repair.py (flag=1).
+✅ WB заказы записаны в marketplace_orders: ~780 строк
+```
+
+Строки «ВНИМАНИЕ, пропущено» быть не должно. Шаг «WB: загрузка продаж/выкупов»
+— фатальный, как был, лог прежний. Тревоги «Шаг не выполнен» — нет.
+
+Таблица (SQL, `marketplace_code = 'wb'`), было на 16:10 UTC 09-22: **23 827
+строк**, `observed_at` не null — 0, `cancelled_orders_qty ≠ 0` — 0, Σ `orders_qty`
+27 714; в окне ≥ 08-24: 725 строк / 29 дат / 928 созданных. После ночи:
+* `count(*)` — 23 827 + новые ключи даты 09-22 и хвоста 09-21, порядка +30…+60;
+* `observed_at` не null — у **всех** строк с `order_date ≥ 2026-08-24` (каждый
+  заказ окна имеет `lastChangeDate ≥ order_date`, значит есть в ответе); у строк
+  старше 08-24 — по-прежнему null;
+* доля отмен в окне: `Σ cancelled_orders_qty / Σ (orders_qty + cancelled_orders_qty)`
+  ≈ **42 % шт** (09-21: 426 из 1 005), ≈ 50 % ₽; Σ созданных в окне ≈ прежним 928
+  (± суточный сдвиг окна), Σ `orders_qty` в окне упадёт до ≈ 540;
+* даты < 08-24 — не тронуты (те же 23 102 строки, Σ `orders_qty` 26 786).
+
+Витрина после ночного KPI: `daily_sku_kpi` / `daily_marketplace_kpi` по WB за
+даты ≥ 08-24 — заказы −42 % шт / −50 % ₽ против вчерашней витрины, выкупаемость и
+ДРР по WB — скачок вверх; за даты < 08-24 — без изменений до восстановления.
+**Это смена базы, не поломка.** Утренний алерт 07:30 UTC 09-23 уйдёт; «WB вчера:
+заказы N» в нём — из funnel-overlay (созданные), витрина — подтверждённые: алерт
+покажет примерно вдвое больше витрины. Ozon-строки — не меняются.
+
+Ozon-поток: локальный `main` в `~/mp-analytics` после мержа отстанет от
+`origin/main` на один коммит — мерж делается плюмбингом и уходит только на
+`origin` (ветка `main` выписана в том worktree, трогать её ref нельзя); там
+нужен `git pull --ff-only`.
+
+---
+
 ## 2026-09-21, вторая задача WB — отчёт
 
 `db_writes = 0`. Ветка не слита и не запушена, `--apply` не запускался,

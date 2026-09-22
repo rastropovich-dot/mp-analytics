@@ -81,21 +81,34 @@ def sleep_seconds(response, attempt):
 
 
 def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
-            max_attempts=MAX_ATTEMPTS, sleep_fn=time.sleep, session=None, **kwargs):
+            max_attempts=MAX_ATTEMPTS, sleep_fn=time.sleep, session=None, stats=None, **kwargs):
     """Как requests.request, но с повтором транзиентных отказов.
 
     Возвращает последний ответ. Не бросает по коду ответа — решение о том,
     что делать с не-200, остаётся за вызывающим.
+
+    stats — словарь вызывающего, если ему важно, был ли сбор гладким: requests (все попытки), retries
+    (повторы), failures (последний ответ не 200), reasons (причины повторов). Сбор, в котором был хоть один
+    повтор, для удаления застрявших ключей не годится (loaders/stale_keys.py).
     """
     caller = session or requests
     response = None
     for attempt in range(1, max(1, int(max_attempts)) + 1):
         response = caller.request(method, url, **kwargs)
+        if stats is not None:
+            stats["requests"] = stats.get("requests", 0) + 1
         retryable, reason = classify(response, retry_429=retry_429)
         if not retryable or attempt >= max_attempts:
-            if reason != "ok" and attempt > 1:
-                print(f"{label}: транзиентный отказ не изжит за {attempt} попыток (reason={reason})")
+            if reason != "ok":
+                if stats is not None:
+                    stats["failures"] = stats.get("failures", 0) + 1
+                if attempt > 1:
+                    print(f"{label}: транзиентный отказ не изжит за {attempt} попыток (reason={reason})")
             return response
+        if stats is not None:
+            stats["retries"] = stats.get("retries", 0) + 1
+            reasons = stats.setdefault("reasons", {})
+            reasons[reason] = reasons.get(reason, 0) + 1
         pause = sleep_seconds(response, attempt)
         print(f"{label}: транзиентный отказ reason={reason} "
               f"attempt={attempt}/{max_attempts} sleep={pause}s")

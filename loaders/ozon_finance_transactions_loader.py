@@ -14,6 +14,11 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
+try:
+    from loaders import stale_keys
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import stale_keys
+
 load_dotenv()
 
 OZON_CLIENT_ID = os.getenv("OZON_CLIENT_ID")
@@ -220,16 +225,50 @@ def save_ozon_sales_to_buyouts(operations):
     print(f"✅ Ozon daily finance записан в marketplace_buyouts: {len(rows)} строк")
 
 
-if __name__ == "__main__":
+def cleanup_stale_buyouts(window, rows, apply):
+    """Ключи (дата, sku) окна в marketplace_buyouts, которых полный сбор не построил, — удалить (loaders/stale_keys.py)."""
+    existing = stale_keys.read_window_rows(
+        supabase, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_amount_seller,buyouts_units",
+        [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", window["day_from"]), ("lte", "buyout_date", window["day_to"])],
+        ["buyout_date", "marketplace_code", "marketplace_sku"])
+    key = lambda r: (r["buyout_date"], str(r.get("marketplace_sku") or ""))  # noqa: E731
+    built_keys, built_days = {key(r) for r in rows}, {r["buyout_date"] for r in rows}
+    return stale_keys.cleanup(
+        supabase, "marketplace_buyouts", window, existing, built_keys, built_days, key, lambda r: r["buyout_date"],
+        lambda r: f"{r['buyout_date']} sku {r.get('marketplace_sku')} {float(r['buyouts_amount_seller'] or 0):,.2f} штук {r.get('buyouts_units')} (id {r['id']})",
+        lambda sb, stale: stale_keys.delete_by_id(sb, "marketplace_buyouts", stale), apply)
+
+
+def run(days_back=30, apply=True):
     # Продажа и возврат в новой модели — одно начисление с обратными знаками.
     # Отдельного типа операции нет, знак несёт смысл сам, поэтому прежняя
     # конструкция «abs() плюс sign по типу» здесь не нужна и была бы вредна.
     # Приёмка (2026-09-11): сумма, комиссия и выручка после комиссии совпали
     # с прежними значениями до копейки на 09-05, 09-06 и 09-07.
-    accruals = accrual.fetch_window(days_back=30)
+    accruals, window = accrual.fetch_window_checked(days_back=days_back)
     rows, counters = accrual.build_buyout_rows(accruals)
     print("Выкупы Ozon из accrual/by-day:")
+    print(f"  окно {window['day_from']} … {window['day_to']}: страниц {window['pages']}, обращений {window['requests']}, "
+          f"повторов {window['retries']}, отказов {window['failures']} — сбор {'полон' if window['complete'] else 'НЕ полон'}")
     print(f"  начислений получено: {len(accruals)}")
     print(f"  строк к записи: {len(rows)}")
     print(f"  счётчики: {counters}")
-    save_buyout_rows(rows)
+    if apply:
+        save_buyout_rows(rows)
+    else:
+        print(f"--dry-run: {len(rows)} строк выкупов не записаны")
+    # Чистка — ПОСЛЕ записи; отказ чистки выкупы не трогает и шаг не роняет, но называется
+    try:
+        cleanup_stale_buyouts(window, rows, apply)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  чистка застрявших ключей marketplace_buyouts не выполнена, выкупы записаны: {type(exc).__name__}: {exc}", flush=True)
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Выкупы Ozon из accrual/by-day; чистка застрявших ключей окна.")
+    ap.add_argument("--dry-run", action="store_true", help="собрать окно и показать план (в т.ч. какие ключи удалились бы); в БД не писать")
+    args = ap.parse_args()
+    run(apply=not args.dry_run)
+    if args.dry_run:
+        print("db_writes = 0")

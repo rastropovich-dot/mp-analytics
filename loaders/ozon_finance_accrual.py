@@ -130,19 +130,21 @@ def load_accrual_types():
     return {t["id"]: t.get("name") or "" for t in (r.json() or {}).get("accrual_types", [])}
 
 
-def fetch_day(day):
-    """Начисления за одну дату. Метод принимает ровно одну дату, не диапазон."""
+def fetch_day(day, stats=None):
+    """Начисления за одну дату. Метод принимает ровно одну дату, не диапазон. stats — см. http_retry.request."""
     out, last_id = [], None
     while True:
         body = {"date": day}
         if last_id:
             body["last_id"] = last_id
         r = http_retry.post(f"{BASE}/v1/finance/accrual/by-day", label="accrual/by-day",
-                            headers=headers(), json=body, timeout=180)
+                            headers=headers(), json=body, timeout=180, stats=stats)
         if r.status_code != 200:
             raise RuntimeError(
                 f"accrual/by-day {day}: HTTP {r.status_code} {r.text[:200]}"
             )
+        if stats is not None:
+            stats["pages"] = stats.get("pages", 0) + 1
         data = r.json() or {}
         batch = data.get("accruals") or []
         out.extend(batch)
@@ -151,14 +153,30 @@ def fetch_day(day):
             return out
 
 
-def fetch_window(days_back=30):
-    day_to = datetime.now(timezone.utc).date()
+def fetch_window_checked(days_back=30, now_utc=None):
+    """Начисления окна [сегодня − days_back, сегодня] по UTC и паспорт сбора.
+
+    Паспорт: day_from, day_to, days, pages, requests, retries, failures, complete. complete — все дни получены
+    без единого повтора и отказа: только такой сбор годится как основание удалять ключи окна, которых в нём нет
+    (loaders/stale_keys.py). Отказ дня (не 200 после повторов) — исключение, как и раньше: шаг падает целиком,
+    ничего не пишется и не удаляется.
+    """
+    day_to = (now_utc or datetime.now(timezone.utc)).date()
     day_from = day_to - timedelta(days=days_back)
+    stats = {}
     out, cur = [], day_from
     while cur <= day_to:
-        out.extend(fetch_day(cur.isoformat()))
+        out.extend(fetch_day(cur.isoformat(), stats))
         cur += timedelta(days=1)
-    return out
+    window = {"day_from": day_from.isoformat(), "day_to": day_to.isoformat(), "days": days_back + 1,
+              "pages": stats.get("pages", 0), "requests": stats.get("requests", 0),
+              "retries": stats.get("retries", 0), "failures": stats.get("failures", 0)}
+    window["complete"] = window["retries"] == 0 and window["failures"] == 0
+    return out, window
+
+
+def fetch_window(days_back=30):
+    return fetch_window_checked(days_back)[0]
 
 
 def _service_lines(accrual):

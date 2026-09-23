@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from collections import deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -19,7 +19,28 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # Держим значение рядом с воркером: менять его надо в одном месте.
 HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 
-# Шаги, чей сбой не должен уносить с собой остальной день.
+# Какие шаги роняют прогон. Правило с 2026-09-23 (тридцать третья задача, §5): НИ ОДИН шаг загрузчика не
+# фатален. Фатальны только шаги KPI — без них нет витрины, и продолжать незачем, — и то, что внесено в
+# FATAL_STEPS явно, с причиной. Прежде было наоборот: всё фатально, кроме списка NON_FATAL_STEPS, и список
+# рос по одному шагу после каждого падения; ночь 09-23 третий по счёту WB-шаг унёс все шаги Ozon и KPI обеих
+# площадок. Упавший шаг печатает «⚠️ шаг не удался», шлёт «Шаг не выполнен, прогон продолжен», а в конце
+# прогона пропущенные шаги перечисляются одной строкой и уходят в pipeline_runtime_state — утренний алерт
+# называет их (alerts_telegram.get_last_pipeline_run).
+FATAL_STEPS = {
+    "KPI: расчет SKU": "витрина daily_sku_kpi — из неё строятся KPI маркетплейсов, алерт и книга; без неё продолжать незачем",
+    "KPI: расчет маркетплейсов": "daily_marketplace_kpi — утренний алерт читает её первой; без неё он пуст",
+}
+
+
+def is_fatal_step(title):
+    return title in FATAL_STEPS
+
+
+PIPELINE_RUN_STATE_KEY = "pipeline_run:last"
+PIPELINE_RUN_STATE_TYPE = "pipeline_run"
+
+# ИСТОРИЯ, не правило: шаги, которые до 2026-09-23 вносились в список нефатальных по одному, после падения.
+# Причины оставлены, чтобы не искать их в git. Решение о фатальности теперь принимает FATAL_STEPS.
 #
 # «Ozon: total orders analytics по SKU» ходит в Seller API за SKU-слоем, и тот
 # отвечает 429 code 8 на ПЕРВОМ же запросе шага — при том, что предыдущее
@@ -30,7 +51,7 @@ HISTORICAL_BACKFILL_FAILURE_EXIT_CODE = 2
 # Питает он единственную таблицу ozon_daily_sku_total_orders, которую читает
 # только расчёт органики — а тот выключен флагом --skip-organic до сбора
 # Selected CPO. Терять из-за него витрину нечем.
-NON_FATAL_STEPS = (
+NON_FATAL_BEFORE_20260923 = (
     "Ozon: total orders analytics по SKU",
     # Выкупы: загрузчик ходит в /v3/finance/transaction/list, отключённый Ozon
     # 2026-09-08. Переводить его на accrual/by-day наспех нельзя — это база
@@ -212,6 +233,9 @@ def build_steps(args=None):
 
 
 STEPS = build_steps()
+
+# Все шаги прогона, кроме фатальных: производное от FATAL_STEPS, не отдельный список.
+NON_FATAL_STEPS = tuple(title for title, _command in STEPS if not is_fatal_step(title))
 
 
 def parse_args():
@@ -494,8 +518,11 @@ def run_step(title, command, fatal=True, nonfatal_returncodes=()):
         if recovery_result and recovery_result.get("status") == "failed":
             print(f"❌ Ошибка на шаге: {title}")
             print("Recovery worker returned status=failed")
-            send_failure_alert(title, 1, list(tail_lines))
-            sys.exit(1)
+            send_failure_alert(title, 1, list(tail_lines), fatal=fatal)
+            if fatal:
+                sys.exit(1)
+            return {"failed": True, "returncode": 1, "output_text": "".join(full_output_lines),
+                    "recovery_result": recovery_result, "ozon_run_summary": None}
 
     print(f"✅ Готово: {title}")
     return {
@@ -507,12 +534,41 @@ def run_step(title, command, fatal=True, nonfatal_returncodes=()):
     }
 
 
+def failed_steps_line(failed_steps):
+    """Одна строка итога: какие шаги не выполнены. Её же (без эмодзи) показывает утренний алерт."""
+    if not failed_steps:
+        return "Шаги не выполнены: нет"
+    return f"⚠️ Шаги не выполнены ({len(failed_steps)}): " + "; ".join(f"{s['title']} (код {s['returncode']})" for s in failed_steps)
+
+
+def record_pipeline_run(started_at, finished_at, failed_steps, client=None):
+    """Итог прогона в pipeline_runtime_state (одна строка, ключ pipeline_run:last) — для утреннего алерта.
+
+    У cron-задачи Render нет диска, а алерт — отдельная задача, поэтому итог живёт в базе. Отказ записи не
+    роняет прогон: витрина уже построена; алерт, не найдя свежего итога, скажет «итог прогона не записан».
+    """
+    payload = {"started_at": started_at.isoformat(timespec="seconds"), "finished_at": finished_at.isoformat(timespec="seconds"),
+               "failed_steps": failed_steps}
+    try:
+        if client is None:
+            from loaders.ozon_performance_ads_loader import supabase as client
+        client.table("pipeline_runtime_state").upsert(
+            {"state_key": PIPELINE_RUN_STATE_KEY, "state_type": PIPELINE_RUN_STATE_TYPE, "account_signature": None,
+             "payload": payload, "updated_at": finished_at.isoformat()},
+            on_conflict="state_key").execute()
+        print(f"Итог прогона записан в pipeline_runtime_state ({PIPELINE_RUN_STATE_KEY}): не выполнено шагов {len(failed_steps)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ Итог прогона не записан в pipeline_runtime_state: {type(exc).__name__}: {exc}")
+
+
 def main():
     args = parse_args()
     steps = build_steps(args)
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    started_at = datetime.now(timezone.utc)
+    failed_steps = []
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     yesterday_cpc_complete = is_yesterday_cpc_loaded()
     ozon_downstream_allowed = None
@@ -527,18 +583,16 @@ def main():
         step_result = run_step(
             title,
             command,
-            fatal=(title != "Ozon: реклама Performance API" and title not in NON_FATAL_STEPS),
+            fatal=is_fatal_step(title),
             # Сбой бэкфилла ИСТОРИЧЕСКОЙ даты (код 2) не должен уносить с собой
             # текущий день: после этого шага строятся total orders, органика,
             # остатки, KPI, decision, excel и Telegram. Сбой сбора за вчера
             # приходит кодом 1 и остаётся фатальным.
             nonfatal_returncodes=(HISTORICAL_BACKFILL_FAILURE_EXIT_CODE,) if is_recovery_step(title) else (),
         )
-        if step_result.get("failed") and title in NON_FATAL_STEPS:
-            print(
-                f"⚠️  {title}: шаг не удался (код {step_result.get('returncode')}). "
-                "Шаг помечен нефатальным по известной причине — витрину строим дальше."
-            )
+        if step_result.get("failed"):
+            failed_steps.append({"title": title, "returncode": step_result.get("returncode")})
+            print(f"⚠️ {title}: шаг не удался (код {step_result.get('returncode')}), витрину строим дальше.")
         if step_result.get("failed") and is_recovery_step(title):
             print(
                 f"⚠️  {title}: сорван бэкфилл исторической даты "
@@ -570,7 +624,11 @@ def main():
                 f"{recovery_result.get('status') or 'unknown'}"
             )
 
-    print("\n✅ Весь пайплайн успешно завершен")
+    finished_at = datetime.now(timezone.utc)
+    print("\n" + failed_steps_line(failed_steps))
+    record_pipeline_run(started_at, finished_at, failed_steps)
+    if not failed_steps:
+        print("✅ Весь пайплайн успешно завершен")
     print(f"Финиш: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 

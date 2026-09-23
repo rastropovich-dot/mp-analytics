@@ -24,8 +24,9 @@ class WbOrdersStepNonFatalTests(unittest.TestCase):
     def test_wb_orders_step_is_non_fatal(self):
         self.assertIn(STEP, pipeline.NON_FATAL_STEPS)
 
-    def test_wb_sales_step_stays_fatal(self):
-        self.assertNotIn("WB: загрузка продаж/выкупов", pipeline.NON_FATAL_STEPS)
+    def test_wb_sales_step_is_non_fatal_since_the_rule_flipped(self):
+        # До 2026-09-23 продажи WB оставались фатальными; правило «загрузчики нефатальны» (§5 тридцать третьей)
+        self.assertIn("WB: загрузка продаж/выкупов", pipeline.NON_FATAL_STEPS)
 
     def test_wb_orders_step_runs_before_expenses_ads_and_kpi(self):
         titles = [title for title, _ in pipeline.build_steps()]
@@ -104,12 +105,14 @@ class PipelineContinuesTests(unittest.TestCase):
             return {"output_text": "", "recovery_result": None, "ozon_run_summary": None}
 
         with mock.patch.object(pipeline, "parse_args", return_value=args), \
+             mock.patch.object(pipeline, "record_pipeline_run"), \
              mock.patch.object(pipeline, "is_yesterday_cpc_loaded", return_value=False), \
              mock.patch.object(pipeline, "run_step", side_effect=fake_run_step):
             pipeline.main()
 
         self.assertIs(fatal_flags[STEP], False)
-        self.assertIs(fatal_flags["WB: загрузка продаж/выкупов"], True)
+        self.assertIs(fatal_flags["WB: загрузка продаж/выкупов"], False)
+        self.assertIs(fatal_flags["KPI: расчет SKU"], True)
         for title in ("WB: загрузка продаж/выкупов", "Ozon: загрузка FBS заказов",
                       "Ozon: расходы и комиссии", "Ozon: реклама Performance API",
                       "KPI: расчет SKU", "KPI: расчет маркетплейсов"):

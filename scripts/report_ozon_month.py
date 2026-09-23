@@ -293,8 +293,31 @@ def platform_of(article):
     return dict(PLATFORMS).get(first, NO_PLATFORM)
 
 
-def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost):
-    """{площадка: [строки по дням]} — то, что делится по SKU из базы.
+# Сегмент по металлу — по названию товара (дыра 5 реестра docs/owner_workbook_gaps.md, лист владельца «в т.ч. Серебро - месяц»).
+# Проверено 2026-09-23 по августу: серебро по признаку «серебр» или «925» в названии даёт оборот 01.08 142 567,00 и комиссию
+# 59 791,90 — ровно строку его листа; всё прочее — золото («золот» или проба 585 / 375 / 750). SKU без названия — «Без признака».
+METALS = (("серебр|925", "Серебро"), ("золот|585|375|750", "Золото"))
+NO_METAL = "Без признака металла"
+
+
+def metal_of(product_name):
+    import re
+    name = str(product_name or "")
+    for pattern, label in METALS:
+        if re.search(pattern, name, re.IGNORECASE):
+            return label
+    return NO_METAL
+
+
+def build_metal_daily(days, buyouts, expenses, kpi_rows, sku2name, unit_cost):
+    """{металл: [строки по дням]} — те же колонки, что у площадок, разрез — по названию товара из витрины."""
+    names = [label for _p, label in METALS] + [NO_METAL]
+    classify = lambda sku: metal_of(sku2name.get(str(sku or ""))) if str(sku or "") else NO_METAL  # noqa: E731
+    return build_platform_daily(days, buyouts, expenses, kpi_rows, {}, unit_cost, classify=classify, names=names)
+
+
+def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, classify=None, names=None):
+    """{площадка: [строки по дням]} — то, что делится по SKU из базы. classify / names — иной разрез теми же колонками (металл).
 
     Оборот, комиссия, выручка, СС, маржа — из выкупов по SKU: делятся точно. Логистика, подписка и «прочее
     с эквайрингом» — из marketplace_expenses по SKU (леджер начислений без SKU и по площадкам не делится,
@@ -302,12 +325,13 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost):
     (ad_spend витрины, решение 5). Расход без SKU и SKU без артикула — отдельная «площадка» «Без площадки»,
     чтобы сумма площадок равнялась целому, а не тихо теряла остаток.
     """
-    names = [n for _p, n in PLATFORMS] + [NO_PLATFORM]
+    names = names or [n for _p, n in PLATFORMS] + [NO_PLATFORM]
+    rest = names[-1]
     acc = {n: {d: defaultdict(Decimal) for d in days} for n in names}
-    where = lambda sku: platform_of(sku2art.get(str(sku or ""))) if str(sku or "") else NO_PLATFORM  # noqa: E731
+    where = classify or (lambda sku: platform_of(sku2art.get(str(sku or ""))) if str(sku or "") else NO_PLATFORM)
     for r in buyouts:
         d = r["buyout_date"]
-        if d not in acc[NO_PLATFORM]:
+        if d not in acc[rest]:
             continue
         a = acc[where(r["marketplace_sku"])][d]
         qty, units = D(r["buyouts_qty"]), r.get("buyouts_units")
@@ -318,13 +342,13 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost):
             a["cogs"] += (qty if units is None else D(units)) * uc
     for r in expenses:
         d, t = r["expense_date"], str(r["expense_type"] or "")
-        if d not in acc[NO_PLATFORM] or t == "commission" or t.startswith("advertising"):
+        if d not in acc[rest] or t == "commission" or t.startswith("advertising"):
             continue
         a = acc[where(r.get("marketplace_sku"))][d]
         a["logistics" if t == "logistics" else "subscription" if t == "subscription" else "other_with_acq"] += D(r["expense_amount"])
     for r in kpi_rows:
         d = r["kpi_date"]
-        if d in acc[NO_PLATFORM]:
+        if d in acc[rest]:
             acc[where(r.get("marketplace_sku"))][d]["ads_perf"] += D(r.get("ad_spend"))
     out = {}
     for name in names:
@@ -509,7 +533,8 @@ def overhead_note(days):
               "«Ebitda с компенсациями» сопоставима с «Ebitda» ручного листа, у которого компенсации внутри «Прочего».")
 
 
-def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None, orders=None, orders_error=None):
+def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None, orders=None, orders_error=None,
+               segments=None, types_summary=None):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -572,9 +597,9 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         ws.column_dimensions[get_column_letter(j)].width = 14 if j > 1 else 16
     ws.column_dimensions[get_column_letter(len(cols))].width = 60
 
-    for name, prows in (platforms or {}).items():
+    for name, prows in list((platforms or {}).items()) + list((segments or {}).items()):
         ptotal = platform_total(prows)
-        if name == NO_PLATFORM and not any(ptotal[k] for k in PLATFORM_MONEY):
+        if name in (NO_PLATFORM, NO_METAL) and not any(ptotal[k] for k in PLATFORM_MONEY):
             continue
         wsp = wb.create_sheet(name)
         wsp["A1"] = f"Выкупы Ozon — {name}"; wsp["A1"].font = bold
@@ -645,6 +670,23 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2.row_dimensions[1].height = 45
     for j, w in enumerate([14, 18, 40] + [15] * (len(cols2) - 3), 1):
         ws2.column_dimensions[get_column_letter(j)].width = w
+    if types_summary:
+        wss = wb.create_sheet("Начисления - свод")
+        wss["A1"] = "Начисления Ozon по типам за месяц (леджер ozon_accrual_daily_types, знак Ozon: списание < 0)"; wss["A1"].font = bold
+        wss["A2"] = ("Группа услуг — как в выгрузке ЛК (сверено с полотном владельца за ноябрь 2025); Вид — справочник владельца «Тип начисления → Вид»; "
+                     "статья — наша свёртка TYPE_TO_EXPENSE. Продаж и комиссии здесь нет: в леджере только услуги с type_id.")
+        heads = ("type_id", "Тип начисления (ЛК)", "Группа услуг (Ozon)", "Вид (владелец)", "Наша статья", "Σ за месяц, руб.", "Дней", "Строк услуг")
+        for j, h in enumerate(heads, 1):
+            c = wss.cell(row=4, column=j, value=h); c.font = bold; c.fill = head_fill
+        for i, r in enumerate(types_summary, 5):
+            for j, k in enumerate(("type_id", "name", "group", "kind", "article", "amount", "days", "lines"), 1):
+                v = r.get(k)
+                c = wss.cell(row=i, column=j, value=float(v) if isinstance(v, Decimal) else v)
+                if k == "amount":
+                    c.number_format = money
+        for j, w in enumerate((8, 52, 30, 18, 22, 18, 7, 11), 1):
+            wss.column_dimensions[get_column_letter(j)].width = w
+        wss.freeze_panes = "A5"
     if orders is not None:
         write_orders_sheets(wb, orders, (money, pct, bold, head_fill, young_fill))
     elif orders_error:
@@ -947,6 +989,89 @@ EXACT = (("Оборот", "turnover", "turnover"), ("Комиссия", "commiss
          ("Эквайринг", "acquiring", "acquiring"), ("Реклама по образцу = их «Реклама»", "ads_like_manual", "ads"))
 
 
+def build_types_summary(types_by_day, days):
+    """Строки листа «Начисления - свод»: type_id → название ЛК, группа услуг Ozon, Вид владельца, наша статья, Σ за месяц.
+
+    Названия — knowledge/ozon/accrual_types_2026-09-23.json (ответ /v1/finance/accrual/types, `description` = колонка «Тип
+    начисления» ЛК); группа и Вид — scripts/accrual_types_owner_check.py (OZON_GROUP по полотну владельца за ноябрь 2025,
+    справочник «Тип → Вид» из docs/owner_manual_report_instruction.md). Тип, которого нет ни там, ни там, — «(нет в справочнике)».
+    """
+    import json
+    import accrual_types_owner_check as owner
+    path = os.path.join(ROOT, "knowledge", "ozon", "accrual_types_2026-09-23.json")
+    names = {t["id"]: t.get("description") or t.get("name") for t in json.load(open(path))} if os.path.exists(path) else {}
+    directory = owner.owner_directory() if os.path.exists(owner.DOC) else []
+    total, ndays, lines = defaultdict(Decimal), defaultdict(int), defaultdict(int)
+    for d in days:
+        for type_id, v in (types_by_day.get(d) or {}).items():
+            # леджер и type_sums хранят расход со знаком «+» (см. load_types_from_ledger: -amount); в своде — знак Ozon
+            total[int(type_id)] += -D(v["amount"] if isinstance(v, dict) else v)
+            ndays[int(type_id)] += 1
+            lines[int(type_id)] += int(v.get("lines", 0)) if isinstance(v, dict) else 0
+    out = []
+    for type_id in sorted(total):
+        name = names.get(type_id, f"type_id {type_id}")
+        kinds = sorted({k for _n, k in owner.match_owner(name, directory, type_id)}) if directory else []
+        out.append({"type_id": type_id, "name": name, "group": owner.OZON_GROUP.get(type_id, "(нет в справочнике)"),
+                    "kind": " / ".join(kinds) if kinds else "(нет в справочнике)",
+                    "article": owner.OUR_ARTICLE.get(type_id, f"unknown_{type_id}"), "amount": total[type_id], "days": ndays[type_id], "lines": lines[type_id]})
+    return out
+
+
+SEGMENT_COLUMNS = (("Оборот (B)", "turnover", ("turnover",)), ("Комиссия (C)", "commission", ("commission",)), ("Логистика (I)", "logistics", ("logistics",)),
+                   ("Реклама (K) — у нас Performance по SKU", "ads_perf", ("ads",)), ("Эквайринг + Прочее (M + O) — у нас одной суммой", "other_with_acq", ("acquiring", "other")),
+                   ("Себестоимость (F) через индекс", "cogs_index", ("cogs",)))
+
+
+def read_manual_segment_sheet(path, sheet):
+    """Первый блок листа «в т.ч. Серебро - месяц»: строки с 4-й до первой не-даты в колонке A (ниже — «Итого» и блок WB с теми
+    же датами; общий read_manual_sheet читал до 60-й строки, и WB-даты затирали Ozon-даты — 2026-09-23)."""
+    import datetime
+    import warnings
+    import openpyxl
+    warnings.simplefilter("ignore")
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    out = {}
+    from reconcile_manual_report_ozon import MANUAL_COLUMNS
+    for row in wb[sheet].iter_rows(min_row=4, max_row=400, values_only=True):
+        d = row[0]
+        if not isinstance(d, datetime.datetime):
+            break
+        out[d.date().isoformat()] = {c: (None if v is None else Decimal(str(v))) for c, v in zip(MANUAL_COLUMNS, row[1:19])}
+    return out
+
+
+def check_segment(prows, manual):
+    """Сегмент (лист «в т.ч. Серебро - месяц» владельца) против нашего сегмента: [(колонка, их Σ, наша Σ, дней 0,00, расхождения)]."""
+    out = []
+    for title, ours_k, theirs_ks in SEGMENT_COLUMNS:
+        t_o = t_t = Z
+        bad, missing, n = [], [], 0
+        for r in prows:
+            m = manual.get(r["date"])
+            if not m or any(m.get(k) is None for k in theirs_ks):
+                missing.append(r["date"]); continue
+            o = r[ours_k] if ours_k != "cogs_index" else r["cogs"] * (cost_index_for(r["date"]) or Decimal(1))
+            t = sum((D(m[k]) for k in theirs_ks), Z)
+            o, t = q(o), q(t)
+            t_o += o; t_t += t; n += 1
+            if o != t:
+                bad.append((r["date"], o - t))
+        out.append({"title": title, "theirs": t_t, "ours": t_o, "diff": t_o - t_t, "equal_days": n - len(bad), "days": n, "bad": bad, "missing": missing})
+    return out
+
+
+def print_check_segment(name, table):
+    print(f"\nсегмент «{name}» против листа владельца")
+    print(f"{'колонка':56}{'у них':>16}{'у нас':>16}{'разница':>14}  дней 0,00")
+    for r in table:
+        print(f"{r['title'][:56]:56}{r['theirs']:>16,.2f}{r['ours']:>16,.2f}{r['diff']:>14,.2f}  {r['equal_days']} из {r['days']}"
+              + (f"; нет у них: {len(r['missing'])} дн." if r["missing"] else ""))
+        if r["bad"]:
+            worst = sorted(r["bad"], key=lambda x: -abs(x[1]))[:6]
+            print("      расходится: " + ", ".join(f"{d} {v:+,.2f}" for d, v in worst) + (f" … ещё {len(r['bad']) - 6} дн." if len(r["bad"]) > 6 else ""))
+
+
 def check(rows, manual):
     """Сверка с ручным листом. Возвращает (таблица строк, число нарушений в колонках, обязанных сходиться до копейки)."""
     out, failures = [], 0
@@ -1209,6 +1334,8 @@ def main():
     ap.add_argument("--summary-json", help="положить сюда итоги книги (для подписи к файлу в Telegram)")
     ap.add_argument("--no-orders", action="store_true", help="лист «Заказы» не собирать (лог статусов и окно долей не читаются)")
     ap.add_argument("--check", action="store_true", help="сверить с ручным листом (--xlsx, --sheet); код возврата 1, если обязанные колонки не сошлись")
+    ap.add_argument("--check-segment", help="сверить сегмент по металлу («Серебро» / «Золото») с листом владельца --segment-sheet (--xlsx); только печать")
+    ap.add_argument("--segment-sheet", help="лист владельца «в т.ч. Серебро - <месяц>»")
     ap.add_argument("--xlsx"); ap.add_argument("--sheet")
     args = ap.parse_args()
     # «Сегодня» — по местному времени, как у загрузчиков. Сегодняшнего дня в базе нет (ночь грузит по вчера), а в
@@ -1298,6 +1425,14 @@ def main():
     platforms = build_platform_daily(days, buyouts, expenses, kpi, sku2art, unit_cost)
     platform_totals = {name: platform_total(prows) for name, prows in platforms.items()}
     addition = platform_addition(total, platform_totals)
+    sku2name = {}
+    for r in kpi:
+        if r.get("product_name") and str(r["marketplace_sku"]) not in sku2name:
+            sku2name[str(r["marketplace_sku"])] = r["product_name"]
+    metals = build_metal_daily(days, buyouts, expenses, kpi, sku2name, unit_cost)
+    metal_totals = {name: platform_total(prows) for name, prows in metals.items()}
+    metal_addition = platform_addition(total, metal_totals)
+    types_summary = build_types_summary(types_by_day, days)
     # Лист «Заказы» — отдельная беда от выкупного: не собрался — остальные листы выходят, причина пишется в книгу и вслух.
     orders, orders_error = None, None
     if not args.no_orders:
@@ -1364,7 +1499,7 @@ def main():
     cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
                  + ("." if units_column else " (колонки marketplace_buyouts.buyouts_units ещё нет — миграция не применена)."))
     notes.insert(1, cogs_note)
-    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error)
+    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error, segments=metals, types_summary=types_summary)
     print("  " + cogs_note)
     print(f"\nплощадки (по первой букве артикула):")
     print(f"  {'площадка':14}{'оборот':>18}{'выручка':>18}{'СС':>18}{'маржа':>16}{'логистика':>13}{'прочее+экв.':>14}{'реклама Perf.':>16}{'фин. рез.':>16}")
@@ -1373,6 +1508,15 @@ def main():
     print(f"  сложение площадок в общий лист:")
     for title, a, b, diff, why in addition:
         print(f"    {title:20}{a:>18,.2f}{('—' if b is None else f'{b:,.2f}'):>18}{('—' if diff is None else f'{diff:,.2f}'):>14}" + (f"   {why}" if diff else ""))
+    print(f"\nметалл (по названию товара из витрины; SKU без названия — «{NO_METAL}»):")
+    print(f"  {'металл':22}{'оборот':>18}{'комиссия':>16}{'выручка':>16}{'СС':>16}{'логистика':>13}{'прочее+экв.':>14}{'реклама Perf.':>16}{'фин. рез.':>16}{'позиций':>9}")
+    for name, t in metal_totals.items():
+        print(f"  {name:22}{t['turnover']:>18,.2f}{t['commission']:>16,.2f}{t['revenue']:>16,.2f}{t['cogs']:>16,.2f}{t['logistics']:>13,.2f}{t['other_with_acq']:>14,.2f}{t['ads_perf']:>16,.2f}{t['fin_result']:>16,.2f}{t['positions']:>9,.0f}")
+    print(f"  сложение металлов в общий лист (обязаны сходиться там же, где площадки):")
+    for title, a, b, diff, why in metal_addition:
+        print(f"    {title:20}{a:>18,.2f}{('—' if b is None else f'{b:,.2f}'):>18}{('—' if diff is None else f'{diff:,.2f}'):>14}" + (f"   {why}" if diff else ""))
+    print(f"лист «Начисления - свод»: типов {len(types_summary)}, из них без группы ЛК {sum(1 for r in types_summary if r['group'] == '(нет в справочнике)')}, "
+          f"без Вида владельца {sum(1 for r in types_summary if r['kind'] == '(нет в справочнике)')}; Σ {sum((r['amount'] for r in types_summary), Z):,.2f}")
     print(f"\nитого: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f}, выручка {total['revenue']:,.2f}, СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}")
     if total["fin_result"] is not None:
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "
@@ -1433,6 +1577,13 @@ def main():
         failures += 0 if sources_ok else 1
         print(f"приёмка: колонок, обязанных сходиться до копейки, — {len(EXACT)}, плюс совпадение источников; не сошлось {failures}")
         code = 1 if failures else code
+    if args.check_segment:
+        if not args.xlsx or not args.segment_sheet:
+            raise SystemExit("--check-segment требует --xlsx и --segment-sheet")
+        if args.check_segment not in metals:
+            raise SystemExit(f"сегмент {args.check_segment!r} не строится; есть: {list(metals)}")
+        manual_s = read_manual_segment_sheet(args.xlsx, args.segment_sheet)
+        print_check_segment(args.check_segment, check_segment(metals[args.check_segment], manual_s))
     if args.check_orders:
         if not args.xlsx:
             raise SystemExit("--check-orders требует --xlsx")

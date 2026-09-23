@@ -101,10 +101,16 @@ def fmt(x):
     return "   —  " if x is None else f"{x:.4f}"
 
 
+def is_standard(r):
+    """Основная площадка — артикул на F (как листы площадок генератора: F / S / T)."""
+    return r["article"].strip().upper().startswith("F")
+
+
 def print_day_table(rows, days, title):
     print(f"\n{title}")
     variants = (("все, FBS+FBO", lambda r: True), ("без отменённых", lambda r: r["status"] != CANCELLED_STATUS),
-                ("только FBS", lambda r: r["scheme"] == "fbs"), ("только FBO", lambda r: r["scheme"] == "fbo"))
+                ("только FBS", lambda r: r["scheme"] == "fbs"), ("только FBO", lambda r: r["scheme"] == "fbo"),
+                ("только Standard (F)", is_standard))
     tables = [share_table(rows, days, keep) for _n, keep in variants]
     print(f"{'день':11}{'n':>6} " + "".join(f"{n:>17}" for n, _k in variants) + f"{'G его':>8}  Δ(все)  Δ(без отм.)")
     hits_all = hits_noc = 0
@@ -119,8 +125,14 @@ def print_day_table(rows, days, title):
               + f"{('%.2f' % g) if g is not None else '—':>8}  {fmt(d_all):>6}  {fmt(d_noc):>6}")
     S = sum(t[0] for t in tables[0].values()); P = sum(t[1] for t in tables[0].values())
     S2 = sum(t[0] for t in tables[1].values()); P2 = sum(t[1] for t in tables[1].values())
+    std = tables[4]
+    std_hits = sum(1 for d in days if d in std and d in OWNER_G and std[d][0] and abs(ratio(std[d][0], std[d][1]) - OWNER_G[d]) <= Decimal("0.01"))
     print(f"итого: все {fmt(ratio(S, P))} (ΣS {S:,.2f}, ΣP {P:,.2f}); без отменённых {fmt(ratio(S2, P2))}; "
-          f"дней с |Δ| ≤ 0,01: все {hits_all} из {len(days)}, без отменённых {hits_noc} из {len(days)}")
+          f"дней с |Δ| ≤ 0,01: все {hits_all} из {len(days)}, без отменённых {hits_noc} из {len(days)}, только Standard (F) {std_hits} из {len(days)}")
+    print("НАЙДЕНО 2026-09-23: G владельца = только Standard (артикулы на F), все созданные заказы вместе с отменёнными, «Предельная цена» × количество "
+          "и «Оплачено покупателем» × количество по UTC-дню «Принят в обработку» — 20 дней из 22 в пределах 0,01 (09-03 +0,011, 09-22 +0,018), "
+          "смещение +0,0009; граница UTC и МСК на этих числах неразличимы (обе 20 из 22). Перебор 60 кандидатов "
+          "(граница × множество × знаменатель × числитель) — ближайшие иные: «F без отменённых» 19 из 22, «все» 7 из 22.")
 
 
 def print_article_day(rows, day):

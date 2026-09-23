@@ -121,7 +121,7 @@ class CostTests(unittest.TestCase):
     def test_missing_cost_is_counted_not_zeroed(self):
         rows = [row("2026-09-01", code="t000000001", retail_price_with_disc="10", for_pay="5", commission_percent="42")]
         [r] = rep.build_daily(rows, ["2026-09-01"], cost_base, {}, date(2026, 9, 10))
-        self.assertEqual((r["no_cost_positions"], r["cogs"]), (1, D(0)))
+        self.assertEqual((r["no_cost_positions"], r["cogs"], r["no_cost_turnover"]), (1, D(0), D("10")))
 
 
 ACQ_TITLE = "Эквайринг (acquiringFee, возврат со знаком минус) / НДС"

@@ -238,6 +238,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
             cnt[d]["cost_" + source] += qty
             if cost is None:
                 cnt[d]["no_cost_positions"] += qty
+                s["no_cost_turnover"] += sign * price   # доля оборота без СС — вслух (задача WB-5 §3)
             else:
                 s["cogs"] += sign * cost * qty
         else:
@@ -271,7 +272,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
                "other": other, "fin_result": fin, "fin_result_pct": ratio(fin, revenue), "overhead": overhead,
                "ebitda": (fin - overhead) if overhead is not None else None, "young": young,
                "reward": s["reward"], "rebill": s["rebill"], "storage": s["storage"], "penalty": s["penalty"], "deduction": s["deduction"],
-               "acquiring_other": s["acquiring_other"]}
+               "acquiring_other": s["acquiring_other"], "no_cost_turnover": s["no_cost_turnover"]}
         row["ebitda_pct"] = ratio(row["ebitda"], revenue) if row["ebitda"] is not None else None
         out.append(row)
     return out
@@ -281,7 +282,7 @@ def total_row(rows):
     t = {"date": "Итого", "young": False, "vat": rows[-1]["vat"] if rows else vat_for("2026-01-01")}
     for k in ("rows", "positions", "no_cost_positions", "no_pct_rows"):
         t[k] = sum(r[k] for r in rows)
-    for k in ("turnover", "commission", "commission_manual", "vat_refund", "revenue", "revenue_manual", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "acquiring_other"):
+    for k in ("turnover", "commission", "commission_manual", "vat_refund", "revenue", "revenue_manual", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "acquiring_other", "no_cost_turnover"):
         t[k] = sum((r[k] for r in rows), Z)
     t["ads"] = sum((r["ads"] for r in rows if r["ads"] is not None), Z) if any(r["ads"] is not None for r in rows) else None
     t["overhead"] = sum((r["overhead"] for r in rows if r["overhead"] is not None), Z) if any(r["overhead"] is not None for r in rows) else None
@@ -471,7 +472,8 @@ def main(argv=None):
              f"Строк {len(rows)}; {outside_text}.",
              f"Комиссия факт = Оборот − forPay; по образцу владельца — Σ цена × кВВ строки (commissionPercent) — в справочных колонках и в приёмке. НДС {total['vat']}.",
              f"Себестоимость: снимок 1С {args.snapshot}, стыковка {args.cogs_by}; позиций по источникам: " + ", ".join(f"{k} {v}" for k, v in sorted(total["cost_sources"].items()))
-             + f"; без СС {total['no_cost_positions']} из {total['positions']} позиций.",
+             + f"; без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}"
+             + (f" ({ratio(total['no_cost_turnover'], total['turnover']):.1%} оборота)." if total["turnover"] else "."),
              ads_note, "Логистика = deliveryService / НДС по дате продажи МСК — с листом владельца до копейки; эквайринг — возврат со знаком минус; "
              "прочее = хранение / НДС + штрафы без НДС + удержания / НДС (docs/wb_report_model.md).",
              f"Жёлтым — дни моложе {YOUNG_DAYS} суток: строки доезжают." + (f" Таких дней: {', '.join(young)}." if young else "")]
@@ -482,6 +484,8 @@ def main(argv=None):
           f"СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}, логистика {total['logistics']:,.2f}, реклама {ads_text}, "
           f"эквайринг {total['acquiring']:,.2f}, прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
           + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total["ebitda"] is not None else ""))
+    print(f"без СС: {total['no_cost_positions']} из {total['positions']} позиций, оборот {total['no_cost_turnover']:,.2f}"
+          + (f" — {ratio(total['no_cost_turnover'], total['turnover']):.2%} оборота" if total["turnover"] else ""))
     print(f"по образцу (кВВ строк): комиссия {total['commission_manual']:,.2f}, выручка {total['revenue_manual']:,.2f}; НДС за возмещение {total['vat_refund']:,.2f}")
     print(f"записано: {out}")
     code = 0

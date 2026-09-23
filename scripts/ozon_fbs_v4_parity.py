@@ -41,9 +41,9 @@ class Counting:
 
     def __call__(self, *a, **kw):
         self.n += 1
+        stats = kw.setdefault("stats", {})        # повторы внутри http_retry тоже 429 — считаем и их
         r = self.orig(*a, **kw)
-        if r.status_code == 429:
-            self.r429 += 1
+        self.r429 += http_retry.count_429(stats, r)
         return r
 
 

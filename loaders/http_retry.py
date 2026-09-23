@@ -50,6 +50,24 @@ def _error_code(response):
         return None
 
 
+RETRY_REASONS_429 = ("rate_limit", "rate_limit_per_second")
+
+
+def is_429_reason(reason):
+    """Причина повтора из classify — это 429? Шаги, печатающие «429 — N», считают по ней и повторы http_retry."""
+    return reason in RETRY_REASONS_429
+
+
+def count_429(stats, response=None):
+    """Все 429 одного вызова request: повторы с причиной 429 из stats плюс последний ответ, если он 429.
+
+    Обёртка, считающая 429 только по возвращённому ответу, не видит повторов, которые request сделал сам:
+    ручной прогон 2026-09-23 — десять 429 в шаге штук и «пауз 429 — 0» в его итоге.
+    """
+    n = sum(v for k, v in (stats.get("reasons") or {}).items() if is_429_reason(k))
+    return n + (1 if response is not None and int(response.status_code) == 429 else 0)
+
+
 def classify(response, retry_429=RETRY_429_OZON_RATE_LIMIT):
     """(повторять?, причина). Причина идёт в лог, чтобы решение было видно."""
     status = int(response.status_code)

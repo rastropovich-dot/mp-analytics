@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 
-from reports_daily_sku_kpi import read_all_by_id
+from reports_daily_sku_kpi import buyout_rate, created_orders_qty, read_all_by_id
 
 load_dotenv()
 
@@ -26,9 +26,23 @@ def load_daily_sku_kpi():
     return read_all_by_id("daily_sku_kpi")
 
 
-def build_marketplace_kpi():
+def load_created_orders_qty():
+    """{(дата, площадка): созданные штуки} из marketplace_orders — знаменатель выкупаемости.
+
+    В daily_sku_kpi отменённых штук нет (колонки нет), поэтому созданные берутся из таблицы заказов напрямую:
+    тем же читателем по id, только нужные колонки. Правило — reports_daily_sku_kpi.buyout_rate.
+    """
+    out = {}
+    for row in read_all_by_id("marketplace_orders", "id,order_date,marketplace_code,orders_qty,cancelled_orders_qty"):
+        key = (row["order_date"], row["marketplace_code"])
+        out[key] = out.get(key, 0) + created_orders_qty(row)
+    return out
+
+
+def build_marketplace_kpi(created=None):
     sku_rows = load_daily_sku_kpi()
     print(f"Строк daily_sku_kpi загружено: {len(sku_rows)}")
+    created = load_created_orders_qty() if created is None else created
 
     grouped = {}
 
@@ -95,10 +109,7 @@ def build_marketplace_kpi():
     rows = []
 
     for row in grouped.values():
-        if row["orders_qty"] > 0:
-            row["buyout_rate"] = round(row["buyouts_qty"] / row["orders_qty"], 4)
-        else:
-            row["buyout_rate"] = 0
+        row["buyout_rate"] = buyout_rate(row["buyouts_qty"], created.get((row["kpi_date"], row["marketplace_code"]), 0))
 
         if row["buyouts_amount_seller"] > 0:
             row["gross_margin_percent"] = round(row["gross_margin_amount"] / row["buyouts_amount_seller"], 4)

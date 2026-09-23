@@ -1,0 +1,84 @@
+{
+ "source": "ozon_search_promo_selected_cpo_orders, sale_date = 2026-05-16, снято 2026-09-23 10:3x UTC одним чтением (SQL); только поля, которые читает classify_selected_cpo_coverage — без номеров заказов и отправлений",
+ "check": "у 1300079194 — 10 965,00 + 11 082,30 = 22 047,30 = эталон CLAUDE.md §8",
+ "rows": [
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1300079194",
+   "promoted_sku": "1300079194",
+   "spend": 10965.0
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1300079194",
+   "promoted_sku": "1300079194",
+   "spend": 11082.3
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1448785140",
+   "promoted_sku": "1448785140",
+   "spend": 8572.2
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1448785715",
+   "promoted_sku": "1448785715",
+   "spend": 9053.9
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1448785715",
+   "promoted_sku": "1448785715",
+   "spend": 9053.9
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1499239951",
+   "promoted_sku": "1499239951",
+   "spend": 4111.4
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1499239951",
+   "promoted_sku": "1499239951",
+   "spend": 4111.4
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1499239951",
+   "promoted_sku": "1499239951",
+   "spend": 4111.4
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1499239951",
+   "promoted_sku": "1499239951",
+   "spend": 4111.4
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1499239951",
+   "promoted_sku": "1499239951",
+   "spend": 4111.4
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1620587314",
+   "promoted_sku": "1620587257",
+   "spend": 3180.9
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1620587321",
+   "promoted_sku": "1620587321",
+   "spend": 2838.1
+  },
+  {
+   "sale_date": "2026-05-16",
+   "ordered_sku": "1620587321",
+   "promoted_sku": "1620587321",
+   "spend": 2838.1
+  }
+ ]
+}

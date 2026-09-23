@@ -11,12 +11,21 @@ TimeoutError через 19 мин 20 с, исключение прошло на�
 квоты.
 """
 
+import os
+import sys
 import unittest
 
 from unittest import mock
 
 import loaders.ozon_performance_ads_loader as loader
 import tests.test_ozon_performance_cpc_recovery as harness
+
+# Загрузчик рекламы сам читает базу (активность кампаний, ledger квоты, статус дня) через глобальный supabase —
+# 2026-09-23 эти тесты ходили за ним в боевую базу. Пустой клиент на весь файл; тесты со своей подделкой её перекрывают.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_000_no_network as _guard  # noqa: E402
+setUpModule, tearDownModule = _guard.offline_module(loader)
+
 
 
 class ReportTimeoutTypeTests(unittest.TestCase):

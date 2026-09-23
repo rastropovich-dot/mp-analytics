@@ -1,7 +1,11 @@
+import json
+import os
 import unittest
 from unittest import mock
 
 import reports_sku_order_forecast_economics as forecast
+
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "selected_cpo_source_2026-05-16.json")
 
 
 class SkuOrderForecastEconomicsTests(unittest.TestCase):
@@ -209,6 +213,11 @@ class SkuOrderForecastEconomicsTests(unittest.TestCase):
                 ],
                 attribution_rows=[],
                 decision_rows=[],
+                # Без этих двух build_report читает Selected CPO из боевой базы (2026-09-23: 3 соединения). Источник —
+                # фикстура того же дня; расход — эталон CLAUDE.md §8 (22 047,30 по SKU 1300079194 за 05-16).
+                selected_cpo_source_rows=json.load(open(FIXTURE))["rows"],
+                selected_cpo_expense_rows=[{"expense_date": "2026-05-16", "marketplace_code": "ozon", "marketplace_sku": "1300079194",
+                                            "expense_type": "advertising_order_selected_cpo", "expense_amount": 22047.30}],
             )
         self.assertEqual(report["db_writes"], 0)
         self.assertFalse(report["migration_applied"])

@@ -1,7 +1,30 @@
+import json
+import os
 import unittest
 from unittest import mock
 
 import reports_ozon_ad_diagnostic_rule as rule
+
+# build_report без selected_cpo_source_rows читает таблицу Selected CPO за дату отчёта. Тесты ходили за ней в боевую
+# базу (2026-09-23: 14 тестов, 42 соединения); теперь — фикстура, снятая один раз с того же дня.
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "selected_cpo_source_2026-05-16.json")
+_patches = []
+
+
+def setUpModule():
+    rows = json.load(open(FIXTURE))["rows"]
+
+    def from_fixture(target_date):
+        return [dict(r) for r in rows if r["sale_date"] == target_date]
+    _patches.append(mock.patch.object(rule, "load_selected_cpo_source_rows", side_effect=from_fixture))
+    for p in _patches:
+        p.start()
+
+
+def tearDownModule():
+    for p in _patches:
+        p.stop()
+    _patches.clear()
 
 
 def _kpi_row(
@@ -575,6 +598,7 @@ class OzonAdDiagnosticRuleTests(unittest.TestCase):
         }
         kpi_row = _kpi_row()
         with mock.patch.object(rule, "load_ready_decision_rows", return_value=[ready_row]), \
+            mock.patch.object(rule, "load_article_unit_costs", return_value=({"F000283615": 29390.06}, None)), \
             mock.patch.object(rule, "fetch_all", return_value=[kpi_row]), \
             mock.patch.object(rule, "discover_campaign_ids", return_value=["24375352"]), \
             mock.patch.object(rule, "run_dry_report", return_value={

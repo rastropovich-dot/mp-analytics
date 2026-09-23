@@ -72,7 +72,7 @@ STALE_MARKETPLACE = "ozon"
 KPI_TABLE = "daily_sku_kpi"
 
 
-def read_all_by_id(table):
+def read_all_by_id(table, columns="*"):
     """Вся таблица страницами: сортировка по id, следующая страница — id больше последнего.
 
     Было range() без order(): PostgREST без сортировки не обещает порядка, и страницы могут
@@ -82,7 +82,7 @@ def read_all_by_id(table):
     """
     rows, last_id = [], None
     while True:
-        query = supabase.table(table).select("*").order("id").limit(PAGE_SIZE)
+        query = supabase.table(table).select(columns).order("id").limit(PAGE_SIZE)
         if last_id is not None:
             query = query.gt("id", last_id)
         page = query.execute().data or []
@@ -150,6 +150,23 @@ def load_ozon_organic():
 
     print(f"Загружено Ozon organic строк: {len(all_rows)}")
     return all_rows
+
+
+# Выкупаемость — к СОЗДАННЫМ заказам (подтверждённые + отменённые), одинаково для Ozon и WB (тридцать четвёртая
+# задача, §3). После правила «orders_* = подтверждённые» (Ozon 2026-09-17, WB 2026-09-21) выкупы / orders_qty
+# потеряли смысл: у WB 1,005 на плато и 1,843 в окне — выкупы по дате продажи против подтверждённых по дате
+# заказа. Созданные — прежняя семантика показателя. ad_share_of_orders, ad_share_orders и roas остаются на
+# подтверждённых (orders_qty / orders_amount_seller). Созданные штуки живут в строке только до расчёта —
+# колонки в daily_sku_kpi для них нет, в базу поле не уходит.
+CREATED_QTY = "_created_orders_qty"
+
+
+def created_orders_qty(order_row):
+    return float(order_row.get("orders_qty") or 0) + float(order_row.get("cancelled_orders_qty") or 0)
+
+
+def buyout_rate(buyouts_qty, created_qty):
+    return round(buyouts_qty / created_qty, 4) if created_qty > 0 else 0
 
 
 def build_article_map(orders):
@@ -227,6 +244,7 @@ def build_kpi():
 
         grouped[key]["orders_qty"] += float(row.get("orders_qty") or 0)
         grouped[key]["orders_amount_seller"] += float(row.get("orders_amount_seller") or 0)
+        grouped[key][CREATED_QTY] = grouped[key].get(CREATED_QTY, 0) + created_orders_qty(row)
 
     for row in buyouts:
         key = (
@@ -312,11 +330,7 @@ def build_kpi():
     for row in grouped.values():
         orders_qty = row["orders_qty"]
         buyouts_qty = row["buyouts_qty"]
-
-        if orders_qty > 0:
-            row["buyout_rate"] = round(buyouts_qty / orders_qty, 4)
-        else:
-            row["buyout_rate"] = 0
+        row["buyout_rate"] = buyout_rate(buyouts_qty, row.pop(CREATED_QTY, 0))
 
         orders_amount = row["orders_amount_seller"]
         ad_spend = row.get("ad_spend") or 0

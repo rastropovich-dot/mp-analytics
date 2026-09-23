@@ -25,7 +25,9 @@ saleDt в московском времени (у строки без saleDt —
     Себестоимость       снимок 1С (article_unit_costs) по базовому артикулу (unit_cost_uniform), для
                         безразмерных — точная строка; --cogs-by variant — по варианту артикул-размер
     Логистика           Σ deliveryService / НДС — его I до копейки при дате saleDt МСК
-    Реклама             advert-api /adv/v1/upd за месяц (фактические списания), 1 обращение; --no-fetch — пусто
+    Реклама             Σ updSum за день (updTime по МСК) / НДС — у владельца реклама без НДС (июль 1 694 178 =
+                        Σ updSum / 1,22 до рубля); источник по умолчанию — таблица wb_ad_spend_daily,
+                        --ads api — живой adv/v1/upd (1 обращение, ручной путь), --ads none — пусто, не ноль
     Эквайринг           Σ acquiringFee (продажа +, возврат −) / НДС — его M; 09-17 он возвраты не вычел
     Прочее              Σ paidStorage / НДС + Σ penalty (штрафы без НДС) + Σ deduction / НДС — его O
     Фин. рез.           Маржа − Логистика − Реклама − Эквайринг − Прочее
@@ -54,6 +56,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 from loaders import stale_keys  # noqa: E402
 import loaders.wb_sales_report_loader as loader  # noqa: E402
+import loaders.wb_ads_loader as ads_loader  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet  # noqa: E402
 from report_ozon_month import MONTHS, VAT_RATES, vat_for  # noqa: E402,F401  — тот же НДС, что у Ozon
 
@@ -189,20 +192,28 @@ def unit_cost_for(exact, uniform, vendor_code, tech_size, mode="base"):
 
 
 def fetch_ads(d1, d2):
-    """Фактические списания за рекламу по дням: advert-api /adv/v1/upd (интервал ≤ 31 день), одно обращение."""
-    import requests
-    resp = requests.get("https://advert-api.wildberries.ru/adv/v1/upd", headers={"Authorization": os.getenv("WB_API_KEY")},
-                        params={"from": d1, "to": d2}, timeout=120)
-    if resp.status_code != 200:
-        raise RuntimeError(f"adv/v1/upd HTTP {resp.status_code}: {resp.text[:200]}")
+    """Ручной путь: живой advert-api /adv/v1/upd (интервал ≤ 31 день), одно обращение; день — updTime по МСК."""
     by, undated = defaultdict(Decimal), Z
-    for x in resp.json() or []:
-        when = (x.get("updTime") or "")[:10]
+    for x in ads_loader.request_upd(d1, d2):
+        when = x.get("updTime")
         if when:
-            by[when] += D(x.get("updSum"))
+            by[ads_loader.upd_day(when)] += D(x.get("updSum"))
         else:
             undated += D(x.get("updSum"))
     return dict(by), undated
+
+
+def load_ads_db(sb, d1, d2):
+    """Списания из wb_ad_spend_daily по upd_day (updSum с НДС). Таблицы нет — RuntimeError, реклама остаётся неизвестной."""
+    try:
+        rows = stale_keys.read_window_rows(sb, ads_loader.TABLE, "advert_id,upd_time,upd_day,upd_sum",
+                                           [("gte", "upd_day", d1), ("lte", "upd_day", d2)], ["upd_day", "advert_id", "upd_time"])
+    except Exception as error:
+        raise RuntimeError(f"не прочитать {ads_loader.TABLE}: {str(error)[:160]}")
+    by = defaultdict(Decimal)
+    for r in rows:
+        by[str(r["upd_day"])] += D(r["upd_sum"])
+    return dict(by), Z
 
 
 # ---------- расчёт ----------
@@ -256,7 +267,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
         withheld = s["turnover"] - s["for_pay"]         # справочно: удержано из выплаты всего
         revenue = (s["turnover"] - commission) / vat - vat_refund
         cogs = s["cogs"]
-        ads = ads_by_day.get(d, Z) if ads_known else None
+        ads = (ads_by_day.get(d, Z) / vat) if ads_known else None   # updSum с НДС → без, как на листе владельца
         logistics, acquiring = s["delivery"] / vat, s["acquiring_raw"] / vat
         other = s["storage"] / vat + s["penalty"] + s["deduction"] / vat   # штрафы у владельца без НДС — 21 из 21 только так
         margin = revenue - cogs
@@ -434,7 +445,10 @@ def main(argv=None):
     ap.add_argument("--rows-from-files", metavar="DIR", help="строки отчёта из файлов сырья бэкфилла, а не из таблицы")
     ap.add_argument("--snapshot", default=SNAP)
     ap.add_argument("--cogs-by", choices=("base", "variant"), default="base", help="СС по базовому артикулу (решение WB-5) или по варианту артикул-размер")
-    ap.add_argument("--no-fetch", action="store_true", help="в API не ходить (реклама пустая)")
+    ap.add_argument("--ads", choices=("table", "api", "none"), default="table",
+                    help="реклама: table — из wb_ad_spend_daily (по умолчанию); api — живой adv/v1/upd (ручной путь); none — пусто")
+    ap.add_argument("--fetch", dest="ads", action="store_const", const="api", help="то же, что --ads api")
+    ap.add_argument("--no-fetch", dest="ads", action="store_const", const="none", help="то же, что --ads none")
     ap.add_argument("--check", action="store_true"); ap.add_argument("--xlsx"); ap.add_argument("--sheet")
     args = ap.parse_args(argv)
 
@@ -448,13 +462,14 @@ def main(argv=None):
           + ("файлы " + args.rows_from_files if args.rows_from_files else loader.TABLE) + ")")
     exact, uniform = load_costs(sb, args.snapshot)
     print(f"снимок 1С {args.snapshot}: точных строк {len(exact)}, базовых артикулов с единой СС {len(uniform)}; стыковка — {args.cogs_by}")
-    ads_by_day, ads_known, ads_note = {}, False, "реклама не запрашивалась (--no-fetch)"
-    if not args.no_fetch:
+    ads_by_day, ads_known, ads_note = {}, False, "реклама не запрашивалась (--ads none)"
+    if args.ads != "none":
         try:
-            ads_by_day, undated = fetch_ads(d1, days[-1])
+            ads_by_day, undated = fetch_ads(d1, days[-1]) if args.ads == "api" else load_ads_db(sb, d1, days[-1])
             ads_known = True
-            ads_note = f"реклама: adv/v1/upd за {d1}…{days[-1]} — списаний {sum(ads_by_day.values(), Z):,.2f}" + (f", без даты {undated:,.2f}" if undated else "")
-        except Exception as error:  # реклама не обязана останавливать лист
+            source = "adv/v1/upd (живой)" if args.ads == "api" else ads_loader.TABLE
+            ads_note = f"реклама: {source} за {d1}…{days[-1]} — списаний {sum(ads_by_day.values(), Z):,.2f} с НДС" + (f", без даты {undated:,.2f}" if undated else "")
+        except Exception as error:  # реклама не обязана останавливать лист; пусто — не ноль
             ads_note = f"реклама не получена: {error}"
     print(ads_note)
     cost_fn = lambda code, size: unit_cost_for(exact, uniform, code, size, args.cogs_by)  # noqa: E731

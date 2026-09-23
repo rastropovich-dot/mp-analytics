@@ -13,6 +13,9 @@
 «реклама не доехала». Файлов сырья на Render нет и не нужно. Дня нет в леджере — пустые реклама и эквайринг с примечанием.
 
 Книга сохраняется в data/reports/ozon_<месяц>_to_<дата>.xlsx (gitignored) — та же, что ушла в Telegram; путь печатается.
+На Render диск cron-задачи эфемерный: файл живёт до конца прогона. Поэтому после sendDocument в лог уходит одна строка
+«книга в Telegram: <имя> file_id=… file_unique_id=… size=… sha256=…» (и то же — в спутник <книга>.json, раздел delivery):
+scripts/fetch_ozon_month_report.py находит её в логе Render и скачивает ту же книгу на машину владельца, сверяя sha256.
 
 Шаг нефатальный для утреннего алерта: alerts_telegram.py зовёт его отдельным процессом уже ПОСЛЕ отправки
 сообщения. Коды: 0 — книга ушла (или собрана при --no-send); 1 — не вышло, и об этом уже сказано в Telegram
@@ -21,6 +24,7 @@
 """
 import argparse
 import calendar
+import hashlib
 import json
 import os
 import subprocess
@@ -96,20 +100,59 @@ def generate(month, date_to, out_dir):
     return (out if ok else None), summary, res.returncode, text[-600:]
 
 
-def telegram(method, token, **kwargs):
-    """Вызов Bot API. Адрес с токеном не печатается. Возвращает (успех, что ответили)."""
+def telegram_call(method, token, **kwargs):
+    """Вызов Bot API. Адрес с токеном не печатается. Возвращает (успех, что ответили, тело ответа)."""
     resp = requests.post(f"https://api.telegram.org/bot{token}/{method}", timeout=120, **kwargs)
     try:
         body = resp.json()
     except ValueError:
         body = {"ok": False, "description": resp.text[:200]}
-    return bool(resp.status_code == 200 and body.get("ok")), f"HTTP {resp.status_code}, ok={body.get('ok')}" + (f", {body.get('description')}" if body.get("description") else "")
+    said = f"HTTP {resp.status_code}, ok={body.get('ok')}" + (f", {body.get('description')}" if body.get("description") else "")
+    return bool(resp.status_code == 200 and body.get("ok")), said, body
+
+
+def telegram(method, token, **kwargs):
+    ok, said, _body = telegram_call(method, token, **kwargs)
+    return ok, said
+
+
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def sent_document(body):
+    """Из ответа sendDocument — то, по чему книгу можно скачать обратно: file_id, file_unique_id, размер, имя."""
+    doc = ((body or {}).get("result") or {}).get("document") or {}
+    return {k: doc.get(k) for k in ("file_id", "file_unique_id", "file_size", "file_name")}
+
+
+def delivery_line(name, doc, size, sha):
+    """Одна строка лога — её ищет fetch_ozon_month_report.py. Формат не менять без правки парсера там."""
+    return (f"книга в Telegram: {name} file_id={doc.get('file_id')} file_unique_id={doc.get('file_unique_id')} "
+            f"size={size} sha256={sha}")
 
 
 def send_document(path, caption, token, chat_id):
+    """(успех, что ответили, {file_id, file_unique_id, file_size, file_name})."""
     with open(path, "rb") as fh:
-        return telegram("sendDocument", token, data={"chat_id": chat_id, "caption": caption},
-                        files={"document": (os.path.basename(path), fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        ok, said, body = telegram_call("sendDocument", token, data={"chat_id": chat_id, "caption": caption},
+                                       files={"document": (os.path.basename(path), fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    return ok, said, sent_document(body)
+
+
+def record_delivery(path, doc, size, sha):
+    """Раздел delivery в спутник <книга>.json (тот же файл, что пишет генератор сводкой). Отказ — не повод ронять доставку."""
+    side = path + ".json"
+    try:
+        data = json.load(open(side)) if os.path.exists(side) else {}
+        data["delivery"] = {**doc, "size": size, "sha256": sha, "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        json.dump(data, open(side, "w"), ensure_ascii=False, indent=1)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  спутник {side} не дописан: {type(exc).__name__}: {exc}")
 
 
 def main(argv=None):
@@ -147,17 +190,25 @@ def main(argv=None):
         return fail(f"генератор завершился с кодом {code}: …{tail[-300:]}")
     caption = build_caption(month, date_to, summary, code == ORDERS_SHEET_FAILED)
     size = os.path.getsize(path)
-    print(f"\nкнига: {path}, {size:,} байт".replace(",", " "))
+    sha = sha256_of(path)
+    print(f"\nкнига: {path}, {size:,} байт".replace(",", " ") + f", sha256 {sha}")
     print("подпись:\n" + caption)
     if args.no_send:
         print("\n--no-send: в Telegram не отправлено ничего. db_writes = 0")
         return 0
     try:
-        ok, said = send_document(path, caption, token, chat_id)
+        ok, said, *rest = send_document(path, caption, token, chat_id)
     except Exception as exc:  # noqa: BLE001
         return fail(f"sendDocument: {type(exc).__name__}: {exc}")
     print(f"sendDocument: {said}")
-    return 0 if ok else fail(f"sendDocument ответил: {said}")
+    if not ok:
+        return fail(f"sendDocument ответил: {said}")
+    doc = rest[0] if rest else {}
+    print(delivery_line(os.path.basename(path), doc, size, sha))
+    if not doc.get("file_id"):
+        print("  ⚠️ в ответе sendDocument нет file_id — скачать книгу обратно из Telegram будет нечем")
+    record_delivery(path, doc, size, sha)
+    return 0
 
 
 if __name__ == "__main__":

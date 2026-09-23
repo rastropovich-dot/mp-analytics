@@ -242,7 +242,9 @@ class FromFilesTests(unittest.TestCase):
                  mock.patch.object(restore.http_retry, "get") as http_get, \
                  mock.patch.object(restore, "supabase") as supabase, \
                  mock.patch.object(restore, "plan_from_files", wraps=restore.plan_from_files) as plan:
-                code = restore.main(["--from-files", tmp, "--plan"])
+                # Свой файл прогресса: после настоящего --apply в logs/ лежит прогресс
+                # со 151 сделанной датой, и очередь теста без него пуста.
+                code = restore.main(["--from-files", tmp, "--plan", "--progress-path", os.path.join(tmp, "p.json")])
 
         self.assertEqual(code, 0)
         http_get.assert_not_called()

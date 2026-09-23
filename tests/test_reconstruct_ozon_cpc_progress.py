@@ -6,7 +6,7 @@ from unittest import mock
 import loaders.ozon_performance_ads_loader as loader
 
 
-MODULE_PATH = Path("/Users/mihaileliseev/mp-analytics/scripts/reconstruct_ozon_cpc_progress.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "reconstruct_ozon_cpc_progress.py"
 SPEC = importlib.util.spec_from_file_location("reconstruct_ozon_cpc_progress", MODULE_PATH)
 reconstruct = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reconstruct)

@@ -1,9 +1,18 @@
+import sys
+import os
 import importlib.util
 from pathlib import Path
 import unittest
 from unittest import mock
 
 import loaders.ozon_performance_ads_loader as loader
+
+# Загрузчик рекламы сам читает базу (активность кампаний, ledger квоты, статус дня) через глобальный supabase —
+# 2026-09-23 эти тесты ходили за ним в боевую базу. Пустой клиент на весь файл; тесты со своей подделкой её перекрывают.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_000_no_network as _guard  # noqa: E402
+setUpModule, tearDownModule = _guard.offline_module(loader)
+
 
 
 MODULE_PATH = Path("/Users/mihaileliseev/mp-analytics/scripts/ozon_performance_recovery_worker.py")

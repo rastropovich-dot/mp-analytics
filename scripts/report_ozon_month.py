@@ -82,6 +82,11 @@ VAT_RATES = (("2026-01-01", Decimal("1.22")), ("0001-01-01", Decimal("1.20")))
 # «Ozon - сентябрь» R = P − $T$83, T83 = 311 527,00 (у WB своя константа 74 002,00 — здесь не используется).
 # Откуда число и как оно меняется — владелец скажет; до даты действия Ebitda пуста, не ноль.
 OVERHEAD_PER_DAY = {"ozon": (("2026-09-01", Decimal("311527.00")),)}
+# Индекс себестоимости — справочно, пока нет новой выгрузки 1С: наш снимок 05-20 против цен владельца за 1–21 сентября
+# (лист 22.09): 27 401 217,62 / 23 824 962,63 = 1,150; по дням 1,175 (начало месяца) → 1,116 (21-е) — у него величина
+# движется внутри месяца, по SKU из его файла не восстановить. С новым снимком 1С индекс с той даты — 1,00.
+COST_INDEX = (("2026-09-01", Decimal("1.150")),)
+COST_INDEX_STALE_PCT = Decimal("0.03")     # индекс по листу отличается от параметра больше — «протух», --check говорит вслух
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
@@ -104,6 +109,14 @@ def vat_for(day):
 def overhead_for(day, platform="ozon"):
     """Накладные в день на дату или None, если ставка на эту дату не задана."""
     for valid_from, value in OVERHEAD_PER_DAY.get(platform, ()):
+        if day >= valid_from:
+            return value
+    return None
+
+
+def cost_index_for(day):
+    """Индекс СС на дату или None, если на эту дату не задан."""
+    for valid_from, value in COST_INDEX:
         if day >= valid_from:
             return value
     return None
@@ -183,9 +196,12 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             row["subscription"] = a["exp_subscription"] / vat
             row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
             for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
-                      "ebitda", "ebitda_with_comp"):
+                      "ebitda", "ebitda_with_comp", "fin_result_index", "ebitda_index"):
                 row[k] = None
             row["overhead"] = overhead_for(d)
+            row["cost_index"] = cost_index_for(d)
+            row["cogs_index"] = None if row["cost_index"] is None else row["cogs"] * row["cost_index"]
+            row["margin_index"] = None if row["cost_index"] is None else row["revenue"] - row["cogs_index"]
             rows.append(row)
             continue
         # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
@@ -216,6 +232,13 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         row["overhead"] = overhead_for(d)
         row["ebitda"] = None if row["overhead"] is None else row["fin_result"] - row["overhead"]
         row["ebitda_with_comp"] = None if row["overhead"] is None else row["fin_result_with_comp"] - row["overhead"]
+        # справочно по индексу СС: та же строка, где себестоимость = снимок × индекс
+        row["cost_index"] = cost_index_for(d)
+        idx = row["cost_index"]
+        row["cogs_index"] = None if idx is None else row["cogs"] * idx
+        row["margin_index"] = None if idx is None else row["revenue"] - row["cogs_index"]
+        row["fin_result_index"] = None if idx is None else row["fin_result"] + row["cogs"] - row["cogs_index"]
+        row["ebitda_index"] = None if idx is None or row["overhead"] is None else row["fin_result_index"] - row["overhead"]
         # Сверка двух таблиц одной базы: статья из типов против той же статьи в marketplace_expenses. Расходятся —
         # называем: upsert расходов строк не удаляет, и начисление, которое Ozon убрал, застревает в базе
         # (найдено 2026-09-21: 09-11, 09-12, 09-15, 09-19 — по одной строке). Лист считает по типам.
@@ -227,6 +250,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
 
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
          "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
+         "cogs_index", "margin_index", "fin_result_index", "ebitda_index",
          "ads_like_manual", "log_other_like_manual", "positions", "units"]
 
 
@@ -467,6 +491,15 @@ def load_costs(sb, snapshot):
     return sku2art, unit_cost, len(cost), len(norms), orders
 
 
+def cost_index_note(days, snapshot):
+    rates = sorted({cost_index_for(d) for d in days if cost_index_for(d) is not None})
+    if not rates:
+        return f"Себестоимость — снимок 1С {snapshot}; индекса СС на эти даты нет, колонки «по индексу» пусты."
+    return (f"Себестоимость — снимок 1С {snapshot}. Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
+            + " (справочно, пока нет новой выгрузки 1С; источник — лист владельца 22.09, 1–21 сентября: 27 401 217,62 / 23 824 962,63; "
+              "у него по дням 1,175 → 1,116). Колонки «по индексу» = снимок × индекс; основные — на снимке.")
+
+
 def overhead_note(days):
     rates = sorted({(overhead_for(d) or Z) for d in days})
     if rates == [Z]:
@@ -496,6 +529,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
             ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
             ("справочно: Ebitda с компенсациями", "ebitda_with_comp", money), ("% Ebitda с компенсациями", "ebitda_with_comp_pct", pct),
+            ("справочно: СС по индексу", "cogs_index", money), ("Маржа по индексу", "margin_index", money),
+            ("Фин. рез. по индексу", "fin_result_index", money), ("Ebitda по индексу", "ebitda_index", money),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
             ("Позиций выкупов", "positions", "#,##0"), ("Штук (где не измерены — позиции)", "units", "#,##0"),
             ("строк СС по штукам", "rows_by_units", "#,##0"), ("строк СС по позициям", "rows_by_positions", "#,##0"),
@@ -643,7 +678,7 @@ def other_share_of(ledger_by_day, buyouts):
     return (expense / turnover if turnover else None), expense, turnover, sorted(unknown)
 
 
-def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
+def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name, day_note=None, snapshot=SNAP):
     """Всё для листов «Заказы»: читает лог статусов, выкупы и леджер окна долей; возвращает словарь для записи и печати."""
     d2 = days[-1]
     stamps = defaultdict(list)
@@ -672,14 +707,19 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     ledger_w = load_types_from_ledger(sb, w1, w2)
     other_share, other_expense, other_turnover, unknown_types = other_share_of(ledger_w, buyouts_w)
     ads_by_day = {r["date"]: r.get("ads") for r in daily_rows}
+    ads_manual_by_day = {r["date"]: r.get("ads_like_manual") for r in daily_rows}     # (41 + 54 + 96 + вся подписка) / НДС — как у владельца
     blocks, said = forecast.build_orders_daily(days, order_rows, curve, obs_dates, commission_share, other_share, ads_by_day, unit_cost, vat_for,
-                                               lambda r: platform_of(r.get("article") or sku2art.get(str(r.get("marketplace_sku") or ""))))
+                                               lambda r: platform_of(r.get("article") or sku2art.get(str(r.get("marketplace_sku") or ""))),
+                                               ads_manual_by_day)
     young = {r["date"] for r in daily_rows if r.get("young")}
     totals = {}
     for key, rows in blocks.items():
         for r in rows:
             forecast.add_order_ratios(r)
             r["young"] = r["date"] in young
+            idx = cost_index_for(r["date"])
+            r["cogs_index"] = None if idx is None or r.get("cogs") is None else r["cogs"] * idx
+            r["fin_result_index"] = None if idx is None or r.get("fin_result") is None else r["fin_result"] + r["cogs"] - r["cogs_index"]
         totals[key] = forecast.orders_total(rows)
     # сверка плато другим разрезом: доля отмен в самой таблице заказов по дням возраста 21…50 (штуки ТОВАРА, не отправления)
     table_plateau = {}
@@ -694,7 +734,8 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name):
     return {"blocks": blocks, "totals": totals, "said": said, "curve": curve, "obs": obs, "obs_date": obs_date, "log_rows": len(log_rows),
             "window": (w1, w2), "commission_share": commission_share, "commission_base": commission_base,
             "other_share": other_share, "other_expense": other_expense, "other_turnover": other_turnover, "ledger_days": len(ledger_w),
-            "unknown_types": unknown_types, "table_plateau": table_plateau, "sensitivity": sensitivity, "mature": forecast.mature_check(blocks["all"])}
+            "unknown_types": unknown_types, "table_plateau": table_plateau, "sensitivity": sensitivity, "mature": forecast.mature_check(blocks["all"]),
+            "day_note": day_note or {}, "snapshot": snapshot}
 
 
 def orders_notes(o):
@@ -724,14 +765,46 @@ def orders_notes(o):
              + ". Прогноз считается по полной кривой; с каждой ночью вес одной отмены падает.",
              "Сверка другим разрезом — доля отмен в самой таблице заказов по дням возраста 21…50 суток (штуки товара / ₽): "
              + "; ".join(f"{names[s]} {pct(q_)} / {pct(a_)}" for s, (q_, a_) in o["table_plateau"].items()) + ".",
-             "Справочные колонки — формулы владельца на его константах 0,65 / 0,59 / 0,024 (июльская книга; в сентябрьской на листе «Заказы» уже 0,58, на «Заказы Standard» — 0,73). "
-             "Реклама в них та же, 41 + 54, чтобы разница показывала константы, а не состав рекламы; себестоимость — по созданным штукам.",
+             owner_multiplier_note(o),
+             "Справочный фин. рез. = Маржа (созданных) × 0,65 − Реклама по образцу − Выручка × 0,65 × 0,024; реклама по образцу = (41 + 54 + 96 + вся статья подписки) / НДС "
+             "по дню заказа, как в его листе; себестоимость — по созданным штукам. Справочный ДРР = Реклама по образцу / (Выручка × 0,65 × НДС / 0,59) — "
+             "у него на листе «Заказы» в знаменателе 0,58, на «Заказы Standard» — 0,73. Колонка модели «Реклама (41 + 54)» и наш фин. рез. прогноз — без подписки и сбора отзывов.",
+             cost_index_note([r["date"] for r in o["blocks"]["all"]], o.get("snapshot", SNAP)).replace("Колонки «по индексу» = снимок × индекс; основные — на снимке.",
+                                                                                                    "«СС по индексу» и «Фин. рез. прогноз по индексу» = снимок × индекс; основные — на снимке."),
+             platform_note(o),
              "Реклама и фин. рез. — только на общем листе: леджер начислений без схемы. Себестоимость — article_unit_costs × прогноз подтверждённых штук товара.",
              f"Приёмка: дозревших дней {o['mature'][0]}, прогноз = факту на {o['mature'][1]}" + (f"; НЕ равен: {', '.join(o['mature'][2])}" if o["mature"][2] else "") + "."]
     if o["unknown_types"]:
         lines.append(f"ВНИМАНИЕ: в окне долей есть незнакомые типы начислений {o['unknown_types']} — вошли в прочие.")
     lines.extend("ВНИМАНИЕ: " + x for x in o["said"])
     return head, lines
+
+
+def owner_multiplier_note(o):
+    """Множители «выручки» владельца по площадкам с датой действия — и рядом измеренная доля комиссии модели."""
+    days = [r["date"] for r in o["blocks"]["all"]]
+    d1, d2 = days[0], days[-1]
+    names = [n for _p, n in PLATFORMS] + [NO_PLATFORM]
+    mult = lambda d: ", ".join(f"{n} {str(forecast.owner_after_commission(d, n)).replace('.', ',')}" for n in names)  # noqa: E731
+    share = o["commission_share"]
+    pct = lambda v: "—" if v is None else f"{v * 100:.1f} %".replace(".", ",")  # noqa: E731
+    return (f"Справочная «Выручка» = создано × множитель площадки владельца / НДС; множители по его сентябрьскому листу (проверены сырьём отправлений 09-01 … 09-16 "
+            f"по UTC-суткам: 0,530 / 0,900 / 0,530 без разброса): на {d2} — {mult(d2)}" + (f"; на {d1} — {mult(d1)}" if mult(d1) != mult(d2) else "")
+            + " (комиссия 47 % / 47 % / 10 %; до 2026-09-01 — 0,59 по подписи июльской книги, июль не перепроверялся). "
+            + "Измеренная доля комиссии — в модели: " + ", ".join(f"{n} {pct(share.get(n))}" for _p, n in PLATFORMS) + ". "
+            + "Его источник режет сутки по UTC, наша таблица — по МСК: по дням его/наша шумит, по итогу сходится.")
+
+
+def platform_note(o):
+    """Площадки на заказах: доля созданного по площадкам и «без площадки» — вслух, не молча."""
+    parts, total = [], o["totals"]["all"]["created_a"] or Z
+    for _p, name in PLATFORMS + ((None, NO_PLATFORM),):
+        t = o["totals"].get(f"platform:{name}")
+        if t is None or (name == NO_PLATFORM and not t["created_a"]):
+            continue
+        parts.append(f"{name} {t['created_a']:,.2f} ₽ ({(t['created_a'] / total * 100) if total else 0:.1f} %)")
+    return ("Площадки — по первой букве артикула, той же картой sku → артикул, что у выкупных листов: создано " + ", ".join(parts)
+            + ". «Без площадки» — товары без артикула в карте; в общий лист входят, в листы площадок нет.")
 
 
 def write_orders_sheets(wb, o, styles):
@@ -745,29 +818,31 @@ def write_orders_sheets(wb, o, styles):
             ("Прогноз подтв., шт", "fc_q", "#,##0.0"), ("Прогноз подтв., руб.", "fc_a", money), ("Прогноз отмен всего, % руб.", "fc_canc_pct", pct),
             ("Комиссия прогноз, руб.", "commission", money), ("Комиссия, %", "commission_pct", pct), ("Выручка прогноз, руб.", "revenue", money),
             ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-            ("Реклама (41 + 54), руб.", "ads", money), ("% ДРР от созданного", "drr_created_pct", pct), ("% ДРР от прогноза подтв.", "drr_fc_pct", pct),
+            ("Реклама (41 + 54), руб.", "ads", money), ("Реклама по образцу (41 + 54 + 96 + подписка), руб.", "ads_manual", money),
+            ("% ДРР от созданного", "drr_created_pct", pct), ("% ДРР от прогноза подтв.", "drr_fc_pct", pct),
             ("Прочие, руб.", "other", money), ("Фин. рез. прогноз, руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), (None, None, None),
-            ("справочно, формулы владельца: Выручка = создано × 0,59 / НДС", "owner_revenue", money), ("Маржа (созданных)", "owner_margin", money),
-            ("ДРР = Реклама / (Выручка × 0,65 × НДС / 0,59)", "owner_drr_pct", pct), ("Фин. рез. = Маржа × 0,65 − Реклама − Выручка × 0,65 × 0,024", "owner_fin_result", money),
+            ("СС по индексу, руб.", "cogs_index", money), ("Фин. рез. прогноз по индексу, руб.", "fin_result_index", money),
+            ("справочно, формулы владельца: Выручка = создано × множитель площадки владельца / НДС", "owner_revenue", money), ("Маржа (созданных)", "owner_margin", money),
+            ("ДРР = Реклама по образцу / (Выручка × 0,65 × НДС / 0,59)", "owner_drr_pct", pct),
+            ("Фин. рез. = Маржа × 0,65 − Реклама по образцу − Выручка × 0,65 × 0,024", "owner_fin_result", money),
             ("Наш фин. рез. − владельца", "fin_result_minus_owner", money), ("шт подтв. без себестоимости", "no_cost_q", "#,##0"), ("Примечание", "note", None)]
-    only_total = {"ads", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "owner_revenue", "owner_margin", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner"}
-    for index, (key, title) in enumerate((("all", "Заказы"), ("fbo", "Заказы FBO"), ("fbs", "Заказы FBS")), 1):
-        ws = wb.create_sheet(title, index)
-        cols = [c for c in full if c[1] not in only_total and not (key != "all" and c[0] is None)] if key != "all" else full
-        ws["A1"] = "Заказы Ozon по дню заказа — прогноз по кривой дозревания" + ("" if key == "all" else f", {key.upper()}"); ws["A1"].font = bold
+    only_total = {"ads", "ads_manual", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "fin_result_index", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner"}
+    part_cols = [c for c in full if c[1] not in only_total and c[0] is not None]
+
+    def write_block(ws, title, cols, rows, total, note_schemas, common):
+        ws["A1"] = title; ws["A1"].font = bold
         ws["A2"] = head
         for j, (h, _k, _f) in enumerate(cols, 1):
             if h:
                 c = ws.cell(row=4, column=j, value=h); c.font = bold; c.fill = head_fill
                 c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-        rows = o["blocks"][key]
-        for i, r in enumerate(rows + [o["totals"][key]], 5):
+        for i, r in enumerate(rows + [total], 5):
             r = dict(r)
             if r["date"] != "Итого":
                 left = "; ".join(f"{s.upper()} ещё −{forecast.remaining_share(o['curve'], s, r['age'], 'amt') * 100:.1f} % ₽".replace(".", ",")
-                                 for s in (forecast.SCHEMAS if key == "all" else (key,)) if forecast.remaining_share(o["curve"], s, r["age"], "amt") is not None)
-                r["note"] = "; ".join(x for x in ("факт: день дозрел" if r["mature"] else f"прогноз: {left}" if left else "прогноза нет: кривой нет",
-                                                   "моложе двух суток — реклама доезжает" if r.get("young") and key == "all" else "") if x)
+                                 for s in note_schemas if forecast.remaining_share(o["curve"], s, r["age"], "amt") is not None)
+                young_note = (o["day_note"].get(r["date"]) or "моложе двух суток — реклама доезжает") if r.get("young") and common else ""
+                r["note"] = "; ".join(x for x in ("факт: день дозрел" if r["mature"] else f"прогноз: {left}" if left else "прогноза нет: кривой нет", young_note) if x)
             for j, (h, k, fmt) in enumerate(cols, 1):
                 if not h:
                     continue
@@ -793,6 +868,19 @@ def write_orders_sheets(wb, o, styles):
         for j in range(1, len(cols) + 1):
             ws.column_dimensions[get_column_letter(j)].width = 15
         ws.column_dimensions[get_column_letter(len(cols))].width = 50
+
+    index = 1
+    for key, title in (("all", "Заказы"), ("fbo", "Заказы FBO"), ("fbs", "Заказы FBS")):
+        ws = wb.create_sheet(title, index); index += 1
+        write_block(ws, "Заказы Ozon по дню заказа — прогноз по кривой дозревания" + ("" if key == "all" else f", {key.upper()}"),
+                    full if key == "all" else part_cols, o["blocks"][key], o["totals"][key], forecast.SCHEMAS if key == "all" else (key,), key == "all")
+    # листы площадок — как у выкупов: та же карта sku → артикул; реклама и фин. рез. только на общем листе (леджер без площадки)
+    for _p, name in PLATFORMS + ((None, NO_PLATFORM),):
+        key = f"platform:{name}"
+        if key not in o["blocks"] or (name == NO_PLATFORM and not o["totals"][key]["created_a"]):
+            continue
+        ws = wb.create_sheet(f"Заказы {name}", index); index += 1
+        write_block(ws, f"Заказы Ozon по дню заказа — {name} (площадка по первой букве артикула)", part_cols, o["blocks"][key], o["totals"][key], forecast.SCHEMAS, False)
     wsc = wb.create_sheet("Кривая дозревания")
     wsc["A1"] = head; wsc["A1"].font = bold
     wsc["A2"] = ("h — доля живых (не отменённых) возраста k, отменённых к следующей ночи; внутри ведра возрастов доля одна. r — доля подтверждённых сейчас, которая ещё "
@@ -835,8 +923,15 @@ def print_orders(o, buyout_total):
     p = lambda v: "—" if v is None else f"{v * 100:.2f} %"  # noqa: E731
     if t["fin_result"] is not None:
         print(f"  реклама {t['ads']:,.2f}; ДРР от созданного {p(t['drr_created_pct'])}, от прогноза подтв. {p(t['drr_fc_pct'])}; фин. рез. прогноз {t['fin_result']:,.2f} ({p(t['fin_result_pct'])} выручки)")
-        print(f"  по формулам владельца (0,65 / 0,59 / 0,024): выручка {t['owner_revenue']:,.2f}, ДРР {p(t['owner_drr_pct'])}, фин. рез. {t['owner_fin_result']:,.2f}; "
-              f"наш − владельца {t['fin_result_minus_owner']:+,.2f}")
+        if t.get("fin_result_index") is not None:
+            print(f"  по индексу СС: СС {t['cogs_index']:,.2f}, фин. рез. прогноз {t['fin_result_index']:,.2f}")
+        print(f"  реклама по образцу (41 + 54 + 96 + подписка) {t['ads_manual']:,.2f}; по формулам владельца (0,65 / множители площадок / 0,024) на ней: выручка {t['owner_revenue']:,.2f}, "
+              f"ДРР {p(t['owner_drr_pct'])}, фин. рез. {t['owner_fin_result']:,.2f}; наш − владельца {t['fin_result_minus_owner']:+,.2f}")
+        for _pl, name in PLATFORMS + ((None, NO_PLATFORM),):
+            pt = o["totals"].get(f"platform:{name}")
+            if pt is not None and pt["created_a"]:
+                print(f"  {name:12} создано {f(pt['created_a']):>16}  прогноз подтв. {f(pt['fc_a']):>16}  выручка {f(pt['revenue']):>14}  "
+                      f"создано × множитель владельца / НДС {f(pt['owner_revenue']):>14}")
         if buyout_total.get("fin_result") is not None:
             print(f"  рядом — выкупной лист за те же дни: оборот {buyout_total['turnover']:,.2f}, выручка {buyout_total['revenue']:,.2f}, фин. рез. {buyout_total['fin_result']:,.2f} "
                   f"(заказы − выкупы: фин. рез. {t['fin_result'] - buyout_total['fin_result']:+,.2f} — дата заказа против даты реализации, прочие у заказов долей, у выкупов фактом)")
@@ -888,6 +983,14 @@ def check(rows, manual):
          "разница — компенсации дня")
     line("Себестоимость (наш снимок 1С против их цен)", lambda r: r.get("cogs"), g("cogs"), False,
          "решение 4 от 2026-09-19: остаёмся на снимке 05-20, расхождение принимается как известное")
+    cogs_line = out[-1]
+    idx_days = [(r["date"], (D(manual[r["date"]]["cogs"]) / r["cogs"]).quantize(Decimal("0.001")))
+                for r in rows if r.get("cogs") and manual.get(r["date"]) and manual[r["date"]].get("cogs") is not None]
+    total_idx = (cogs_line["theirs"] / cogs_line["ours"]).quantize(Decimal("0.001")) if cogs_line["ours"] else None
+    params = sorted({cost_index_for(r["date"]) for r in rows if cost_index_for(r["date"]) is not None})
+    param = params[0] if len(params) == 1 else None
+    cogs_line.update({"index_days": idx_days, "index_total": total_idx, "index_param": param,
+                      "index_stale": (param is not None and total_idx is not None and abs(total_idx - param) > COST_INDEX_STALE_PCT * param)})
     line("Фин. рез. с компенсациями против их «Фин. рез.»", lambda r: r.get("fin_result_with_comp"), g("fin_result"), False,
          "остаток = разница себестоимости (решение 4) и 09-01; подписка у них внутри рекламы — на итог не влияет")
     line("Ebitda с компенсациями против их «Ebitda»", lambda r: r.get("ebitda_with_comp"), g("ebitda"), False,
@@ -896,6 +999,174 @@ def check(rows, manual):
     line("Прочее (наше без эквайринга против их строки)", lambda r: r.get("other"), g("other"), False, "границу не повторяем — решение 7")
     line("Реклама (41 + 54) против их «Рекламы»", lambda r: r.get("ads"), g("ads"), False, "у них в рекламе ещё вся подписка (51, 52, 74) и сбор отзывов (96)")
     return out, failures
+
+
+def read_manual_orders_sheet(path, sheet, columns=("revenue", "margin", "margin_pct", "ads", "drr_pct", "coinvest_pct", "fin_result_pct", "fin_result")):
+    """Лист «Заказы» владельца: строки с 3-й; A — день, B выручка, C маржа, D м-ть, E реклама, F ДРР, G соинвест, H % фин. реза, I фин. рез.
+    Листы площадок («Заказы Standard», «Ozon Select», «Ozon Дискаунтер») — B выручка, C маржа. Строка-ошибка Excel — None."""
+    import datetime
+    import warnings
+    import openpyxl
+    warnings.simplefilter("ignore")
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    out = {}
+    for row in wb[sheet].iter_rows(min_row=3, max_row=80, values_only=True):
+        d = row[0]
+        if isinstance(d, datetime.datetime) and row[1] is not None:
+            out[d.date().isoformat()] = {c: (Decimal(repr(v)) if isinstance(v, (int, float)) else None) for c, v in zip(columns, row[1:1 + len(columns)])}
+    return out
+
+
+def check_orders(rows, manual, platform_rows, manual_platforms, young_days):
+    """Сверка листа «Заказы» с листом владельца по дням. Возвращает (таблица, отказов, разложения).
+
+    Обязана сходиться одна колонка — «Реклама по образцу» против его E, и только на днях старше двух суток
+    (за D−1 реклама доезжает после ночного сбора). Выручка B и себестоимость — известные разницы, печатаются с
+    отношением его/наша по дням; фин. рез. I раскладывается на базу / СС / рекламу / прочие 2,4 % (формулы
+    владельца) и на выручку / СС / рекламу / прочие (наш прогноз по кривой). Знак разниц — «наша − его».
+    """
+    OWN = forecast.OWNER
+    table, failures = [], 0
+    by_date = {r["date"]: r for r in rows}
+
+    def line(title, ours_fn, theirs_fn, must, why="", with_ratio=False):
+        nonlocal failures
+        t_o = t_t = Z
+        diffs, ratios = [], []
+        for r in rows:
+            m = manual.get(r["date"])
+            o = ours_fn(r)
+            t = theirs_fn(m) if m else None
+            if o is None or t is None:
+                diffs.append((r["date"], None)); continue
+            o, t = q(o), q(t)
+            t_o += o; t_t += t
+            if with_ratio and o:
+                ratios.append((r["date"], t / o))
+            if o != t:
+                diffs.append((r["date"], o - t))
+        bad = [(d, v) for d, v in diffs if v is not None]
+        missing = [d for d, v in diffs if v is None]
+        strict_bad = [(d, v) for d, v in bad if d not in young_days]
+        strict_missing = [d for d in missing if d not in young_days]
+        if must and (strict_bad or strict_missing):
+            failures += 1
+        table.append({"title": title, "theirs": t_t, "ours": t_o, "diff": t_o - t_t, "equal_days": len(rows) - len(bad) - len(missing), "days": len(rows),
+                      "bad": bad, "missing": missing, "must": must, "why": why, "ratios": ratios, "young_bad": [(d, v) for d, v in bad if d in young_days]})
+
+    g = lambda k: (lambda m: m.get(k))  # noqa: E731
+    line("Выручка B vs создано × множитель владельца / НДС", lambda r: r.get("owner_revenue"), g("revenue"), False,
+         "его сутки — UTC, наши — МСК: по дням шумит, по итогу ≈ 1; 09-17 у него вбит иначе (+848 179 к правилу) — печатать, не чинить", with_ratio=True)
+    line("Маржа C vs Маржа (созданных)", lambda r: r.get("owner_margin"), g("margin"), False, "разница базы и себестоимости (снимок 05-20, решение 4)")
+    line("Реклама E vs Реклама по образцу", lambda r: r.get("ads_manual"), g("ads"), True,
+         "обязана сходиться на днях старше двух суток; за D−1 реклама доезжает после ночного сбора")
+    line("Фин. рез. I vs Фин. рез. по формулам владельца", lambda r: r.get("owner_fin_result"), g("fin_result"), False, "разложение ниже: база / СС / реклама / прочие 2,4 %")
+    line("Фин. рез. I vs Фин. рез. прогноз (кривая)", lambda r: r.get("fin_result"), g("fin_result"), False, "разложение ниже: выручка (выкупаемость, комиссия) / СС / реклама / прочие")
+    for name, his_rows in manual_platforms.items():
+        ours = {r["date"]: r for r in platform_rows.get(name, [])}
+        saved = manual
+        manual = his_rows
+        line(f"Выручка его листа площадки vs {name}: создано × множитель / НДС", lambda r, ours=ours: (ours.get(r["date"]) or {}).get("owner_revenue"), g("revenue"), False,
+             "отношение его/наша по дням: ≈ 1, разброс — граница суток (UTC у него, МСК у нас)", with_ratio=True)
+        manual = saved
+
+    # разложения — по дням, где есть обе стороны
+    dec_owner = defaultdict(Decimal); dec_fc = defaultdict(Decimal); n_owner = n_fc = 0
+    sums = defaultdict(Decimal)
+    for r in rows:
+        m = manual.get(r["date"]) or {}
+        if m.get("revenue") is None or m.get("margin") is None or m.get("fin_result") is None:
+            continue
+        his_cogs = m["revenue"] - m["margin"]
+        if r.get("owner_fin_result") is not None and m.get("ads") is not None:
+            dB = r["owner_revenue"] - m["revenue"]; dC = r["cogs_created"] - his_cogs; dE = r["ads_manual"] - m["ads"]
+            dec_owner["база = 0,65 × Δвыручки"] += OWN["buyout_rate"] * dB
+            dec_owner["СС = −0,65 × Δсебестоимости"] += -OWN["buyout_rate"] * dC
+            dec_owner["реклама = −Δрекламы по образцу"] += -dE
+            dec_owner["прочие = −0,65 × 0,024 × Δвыручки"] += -OWN["buyout_rate"] * OWN["other_rate"] * dB
+            dec_owner["итого наш − его"] += r["owner_fin_result"] - m["fin_result"]
+            n_owner += 1
+        if r.get("fin_result") is not None and m.get("ads") is not None:
+            dec_fc["выручка = прогноз выручки − B × 0,65"] += r["revenue"] - m["revenue"] * OWN["buyout_rate"]
+            dec_fc["СС = −(СС прогноза − его СС × 0,65)"] += -(r["cogs"] - his_cogs * OWN["buyout_rate"])
+            dec_fc["реклама = −(41 + 54 − его E)"] += -(r["ads"] - m["ads"])
+            dec_fc["прочие = −(прочие прогноза − B × 0,65 × 0,024)"] += -(r["other"] - m["revenue"] * OWN["buyout_rate"] * OWN["other_rate"])
+            dec_fc["итого наш − его"] += r["fin_result"] - m["fin_result"]
+            sums["created_a"] += r["created_a"]; sums["fc_a"] += r["fc_a"]; sums["commission"] += r["commission"]
+            n_fc += 1
+    implied = {"выкупаемость прогноза": ratio(sums["fc_a"], sums["created_a"]), "комиссия прогноза": ratio(sums["commission"], sums["fc_a"])}
+    return table, failures, {"owner": (dict(dec_owner), n_owner), "forecast": (dict(dec_fc), n_fc), "implied": implied}
+
+
+def print_check_orders(table, decomposition, young_days):
+    print(f"\n{'лист «Заказы» против листа владельца':58}{'у него':>17}{'у нас':>17}{'наша − его':>15}{'дней 0,00':>11}")
+    for t in table:
+        print(f"{t['title'][:57]:58}{t['theirs']:>17,.2f}{t['ours']:>17,.2f}{t['diff']:>15,.2f}{t['equal_days']:>7} из {t['days']}"
+              + ("   ОБЯЗАНА СХОДИТЬСЯ" if t["must"] and [b for b in t["bad"] if b[0] not in young_days] else ""))
+        if t["bad"] and (t["must"] or len(t["bad"]) <= 4):
+            print("      расходится: " + ", ".join(f"{d} {v:+,.2f}" + (" (моложе двух суток)" if d in young_days else "") for d, v in t["bad"]))
+        if t["missing"]:
+            print("      нет значения: " + ", ".join(t["missing"]))
+        if t["ratios"]:
+            vals = [v for _d, v in t["ratios"]]
+            print(f"      его/наша: итого {t['theirs'] / t['ours'] if t['ours'] else 0:.3f}, по дням {min(vals):.3f} … {max(vals):.3f}: "
+                  + ", ".join(f"{d[5:]} {v:.3f}" for d, v in t["ratios"]))
+        if t["why"] and (t["bad"] or t["missing"]):
+            print(f"      чем объясняется: {t['why']}")
+    for key, title in (("owner", "Фин. рез. I против формул владельца на наших числах"), ("forecast", "Фин. рез. I против нашего прогноза по кривой")):
+        parts, n = decomposition[key]
+        print(f"\n  {title} — разложение «наша − его» по {n} дням:")
+        for k, v in parts.items():
+            print(f"      {k:52}{v:>18,.2f}")
+        check = sum((v for k, v in parts.items() if not k.startswith("итого")), Z) - parts.get("итого наш − его", Z)
+        print(f"      {'сумма частей − итого':52}{check:>18,.2f}")
+    print("  подразумеваемые доли прогноза: " + ", ".join(f"{k} {v * 100:.2f} %" for k, v in decomposition["implied"].items() if v is not None)
+          + " (у владельца 65 % и 41 %)")
+
+
+def created_by_utc_day(postings_by_scheme):
+    """{(UTC-день, площадка): создано ₽} из сырых отправлений — цена × количество по всем статусам, площадка по первой букве offer_id.
+
+    Его источник режет сутки по UTC (проверено 2026-09-22: 0,530 / 0,900 / 0,530 без разброса на 16 днях), наша таблица — по МСК;
+    сравнивать с его листом честно можно только на сырье с временем заказа. FBO — created_at, FBS — in_process_at (как в загрузчиках).
+    """
+    import loaders.ozon_fbo_orders_loader as fbo
+    out = defaultdict(Decimal)
+    for scheme, postings in postings_by_scheme.items():
+        field = "created_at" if scheme == "fbo" else "in_process_at"
+        for p in postings:
+            ts = p.get(field)
+            if not ts:
+                continue
+            day = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc).date().isoformat()
+            for pr in p.get("products") or []:
+                out[(day, platform_of(pr.get("offer_id")))] += D(fbo.posting_price(pr)) * D(pr.get("quantity"))
+    return dict(out)
+
+
+def check_orders_utc(manual_platforms, created_utc, days):
+    """Его B × НДС / наше созданное по UTC-суткам, по площадкам. Возвращает [(площадка, день, его B, создано, отношение, ожидание)]."""
+    rows = []
+    for name, his in manual_platforms.items():
+        for d in days:
+            m = his.get(d)
+            created = created_utc.get((d, name))
+            if not m or m.get("revenue") is None or not created:
+                continue
+            rows.append((name, d, m["revenue"], created, (m["revenue"] * vat_for(d) / created).quantize(Decimal("0.001")), forecast.owner_after_commission(d, name)))
+    return rows
+
+
+def print_check_orders_utc(rows):
+    print("\n  по UTC-суткам (сырьё отправлений): его B × НДС / наше созданное; ожидание — множитель владельца площадки")
+    by = defaultdict(list)
+    for name, d, _b, _c, r, exp in rows:
+        by[name].append((d, r, exp))
+    for name, items in by.items():
+        off = [(d, r, exp) for d, r, exp in items if abs(r - exp) > Decimal("0.005")]
+        print(f"    {name:12} дней {len(items)}, ровно по множителю {len(items) - len(off)}: " + ", ".join(f"{d[5:]} {r}" for d, r, _e in items))
+        if off:
+            print(f"    {'':12} отклонения: " + ", ".join(f"{d[5:]} {r} (ожидание {exp})" for d, r, exp in off))
 
 
 def print_check(table):
@@ -909,6 +1180,11 @@ def print_check(table):
             print("      нет значения: " + ", ".join(t["missing"]))
         if t["why"] and (t["bad"] or t["missing"]):
             print(f"      чем объясняется: {t['why']}")
+        if t.get("index_days"):
+            print(f"      индекс СС (их / наша): по итогу {t['index_total']}, параметр {t['index_param']}; по дням "
+                  + ", ".join(f"{d[5:]} {v}" for d, v in t["index_days"]))
+            if t.get("index_stale"):
+                print(f"      ВНИМАНИЕ: индекс СС протух: параметр {t['index_param']}, по листу {t['index_total']} (больше {COST_INDEX_STALE_PCT * 100:.0f} %)")
 
 
 def main():
@@ -917,7 +1193,16 @@ def main():
     ap.add_argument("--date-to", help="последний день листа; по умолчанию — вчера по местному времени: сегодняшний день ночь ещё не грузила")
     ap.add_argument("--out")
     ap.add_argument("--snapshot", default=SNAP)
-    ap.add_argument("--no-fetch", action="store_true", help="в API не ходить ни за чем")
+    ap.add_argument("--no-fetch", action="store_true", help="в API не ходить ни за чем (= --fetch none)")
+    ap.add_argument("--fetch", choices=("none", "young", "all"), default="young",
+                    help="в API: none — никогда; young — только за дни моложе двух суток, живым ответом, файл не сохраняется (реклама за D−1 "
+                         "доезжает после ночного сбора, в леджере её ещё нет); all — ещё и за дни без файла сырья (в файл). --check подразумевает all")
+    ap.add_argument("--check-orders", action="store_true", help="сверить лист «Заказы» с листом владельца (--xlsx, --orders-sheet, --orders-platform-sheets); код 1, если реклама по образцу не сошлась на дне старше двух суток")
+    ap.add_argument("--orders-sheet", default="Заказы", help="лист владельца по заказам (строки с 3-й: день, выручка, маржа, …, реклама E, фин. рез. I)")
+    ap.add_argument("--orders-platform-sheets", default="Заказы Standard,Ozon Select,Ozon Дискаунтер", help="его листы площадок в порядке Основная, Селект, Дискаунтер")
+    ap.add_argument("--day-boundary", choices=("msk", "utc"), default="msk",
+                    help="с --check-orders: utc — ещё и таблица по UTC-суткам на сырье отправлений окна (data/postings_raw/history_*, файл есть — в API не идёт; "
+                         "иначе сбор теми же методами, что ночь: ~2 обращения на день на схему)")
     ap.add_argument("--types-from", choices=("db", "files"), default="db",
                     help="откуда типы начислений: db — леджер ozon_accrual_daily_types (дня нет в леджере — файл, нет файла — API); "
                          "files — только файлы сырья, как до леджера. С --check читаются ОБА источника и обязаны совпасть")
@@ -954,20 +1239,42 @@ def main():
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
     sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot)
 
-    counters, sources, types_by_day = {"requests": 0, "429": 0}, defaultdict(list), {}
+    counters, sources, types_by_day, day_note = {"requests": 0, "429": 0}, defaultdict(list), {}, {}
     young_days = {d for d in days if (date.fromisoformat(today) - date.fromisoformat(d)).days < YOUNG_DAYS}
+    fetch_mode = "none" if args.no_fetch else ("all" if args.check else args.fetch)
     ledger = load_types_from_ledger(sb, d1, d2) if (args.types_from == "db" or args.check) else {}
     file_types = {}
+
+    def fetch_raw(d, allow):
+        """Начисления дня из файла или API; отказ API — не падение листа, а (None, причина): день останется на леджере с примечанием."""
+        try:
+            return load_day_raw(d, today, allow, counters)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"живой ответ не получен: {type(exc).__name__}: {str(exc)[:120]}"
+
     for d in days:
+        young = d in young_days
         if args.types_from == "db" and d in ledger and not args.check:
+            # Молодой день (моложе двух суток) в леджере лежит ночным снимком, а начисления рекламы за него доезжают к утру
+            # (2026-09-22: 41/54 за 09-21 в 00:27 нет, в 07:07 есть): берём живой ответ, файл не сохраняем. Нет ответа — леджер,
+            # и в примечании дня «реклама не доехала» — нулём не молчим.
+            if young and fetch_mode != "none":
+                accruals, where = fetch_raw(d, True)
+                if accruals is not None:
+                    file_types[d] = type_sums(accruals)
+                    types_by_day[d] = file_types[d]
+                    sources["живой ответ — моложе двух суток, в леджере рекламы за день ещё нет"].append(d)
+                    day_note[d] = "моложе двух суток — реклама живым ответом by-day (в леджере за день её ещё нет)"
+                    continue
+                day_note[d] = f"реклама не доехала: {where}; типы из леджера — ночной снимок, рекламы за день в нём ещё нет"
             types_by_day[d] = ledger[d]
             sources["леджер"].append(d)
             continue
-        # дня нет в леджере (моложе посева и ещё не записан ночью), либо источник — файлы, либо --check сверяет оба.
-        # Молодой день (моложе двух суток) в леджере лежит ночным снимком, а начисления рекламы за него доезжают к утру
-        # (2026-09-22: 41/54 за 09-21 в 00:27 нет, в 07:07 есть) — в --check его берём живым ответом и не требуем равенства.
-        young = d in young_days
-        accruals, where = load_day_raw(d, today, not args.no_fetch, counters)
+        # дня нет в леджере (моложе посева и ещё не записан ночью), либо источник — файлы, либо --check сверяет оба;
+        # в --check молодой день — живым ответом без требования равенства с леджером.
+        accruals, where = fetch_raw(d, fetch_mode == "all" or (young and fetch_mode != "none"))
+        if young and accruals is None and d in ledger:
+            day_note[d] = f"реклама не доехала: {where}; типы из леджера"
         if accruals is not None:
             file_types[d] = type_sums(accruals)
         if args.types_from == "db" and d in ledger and not (young and accruals is not None):
@@ -995,7 +1302,7 @@ def main():
     orders, orders_error = None, None
     if not args.no_orders:
         try:
-            orders = build_orders(sb, days, order_rows, rows, sku2art, unit_cost, os.getenv("APP_TIMEZONE", "Europe/Moscow"))
+            orders = build_orders(sb, days, order_rows, rows, sku2art, unit_cost, os.getenv("APP_TIMEZONE", "Europe/Moscow"), day_note, args.snapshot)
         except Exception as exc:  # noqa: BLE001
             orders_error = f"{type(exc).__name__}: {exc}"
 
@@ -1050,6 +1357,7 @@ def main():
              "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 96 + вся статья подписки: 51, 52, 74) / НДС — так считает ручной лист. "
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
              overhead_note(days),
+             cost_index_note(days, args.snapshot),
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
     out = args.out or os.path.join(OUT_DIR, f"ozon_{args.month}.xlsx")
@@ -1069,7 +1377,8 @@ def main():
     if total["fin_result"] is not None:
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "
               f"прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
-              + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total.get("ebitda") is not None else ", Ebitda — (накладные не заданы)"))
+              + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total.get("ebitda") is not None else ", Ebitda — (накладные не заданы)")
+              + (f"; по индексу СС: СС {total['cogs_index']:,.2f}, фин. рез. {total['fin_result_index']:,.2f}" if total.get("fin_result_index") is not None else ""))
     print(f"лист «По SKU»: строк {len(sku_rows)}, реклама Performance {ads_sku:,.2f}" + (f" против начислений {ads_sheet1:,.2f}, разница {ads_sku - ads_sheet1:+,.2f}" if ads_sheet1 is not None else ""))
     if ad_gaps:
         print("       по дням (Performance − начисления, без НДС): " + "; ".join(f"{d} {v:+,.2f}" for d, v in ad_gaps[:8])
@@ -1085,7 +1394,7 @@ def main():
         num = lambda v: None if v is None else str(q(v))  # noqa: E731
         no_types = [r["date"] for r in rows if not r["has_raw"]]
         summary = {"month": args.month, "date_from": d1, "date_to": d2,
-                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result", "ebitda")},
+                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result", "ebitda", "fin_result_index")},
                    "warnings": ([f"нет типов начислений за {', '.join(no_types)} — реклама, эквайринг и фин. рез. за эти дни пусты, итог неполон"] if no_types else [])
                                + ([f"лист «Заказы» не собран: {orders_error}"] if orders_error else [])}
         if orders is not None:
@@ -1124,6 +1433,27 @@ def main():
         failures += 0 if sources_ok else 1
         print(f"приёмка: колонок, обязанных сходиться до копейки, — {len(EXACT)}, плюс совпадение источников; не сошлось {failures}")
         code = 1 if failures else code
+    if args.check_orders:
+        if not args.xlsx:
+            raise SystemExit("--check-orders требует --xlsx")
+        if orders is None:
+            raise SystemExit(f"лист «Заказы» не собран: {orders_error}")
+        manual_o = read_manual_orders_sheet(args.xlsx, args.orders_sheet)
+        sheet_names = [x.strip() for x in args.orders_platform_sheets.split(",") if x.strip()]
+        manual_p = {name: read_manual_orders_sheet(args.xlsx, sheet, ("revenue", "margin")) for sheet, (_p, name) in zip(sheet_names, PLATFORMS)}
+        platform_rows = {name: orders["blocks"].get(f"platform:{name}", []) for _p, name in PLATFORMS}
+        table_o, failures_o, decomposition = check_orders(orders["blocks"]["all"], manual_o, platform_rows, manual_p, young_days)
+        print_check_orders(table_o, decomposition, young_days)
+        if args.day_boundary == "utc":
+            # сырьё окна — теми же функциями, что пересборка истории: файл history_<схема>_<от>_<до>.json есть — в API не идёт.
+            # Последний UTC-день кончается в 21:00 UTC по МСК-окну, поэтому окно берётся до d2 + 1 день (не позже сегодня).
+            import rebuild_ozon_orders_history as hist
+            to = min(date.fromisoformat(d2) + timedelta(days=1), today_date).isoformat()
+            raw = {scheme: hist.fetch_history(scheme, d1, to) for scheme in ("fbo", "fbs")}
+            utc_rows = check_orders_utc(manual_p, created_by_utc_day(raw), days)
+            print_check_orders_utc(utc_rows)
+        print(f"приёмка листа «Заказы»: обязанная колонка одна (реклама по образцу, дни старше двух суток); не сошлось {failures_o}")
+        code = 1 if failures_o else code
     print("db_writes = 0")
     sys.exit(code)
 

@@ -188,3 +188,46 @@ class Shares(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerAdsAndPlatforms(unittest.TestCase):
+    """Тридцать первая: формулы владельца — на его рекламе («по образцу»), блоки по площадкам — те же колонки без рекламы."""
+    CURVE = {"fbo": {"r_cnt": {a: D("0.2") for a in range(21)}, "r_amt": {a: D("0.1") for a in range(21)}}}
+    VAT = staticmethod(lambda d: D("1.22"))
+
+    def build(self, orders, ads=None, ads_manual=None):
+        return fc.build_orders_daily(["2026-09-20"], orders, self.CURVE, "2026-09-21", {"Основная": D("0.4"), "Селект": D("0.1"), "все": D("0.3")},
+                                     D("0.05"), ads or {}, lambda sku: D(300), self.VAT,
+                                     lambda r: "Селект" if str(r.get("article") or "").startswith("S") else "Основная", ads_manual)
+
+    def test_owner_formulas_use_the_owner_style_ads_and_the_model_keeps_41_54(self):
+        blocks, _ = self.build([order("2026-09-20", conf_a="1220", canc_a="1220")], ads={"2026-09-20": D(100)}, ads_manual={"2026-09-20": D(130)})
+        r = fc.add_order_ratios(blocks["all"][0])
+        self.assertEqual((r["ads"], r["ads_manual"]), (D(100), D(130)))
+        self.assertEqual(r["fin_result"], r["margin"] - D(100) - r["other"])                                   # модель — 41 + 54
+        self.assertEqual(r["owner_fin_result"], r["owner_margin"] * D("0.65") - D(130) - r["owner_revenue"] * D("0.65") * D("0.024"))
+        # ДРР владельца — от его рекламы; знаменатель — его выручка (0,53 с 09-01) × 0,65 × НДС / 0,59 (формула как есть)
+        self.assertEqual(r["owner_drr_pct"], D(130) / (D(2440) * D("0.53") * D("0.65") / D("0.59")))
+
+    def test_without_owner_ads_the_model_ads_are_used(self):
+        blocks, _ = self.build([order("2026-09-20")], ads={"2026-09-20": D(100)})
+        self.assertEqual(blocks["all"][0]["ads_manual"], D(100))
+
+    def test_platform_blocks_split_the_common_sheet_without_ads(self):
+        blocks, _ = self.build([order("2026-09-20", conf_a="1000", article="F1"), order("2026-09-20", conf_a="500", article="S2", sku="22")],
+                               ads={"2026-09-20": D(50)})
+        main, sel = blocks["platform:Основная"][0], blocks["platform:Селект"][0]
+        self.assertEqual((main["created_a"], sel["created_a"]), (D(1000), D(500)))
+        self.assertEqual(main["created_a"] + sel["created_a"], blocks["all"][0]["created_a"])
+        self.assertEqual(sel["commission"], D(450) * D("0.1"))                                                   # своя доля комиссии
+        self.assertIsNone(main["ads"]); self.assertIsNone(main["fin_result"])
+        self.assertEqual(main["owner_revenue"], D(1000) * D("0.53") / D("1.22"))                                  # Основная с 09-01 — 0,53
+        self.assertEqual(sel["owner_revenue"], D(500) * D("0.90") / D("1.22"))                                    # Селект — 0,90
+        self.assertEqual(blocks["all"][0]["owner_revenue"], main["owner_revenue"] + sel["owner_revenue"])      # общий лист — сумма площадок
+        self.assertIn("ads_manual", fc.ORDER_MONEY)
+
+    def test_owner_multiplier_has_an_effective_date(self):
+        self.assertEqual(fc.owner_after_commission("2026-08-31", "Основная"), D("0.59"))
+        self.assertEqual(fc.owner_after_commission("2026-09-01", "Основная"), D("0.53"))
+        self.assertEqual(fc.owner_after_commission("2026-10-05", "Селект"), D("0.90"))
+        self.assertEqual(fc.owner_after_commission("2026-09-05", "Без площадки"), D("0.53"))

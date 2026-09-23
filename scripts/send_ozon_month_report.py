@@ -8,8 +8,11 @@
 ВЧЕРА. 1-го числа вчера — последний день прошлого месяца: уходит прошлый месяц целиком, а текущего ещё нет ни дня.
 Отдельного правила для первого числа поэтому нет — оно получается само. --month / --date-to задают окно руками.
 
-Источник — только база: генератор зовётся с --no-fetch, в Seller API не ходит, файлов сырья не ждёт (на Render
-их нет). Дня нет в леджере начислений — в книге у него пустые реклама и эквайринг с примечанием, а не ноль.
+Источник — база плюс живой ответ by-day за дни моложе двух суток (`--fetch young`, 1–3 обращения на день): реклама за D−1
+доезжает после ночного сбора, и в леджере её ещё нет. Живого ответа нет — день остаётся на леджере с примечанием
+«реклама не доехала». Файлов сырья на Render нет и не нужно. Дня нет в леджере — пустые реклама и эквайринг с примечанием.
+
+Книга сохраняется в data/reports/ozon_<месяц>_to_<дата>.xlsx (gitignored) — та же, что ушла в Telegram; путь печатается.
 
 Шаг нефатальный для утреннего алерта: alerts_telegram.py зовёт его отдельным процессом уже ПОСЛЕ отправки
 сообщения. Коды: 0 — книга ушла (или собрана при --no-send); 1 — не вышло, и об этом уже сказано в Telegram
@@ -22,7 +25,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -33,6 +35,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT, ".env"))
 
 GENERATOR = os.path.join(ROOT, "scripts", "report_ozon_month.py")
+REPORTS_DIR = os.path.join(ROOT, "data", "reports")
 GENERATOR_TIMEOUT = 900            # сентябрь собирается ~60 с; запас — на медленную базу, а не на зависание
 ORDERS_SHEET_FAILED = 2            # код генератора: книга записана, но лист «Заказы» не собран
 MONTHS_GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -67,7 +70,8 @@ def build_caption(month, date_to, summary, orders_failed):
     lines = [f"Ozon — {MONTHS[last.month - 1]} {last.year}, по {last.day} {MONTHS_GENITIVE[last.month - 1]}"]
     b, o = (summary or {}).get("buyouts") or {}, (summary or {}).get("orders") or {}
     if b:
-        lines.append(f"Выкупы: оборот {mln(b.get('turnover'))}, выручка {mln(b.get('revenue'))}, фин. рез. {mln(b.get('fin_result'))}, Ebitda {mln(b.get('ebitda'))}")
+        lines.append(f"Выкупы: оборот {mln(b.get('turnover'))}, выручка {mln(b.get('revenue'))}, фин. рез. {mln(b.get('fin_result'))}, Ebitda {mln(b.get('ebitda'))}"
+                     + (f", фин. рез. по индексу СС {mln(b.get('fin_result_index'))}" if b.get("fin_result_index") is not None else ""))
     if o:
         lines.append(f"Заказы: создано {mln(o.get('created'))}, прогноз подтв. {mln(o.get('forecast_confirmed'))}, "
                      f"ДРР {pct(o.get('drr_created'))} от созданного / {pct(o.get('drr_forecast'))} от прогноза, фин. рез. прогноз {mln(o.get('fin_result'))}")
@@ -83,7 +87,7 @@ def generate(month, date_to, out_dir):
     """Зовёт генератор отдельным процессом. Возвращает (путь | None, сводка | None, код генератора, хвост вывода)."""
     out = os.path.join(out_dir, f"ozon_{month}_to_{date_to}.xlsx")
     summary_path = out + ".json"
-    cmd = [sys.executable, GENERATOR, "--month", month, "--date-to", date_to, "--no-fetch", "--out", out, "--summary-json", summary_path]
+    cmd = [sys.executable, GENERATOR, "--month", month, "--date-to", date_to, "--fetch", "young", "--out", out, "--summary-json", summary_path]
     res = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=GENERATOR_TIMEOUT)
     text = "\n".join(line for line in (res.stdout or "").splitlines() if "Warning" not in line and "warnings.warn" not in line)
     print(text)
@@ -113,7 +117,7 @@ def main(argv=None):
     ap.add_argument("--no-send", action="store_true", help="собрать книгу и показать подпись, в Telegram ничего не отправлять")
     ap.add_argument("--month", help="YYYY-MM; по умолчанию — месяц вчерашнего дня")
     ap.add_argument("--date-to", help="последний день листа; по умолчанию — вчера по местному времени")
-    ap.add_argument("--out-dir", help="куда положить книгу; по умолчанию — временная папка")
+    ap.add_argument("--out-dir", help=f"куда положить книгу; по умолчанию — {REPORTS_DIR}")
     args = ap.parse_args(argv)
     token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if not args.no_send and not (token and chat_id):
@@ -122,7 +126,8 @@ def main(argv=None):
     default_month, default_to = window_for(yesterday_local())
     month = args.month or default_month
     date_to = args.date_to or (default_to if month == default_month else month_end(month))   # чужой месяц без --date-to — целиком
-    out_dir = args.out_dir or tempfile.mkdtemp(prefix="ozon_month_")
+    out_dir = args.out_dir or REPORTS_DIR
+    os.makedirs(out_dir, exist_ok=True)
     print(f"лист Ozon: месяц {month}, по {date_to}; отправка {'ВЫКЛЮЧЕНА (--no-send)' if args.no_send else 'включена'}")
 
     def fail(reason):

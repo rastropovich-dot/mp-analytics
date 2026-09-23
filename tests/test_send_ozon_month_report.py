@@ -15,7 +15,7 @@ _spec.loader.exec_module(send)
 
 import alerts_telegram as alerts  # noqa: E402
 
-SUMMARY = {"buyouts": {"turnover": "87054208.00", "revenue": "39531311.99", "fin_result": "9000000.00"},
+SUMMARY = {"buyouts": {"turnover": "87054208.00", "revenue": "39531311.99", "fin_result": "9000000.00", "fin_result_index": "5500000.00"},
            "orders": {"created": "162480180.00", "forecast_confirmed": "98467177.97", "fin_result": "10011574.23", "drr_created": "0.0554",
                       "drr_forecast": "0.0918", "curve_nights": "2026-09-17 … 2026-09-21", "mature_days": 0, "forecast_days": 20},
            "warnings": []}
@@ -44,6 +44,7 @@ class Caption(unittest.TestCase):
         text = send.build_caption("2026-09", "2026-09-20", SUMMARY, False)
         self.assertIn("Ozon — сентябрь 2026, по 20 сентября", text)
         self.assertIn("оборот 87,1 млн", text)
+        self.assertIn("фин. рез. по индексу СС 5,5 млн", text)
         self.assertIn("прогноз подтв. 98,5 млн", text)
         self.assertIn("ДРР 5,5 % от созданного / 9,2 % от прогноза", text)
         self.assertNotIn("⚠️", text)
@@ -55,6 +56,18 @@ class Caption(unittest.TestCase):
         self.assertIn("Лист «Заказы» не собран", text)
         self.assertIn("нет типов начислений за 2026-09-20", text)
         self.assertLessEqual(len(text), 1024)
+
+
+class GeneratorCall(unittest.TestCase):
+    def test_book_is_built_into_data_reports_with_live_young_days(self):
+        with mock.patch.object(send.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")) as run, \
+                mock.patch.object(send.os.path, "exists", return_value=False), mock.patch("builtins.print"):
+            path, summary, code, _tail = send.generate("2026-09", "2026-09-21", send.REPORTS_DIR)
+        cmd = run.call_args[0][0]
+        self.assertIn("--fetch", cmd); self.assertEqual(cmd[cmd.index("--fetch") + 1], "young")
+        self.assertNotIn("--no-fetch", cmd)
+        self.assertTrue(cmd[cmd.index("--out") + 1].endswith(os.path.join("data", "reports", "ozon_2026-09_to_2026-09-21.xlsx")))
+        self.assertTrue(send.REPORTS_DIR.endswith(os.path.join("data", "reports")))
 
 
 class Delivery(unittest.TestCase):

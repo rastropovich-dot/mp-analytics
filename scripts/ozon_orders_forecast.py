@@ -43,6 +43,21 @@ CURVE_NIGHTS = 45                  # сколько последних ноче�
 # чтобы разница с измеренным была видна. Они дрейфуют: в сентябрьской книге на листе «Заказы» уже 0,58,
 # на «Заказы Standard» — 0,73.
 OWNER = {"buyout_rate": Decimal("0.65"), "after_commission": Decimal("0.59"), "other_rate": Decimal("0.024")}
+# Множитель «выручки» владельца по площадке, с датой действия. Сентябрьский лист (22.09) проверен сырьём отправлений
+# 09-01 … 09-16: его B = заказы × 0,53 / НДС на Standard и Дискаунтере (комиссия 47 %) и × 0,90 / НДС на Селекте (10 %) —
+# по UTC-суткам, 0,530 / 0,900 / 0,530 без разброса на 16 днях. До 09-01 — 0,59 по подписи июльской книги (не перепроверялось).
+# «*» — площадка, не названная явно (в т. ч. «Без площадки»).
+OWNER_AFTER_COMMISSION = (
+    ("2026-09-01", {"Основная": Decimal("0.53"), "Дискаунтер": Decimal("0.53"), "Селект": Decimal("0.90"), "*": Decimal("0.53")}),
+    ("0001-01-01", {"*": Decimal("0.59")}),
+)
+
+
+def owner_after_commission(day, platform):
+    for valid_from, table in OWNER_AFTER_COMMISSION:
+        if day >= valid_from:
+            return table.get(platform, table["*"])
+    raise ValueError(f"нет множителя владельца для {day}")
 
 
 def D(v):
@@ -202,17 +217,22 @@ def shares_by_platform(buyouts, platform_of_sku):
     return {k: (c / t if t else None) for k, (c, t) in acc.items()}, {k: t for k, (c, t) in acc.items()}
 
 
-def build_orders_daily(days, orders, curve, obs_date, commission_share, other_share, ads_by_day, unit_cost, vat_for, platform_of_row):
-    """Строки листа «Заказы»: {"fbo": [...], "fbs": [...], "all": [...]} по дням заказа.
+def build_orders_daily(days, orders, curve, obs_date, commission_share, other_share, ads_by_day, unit_cost, vat_for, platform_of_row,
+                       ads_manual_by_day=None):
+    """Строки листа «Заказы»: {"fbo": [...], "fbs": [...], "all": [...], "platform:<площадка>": [...]} по дням заказа.
 
     orders            [{order_date, order_schema, marketplace_sku, article, orders_qty, orders_amount_seller,
                         cancelled_orders_qty, cancelled_orders_amount_seller}]
     obs_date          ночь, на которую снято состояние заказов: "YYYY-MM-DD" или {схема: "YYYY-MM-DD"}
     commission_share  {площадка: доля} с ключом "все" — запасная доля для площадки без выкупов в окне
     other_share       доля прочих расходов (с НДС) в обороте выкупов (с НДС); None — не измерена
-    ads_by_day        {день: реклама без НДС | None}
+    ads_by_day        {день: реклама 41 + 54 без НДС | None} — реклама модели (наш фин. рез. прогноз)
+    ads_manual_by_day {день: «реклама по образцу» без НДС | None} — (41 + 54 + 96 + вся подписка), как у владельца; от неё считаются
+                      его формулы (ДРР, фин. рез.), чтобы сравниваться с его листом напрямую. Не задана — берётся ads_by_day
+    Блоки по площадкам ("platform:Основная" …) — те же колонки без рекламы и фин. реза: леджер начислений без площадки.
     Возвращает ещё и список названных вслух обстоятельств (площадка без своей доли комиссии, схема без кривой).
     """
+    ads_manual_by_day = ads_by_day if ads_manual_by_day is None else ads_manual_by_day
     blocks = {k: {d: defaultdict(Decimal) for d in days} for k in SCHEMAS + ("all",)}
     said = set()
     # Состояние схем может быть разной свежести: ночью упал шаг одной из них — её заказы на сутки старше, и возраст у них свой.
@@ -235,18 +255,22 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         if r_cnt is None:
             said.add(f"для схемы {schema} кривой нет (в логе нет ночных срезов с дозревшими возрастами) — прогноза по ней нет")
         platform = platform_of_row(r)
+        pkey = f"platform:{platform}"
+        if pkey not in blocks:
+            blocks[pkey] = {d: defaultdict(Decimal) for d in days}
         share = commission_share.get(platform)
         if share is None:
             share = commission_share.get("все")
             said.add(f"у площадки «{platform}» нет выкупов в окне комиссии — взята общая доля")
         uc = unit_cost(r["marketplace_sku"])
         vat = vat_for(d)
-        for key in (schema, "all"):
+        for key in (schema, "all", pkey):
             a = blocks[key][d]
             a["created_q"] += conf_q + canc_q; a["created_a"] += conf_a + canc_a
             a["conf_q"] += conf_q; a["conf_a"] += conf_a
             a["canc_q"] += canc_q; a["canc_a"] += canc_a
             a["cogs_created"] += (conf_q + canc_q) * (uc or Z)
+            a["owner_gross"] += (conf_a + canc_a) * owner_after_commission(d, platform)     # его «выручка» с НДС: создано × множитель площадки
             if uc is None:
                 a["no_cost_q"] += conf_q
             if r_cnt is None or share is None:
@@ -273,20 +297,22 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             row["margin"] = (row["revenue"] - row["cogs"]) if ok else None
             row["other"] = (row["fc_a"] * other_share / vat) if ok and other_share is not None else None
             row["ads"] = ads_by_day.get(d) if key == "all" else None
+            row["ads_manual"] = ads_manual_by_day.get(d) if key == "all" else None
             row["fin_result"] = None if None in (row["margin"], row["ads"], row["other"]) else row["margin"] - row["ads"] - row["other"]
-            # справочно: формулы владельца на его константах. Реклама — та же (41 + 54), чтобы разница показывала
-            # константы, а не состав рекламы; у него самого в «Рекламе» ещё подписка (51) и сбор отзывов (96).
-            row["owner_revenue"] = a["created_a"] * OWNER["after_commission"] / vat
+            # справочно: формулы владельца на его константах и на ЕГО рекламе («по образцу»: 41 + 54 + 96 + вся подписка) —
+            # чтобы его лист «Заказы» и эти колонки сравнивались напрямую (2026-09-22, тридцать первая).
+            row["owner_revenue"] = a["owner_gross"] / vat
             row["owner_margin"] = row["owner_revenue"] - a["cogs_created"]
-            row["owner_fin_result"] = None if row["ads"] is None else (row["owner_margin"] * OWNER["buyout_rate"] - row["ads"]
-                                                                        - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])
+            row["owner_fin_result"] = None if row["ads_manual"] is None else (row["owner_margin"] * OWNER["buyout_rate"] - row["ads_manual"]
+                                                                               - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])
             rows.append(row)
         out[key] = rows
     return out, sorted(said)
 
 
 ORDER_MONEY = ("created_q", "created_a", "conf_q", "conf_a", "canc_q", "canc_a", "fc_q", "fc_a", "expected_cancels_a", "commission", "revenue",
-               "cogs", "margin", "ads", "other", "fin_result", "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created")
+               "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "cogs_index", "fin_result_index",
+               "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created")
 
 
 def ratio(a, b):
@@ -305,7 +331,7 @@ def add_order_ratios(row):
     row["drr_created_pct"] = ratio(row["ads"], created_net)
     row["drr_fc_pct"] = ratio(row["ads"], fc_net)
     row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
-    row["owner_drr_pct"] = ratio(row["ads"], row["owner_revenue"] * OWNER["buyout_rate"] * vat / OWNER["after_commission"])
+    row["owner_drr_pct"] = ratio(row.get("ads_manual", row["ads"]), row["owner_revenue"] * OWNER["buyout_rate"] * vat / OWNER["after_commission"])
     row["fin_result_minus_owner"] = None if None in (row["fin_result"], row["owner_fin_result"]) else row["fin_result"] - row["owner_fin_result"]
     return row
 

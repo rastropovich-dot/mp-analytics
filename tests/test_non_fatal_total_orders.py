@@ -52,13 +52,16 @@ class NonFatalStepsTests(unittest.TestCase):
           - Sales Funnel WB: питает только overlay утреннего алерта; ночь 09-23
             он упал на ReadTimeout после 429 и унёс прогон до KPI обеих площадок.
             Решение владельца 2026-09-23, tests/test_wb_funnel_step_non_fatal.py
+          - отчёт реализации WB: новая таблица wb_sales_report_rows, читателей у
+            неё пока нет; finance-api 1 запрос/мин; отказ — одна ночь, окно 21
+            день доберёт (2026-09-23, WB-5). tests/test_wb_sales_report_step.py
         """
         self.assertEqual(
             tuple(pipeline.NON_FATAL_STEPS),
             (STEP, "Ozon: дневные финоперации", "Ozon: загрузка FBO заказов",
              "Ozon: загрузка FBS заказов", "Ozon: лог статусов отправлений",
              "Ozon: штуки выкупов", "WB: загрузка заказов",
-             "WB: загрузка заказов Analytics Sales Funnel"),
+             "WB: загрузка заказов Analytics Sales Funnel", "WB: отчёт реализации"),
         )
 
     def test_steps_that_must_stay_fatal(self):

@@ -87,6 +87,12 @@ NON_FATAL_STEPS = (
     # KPI. Цена отказа шага — один overlay в алерте; цена фатальности — ночь обеих
     # площадок. Решение владельца 2026-09-23, tests/test_wb_funnel_step_non_fatal.py.
     "WB: загрузка заказов Analytics Sales Funnel",
+    # Отчёт реализации WB: новая таблица wb_sales_report_rows, которую ни витрины, ни алерт
+    # пока не читают; finance-api — 1 запрос в минуту, отказ (429 не изжит, сеть, таблицы
+    # нет) — потеря одной ночи, окно 21 день доберёт следующей. Шаг стоит перед остатками
+    # WB, всеми шагами Ozon и KPI — фатальным ему быть не за что. 2026-09-23 (WB-5),
+    # tests/test_wb_sales_report_step.py.
+    "WB: отчёт реализации",
 )
 
 # Хвост вчерашней даты — это один-два батча по 10 кампаний.
@@ -185,6 +191,10 @@ def build_steps(args=None):
         ("WB: загрузка заказов", "python3 loaders/wb_orders_loader.py"),
         ("WB: загрузка заказов Analytics Sales Funnel", "python3 loaders/wb_sales_funnel_orders_loader.py"),
         ("WB: загрузка продаж/выкупов", "python3 loaders/wb_sales_loader.py"),
+        # Отчёт реализации WB (finance-api, 1 запрос/мин, period=daily, окно 21 день) — правая часть
+        # листа «WB - месяц»: комиссия факт, логистика, эквайринг, хранение, штрафы, возмещения.
+        # Нефатальный: питает только wb_sales_report_rows, витрины его пока не читают.
+        ("WB: отчёт реализации", "python3 loaders/wb_sales_report_loader.py"),
         ("WB: загрузка остатков", "python3 loaders/wb_stocks_loader.py"),
         # Шаги заказов вызывают функции тех же загрузчиков, но через обёртки, которые
         # кладут сырой ответ в data/postings_raw/ для лога статусов. Загрузчики не

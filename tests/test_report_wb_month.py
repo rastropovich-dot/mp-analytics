@@ -1,8 +1,8 @@
 """Лист «WB - месяц»: формулы владельца на строках отчёта реализации, СС по базовому артикулу, приёмка.
 
 Держим: день строки — saleDt в московском времени (без saleDt — rrDate); оборот = продажа − возврат
-по retailPriceWithDisc; комиссия факт = оборот − forPay; комиссия по образцу = Σ цена × кВВ строки со
-знаком возврата; НДС за возмещение = (ppvzReward + rebillLogisticCost) × 0,22/1,22; эквайринг —
+по retailPriceWithDisc; комиссия = Σ цена × кВВ строки со знаком возврата (как у владельца, решение
+советника 2026-09-23); справочно «удержано из выплаты всего» = оборот − forPay; НДС за возмещение = (ppvzReward + rebillLogisticCost) × 0,22/1,22; эквайринг —
 возврат со знаком минус, / 1,22; прочее = хранение / 1,22 + штрафы без НДС + удержания / 1,22;
 Ebitda = фин. рез. − 74 002 с 09-01; СС — по базовому артикулу через unit_cost_uniform, безразмерные —
 точной строкой; строки с датой продажи вне листа считаются, не теряются молча; известные дни в
@@ -49,11 +49,10 @@ class FormulaTests(unittest.TestCase):
     def test_owner_formulas_on_one_day(self):
         [r] = rep.build_daily(ROWS, ["2026-09-01"], cost_base, {}, date(2026, 9, 10))
         self.assertEqual(r["turnover"], D("900"))                       # 1000 − 100
-        self.assertEqual(r["commission"], D("900") - D("500.4"))        # оборот − forPay± (556 − 55.6)
-        self.assertEqual(r["commission_manual"], D("377.00"))           # 1000 × 42 % − 100 × 43 % — кВВ строки, знак возврата
+        self.assertEqual(r["commission"], D("377.00"))                  # 1000 × 42 % − 100 × 43 % — кВВ строки, знак возврата
+        self.assertEqual(r["withheld"], D("900") - D("500.4"))          # справочно: оборот − forPay± (556 − 55.6)
         self.assertEqual(rep.q(r["vat_refund"]), rep.q((D("18115.294") + D("8463.49")) * 22 / 122))  # как колонка AB владельца
-        self.assertEqual(rep.q(r["revenue_manual"]), rep.q((D("900") - D("377")) / D("1.22") - r["vat_refund"]))
-        self.assertEqual(rep.q(r["revenue"]), rep.q((D("900") - r["commission"]) / D("1.22") - r["vat_refund"]))
+        self.assertEqual(rep.q(r["revenue"]), rep.q((D("900") - D("377")) / D("1.22") - r["vat_refund"]))   # его E
         self.assertEqual(r["logistics"], D("200"))                      # 244 / 1,22
         self.assertEqual(r["acquiring"], D("90"))                       # (122 − 12,2) / 1,22 — возврат со знаком минус
         self.assertEqual(r["other"], D("1344"))                         # 1220 / 1,22 + 244 (штраф без НДС) + 122 / 1,22
@@ -80,7 +79,7 @@ class FormulaTests(unittest.TestCase):
     def test_a_sale_without_commission_percent_is_counted_not_hidden(self):
         rows = [row("2026-09-01", retail_price_with_disc="1000", for_pay="556")]
         [r] = rep.build_daily(rows, ["2026-09-01"], cost_base, {}, date(2026, 9, 10))
-        self.assertEqual((r["no_pct_rows"], r["commission_manual"]), (1, D(0)))
+        self.assertEqual((r["no_pct_rows"], r["commission"]), (1, D(0)))
 
 
 class DayRuleTests(unittest.TestCase):
@@ -131,7 +130,7 @@ LOG_TITLE = "Логистика (deliveryService / НДС, по дате про�
 class CheckTests(unittest.TestCase):
     def manual_like_ours(self, daily):
         r = daily[0]
-        return {"2026-09-01": {"turnover": "900", "revenue": str(rep.q(r["revenue_manual"])), "acquiring": "90", "other": "1344",
+        return {"2026-09-01": {"turnover": "900", "revenue": str(rep.q(r["revenue"])), "acquiring": "90", "other": "1344",
                                "commission": "377", "logistics": "200", "cogs": "0", "fin_result": "0"}}
 
     def test_six_mandatory_columns_match_and_known_days_are_printed_not_failures(self):
@@ -141,8 +140,8 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(failures, 0)
         by = {t["title"]: t for t in table}
         self.assertEqual([t["title"] for t in table if t["must"]],
-                         ["Оборот (с НДС)", "Выручка по образцу (комиссия по кВВ, минус НДС за возмещение)", ACQ_TITLE,
-                          "Прочее (хранение / НДС + штрафы без НДС + удержания / НДС)", "Комиссия по образцу (Σ цена × кВВ строки, знак возврата)", LOG_TITLE])
+                         ["Оборот (с НДС)", "Выручка (оборот − комиссия) / НДС − НДС за возмещение", ACQ_TITLE,
+                          "Прочее (хранение / НДС + штрафы без НДС + удержания / НДС)", "Комиссия (Σ цена × кВВ строки, знак возврата)", LOG_TITLE])
         self.assertTrue(all(by[t]["equal_days"] == 1 for t in by if by[t]["must"]))
         rep.KNOWN_MANUAL_DIFFS.add(("acquiring", "2026-09-01"))
         try:
@@ -183,7 +182,8 @@ class BookTests(unittest.TestCase):
             rep.write_xlsx(path, "2026-09", daily, total, ["note"])
             ws = openpyxl.load_workbook(path)["WB - сентябрь"]
             heads = [ws.cell(row=3, column=j).value for j in range(1, 6)]
-            self.assertEqual(heads[:3], ["Дата реализации", "Оборот (с НДС), руб.", "Комиссия факт (с НДС), руб."])
+            self.assertEqual(heads[:5], ["Дата реализации", "Оборот (с НДС), руб.", "Комиссия (с НДС), руб.", "Комиссия, %",
+                                         "справочно: удержано из выплаты всего (оборот − forPay), руб."])
             self.assertEqual(ws.cell(row=5, column=1).value, "Итого")
             self.assertAlmostEqual(ws.cell(row=4, column=2).value, 900.0)
 

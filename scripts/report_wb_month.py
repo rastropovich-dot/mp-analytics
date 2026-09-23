@@ -16,11 +16,12 @@ saleDt в московском времени (у строки без saleDt —
 
 КОЛОНКИ (по дню, суммы за день; знак: Продажа +, Возврат −):
     Оборот              Σ retailPriceWithDisc (продажа − возврат) — = marketplace_buyouts, до рубля
-    Комиссия (факт)     Оборот − Σ forPay± («К перечислению продавцу»), по отчёту 44,4 %
-    Комиссия по образцу Σ retailPriceWithDisc × commissionPercent / 100 (кВВ строки, знак возврата) — его C
+    Комиссия            Σ retailPriceWithDisc × commissionPercent / 100 (кВВ строки, знак возврата) — его C
+                        (решение советника 2026-09-23: колонка листа — как у владельца)
+    Удержано из выплаты Оборот − Σ forPay± («К перечислению продавцу»), по отчёту 44,4 % — справочно:
+                        всё, что WB удержал из выплаты (комиссия, скидки, доплаты), не одна комиссия
     НДС за возмещение   (Σ ppvzReward + Σ rebillLogisticCost) × (НДС − 1) / НДС — колонка AB его «свода»
-    Выручка (факт)      (Оборот − Комиссия факт) / НДС − НДС за возмещение
-    Выручка по образцу  (Оборот − Комиссия по образцу) / НДС − НДС за возмещение — его E, до копейки
+    Выручка             (Оборот − Комиссия) / НДС − НДС за возмещение — его E, до копейки
     Себестоимость       снимок 1С (article_unit_costs) по базовому артикулу (unit_cost_uniform), для
                         безразмерных — точная строка; --cogs-by variant — по варианту артикул-размер
     Логистика           Σ deliveryService / НДС — его I до копейки при дате saleDt МСК
@@ -230,7 +231,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
             pct = r.get("commission_percent")
             if pct in (None, ""):
                 cnt[d]["no_pct_rows"] += 1
-            s["commission_manual"] += sign * price * D(pct) / 100
+            s["commission"] += sign * price * D(pct) / 100
             s["acquiring_raw"] += sign * D(r["acquiring_fee"])
             qty = int(r.get("quantity") or 1)
             cost, source = cost_fn(r.get("vendor_code"), r.get("tech_size"))
@@ -251,10 +252,9 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
     for d in days:
         s, c, vat = by[d], cnt[d], vat_for(d)
         vat_refund = (s["reward"] + s["rebill"]) * (vat - 1) / vat
-        commission = s["turnover"] - s["for_pay"]
-        commission_manual = s["commission_manual"]
+        commission = s["commission"]                    # как у владельца: кВВ строк (решение советника 2026-09-23)
+        withheld = s["turnover"] - s["for_pay"]         # справочно: удержано из выплаты всего
         revenue = (s["turnover"] - commission) / vat - vat_refund
-        revenue_manual = (s["turnover"] - commission_manual) / vat - vat_refund
         cogs = s["cogs"]
         ads = ads_by_day.get(d, Z) if ads_known else None
         logistics, acquiring = s["delivery"] / vat, s["acquiring_raw"] / vat
@@ -266,7 +266,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
         row = {"date": d, "vat": vat, "rows": c["rows"], "positions": c["positions"], "no_cost_positions": c["no_cost_positions"], "no_pct_rows": c["no_pct_rows"],
                "cost_sources": {k[5:]: v for k, v in c.items() if k.startswith("cost_")},
                "turnover": s["turnover"], "commission": commission, "commission_pct": ratio(commission, s["turnover"]),
-               "commission_manual": commission_manual, "vat_refund": vat_refund, "revenue": revenue, "revenue_manual": revenue_manual,
+               "withheld": withheld, "withheld_pct": ratio(withheld, s["turnover"]), "vat_refund": vat_refund, "revenue": revenue,
                "cogs": cogs, "margin": margin, "margin_pct": ratio(margin, revenue), "logistics": logistics, "logistics_pct": ratio(logistics, revenue),
                "ads": ads, "drr_pct": ratio(ads, s["turnover"]) if ads is not None else None, "acquiring": acquiring, "acquiring_pct": ratio(acquiring, revenue),
                "other": other, "fin_result": fin, "fin_result_pct": ratio(fin, revenue), "overhead": overhead,
@@ -282,12 +282,13 @@ def total_row(rows):
     t = {"date": "Итого", "young": False, "vat": rows[-1]["vat"] if rows else vat_for("2026-01-01")}
     for k in ("rows", "positions", "no_cost_positions", "no_pct_rows"):
         t[k] = sum(r[k] for r in rows)
-    for k in ("turnover", "commission", "commission_manual", "vat_refund", "revenue", "revenue_manual", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "acquiring_other", "no_cost_turnover"):
+    for k in ("turnover", "commission", "withheld", "vat_refund", "revenue", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "acquiring_other", "no_cost_turnover"):
         t[k] = sum((r[k] for r in rows), Z)
     t["ads"] = sum((r["ads"] for r in rows if r["ads"] is not None), Z) if any(r["ads"] is not None for r in rows) else None
     t["overhead"] = sum((r["overhead"] for r in rows if r["overhead"] is not None), Z) if any(r["overhead"] is not None for r in rows) else None
     t["ebitda"] = (t["fin_result"] - t["overhead"]) if t["overhead"] is not None else None
-    t["commission_pct"] = ratio(t["commission"], t["turnover"]); t["margin_pct"] = ratio(t["margin"], t["revenue"])
+    t["commission_pct"] = ratio(t["commission"], t["turnover"]); t["withheld_pct"] = ratio(t["withheld"], t["turnover"])
+    t["margin_pct"] = ratio(t["margin"], t["revenue"])
     t["logistics_pct"] = ratio(t["logistics"], t["revenue"]); t["acquiring_pct"] = ratio(t["acquiring"], t["revenue"])
     t["drr_pct"] = ratio(t["ads"], t["turnover"]) if t["ads"] is not None else None
     t["fin_result_pct"] = ratio(t["fin_result"], t["revenue"]); t["ebitda_pct"] = ratio(t["ebitda"], t["revenue"]) if t["ebitda"] is not None else None
@@ -301,9 +302,9 @@ def total_row(rows):
 
 # ---------- книга ----------
 
-COLS = [("Дата реализации", "date", None), ("Оборот (с НДС), руб.", "turnover", "money"), ("Комиссия факт (с НДС), руб.", "commission", "money"),
-        ("Комиссия факт, %", "commission_pct", "pct"), ("справочно: Комиссия по образцу (Σ цена × кВВ строки)", "commission_manual", "money"),
-        ("Выручка, руб.", "revenue", "money"), ("справочно: Выручка по образцу (с комиссией по кВВ)", "revenue_manual", "money"),
+COLS = [("Дата реализации", "date", None), ("Оборот (с НДС), руб.", "turnover", "money"), ("Комиссия (с НДС), руб.", "commission", "money"),
+        ("Комиссия, %", "commission_pct", "pct"), ("справочно: удержано из выплаты всего (оборот − forPay), руб.", "withheld", "money"),
+        ("справочно: удержано, %", "withheld_pct", "pct"), ("Выручка, руб.", "revenue", "money"),
         ("Себестоимость, руб.", "cogs", "money"), ("Маржа, руб.", "margin", "money"), ("Мар-ть, %", "margin_pct", "pct"),
         ("Логистика, руб.", "logistics", "money"), ("% Логистики", "logistics_pct", "pct"), ("Реклама, руб.", "ads", "money"),
         ("% ДРР (от ТО)", "drr_pct", "pct"), ("Эквайринг, руб.", "acquiring", "money"), ("% Эквайринга", "acquiring_pct", "pct"),
@@ -370,16 +371,16 @@ def write_xlsx(path, month, rows, total, notes):
 CHECK_LINES = (
     # (заголовок, наше поле, их колонка, обязана сходиться, чем объясняется расхождение)
     ("Оборот (с НДС)", "turnover", "turnover", True, ""),
-    ("Выручка по образцу (комиссия по кВВ, минус НДС за возмещение)", "revenue_manual", "revenue", True, ""),
+    ("Выручка (оборот − комиссия) / НДС − НДС за возмещение", "revenue", "revenue", True, ""),
     ("Эквайринг (acquiringFee, возврат со знаком минус) / НДС", "acquiring", "acquiring", True,
      "09-17 владелец не вычел эквайринг двух возвратов (441,25 + 936,24 с НДС = 1 129,09 без) — на 09-03, 09-07, 09-14 вычел; его сторона"),
     ("Прочее (хранение / НДС + штрафы без НДС + удержания / НДС)", "other", "other", True, ""),
-    ("Комиссия по образцу (Σ цена × кВВ строки, знак возврата)", "commission_manual", "commission", True, ""),
+    ("Комиссия (Σ цена × кВВ строки, знак возврата)", "commission", "commission", True, ""),
     ("Логистика (deliveryService / НДС, по дате продажи МСК)", "logistics", "logistics", True, ""),
-    ("Комиссия факт (оборот − forPay) против его по кВВ", "commission", "commission", False, "у него кВВ строки (42 % почти везде), факт по отчёту 44,4 % — решение 4 WB-5: наш лист по факту"),
-    ("Выручка факт против его выручки", "revenue", "revenue", False, "разница — комиссия факт против кВВ"),
+    ("справочно: удержано из выплаты всего (оборот − forPay) против его комиссии", "withheld", "commission", False,
+     "удержано всё: комиссия по кВВ + согласованная скидка + доплаты; по отчёту 44,4 % против кВВ ~42 % — не одно и то же"),
     ("Себестоимость (снимок 1С 05-20 по базовому артикулу против его цен)", "cogs", "cogs", False, "снимок 05-20 и стыковка по базовому артикулу (WB-5 §4)"),
-    ("Фин. рез. (наш факт против его)", "fin_result", "fin_result", False, "комиссия факт против кВВ + СС"),
+    ("Фин. рез. против его", "fin_result", "fin_result", False, "разница — СС (и эквайринг 09-17)"),
 )
 
 
@@ -470,7 +471,8 @@ def main(argv=None):
         print(f"ВНИМАНИЕ: строк продаж/возвратов без commissionPercent — {total['no_pct_rows']}, в комиссии по образцу они как 0 %")
     notes = [f"Источник: отчёт реализации WB (finance-api sales-reports/detailed, period=daily); день строки — saleDt в московском времени, без saleDt — rrDate. "
              f"Строк {len(rows)}; {outside_text}.",
-             f"Комиссия факт = Оборот − forPay; по образцу владельца — Σ цена × кВВ строки (commissionPercent) — в справочных колонках и в приёмке. НДС {total['vat']}.",
+             f"Комиссия = Σ цена × кВВ строки (commissionPercent), как у владельца; справочно «удержано из выплаты всего» = Оборот − forPay "
+             f"(комиссия + согласованная скидка + доплаты). НДС {total['vat']}.",
              f"Себестоимость: снимок 1С {args.snapshot}, стыковка {args.cogs_by}; позиций по источникам: " + ", ".join(f"{k} {v}" for k, v in sorted(total["cost_sources"].items()))
              + f"; без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}"
              + (f" ({ratio(total['no_cost_turnover'], total['turnover']):.1%} оборота)." if total["turnover"] else "."),
@@ -480,13 +482,13 @@ def main(argv=None):
     out = args.out or os.path.join(OUT_DIR, f"wb_{args.month}_to_{days[-1]}.xlsx")
     write_xlsx(out, args.month, daily, total, notes)
     ads_text = "—" if total["ads"] is None else f"{total['ads']:,.2f}"
-    print(f"итого {d1}…{days[-1]}: оборот {total['turnover']:,.2f}, комиссия факт {total['commission']:,.2f} ({total['commission_pct']:.2%}), выручка {total['revenue']:,.2f}, "
+    print(f"итого {d1}…{days[-1]}: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f} ({total['commission_pct']:.2%}), выручка {total['revenue']:,.2f}, "
           f"СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}, логистика {total['logistics']:,.2f}, реклама {ads_text}, "
           f"эквайринг {total['acquiring']:,.2f}, прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
           + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total["ebitda"] is not None else ""))
     print(f"без СС: {total['no_cost_positions']} из {total['positions']} позиций, оборот {total['no_cost_turnover']:,.2f}"
           + (f" — {ratio(total['no_cost_turnover'], total['turnover']):.2%} оборота" if total["turnover"] else ""))
-    print(f"по образцу (кВВ строк): комиссия {total['commission_manual']:,.2f}, выручка {total['revenue_manual']:,.2f}; НДС за возмещение {total['vat_refund']:,.2f}")
+    print(f"справочно: удержано из выплаты всего (оборот − forPay) {total['withheld']:,.2f} ({total['withheld_pct']:.2%}); НДС за возмещение {total['vat_refund']:,.2f}")
     print(f"записано: {out}")
     code = 0
     if args.check:

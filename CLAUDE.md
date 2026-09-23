@@ -745,6 +745,10 @@ scripts/ozon_cpc_data_gap_report.py    export_management_excel.py ← OOM risk
 sql/20260914_create_article_unit_costs.sql ← применён 2026-09-14 через MCP, таблица пуста; 20260518_* удалён (другая модель)
 scripts/load_article_unit_costs.py        загрузчик снимка 1С, без --apply ничего не пишет
 
+tests/test_000_no_network.py            тесты без сети (2026-09-23): фальшивые ключи вместо .env, любое соединение — ошибка,
+                                        test_zzz_… в конце набора падает на любой попытке; живой тест — @live_only,
+                                        запуск с MP_TESTS_LIVE=1 (сейчас таких тестов 0); фикстуры — tests/fixtures/
+
 docs/how-we-work.md                     метод работы, см. §11
 docs/inbox.md / docs/outbox.md          задача и отчёт, см. §11
 spec/  knowledge/telegram/               спеки Ozon и чат разработчиков, см. §11

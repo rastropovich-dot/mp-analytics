@@ -8,30 +8,37 @@
 
 ---
 
-## 2026-09-23, шестая задача WB — §2, §3, §3а сделаны вечером 09-23; §1 — утром 09-24 (будильник 07:53 UTC)
+## 2026-09-23, шестая задача WB — §2, §3, §3а сделаны; реклама в базе и в проде по слову (мерж `385aafb`); §1 — утром 09-24
 
 `db_writes = 0`. Обращений к WB API — **15**: воронка `sales-funnel/products` 6 (пять дней
 расхождения + контрольный 09-01, зачем — §2), `adv/v1/upd` 8 (съём истории рекламы по 31 дню,
 §3а) и 1 (dry-run загрузчика); **429 — 0, таймаутов — 0** (леджеры
 `logs/wb_funnel_recheck_20260923/calls.json`, `data/wb_ads_raw/calls.json`,
-`logs/wb_ads_loader_dryrun_20260923.out`). Книга владельца читалась на месте. `origin/main` =
-`b9152e0` (тридцать пятая Ozon ещё не слита — `docs/owner_workbook_gaps.md` и правка
-`how-we-work.md` до ветки не дошли, статус дыры 4 поставлю после мержа). Тесты — **945 OK**.
+`logs/wb_ads_loader_dryrun_20260923.out`). Книга владельца читалась на месте. Тесты после
+мержа `origin/main` (`4e6f0bf`, тридцать пятая Ozon) — **949 OK**; дыра 4 в
+`docs/owner_workbook_gaps.md` переведена в «площадка найдена».
 
-### ⚠️ Вопросы, задача не закончена — три слова владельца (после утра 09-24 — четвёртое)
+### Выполнено по слову владельца (три «да» в чате ~20:50 UTC)
 
-1. **Миграция** `sql/20260923_create_wb_ad_spend_daily.sql` — таблица списаний за рекламу WB,
-   зерно `(advert_id, upd_time)`, 12 колонок, 2 индекса; ничего существующего не трогает.
-2. **Бэкфилл рекламы** `scripts/wb_ads_backfill.py --apply --approve-wb-ads-write` из снятых
-   файлов: **33 781 строка за 2026-02-01 … 2026-08-31** (сентябрь — 0 строк, реклама
-   остановлена 18.08), Σ 32 004 476,00 с НДС; обращений к API — 0. Контроль после записи:
-   `count(*)` = 33 781, `count(distinct (advert_id, upd_time))` = 33 781, Σ `upd_sum` за
-   июль / 1,22 = 1 694 177,87, за 08-01…08-17 / 1,22 = 835 968,03 — как на листе.
-3. **Строка шага «WB: реклама»** (`python3 loaders/wb_ads_loader.py`) после «WB: отчёт
-   реализации» в `run_daily_pipeline.py` — по §5 файл не трогала; по правилу `FATAL_STEPS`
-   шаг нефатален сам собой. Без строки таблица живёт только бэкфиллом.
-4. **`marketplace_buyouts` WB из отчёта** — план §3 готов, `--apply` не запускался (по задаче);
-   слово — после чисел §3.3 утром 09-24 (доступен ли отчёт за D в ночь D+1).
+1. **Миграция применена 20:51 UTC** через MCP (`apply_migration create_wb_ad_spend_daily`,
+   текст = `sql/20260923_create_wb_ad_spend_daily.sql`): таблица `wb_ad_spend_daily`, 12
+   колонок, PK `(advert_id, upd_time)` + 2 индекса.
+2. **Бэкфилл рекламы записан 20:52:28–20:53:02 UTC** (`--apply --approve-wb-ads-write`,
+   `logs/wb_ads_backfill_apply_20260923.out`): `✅ wb_ad_spend_daily: upsert 33781 строк`, к
+   API — 0 обращений. **Контроль SQL 20:53 UTC:** `count(*)` = **33 781**, различных пар
+   `(advert_id, upd_time)` = **33 781**, `observed_at` один у всех (20:52:28), `upd_day`
+   02-01 … 08-17; июль / 1,22 = **1 694 177,87** (лист 1 694 178), 08-01…08-17 / 1,22 =
+   **835 968,03** (лист 835 968), по месяцам строки и Σ = плану на всех 7 месяцах
+   (02: 4 488 / 6 942 541 … 08: 1 146 / 1 019 881), итого 32 004 476,00; `upd_num` null — 0.
+3. **Строка шага «WB: реклама»** (`python3 loaders/wb_ads_loader.py`) добавлена в
+   `run_daily_pipeline.py` сразу после «WB: отчёт реализации» (нефатален по правилу
+   `FATAL_STEPS`), 4 теста `tests/test_wb_ads_step.py`. Первая ночь — 09-24: в логе ждать
+   «WB реклама: окно 2026-08-24 … 2026-09-23», «HTTP 200, строк 0», «списаний в окне нет —
+   писать нечего» (реклама остановлена 18.08).
+4. **Мерж в `main`:** `origin/main` `4e6f0bf` влит в ветку (конфликт только в `.gitignore`,
+   обе строки оставлены), полный набор **949 OK**, мерж-коммит **`385aafb`** собран плюмбингом
+   и запушен **20:54:45 UTC**; ветка `wb-fixes` переведена на него. Render — ниже, §5.
+5. **`--apply` по выкупам** — не запускался: после утра 09-24 и решения по §3.3.
 
 ### §1. Утро 09-24 — не наступило
 
@@ -216,19 +223,28 @@ Dry-run загрузчика по живому API: окно 08-23 … 09-22, HT
 пустой, не нулём (приёмка сентября после правки — те же 6 из 6, код 0). Шаг в
 `run_daily_pipeline.py` не добавлен (§5) — вопрос 3 выше.
 
+### §5. Render — live до 00:15 UTC
+
+`GET /v1/services/{id}/deploys?limit=1`: оба сервиса на `385aafb`, **live 20:55:25 UTC**
+(`mp-analytics`) и **20:55:26 UTC** (`mp-analytics-telegram-report`) — за три с лишним часа до
+00:15 UTC. Ночь 09-24 — первая для двух шагов: «WB: отчёт реализации» и «WB: реклама».
+
 ### §4. Решения советника — как применены
 
 Дата листа `saleDt` МСК и комиссия по кВВ — не трогались. Февраль–март выкупов — в плане §3
 (5 515 новых ключей, +237,8 млн). Лист WB в Telegram — не делался.
 
-### `git log origin/main..HEAD` (`b9152e0` … )
+### `git log` ветки до мержа (всё вошло в `385aafb`)
 
 ```
+dfecd84 Merge origin/main (thirty-fifth Ozon task) into wb-fixes; gap 4 of the workbook register: the t-letter Discounter confirmed
+4876b25 Nightly step «WB: реклама» after the sales report step, by the owner's word; 4 tests
+2acd479 Sixth WB report so far: K = funnel orderSum × 0,58/1,22, the t-letter Discounter, P ≈ SPP share by sale day; …
 d75ee59 Sixth WB task: buyouts rebuild plan from the sales report, WB ads loader with table and backfill plan, sheet ads from the table
 52de1a3 Keep the sixth WB task text as placed by the adviser
 ```
-(+ коммит этого отчёта). Общие файлы не трогались; `scripts/report_wb_month.py` — только
-источник рекламы.
+Общие файлы: `run_daily_pipeline.py` — только строка шага «WB: реклама» (по слову);
+`docs/owner_workbook_gaps.md` — статус дыры 4; `.gitignore` — `data/wb_ads_raw/`.
 
 ### Что не сошлось — одной строкой
 

@@ -76,6 +76,12 @@ class FormulaTests(unittest.TestCase):
         [r] = rep.build_daily([], ["2026-09-01"], cost_base, {}, date(2026, 9, 10), ads_known=False)
         self.assertIsNone(r["ads"]); self.assertIsNone(r["drr_pct"])
 
+    def test_ads_are_taken_without_vat_like_the_owner(self):
+        [r] = rep.build_daily([], ["2026-09-01"], cost_base, {"2026-09-01": D("122")}, date(2026, 9, 10), ads_known=True)
+        self.assertEqual(r["ads"], D("100"))
+        [r] = rep.build_daily([], ["2026-09-02"], cost_base, {"2026-09-01": D("122")}, date(2026, 9, 10), ads_known=True)
+        self.assertEqual(r["ads"], D(0))                          # известно и ноль — ноль, не пусто
+
     def test_a_sale_without_commission_percent_is_counted_not_hidden(self):
         rows = [row("2026-09-01", retail_price_with_disc="1000", for_pay="556")]
         [r] = rep.build_daily(rows, ["2026-09-01"], cost_base, {}, date(2026, 9, 10))

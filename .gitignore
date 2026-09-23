@@ -41,3 +41,4 @@ data/ozon_orders_*.csv
 
 # сырьё отчёта реализации WB (finance-api, period=daily), куски по 14 дней — в git не кладём
 data/wb_sales_report_raw/
+data/wb_ads_raw/

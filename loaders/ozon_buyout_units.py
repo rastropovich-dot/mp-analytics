@@ -57,17 +57,43 @@ def sold_postings(accruals):
     return out
 
 
+def absorb_retry_stats(counters, stats):
+    """Счётчики одного вызова http_retry → счётчики шага. Повтор с причиной 429 — тоже 429."""
+    counters["http"] += stats.get("requests", 0)
+    counters["retries"] += stats.get("retries", 0)
+    for reason, n in (stats.get("reasons") or {}).items():
+        counters["reasons"][reason] = counters["reasons"].get(reason, 0) + n
+        if http_retry.is_429_reason(reason):
+            counters["429"] += n
+
+
 def fetch_postings(numbers, counters):
-    """accrual/postings пачками по CHUNK. counters: {'requests', '429'} — число обращений и пауз печатает вызывающий."""
+    """accrual/postings пачками по CHUNK. counters — печатает вызывающий:
+
+        requests        обращений шага (пачка × попытка антиспама)
+        http            HTTP-попыток всего, включая повторы внутри http_retry
+        retries         повторов http_retry; reasons — их причины (rate_limit_per_second и т. п.)
+        antispam_429    429, дошедших до шага после повторов http_retry, — пауза ANTISPAM_PAUSE_SECONDS
+        429             ВСЕ 429 шага: antispam_429 + повторы http_retry с причиной 429
+
+    Прежде шаг считал только antispam_429 и печатал «пауз 429 — 0» при десяти 429, которые http_retry
+    повторил сам (ручной прогон 2026-09-23): ложный ноль — тот же класс, что тихий ноль.
+    """
+    for key in ("requests", "http", "retries", "antispam_429", "429"):
+        counters.setdefault(key, 0)
+    counters.setdefault("reasons", {})
     out = []
     for i in range(0, len(numbers), CHUNK):
         chunk = numbers[i:i + CHUNK]
         for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
             time.sleep(PAUSE_SECONDS)
             counters["requests"] += 1
+            stats = {}
             r = http_retry.post(f"{accrual.BASE}/v1/finance/accrual/postings", label="accrual/postings",
-                                headers=accrual.headers(), json={"posting_numbers": chunk}, timeout=180)
+                                headers=accrual.headers(), json={"posting_numbers": chunk}, timeout=180, stats=stats)
+            absorb_retry_stats(counters, stats)
             if r.status_code == 429:
+                counters["antispam_429"] += 1
                 counters["429"] += 1
                 print(f"accrual/postings: 429, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}", flush=True)
                 time.sleep(ANTISPAM_PAUSE_SECONDS)

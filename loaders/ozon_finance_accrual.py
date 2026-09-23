@@ -59,20 +59,19 @@ TYPE_TO_EXPENSE = {
     # Доставка, приёмка, обработка, возвратная логистика:
     32: "logistics",  # Logistic
     29: "logistics",  # LastMileCourier
-    16: "logistics",  # Drop-Off
-    17: "logistics",  # Drop-Off Agent
-    45: "logistics",  # PickUpPointReturnAcceptance
     98: "logistics",  # DeliveryToHandoverPlaceByOzon
     59: "logistics",  # ReturnFlowLogistic
-    78: "logistics",  # TemporaryPlacement
-    82: "logistics",  # VolumeWeightCharacteristicsProcessing
     65: "logistics",  # RfbsEasyReturn
     71: "logistics",  # SellerReturns
     6:  "logistics",  # Cancellation
     9:  "logistics",  # ClientReturn
     40: "logistics",  # PartialReturn
-    62: "logistics",  # RfbsClientDeliveryCharge
     64: "logistics",  # RfbsDomesticDelivery
+    # По справочнику владельца «Тип начисления → Вид» (docs/owner_manual_report_instruction.md, сверено 2026-09-23 с его
+    # полотном за ноябрь 2025 по суммам до копейки): «Размещение товаров на складах Ozon» и «Агентское вознаграждение Ozon
+    # Агрегатор realFBS» у него — Логистика. До 09-23 лежали в other.
+    46: "logistics",  # Placements — «Размещение товаров на складах Ozon»
+    63: "logistics",  # RfbsDomesticAgentFee — «Агентское вознаграждение Ozon Агрегатор realFBS»
     # Подписки — отдельная статья: платим за подписку, а не за операцию.
     # Проверено 2026-09-11: в комиссию НЕ входят. sale_commission равна
     # sale_amount × commission_ratio на 1000 строк из 1000, а услуга 51
@@ -84,9 +83,17 @@ TYPE_TO_EXPENSE = {
     23: "external_promo",  # InternetSiteAdvertising
     # Прочие затраты: штрафы, разовые услуги, корректировки.
     1:  "other",  # Acquiring
+    # По тому же справочнику владельца эти шесть — Прочее, не Логистика (до 2026-09-23 лежали в logistics): обработка
+    # Drop-off (СЦ / ПВЗ / партнёрами), обработка возвратов, отмен и невыкупов партнёрами, перечисление за доставку от
+    # покупателя, временное размещение в СЦ/ПВЗ, дополнительная обработка ОВХ. Сентябрь 1–21: Σ +812,00 со знаком Ozon.
+    16: "other",  # Drop-Off — «Обработка отправления Drop-off»
+    17: "other",  # Drop-Off Agent — «Обработка отправления Drop-off партнёрами»
+    45: "other",  # PickUpPointReturnAcceptance — «Обработка возвратов, отмен и невыкупов партнёрами»
+    62: "other",  # RfbsClientDeliveryCharge — «Перечисление за доставку от покупателя» (доход, знак +)
+    78: "other",  # TemporaryPlacement — «Краткосрочное размещение возврата FBS» (у владельца «Временное размещение товара в СЦ/ПВЗ»)
+    82: "other",  # VolumeWeightCharacteristicsProcessing — «Дополнительная обработка ОВХ»
     38: "other",  # PackageCost
     39: "other",  # PackingFee
-    46: "other",  # Placements
     61: "other",  # ReviewsPin
     79: "other",  # TemporaryPlacementsAgent
     76: "other",  # StockInsurance
@@ -94,7 +101,6 @@ TYPE_TO_EXPENSE = {
     96: "other",  # AcceleratedReviewCollection
     93: "other",  # DefectFineErrors
     92: "other",  # DefectFineComplaint
-    63: "other",  # RfbsDomesticAgentFee
     47: "other",  # PointsForReviews
     15: "other",  # Disposal — утилизация, не доставка
     57: "other",  # RealizationReportCorrection

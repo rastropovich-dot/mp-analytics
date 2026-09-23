@@ -47,7 +47,9 @@ chat-merge-0923           00601db  архив чата до 09-23 (+232), script
 accrual-articles-owner    2608ff2  knowledge/ozon/accrual_types_2026-09-23.json (124 типа), scripts/accrual_types_owner_check.py, scripts/fetch_accrual_history_range.py
                           6fb657b  TYPE_TO_EXPENSE по справочнику владельца: 16, 17, 45, 62, 78, 82 → other; 46, 63 → logistics   ← меняет ночную запись расходов
                           53ae9e1  листы «Серебро» / «Золото», лист «Начисления - свод», --check-segment, +6 тестов, реестр дыр
-полный набор на accrual-articles-owner: Ran 931 tests — OK (925 + 6); ветки друг от друга не зависят, общих файлов нет
+                          9aae16d  merge main (шестая WB-задача, 1601b17) — реестр дыр правили обе сессии (WB — дыра 4, я — 1, 5, 6), конфликт снят, обе правки на месте
+                          b97e2fd  тест: загрузчики отправлений не падают на новых полях (customer_price и т. п.) — §3, последний абзац; CLAUDE.md §10
+main после pull 21:1x UTC = 1601b17 (WB-6): Ran 949 tests — OK; обе ветки поверх него во временной ветке: конфликтов 0, Ran 956 tests — OK (949 + 7)
 ```
 
 `6fb657b` — единственный коммит, который меняет прод: с ночи после мержа `marketplace_expenses`

@@ -15,7 +15,7 @@ setUpModule, tearDownModule = _guard.offline_module(loader)
 
 
 
-MODULE_PATH = Path("/Users/mihaileliseev/mp-analytics/scripts/ozon_performance_recovery_worker.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "ozon_performance_recovery_worker.py"
 SPEC = importlib.util.spec_from_file_location("ozon_performance_recovery_worker", MODULE_PATH)
 worker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worker)

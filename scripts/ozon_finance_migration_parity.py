@@ -3,8 +3,9 @@
 import json,os,sys,time
 from collections import defaultdict
 from datetime import date,timedelta
-sys.path.insert(0,'/Users/mihaileliseev/mp-analytics')
-from dotenv import load_dotenv; load_dotenv("/Users/mihaileliseev/mp-analytics/.env")
+ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0,ROOT)
+from dotenv import load_dotenv; load_dotenv(os.path.join(ROOT,".env"))
 from loaders import http_retry
 OUT="/private/tmp/claude-501/-Users-mihaileliseev-mp-analytics/aa40a0dd-8668-4802-8516-65cf0cc44048/scratchpad"
 H={"Client-Id":os.getenv("OZON_CLIENT_ID"),"Api-Key":os.getenv("OZON_API_KEY"),"Content-Type":"application/json"}

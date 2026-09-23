@@ -14,7 +14,7 @@
 отчёта 09:35–09:39 UTC, 17 съём бэкфилла 09:44–10:10, 1 dry-run загрузчика, 1
 `adv/v1/upd` в первой приёмке), **429 — 0, сетевых отказов — 0** (`calls.json`,
 `logs/wb_sales_report_probe2/run.out`, `logs/wb_sales_report_dryrun_20260923.out`).
-Файл владельца читался на месте. Ветка `wb-fixes` = `bcb995c` (запушена), включает
+Файл владельца читался на месте. Ветка `wb-fixes` = `d936876` (запушена), включает
 `origin/main` `39754e2` (тридцать третья задача Ozon: правило фатальности перевёрнуто —
 подробнее в §2). Тесты после мержа — **905 OK** (838 на утро + 12 загрузчик + 4 шаг +
 17 лист + 34 из `main`).
@@ -215,9 +215,10 @@ UTC: 17 обращений (куски по 14 дней), 17 файлов, 329 5
 (артикулов нет в снимке 05-20; стыковка: `uniform` 405, `plain` 180) — печатается в
 выводе и в подвале книги.
 
-### `git log origin/main..HEAD` (`bcb995c`)
+### `git log origin/main..HEAD` (`d936876`)
 
 ```
+d936876 Fifth WB report: six columns of the owner's sheet match 21 of 21, the backfill plan by month, two words pending (migration, --apply)
 bcb995c Merge origin/main (thirty-third Ozon task: fatality rule inverted) into wb-fixes
 f01d1ab WB month sheet: the owner's rules found — day = saleDt in Moscow time, commission by row kVV, returns signed in acquiring, penalties without VAT
 1276272 Fifth WB report, interim: corrections (429 by log, buyout_rate dependents), sales-report loader and sheet in the branch

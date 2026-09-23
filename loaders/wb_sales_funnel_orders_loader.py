@@ -21,9 +21,20 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products"
 
-# Предел повторов по 429. Без него цикл ниже крутился бесконечно.
+# Предел повторов по 429 и сетевым отказам. Без него цикл ниже крутился бесконечно.
 WB_RATE_LIMIT_MAX_ATTEMPTS = 5
 WB_RATE_LIMIT_SLEEP_SECONDS = 60
+
+# Лимит sales-funnel/products — 3 запроса в минуту, интервал 20 с (spec/wb/11-analytics.yaml).
+# Раньше страницы шли через 3 с, дни — через 5 с: 4 запроса за 30 с, и 429 на
+# третьем дне ловился каждую ночь (09-22, 09-23). 21 с между запросами — под лимит.
+PAGE_SLEEP_SECONDS = 21
+
+# Ночь 09-23: после 429 и паузы повторный запрос не дождался ответа
+# (ReadTimeout 60 с), исключение никто не ловил, шаг упал с кодом 1 и, будучи
+# фатальным, унёс весь прогон до KPI обеих площадок. Сетевой отказ — такой же
+# транзиентный, как 429: те же попытки, та же пауза, по исчерпании — RuntimeError.
+TRANSIENT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
 
 HEADERS = {
     "Authorization": WB_API_KEY,
@@ -79,7 +90,19 @@ def fetch_wb_sales_funnel_day(day: str):
             "offset": offset
         }
 
-        resp = requests.post(URL, headers=HEADERS, json=payload, timeout=60)
+        try:
+            resp = requests.post(URL, headers=HEADERS, json=payload, timeout=60)
+        except TRANSIENT_ERRORS as error:
+            rate_limit_attempts += 1
+            print(f"WB Sales Funnel {day} offset {offset}: сеть — {type(error).__name__}: {str(error)[:200]}")
+            if rate_limit_attempts > WB_RATE_LIMIT_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"WB Sales Funnel: сетевой отказ не изжит за {WB_RATE_LIMIT_MAX_ATTEMPTS} попыток "
+                    f"({day}, offset {offset}): {type(error).__name__}"
+                ) from error
+            print(f"⏳ Жду {WB_RATE_LIMIT_SLEEP_SECONDS} секунд (попытка {rate_limit_attempts}/{WB_RATE_LIMIT_MAX_ATTEMPTS})...")
+            time.sleep(WB_RATE_LIMIT_SLEEP_SECONDS)
+            continue
 
         print(f"WB Sales Funnel {day} offset {offset} HTTP: {resp.status_code}")
 
@@ -125,7 +148,7 @@ def fetch_wb_sales_funnel_day(day: str):
             break
 
         offset += limit
-        time.sleep(3)
+        time.sleep(PAGE_SLEEP_SECONDS)
 
     return {
         "order_date": day,
@@ -170,7 +193,7 @@ def main(days_back=DEFAULT_DAYS_BACK):
         day = (today - timedelta(days=i)).isoformat()
         row = fetch_wb_sales_funnel_day(day)
         save_day(row)
-        time.sleep(5)
+        time.sleep(PAGE_SLEEP_SECONDS)
 
 
 if __name__ == "__main__":

@@ -43,9 +43,9 @@ def fetch(scheme, days_back):
 
     def counted(*a, **kw):
         calls["n"] += 1
+        stats = kw.setdefault("stats", {})        # повторы внутри http_retry тоже 429 — считаем и их
         r = orig(*a, **kw)
-        if r.status_code == 429:
-            calls["429"] += 1
+        calls["429"] += http_retry.count_429(stats, r)
         return r
     http_retry.post = counted
     to = datetime.now(timezone.utc).replace(microsecond=0)

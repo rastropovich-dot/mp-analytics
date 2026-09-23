@@ -239,6 +239,8 @@ class RunStepNonFatalTests(unittest.TestCase):
             ("KPI: расчет SKU", "kpi_cmd"),
         ]
         with mock.patch.object(pipeline, "run_step", side_effect=fake_run_step), \
+             mock.patch.object(pipeline, "record_pipeline_run"), \
+             mock.patch.object(pipeline, "is_yesterday_cpc_loaded", return_value=False), \
              mock.patch.object(pipeline, "build_steps", return_value=steps), \
              mock.patch.object(pipeline, "parse_args", return_value=args), \
              mock.patch.object(pipeline, "send_failure_alert"):

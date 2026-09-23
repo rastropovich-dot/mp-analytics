@@ -36,11 +36,14 @@ def run(supabase, days_back=30, dry_run=False, accrual_module=accrual, units_mod
     expected_calls = -(-len(numbers) // units_module.CHUNK)
     print(f"Штуки выкупов: начислений {len(accruals)}, дат {len(days)}" + (f" ({days[0]} … {days[-1]})" if days else "")
           + f", отправлений с продажей {len(numbers)} → оценка {expected_calls} обращений к accrual/postings", flush=True)
-    counters = {"requests": 0, "429": 0}
+    counters = {"requests": 0, "http": 0, "retries": 0, "antispam_429": 0, "429": 0, "reasons": {}}
     postings = units_module.fetch_postings(numbers, counters)
     got = {p.get("posting_number") for p in postings}
     units, c, unmatched, positions = units_module.units_by_key(accruals, postings)
-    print(f"  accrual/postings: обращений {counters['requests']} (оценка {expected_calls}), пауз 429 — {counters['429']}; "
+    reasons = ", ".join(f"{k} {v}" for k, v in sorted(counters["reasons"].items()))
+    print(f"  accrual/postings: обращений {counters['requests']} (оценка {expected_calls}), HTTP-попыток {counters['http']}; "
+          f"429 — {counters['429']} (повторов http_retry {counters['retries']}{': ' + reasons if reasons else ''}; "
+          f"пауз {bu.ANTISPAM_PAUSE_SECONDS} с — {counters['antispam_429']}); "
           f"спросили {len(numbers)}, в ответе {len(got)}, нет в ответе {len([n for n in numbers if n not in got])}")
     print(f"  строк by-day {c.get('rows', 0)}, сведено {c.get('matched_rows', 0)}, не сведено {c.get('unmatched_rows', 0)}; "
           f"ключей (дата, sku) {c.get('keys', 0)}, измерено {c.get('keys_measured', 0)}, НЕ измерено {c.get('keys_unmeasured', 0)}; "

@@ -1,7 +1,11 @@
+import argparse
 import os
 from collections import defaultdict
+from datetime import date, timedelta
 from dotenv import load_dotenv
 from supabase import create_client
+
+from loaders import stale_keys
 
 load_dotenv()
 
@@ -56,6 +60,16 @@ def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", produ
 
 
 PAGE_SIZE = 1000
+
+# Источник, который не удалось прочитать: витрина из него собрана без его строк, и ключи, державшиеся
+# только на нём, выглядели бы застрявшими. Пока список не пуст, чистка витрины ничего не удаляет.
+SOURCE_READ_FAILURES = []
+
+# Окно чистки витрины — то же, что у загрузчиков начислений и заказов: сегодня и 30 дней назад.
+# Ключи старше окна не трогаются никогда: их источники ночь не пересобирает.
+STALE_WINDOW_DAYS = 30
+STALE_MARKETPLACE = "ozon"
+KPI_TABLE = "daily_sku_kpi"
 
 
 def read_all_by_id(table):
@@ -126,6 +140,7 @@ def load_ozon_organic():
     except RuntimeError:
         raise
     except Exception as e:
+        SOURCE_READ_FAILURES.append("ozon_daily_sku_organic")
         print(
             "Не удалось загрузить ozon_daily_sku_organic. "
             "Проверьте миграцию sql/20260506_create_ozon_daily_sku_organic.sql. "
@@ -350,6 +365,62 @@ def save_kpi(rows):
     print(f"✅ daily_sku_kpi обновлена: {len(rows)} строк")
 
 
+def kpi_key(row):
+    return (str(row["kpi_date"]), str(row["marketplace_code"]), str(row["marketplace_sku"]))
+
+
+def cleanup_stale_kpi_keys(rows, today=None, apply=True, sb=None):
+    """Ключи витрины без единой строки-источника — удалить (Ozon, окно 30 дней). Возвращает число удалённых.
+
+    Витрина пишется upsert-ом и ключ, у которого не осталось ни заказа, ни выкупа, ни расхода, ни органики,
+    не строит и не удаляет: 2026-09-23 механизм загрузчиков удалил фантомный выкуп 08-25 (171 227,00), а ключ
+    витрины остался с той же суммой (тридцать вторая, §1). «Построенные ключи» здесь — ключи, которые этот
+    прогон собрал из четырёх таблиц; ключ есть в витрине, среди построенных нет — источника у него нет.
+
+    Защиты — те же, что у загрузчиков (loaders/stale_keys.py): только ключи окна и только Ozon; ничего не
+    удалять, если хоть один источник не прочитан (SOURCE_READ_FAILURES) — «полнота сбора» витрины; день окна,
+    за который не построено ни одного ключа, не трогается; порог MAX_STALE_ROWS / MAX_STALE_SHARE; список
+    печатается целиком до удаления; удаление — после записи витрины.
+    """
+    sb = sb or supabase
+    today = today or date.today()
+    day_from = (today - timedelta(days=STALE_WINDOW_DAYS)).isoformat()
+    day_to = today.isoformat()
+    in_window = [r for r in rows if str(r["marketplace_code"]) == STALE_MARKETPLACE and day_from <= str(r["kpi_date"]) <= day_to]
+    built_keys = {kpi_key(r) for r in in_window}
+    built_days = {str(r["kpi_date"]) for r in in_window}
+    existing = stale_keys.read_window_rows(
+        sb, KPI_TABLE,
+        "id,kpi_date,marketplace_code,marketplace_sku,orders_amount_seller,buyouts_amount_seller,ad_spend,other_expenses_amount",
+        [("eq", "marketplace_code", STALE_MARKETPLACE), ("gte", "kpi_date", day_from), ("lte", "kpi_date", day_to)],
+        ["kpi_date", "marketplace_code", "marketplace_sku"])
+    window = {"day_from": day_from, "day_to": day_to, "complete": not SOURCE_READ_FAILURES,
+              "retries": 0, "failures": len(SOURCE_READ_FAILURES)}
+    if SOURCE_READ_FAILURES:
+        print(f"Чистка витрины: не прочитаны источники {', '.join(SOURCE_READ_FAILURES)} — ключи без источника не ищу")
+
+    def describe(r):
+        return (f"{r['kpi_date']} sku {r['marketplace_sku']} заказы {float(r.get('orders_amount_seller') or 0):,.2f} "
+                f"выкупы {float(r.get('buyouts_amount_seller') or 0):,.2f} реклама {float(r.get('ad_spend') or 0):,.2f} "
+                f"прочее {float(r.get('other_expenses_amount') or 0):,.2f} (id {r['id']})")
+
+    return stale_keys.cleanup(
+        sb, KPI_TABLE, window, existing, built_keys, built_days, kpi_key, lambda r: str(r["kpi_date"]), describe,
+        lambda client, stale: stale_keys.delete_by_id(client, KPI_TABLE, stale), apply)
+
+
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true", help="собрать витрину и план чистки ключей; в БД не писать ни строки")
+    args = ap.parse_args()
     rows = build_kpi()
-    save_kpi(rows)
+    if args.dry_run:
+        print(f"--dry-run: витрина собрана ({len(rows)} строк), не записываю")
+    else:
+        save_kpi(rows)
+    try:
+        cleanup_stale_kpi_keys(rows, apply=not args.dry_run)
+    except Exception as exc:  # витрина уже записана; отказ чистки не должен ронять фатальный шаг KPI
+        print(f"⚠️ Чистка ключей витрины не выполнена: {type(exc).__name__}: {exc}")
+    if args.dry_run:
+        print("db_writes = 0")

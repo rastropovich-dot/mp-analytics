@@ -85,6 +85,34 @@ class UnitsTests(unittest.TestCase):
         self.assertEqual((counters["requests"], counters["429"]), (3, 3))
         self.assertEqual(sum(1 for c in sleep.call_args_list if c.args[0] == 60), 3)
 
+    def test_429_retried_inside_http_retry_is_counted(self):
+        # Ручной прогон 2026-09-23: http_retry повторил десять 429 по 1 с, а шаг напечатал «пауз 429 — 0»
+        def rate_limited(code):
+            r = mock.Mock(status_code=code, text="")
+            r.json.return_value = {"code": 8} if code == 429 else {"posting_accruals": [{"posting_number": "A-1"}]}
+            r.headers = {}
+            return r
+        session = mock.Mock()
+        session.request.side_effect = [rate_limited(429), rate_limited(429), rate_limited(200)]
+        real_post = bu.http_retry.post
+
+        def post(url, **kw):
+            return real_post(url, session=session, sleep_fn=lambda s: None, **kw)
+        with mock.patch.object(bu.http_retry, "post", side_effect=post), mock.patch.object(bu.time, "sleep"), \
+                mock.patch.object(bu.accrual, "headers", return_value={}), mock.patch("builtins.print"):
+            counters = {}
+            out = bu.fetch_postings(["A-1"], counters)
+        self.assertEqual(len(out), 1)
+        self.assertEqual((counters["requests"], counters["http"], counters["retries"]), (1, 3, 2))
+        self.assertEqual((counters["429"], counters["antispam_429"]), (2, 0))
+        self.assertEqual(counters["reasons"], {"rate_limit_per_second": 2})
+
+    def test_count_429_sees_retries_and_last_response(self):
+        stats = {"reasons": {"rate_limit_per_second": 3, "http_502": 1}}
+        self.assertEqual(bu.http_retry.count_429(stats), 3)
+        self.assertEqual(bu.http_retry.count_429(stats, mock.Mock(status_code=429)), 4)
+        self.assertEqual(bu.http_retry.count_429({}, mock.Mock(status_code=200)), 0)
+
 
 class StepTests(unittest.TestCase):
     def test_dry_run_writes_nothing_and_tells_zero_keys_from_real_ones(self):

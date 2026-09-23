@@ -38,3 +38,6 @@ data/postings_raw/
 # сырые ответы accrual/postings (начисления по номерам отправлений) для проверок отнесения по дате, в git не кладём
 data/accrual_postings/
 data/ozon_orders_*.csv
+
+# сырьё отчёта реализации WB (finance-api, period=daily), куски по 14 дней — в git не кладём
+data/wb_sales_report_raw/

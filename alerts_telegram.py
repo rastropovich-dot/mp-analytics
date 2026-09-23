@@ -2,7 +2,7 @@ import argparse
 import os
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
@@ -964,6 +964,47 @@ def build_short_snapshot(intraday_rows):
 
 
 
+PIPELINE_RUN_STATE_KEY = "pipeline_run:last"     # пишет run_daily_pipeline.record_pipeline_run
+PIPELINE_RUN_MAX_AGE_HOURS = 20                  # ночь кончается к 04:30 UTC, алерт в 07:30 — итог старше суток значит «ночи не было»
+
+
+def get_last_pipeline_run(client=None):
+    """payload итога последнего ночного прогона или None, если строки нет (или чтение не удалось)."""
+    try:
+        rows = ((client or supabase).table("pipeline_runtime_state").select("payload,updated_at")
+                .eq("state_key", PIPELINE_RUN_STATE_KEY).limit(1).execute().data or [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"Не удалось прочитать итог ночного прогона: {exc}")
+        return None
+    return rows[0].get("payload") if rows else None
+
+
+def pipeline_run_line(run, now=None):
+    """Одна строка про ночь: какие шаги не выполнены — или что итога нет. Всё прошло — пусто.
+
+    Нефатальный шаг, который упал, дальше витрину не останавливает, но и промолчать о нём нельзя: утром
+    перечисляются все пропущенные шаги. Итога нет или он старый — прогон умер на фатальном шаге (KPI) или не
+    запускался: этого не видно ни по одному блокеру.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not run or not run.get("finished_at"):
+        return "⚠️ Ночной прогон: итог не записан — прогон упал на фатальном шаге или не запускался."
+    try:
+        finished = datetime.fromisoformat(str(run["finished_at"]))
+    except (TypeError, ValueError):
+        return f"⚠️ Ночной прогон: итог не читается (finished_at={str(run.get('finished_at'))[:40]})."
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    if now - finished > timedelta(hours=PIPELINE_RUN_MAX_AGE_HOURS):
+        return (f"⚠️ Ночной прогон: последний итог — {finished.strftime('%Y-%m-%d %H:%M')} UTC; "
+                "сегодняшняя ночь не завершилась (фатальный шаг или не запускалась).")
+    failed = run.get("failed_steps") or []
+    if not failed:
+        return ""
+    return f"⚠️ Ночью не выполнены шаги ({len(failed)}): " + "; ".join(
+        f"{f.get('title')} (код {f.get('returncode')})" for f in failed)
+
+
 def build_message(target_date=None, skip_snapshot=False):
     kpi_rows = get_kpi_rows(days_back=30)
     kpi_rows = overlay_wb_orders_from_sales_funnel(kpi_rows)
@@ -977,6 +1018,9 @@ def build_message(target_date=None, skip_snapshot=False):
         f"Дата: {today_local().isoformat()}",
         "",
     ]
+    run_line = pipeline_run_line(get_last_pipeline_run())
+    if run_line:
+        lines.extend([run_line, ""])
 
     lines.extend(build_executive_summary(kpi_rows, target_date=target_date))
 

@@ -33,8 +33,7 @@
    до мержа (`fd9a98d`): выручка, маржа, фин. рез. и Ebitda идут от его
    комиссии; удержано всего — справочная колонка и необязательная строка приёмки.
    Приёмка после правки — §3.
-4. **Мерж в `main`** — после контроля бэкфилла: полный набор, push, Render по API —
-   ниже, в §5.
+4. **Мерж в `main` — сделан 11:31:50 UTC, Render live 11:32:29 / 11:32:31 UTC** — §5.
 
 Ниже — что сделано и с какими числами.
 
@@ -246,9 +245,34 @@ UTC: 17 обращений (куски по 14 дней), 17 файлов, 329 5
 (артикулов нет в снимке 05-20; стыковка: `uniform` 405, `plain` 180) — печатается в
 выводе и в подвале книги.
 
-### `git log origin/main..HEAD` (`d936876`)
+### §5. Мерж в `main`, push, Render
+
+Полный набор на голове ветки `b40982e` — **925 OK** (0,5 с). `origin/main` перед мержем
+= `b3ba9a2` (проверено в той же команде; предок ветки, конфликтов нет). Мерж-коммит
+собран плюмбингом (`git commit-tree`, родители `b3ba9a2` + `b40982e`, `--no-ff`
+по смыслу): **`25d5534` «Merge wb-fixes (fifth WB task) by the owner's word»**, push в
+`main` **11:31:50 UTC** моей рукой (классификатор пропустил, как 09-23 утром).
+Render по API (`GET /v1/services/{id}/deploys?limit=1`): оба сервиса на `25d5534`,
+**live 11:32:29 UTC** (`mp-analytics`) и **11:32:31 UTC** (`mp-analytics-telegram-report`)
+— до 00:15 UTC с запасом. Ветка `wb-fixes` переведена на `25d5534` (fast-forward),
+`git log origin/main..HEAD` — пусто.
+
+**Ночь 09-24 — что смотреть:** в логе Render шаг «WB: отчёт реализации» сразу после
+«WB: загрузка продаж/выкупов»: `WB sales report 2026-09-03…2026-09-23: HTTP 200, строк
+~14 000`, `обращений 1, 429 — 0`, `✅ wb_sales_report_rows: upsert …`, блок застрявших —
+«удалять нечего» или список ≤ 200 строк до удаления; в таблице
+`select count(*) from wb_sales_report_rows where observed_at::date = '2026-09-24'` ≈
+14 000 и `max(rr_date) = 2026-09-23`. Упал — нефатально по правилу `FATAL_STEPS`,
+тревога «Шаг не выполнен, прогон продолжен» с именем шага; таблицу пустой сбор не портит.
+
+### `git log` ветки до мержа (`b40982e`, всё вошло в `25d5534`)
 
 ```
+b40982e Fifth WB report: migration applied, backfill written and checked by SQL (329 522 rows, Sept 1…21 = 16 667 220,00, 7 of 7 days, 8 of 8 months), the advisor's commission decision applied
+34a5663 WB sales-report step test: stub record_pipeline_run like the sibling step tests (no network in tests, thirty-fourth Ozon task)
+4fdef49 Merge remote-tracking branch 'origin/main' into wb-fixes
+fd9a98d WB month sheet: «Комиссия» = Σ price × row kVV as on the owner's sheet; «оборот − forPay» kept as the reference «удержано из выплаты всего»
+0fe0174 Fifth WB report: branch head named exactly
 d936876 Fifth WB report: six columns of the owner's sheet match 21 of 21, the backfill plan by month, two words pending (migration, --apply)
 bcb995c Merge origin/main (thirty-third Ozon task: fatality rule inverted) into wb-fixes
 f01d1ab WB month sheet: the owner's rules found — day = saleDt in Moscow time, commission by row kVV, returns signed in acquiring, penalties without VAT
@@ -260,10 +284,15 @@ c5ba76f Merge remote-tracking branch 'origin/main' into wb-fixes
 22d31fa Funnel fix merged and live on Render at 09:26 UTC by the owner's word; what to check on the morning of 09-24
 ```
 
-Файлы против `origin/main`: `.gitignore`, `docs/outbox_wb.md`, `docs/wb_report_model.md`,
-`loaders/wb_sales_report_loader.py`, `run_daily_pipeline.py` (+10), `scripts/report_wb_month.py`,
+Файлы мержа против `b3ba9a2`: `.gitignore`, `docs/outbox_wb.md`, `docs/wb_report_model.md`,
+`loaders/wb_sales_report_loader.py`, `run_daily_pipeline.py` (+10: строка шага и запись в
+историю `NON_FATAL_BEFORE_20260923`), `scripts/report_wb_month.py`,
 `scripts/wb_sales_report_backfill.py`, `sql/20260923_create_wb_sales_report_rows.sql`, три файла
-тестов. Ozon не тронут.
+тестов — 11 файлов, +1 803 / −14. Ozon не тронут. **Замечание Ozon-потоку:**
+`tests/test_ozon_performance_recovery_worker.py` грузит воркер по абсолютному пути
+`/Users/mihaileliseev/mp-analytics/scripts/…` — из другого worktree набор ломается, как
+только деревья расходятся (сегодня 11:1x, до мержа `b3ba9a2`); лечится мержем `main`,
+но путь стоит вычислять от `__file__`.
 
 ### Что не сошлось — одной строкой
 

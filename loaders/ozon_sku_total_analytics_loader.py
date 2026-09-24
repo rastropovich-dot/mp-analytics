@@ -1,4 +1,5 @@
 import argparse
+from decimal import Decimal
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -471,6 +472,44 @@ def print_sample(rows, limit=10):
         print(row)
 
 
+def created_orders_totals(date_from, date_to, client=None):
+    """Созданные заказы Ozon (подтверждённые + отменённые) из marketplace_orders за те же даты: (Σ руб., Σ шт, строк)."""
+    client = client or supabase
+    amount = qty = Decimal(0)
+    rows = 0
+    start = 0
+    while True:
+        page = (client.table("marketplace_orders").select("orders_qty,orders_amount_seller,cancelled_orders_qty,cancelled_orders_amount_seller")
+                .eq("marketplace_code", "ozon").gte("order_date", date_from).lte("order_date", date_to)
+                .order("id").range(start, start + 999).execute().data or [])
+        for r in page:
+            amount += Decimal(str(r.get("orders_amount_seller") or 0)) + Decimal(str(r.get("cancelled_orders_amount_seller") or 0))
+            qty += Decimal(str(r.get("orders_qty") or 0)) + Decimal(str(r.get("cancelled_orders_qty") or 0))
+        rows += len(page)
+        if len(page) < 1000:
+            return amount, qty, rows
+        start += 1000
+
+
+def revenue_guard_line(analytics_revenue, analytics_qty, created_amount, created_qty, orders_rows):
+    """Сторож: revenue аналитики к созданным заказам за те же даты. Только печать — порог и тревога после решения советника.
+
+    Замер 2026-09-24 (тридцать пятая задача, §3 п. 2): на 21 дне из 26 (08-20 … 09-21) отношение ровно 1,0000 — analytics/data
+    и marketplace_orders считают одно множество по МСК-суткам; 08-31 — 1,0113, 09-08 — 0,9978; а за 09-22 аналитика отдала
+    11 279 201 против 8 074 089 созданных (1,397; отчёты ЛК подтвердили наши 8 074 089 до рубля) и за 09-23 — 1,090.
+    Без этой строки завышение было бы невидимо: таблицу читает только выключенная органика.
+    """
+    if orders_rows == 0:
+        return (f"сторож revenue: заказов за период в marketplace_orders нет (шаг заказов не прошёл или дата ещё не собрана) — "
+                f"аналитика {analytics_revenue:,.2f} руб. / {analytics_qty:,.0f} шт, сравнить не с чем")
+    ratio = (Decimal(str(analytics_revenue)) / created_amount) if created_amount else None
+    ratio_qty = (Decimal(str(analytics_qty)) / created_qty) if created_qty else None
+    return (f"сторож revenue: аналитика {analytics_revenue:,.2f} руб. / {analytics_qty:,.0f} шт против созданных заказов "
+            f"{created_amount:,.2f} руб. / {created_qty:,.0f} шт ({orders_rows} строк) — отношение по деньгам "
+            f"{'—' if ratio is None else f'{ratio:.4f}'}, по штукам {'—' if ratio_qty is None else f'{ratio_qty:.4f}'}; "
+            "на дозревших днях ровно 1,0000 (порог тревоги — после решения советника)")
+
+
 def main():
     args = parse_args()
     date_from, date_to = resolve_date_range(args)
@@ -507,6 +546,11 @@ def main():
     }
     print("Ozon Seller Analytics total orders summary:")
     print(summary)
+    try:
+        created_amount, created_qty, orders_rows = created_orders_totals(date_from, date_to)
+        print(revenue_guard_line(summary["totals"]["total_orders_revenue"], summary["totals"]["total_orders_qty"], created_amount, created_qty, orders_rows))
+    except Exception as exc:  # сторож не должен ронять шаг: он только печатает
+        print(f"сторож revenue: не посчитан — {type(exc).__name__}: {exc}")
 
     if args.debug_sample or args.dry_run:
         print_sample(aggregated_rows)

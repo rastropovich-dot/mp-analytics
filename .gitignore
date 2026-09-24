@@ -54,3 +54,7 @@ data/wb_funnel_raw/
 
 # сырьё статистики рекламы WB по номенклатурам (adv/v3/fullstats), по месяцам и пачкам кампаний — в git не кладём
 data/wb_ads_nm_raw/
+data/owner_*.xlsx
+
+# карточки Ozon (product/info/list, дерево категорий, разбор) — снимки вне git
+data/ozon_products/

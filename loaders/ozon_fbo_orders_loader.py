@@ -177,7 +177,7 @@ def parse_date(value):
     return to_local_order_date(value)
 
 
-def build_order_rows(postings, observed_at=None):
+def build_order_rows(postings, observed_at=None, buyer_prices=None):
     """Строки к записи по общему правилу обеих схем (loaders/ozon_orders_rows.py).
 
     До 2026-09-16 отменённые здесь выбрасывались, и ключ, у которого отправлений
@@ -185,7 +185,7 @@ def build_order_rows(postings, observed_at=None):
     cancelled_orders_*, подтверждённые — в orders_*, каждый ключ окна
     переписывается целиком.
     """
-    rows, counters = rules.build_order_rows(postings, "fbo", observed_at=observed_at)
+    rows, counters = rules.build_order_rows(postings, "fbo", observed_at=observed_at, buyer_prices=buyer_prices)
     rules.print_counters("fbo", counters)
     return rows
 
@@ -195,12 +195,7 @@ def save_orders(rows):
         print("Нет FBO заказов для записи")
         return
 
-    for batch in chunks(rows, 500):
-        supabase.table("marketplace_orders").upsert(
-            batch,
-            on_conflict="order_date,marketplace_code,marketplace_sku,order_schema"
-        ).execute()
-
+    rules.upsert_orders(supabase, rows, "Ozon FBO")
     print(f"✅ Ozon FBO orders записаны в marketplace_orders: {len(rows)} строк")
 
 

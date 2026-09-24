@@ -387,6 +387,8 @@ def build_buyout_rows(accruals):
                     "commission_amount": 0.0,
                     "revenue_after_commission_vat": 0.0,
                     "vat_amount": 0.0,
+                    "bonus_amount": 0.0,
+                    "coinvestment_amount": 0.0,
                 }
             row = grouped[key]
             # ВНИМАНИЕ: количество. Поля штук в новой модели НЕТ — у товарной
@@ -397,7 +399,18 @@ def build_buyout_rows(accruals):
             # и НЕ подогнано: сумма, комиссия и выручка сходятся точно, а штуки
             # новая модель не отдаёт.
             row["buyouts_qty"] += 1 if sale_amount >= 0 else -1
-            row["buyouts_amount_buyer"] += sale_amount
+            # Оплачено покупателем — commission.sale_price, ЗА СТРОКУ (не за единицу: 2026-09-24, 62 из 64 строк с кол-вом > 1
+            # равны CSV ЛК «Оплачено покупателем» × кол-во); баллы за скидки и зелёные цены (соинвест Ozon) — bonus и coinvestment.
+            # Тождество построчно: sale_amount − sale_price = bonus + coinvestment (983 из 998 строк на 4 днях; остаток — счётчик).
+            # До 2026-09-24 в buyouts_amount_buyer писалась цена продавца (дубль buyouts_amount_seller).
+            sale_price = money(commission.get("sale_price"))
+            bonus = money(commission.get("bonus"))
+            coinvestment = money(commission.get("coinvestment"))
+            row["buyouts_amount_buyer"] += sale_price
+            row["bonus_amount"] += bonus
+            row["coinvestment_amount"] += coinvestment
+            if round(sale_amount - sale_price - bonus - coinvestment, 2) != 0:
+                counters["coinvest_identity_broken"] += 1
             row["buyouts_amount_seller"] += sale_amount
             # Комиссия в таблице хранится положительной у продажи.
             row["commission_amount"] += -sale_commission
@@ -416,8 +429,8 @@ def build_buyout_rows(accruals):
     rows = []
     for row in grouped.values():
         for field in ("buyouts_amount_buyer", "buyouts_amount_seller",
-                      "commission_amount", "revenue_after_commission_vat"):
+                      "commission_amount", "revenue_after_commission_vat", "bonus_amount", "coinvestment_amount"):
             row[field] = round(row[field], 2)
-        if any(row[f] for f in ("buyouts_qty", "buyouts_amount_buyer", "commission_amount")):
+        if any(row[f] for f in ("buyouts_qty", "buyouts_amount_seller", "buyouts_amount_buyer", "commission_amount")):
             rows.append(row)
     return rows, dict(counters)

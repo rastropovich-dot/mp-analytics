@@ -110,16 +110,32 @@ def _dead_transaction_list(days_back=30):
     return operations
 
 
+COINVEST_COLUMNS = ("bonus_amount", "coinvestment_amount")   # sql/20260924_add_buyouts_bonus_coinvestment.sql; нет колонок — пишем без них и говорим
+
+
 def save_buyout_rows(rows):
-    """Запись готовых строк выкупов. Разбор — в loaders/ozon_finance_accrual.py."""
+    """Запись готовых строк выкупов. Разбор — в loaders/ozon_finance_accrual.py.
+
+    Колонки соинвеста (bonus_amount, coinvestment_amount) появляются миграцией по слову владельца; до неё upsert со
+    строками, где они есть, падает на первой пачке — тогда строки пишутся без этих ключей, а отсутствие колонок
+    называется вслух (null в таблице = не измерено, как у buyouts_units)."""
     if not rows:
         print("Нет выкупов Ozon для записи")
         return
-    for i in range(0, len(rows), 500):
-        supabase.table("marketplace_buyouts").upsert(
-            rows[i:i + 500],
-            on_conflict="buyout_date,marketplace_code,marketplace_sku",
-        ).execute()
+    batches = [rows[i:i + 500] for i in range(0, len(rows), 500)]
+    try:
+        supabase.table("marketplace_buyouts").upsert(batches[0], on_conflict="buyout_date,marketplace_code,marketplace_sku").execute()
+        rest = batches[1:]
+    except Exception as exc:
+        if not any(col in str(exc) for col in COINVEST_COLUMNS):
+            raise
+        print(f"⚠️  в marketplace_buyouts нет колонок {COINVEST_COLUMNS} (миграция не применена) — пишу выкупы без них: {str(exc)[:120]}")
+        rows = [{k: v for k, v in r.items() if k not in COINVEST_COLUMNS} for r in rows]
+        batches = [rows[i:i + 500] for i in range(0, len(rows), 500)]
+        supabase.table("marketplace_buyouts").upsert(batches[0], on_conflict="buyout_date,marketplace_code,marketplace_sku").execute()
+        rest = batches[1:]
+    for batch in rest:
+        supabase.table("marketplace_buyouts").upsert(batch, on_conflict="buyout_date,marketplace_code,marketplace_sku").execute()
     print(f"✅ Выкупы Ozon записаны в marketplace_buyouts: {len(rows)} строк")
 
 

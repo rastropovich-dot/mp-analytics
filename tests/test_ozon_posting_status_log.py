@@ -108,15 +108,21 @@ class OrderStepWrappersTests(unittest.TestCase):
                 order.append("fetch"); return [{"posting_number": "A-1"}]
 
             @staticmethod
-            def build_order_rows(postings):
-                order.append("build"); return [{"row": 1}]
+            def build_order_rows(postings, buyer_prices=None):
+                order.append(("build", buyer_prices)); return [{"row": 1}]
 
             @staticmethod
             def save_orders(rows):
                 order.append("save")
+
+        class FakeReport:
+            @staticmethod
+            def fetch_buyer_prices(scheme, since, to):
+                order.append(("report", scheme)); return {("A-1", "1"): 10}, {"rows": 1, "skipped": 0, "create": 1, "info": 2, "download": 1, "seconds": 9.5}
         fake_log, calls = self._fake_log(raise_it=True)
-        step.run(fbo_module=FakeFbo, log_module=fake_log)
-        self.assertEqual(order, ["fetch", "build", "save"])
+        step.run(fbo_module=FakeFbo, log_module=fake_log, report_module=FakeReport)
+        # отчёт ЛК — после списка и до сборки строк; его цены уходят в build_order_rows
+        self.assertEqual(order, ["fetch", ("report", "fbo"), ("build", {("A-1", "1"): 10}), "save"])
         self.assertEqual(calls, [("dump", "fbo", 1)])
 
     def test_fbs_orders_are_saved_before_raw_dump_and_dump_failure_does_not_raise(self):
@@ -145,7 +151,7 @@ class OrderStepWrappersTests(unittest.TestCase):
             def get_fbo_postings(days_back): return []
 
             @staticmethod
-            def build_order_rows(postings): return []
+            def build_order_rows(postings, buyer_prices=None): order.append(("build", buyer_prices)); return []
 
             @staticmethod
             def save_orders(rows): order.append("save")
@@ -153,5 +159,10 @@ class OrderStepWrappersTests(unittest.TestCase):
         class FakeLog:
             @staticmethod
             def dump_raw(postings, schema): order.append("dump"); return "p"
-        step.run(fbo_module=FakeFbo, log_module=FakeLog)
-        self.assertEqual(order, ["save", "dump"])
+
+        class BrokenReport:
+            @staticmethod
+            def fetch_buyer_prices(scheme, since, to): raise RuntimeError("report/info fbo: отчёт не готов за 180 с (status=waiting)")
+        step.run(fbo_module=FakeFbo, log_module=FakeLog, report_module=BrokenReport)
+        # отчёт ЛК упал — заказы всё равно записаны (цены покупателя пустые → amount_buyer null), шаг не упал
+        self.assertEqual(order, [("build", {}), "save", "dump"])

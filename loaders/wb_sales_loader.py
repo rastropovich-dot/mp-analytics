@@ -1,10 +1,34 @@
+#!/usr/bin/env python3
+"""Выкупы WB → marketplace_buyouts. Шаг «WB: загрузка продаж/выкупов» (строка шага в run_daily_pipeline.py не менялась).
+
+    python3 loaders/wb_sales_loader.py                 источник auto: отчёт реализации, иначе supplier/sales
+    python3 loaders/wb_sales_loader.py --dry-run       ничего не пишет, db_writes = 0
+    python3 loaders/wb_sales_loader.py --source sales  только старый путь (supplier/sales, окно записи 30 дней)
+
+ИСТОЧНИК С 2026-09-24 (решение советника, WB-7 §2.2): отчёт реализации. Шаг сам собирает окно отчёта
+(loaders/wb_sales_report_loader.run — 21 день до вчера, 1 обращение finance-api, upsert в
+wb_sales_report_rows, чистка застрявших) и строит выкупы окна из него (loaders/wb_buyouts_from_report.run:
+Продажа − Возврат по saleDt МСК, зерно (день, nmId), штуки со знаком, застрявшие ключи по правилу
+stale_keys). Шаг «WB: отчёт реализации», идущий следом, видит свежий сбор и в API не ходит.
+Отчёт не собрался (429 / сеть не изжиты, HTTP-отказ) — запасной путь: старый сбор supplier/sales
+(flag=0, окно записи 30 дней) с пометкой в логе «источник: supplier/sales (отчёт не собран: …)».
+
+Старый путь — как был (ниже, без изменений логики): flag=0 отбирает по дате последнего изменения, upsert
+замещает агрегат дня, поэтому пишутся только даты внутри окна запроса (docs/wb_orders_write_window.md).
+"""
+import argparse
 import os
+import sys
 import requests
 
 try:
     from loaders import http_retry
+    from loaders import wb_sales_report_loader as report_loader
+    from loaders import wb_buyouts_from_report as buyouts_from_report
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import http_retry
+    import wb_sales_report_loader as report_loader
+    import wb_buyouts_from_report as buyouts_from_report
 from datetime import date, timedelta
 from dotenv import load_dotenv
 from supabase import create_client
@@ -144,7 +168,7 @@ def describe_held(held):
     )
 
 
-def save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=None):
+def save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False):
     grouped = aggregate_sales(items)
     window_start = write_window_start(days_back, today)
     rows, held = split_by_write_window(list(grouped.values()), window_start)
@@ -154,6 +178,10 @@ def save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=None):
 
     if not rows:
         print("Нет WB продаж/выкупов для записи")
+        return {"rows_written": 0, "held_rows": len(held), "window_start": window_start.isoformat()}
+
+    if dry_run:
+        print(f"dry-run: не пишу {len(rows)} строк агрегата, db_writes = 0")
         return {"rows_written": 0, "held_rows": len(held), "window_start": window_start.isoformat()}
 
     for i in range(0, len(rows), 500):
@@ -168,8 +196,49 @@ def save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=None):
     return {"rows_written": len(rows), "held_rows": len(held), "window_start": window_start.isoformat()}
 
 
-if __name__ == "__main__":
-    run_date = date.today()
-    items = get_wb_sales(days_back=DEFAULT_DAYS_BACK, today=run_date)
+def run_sales_path(today, dry_run=False, reason=""):
+    """Старый путь: supplier/sales flag=0, окно записи DEFAULT_DAYS_BACK дней."""
+    print(f"источник: supplier/sales" + (f" (отчёт не собран: {reason})" if reason else " (по флагу --source sales)"), flush=True)
+    items = get_wb_sales(days_back=DEFAULT_DAYS_BACK, today=today)
     print(f"Получено строк WB sales: {len(items)}")
-    save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=run_date)
+    summary = save_wb_sales(items, days_back=DEFAULT_DAYS_BACK, today=today, dry_run=dry_run)
+    summary["source"] = "supplier/sales"
+    return summary
+
+
+def run_report_path(today, dry_run=False, sb=None):
+    """Новый путь: собрать окно отчёта (или увидеть, что оно уже собрано этой ночью) и построить из него выкупы."""
+    sb = sb or supabase
+    report = report_loader.run(sb, days_back=report_loader.DEFAULT_DAYS_BACK, today=today, dry_run=dry_run)
+    d1, d2 = report["window"]
+    how = (f"уже собран этой ночью в {report['collected_at'].strftime('%H:%M:%S')} UTC" if report.get("skipped")
+           else f"собран этой ночью: строк {report['rows']}, обращений {report['requests']}, 429 — {report['429']}")
+    print(f"источник: {report_loader.TABLE} (отчёт {how}; окно {d1} … {d2})", flush=True)
+    summary = buyouts_from_report.run(sb, days_back=report_loader.DEFAULT_DAYS_BACK, today=today, dry_run=dry_run,
+                                      complete=bool(report.get("complete", True)))
+    summary["report"] = report
+    return summary
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="WB выкупы → marketplace_buyouts")
+    ap.add_argument("--source", choices=("auto", "report", "sales"), default="auto",
+                    help="auto — отчёт реализации, при отказе supplier/sales; report — только отчёт; sales — только старый путь")
+    ap.add_argument("--dry-run", action="store_true", help="ничего не писать, db_writes = 0")
+    args = ap.parse_args(argv)
+    today = date.today()
+    if args.source == "sales":
+        run_sales_path(today, dry_run=args.dry_run)
+        return 0
+    try:
+        run_report_path(today, dry_run=args.dry_run)
+        return 0
+    except (RuntimeError, requests.RequestException) as error:
+        if args.source == "report":
+            raise
+        run_sales_path(today, dry_run=args.dry_run, reason=f"{type(error).__name__}: {str(error)[:200]}")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

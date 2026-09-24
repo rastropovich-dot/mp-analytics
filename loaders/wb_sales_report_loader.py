@@ -18,8 +18,9 @@ DEFAULT_DAYS_BACK дней целиком, upsert по rrd_id; а строки �
 ПОЛНОМ ответе нет, снимаются тем же механизмом, что у Ozon (loaders/stale_keys.py):
 только при полном сборе, с порогом, списком до удаления и после записи.
 
-ОБРАЩЕНИЯ. Окно 21 день ≈ 18 тыс. строк — одна страница на 100 000, то есть 1
-обращение за ночь (следующая страница нужна, только если пришло ровно limit
+ОБРАЩЕНИЯ. Окно 21 день ≈ 12–14 тыс. строк — одна страница на 100 000, то есть 1
+обращение за ночь; с 2026-09-24 его делает шаг «WB: загрузка продаж/выкупов» (он идёт
+раньше и строит выкупы из отчёта), а этот шаг видит свежий сбор и в API не ходит (MAX_AGE_HOURS) (следующая страница нужна, только если пришло ровно limit
 строк). 429 — пауза 65 с, до 3 попыток, дальше отказ с причиной; таймаут и сеть —
 так же. Числа печатаются в конце.
 
@@ -58,6 +59,11 @@ SLEEP_SECONDS = 65            # лимит метода — 1 запрос в м
 MAX_ATTEMPTS = 3              # 429 / таймаут / сеть: пауза SLEEP_SECONDS, затем отказ с причиной
 DEFAULT_DAYS_BACK = 21        # три недели: закрытые отчёты не менялись за сутки, но гарантии нет
 TIMEOUT = 300                 # ответ за неделю — 12 МБ
+# Один сбор за ночь. Шаг «WB: загрузка продаж/выкупов» идёт РАНЬШЕ шага «WB: отчёт реализации» и с 2026-09-24
+# собирает отчёт сам (loaders/wb_sales_loader.py, WB-7 §2.2), чтобы выкупы за вчера строились из отчёта уже
+# этой ночью. Второй шаг тогда не ходит в API: строки за вчера с observed_at моложе MAX_AGE_HOURS — сбор был.
+# Это же прикрывает ручной перезапуск прогона утром (09-23: 05:56 UTC). --force снимает проверку.
+MAX_AGE_HOURS = 6
 
 # Поле ответа → колонка таблицы, тип (d — дата, t — момент, i — целое, n — numeric, s — строка).
 FIELDS = (
@@ -174,6 +180,26 @@ def check_items(items, date_from, date_to):
         raise RuntimeError(f"WB sales report: строки вне периода {date_from}…{date_to}: {outside[:5]}")
 
 
+def collected_recently(sb, date_to, now=None, max_age_hours=MAX_AGE_HOURS):
+    """Момент последнего сбора строк за date_to, если он моложе max_age_hours; иначе None. Таблицы нет — None, вслух."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        res = sb.table(TABLE).select("observed_at").eq("rr_date", date_to).order("observed_at", desc=True).limit(1).execute()
+    except Exception as error:  # таблицы нет / отказ PostgREST — считаем, что не собрано
+        print(f"проверка «уже собрано»: не прочитать {TABLE} — {str(error)[:160]}", flush=True)
+        return None
+    data = getattr(res, "data", None)
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    value = data[0].get("observed_at")
+    if not isinstance(value, str) or not value:
+        return None
+    ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts if now - ts <= timedelta(hours=max_age_hours) else None
+
+
 def upsert_rows(sb, rows, batch=500):
     written = 0
     for i in range(0, len(rows), batch):
@@ -224,13 +250,21 @@ def summarize(rows):
     return days, opers, turnover
 
 
-def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=time.sleep):
+def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=time.sleep, force=False):
+    """Сбор окна. Возвращает паспорт: window, rows, written, deleted, requests, 429, skipped (сбор уже был этой ночью), complete."""
     today = today or date.today()
     date_to = (today - timedelta(days=1)).isoformat()          # день D появляется D+1
     date_from = (today - timedelta(days=days_back)).isoformat()
     observed_at = datetime.now(timezone.utc).isoformat()
     counters = {"requests": 0, "429": 0, "transient": 0}
     print(f"WB отчёт реализации: окно {date_from} … {date_to} (period=daily), {'dry-run, db_writes = 0' if dry_run else 'запись'}", flush=True)
+    if not force:
+        last = collected_recently(sb, date_to)
+        if last is not None:
+            print(f"отчёт за {date_to} уже собран {last.astimezone(timezone.utc).strftime('%H:%M:%S')} UTC этой ночью (моложе {MAX_AGE_HOURS} ч) — "
+                  f"повторно в API не хожу; обращений 0 (--force снимает)", flush=True)
+            return {"window": (date_from, date_to), "rows": None, "written": 0, "deleted": 0, "requests": 0, "429": 0,
+                    "skipped": True, "collected_at": last, "complete": True}
 
     complete = True
     try:
@@ -250,23 +284,26 @@ def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=tim
     if dry_run:
         print("dry-run: ничего не пишу, db_writes = 0", flush=True)
         cleanup_stale(sb, date_from, date_to, rows, complete, apply=False)
-        return {"rows": len(rows), "written": 0, "deleted": 0, "requests": counters["requests"], "429": counters["429"]}
+        return {"window": (date_from, date_to), "rows": len(rows), "written": 0, "deleted": 0, "requests": counters["requests"],
+                "429": counters["429"], "skipped": False, "complete": complete}
 
     written = upsert_rows(sb, rows) if rows else 0
     print(f"✅ {TABLE}: upsert {written} строк", flush=True)
     # Чистка — ПОСЛЕ записи и только при полном сборе (loaders/stale_keys.py).
     deleted = cleanup_stale(sb, date_from, date_to, rows, complete, apply=True)
-    return {"rows": len(rows), "written": written, "deleted": deleted, "requests": counters["requests"], "429": counters["429"]}
+    return {"window": (date_from, date_to), "rows": len(rows), "written": written, "deleted": deleted, "requests": counters["requests"],
+            "429": counters["429"], "skipped": False, "complete": complete}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="WB sales report (finance-api) → wb_sales_report_rows")
     ap.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK)
     ap.add_argument("--dry-run", action="store_true", help="ничего не писать, db_writes = 0")
+    ap.add_argument("--force", action="store_true", help="идти в API, даже если окно уже собрано этой ночью")
     args = ap.parse_args(argv)
     if not WB_API_KEY:
         raise SystemExit("WB_API_KEY не задан")
-    run(_client(), days_back=args.days_back, dry_run=args.dry_run)
+    run(_client(), days_back=args.days_back, dry_run=args.dry_run, force=args.force)
     return 0
 
 

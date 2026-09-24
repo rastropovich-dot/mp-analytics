@@ -153,3 +153,52 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SameNightSkipTests(unittest.TestCase):
+    """Один сбор за ночь: шаг продаж собрал окно, шаг отчёта видит свежие строки за вчера и в API не ходит; --force — ходит."""
+
+    class Sb:
+        def __init__(self, observed_at):
+            self.observed_at = observed_at
+
+        def table(self, _name):
+            sb = self
+
+            class T:
+                def select(self, *_a):
+                    return self
+
+                def eq(self, *_a):
+                    return self
+
+                def order(self, *_a, **_k):
+                    return self
+
+                def limit(self, *_a):
+                    return self
+
+                def execute(self):
+                    return mock.Mock(data=[{"observed_at": sb.observed_at}] if sb.observed_at else [])
+            return T()
+
+    def test_fresh_collection_for_yesterday_skips_the_api(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 9, 25, 0, 20, 0, tzinfo=timezone.utc)
+        sb = self.Sb("2026-09-25T00:19:20+00:00")
+        self.assertIsNotNone(loader.collected_recently(sb, "2026-09-24", now))
+        self.assertIsNone(loader.collected_recently(self.Sb("2026-09-24T00:19:20+00:00"), "2026-09-24", now))   # сутки назад — не эта ночь
+        self.assertIsNone(loader.collected_recently(self.Sb(None), "2026-09-24", now))
+        with mock.patch.object(loader.requests, "post") as post:
+            result = loader.run(sb, days_back=21, today=date(2026, 9, 25), sleep_fn=lambda _s: None)
+        post.assert_not_called()
+        self.assertTrue(result["skipped"])
+        self.assertEqual((result["requests"], result["written"], result["window"]), (0, 0, ("2026-09-04", "2026-09-24")))
+
+    def test_force_goes_to_the_api_anyway(self):
+        sb = self.Sb("2026-09-25T00:19:20+00:00")
+        with mock.patch.object(loader.requests, "post", return_value=response(204)) as post, \
+             mock.patch.object(loader, "cleanup_stale", return_value=0):
+            result = loader.run(sb, days_back=21, today=date(2026, 9, 25), dry_run=True, sleep_fn=lambda _s: None, force=True)
+        post.assert_called_once()
+        self.assertFalse(result["skipped"])

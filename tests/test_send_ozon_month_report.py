@@ -75,7 +75,8 @@ class Delivery(unittest.TestCase):
         with mock.patch.dict(os.environ, ENV), mock.patch.object(send, "generate", return_value=generated) as gen, \
                 mock.patch.object(send, "telegram", return_value=sent) as tg, mock.patch.object(send, "send_document", return_value=sent) as doc, \
                 mock.patch.object(send.os.path, "getsize", return_value=300000), mock.patch.object(send, "sha256_of", return_value="ab" * 32), \
-                mock.patch.object(send, "record_delivery"), mock.patch("builtins.print"):
+                mock.patch.object(send, "record_delivery"), mock.patch.object(send, "add_wb_sheet_nonfatal", return_value="WB: оборот 1,0 млн"), \
+                mock.patch("builtins.print"):
             return send.main(argv), gen, tg, doc
 
     def test_no_send_builds_the_book_and_sends_nothing(self):

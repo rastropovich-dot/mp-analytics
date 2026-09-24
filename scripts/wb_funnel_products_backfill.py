@@ -169,7 +169,7 @@ def plan(sb, files):
             snap_text = f"{snap_sum:,.0f} → {now_same:,.0f} ({now_same - snap_sum:+,.0f})"
         print(f"{day:11}{s['cards']:>6}{f['pages']:>5}{'да' if f['complete'] else 'НЕТ':>6}{s['qty']:>8,.0f}{s['sum']:>13,.0f}"
               f"{s['by_letter'][DISCOUNTER_LETTER]['sum']:>15,.0f}{other:>8,.0f}{s['buyout_sum']:>12,.0f}"
-              f"{(f'{base_sum:,.0f}' if base_sum is not None else '—'):>14}{(f'{diff:+,.0f}' if diff is not None else '—'):>11}{snap_text:>24}")
+              f"{(f'{base_sum:,.0f}' if base_sum is not None else '—'):>14}{(f'{diff:+,.0f}' if diff is not None else '—'):>11}   {snap_text}")
         tot["cards"] += s["cards"]; tot["qty"] += s["qty"]; tot["sum"] += s["sum"]; tot["t"] += s["by_letter"][DISCOUNTER_LETTER]["sum"]
         tot["base"] += base_sum or Z
         tot["days_equal"] += 1 if diff == 0 else 0

@@ -49,7 +49,7 @@ class DataRowsTests(unittest.TestCase):
         self.assertEqual((by[("2026-09-05", None)]["ads"], by[("2026-09-05", None)]["sales"]), (D("10"), D("0")))   # списания без строк отчёта — не теряются
         r1 = by[("2026-09-01", 1)]
         self.assertEqual((r1["sales"], r1["commission"], r1["coinvest"], r1["acquiring"], r1["qty"]), (D("900"), D("378.00"), D("360"), D("10.98"), 0))
-        self.assertEqual((r1["logistics"], r1["rebill"], r1["other"], r1["cogs"], r1["storage"]), (D("146.4"), D("24.4"), D("40.2"), D("0"), D("0")))
+        self.assertEqual((r1["logistics"], r1["rebill"], r1["other"], r1["cogs"], r1["storage"]), (D("122"), D("24.4"), D("40.2"), D("0"), D("0")))   # rebill — не берём
         self.assertEqual((r1["article"], r1["brand"], r1["category"], r1["title"], r1["month"], r1["platform"]), ("F000283615", "KARATOV", "Серьги", "Серьги", "сен", "WB"))
         r2 = by[("2026-09-01", 2)]
         self.assertEqual((r2["sales"], r2["qty"], r2["brand"], r2["category"], r2["no_cost_qty"], r2["cogs"]), (D("1200"), 2, "КОЮЗ Топаз", "прочее", 2, D("0")))
@@ -66,7 +66,7 @@ class DataRowsTests(unittest.TestCase):
         self.assertEqual(by[1], D("104.57"))          # 244 × 900 / 2100
         self.assertEqual(by[2], D("139.43"))          # остаток копеек — последнему
         self.assertEqual(by[None], D("0"))
-        self.assertTrue([r for r in day1 if r["nm_id"] == 1][0]["ads_allocated"])
+        self.assertEqual([r for r in day1 if r["nm_id"] == 1][0]["ads_allocated"], "по продажам")
         self.assertEqual([r["ads"] for r in rows if r["date"] == "2026-09-02"], [D("50")])
 
     def test_ads_without_sales_go_to_the_no_product_row_and_none_when_unknown(self):
@@ -75,6 +75,23 @@ class DataRowsTests(unittest.TestCase):
         self.assertEqual((len(extra), extra[0]["nm_id"], extra[0]["ads"]), (1, None, D("70")))
         rows = fr.build_rows("2026-09", "2026-09", None, sb=object(), rows=ROWS, costs=COSTS, ads_by_day=None, products=PRODUCTS)
         self.assertTrue(all(r["ads"] is None for r in rows))
+
+    def test_ads_shares_from_fullstats_are_normalized_to_the_day_write_offs(self):
+        nm_shares = {"2026-09-01": {1: D("30"), 2: D("10"), 9: D("10")}}      # Σ 50 против списаний 244 — нормируем к 244
+        rows = fr.build_rows("2026-09", "2026-09", None, sb=object(), rows=ROWS, costs=COSTS, ads_by_day=ADS, products=PRODUCTS, ads_nm_by_day=nm_shares)
+        day1 = {r["nm_id"]: r for r in rows if r["date"] == "2026-09-01"}
+        self.assertEqual((day1[1]["ads"], day1[2]["ads"], day1[9]["ads"]), (D("146.40"), D("48.80"), D("48.80")))
+        self.assertEqual(sum((r["ads"] for r in day1.values()), D(0)), D("244"))
+        self.assertEqual((day1[9]["sales"], day1[9]["qty"], day1[9]["ads_allocated"], day1[1]["ads_allocated"]), (D("0"), 0, "fullstats", "fullstats"))
+        self.assertEqual([r["ads_allocated"] for r in rows if r["date"] == "2026-09-02"], ["по продажам"])   # за 09-02 статистики нет
+
+    def test_category_and_brand_come_from_the_report_row_first(self):
+        rows_with = [dict(r, subject_name="Ювелирные кольца", brand_name="КОЮЗ Топаз") if r["nm_id"] == 1 else r for r in ROWS]
+        rows = fr.build_rows("2026-09", "2026-09", None, sb=object(), rows=rows_with, costs=COSTS, ads_by_day=None, products=PRODUCTS)
+        r1 = [r for r in rows if r["nm_id"] == 1 and r["date"] == "2026-09-01"][0]
+        self.assertEqual((r1["category"], r1["brand"]), ("Кольца", "КОЮЗ Топаз"))          # строка отчёта важнее словаря карточек
+        r3 = [r for r in rows if r["nm_id"] == 3][0]
+        self.assertEqual(r3["category"], "прочее (нет предмета)")
 
     def test_date_to_cuts_the_period(self):
         rows = fr.build_rows("2026-09", "2026-09", "2026-09-01", sb=object(), rows=ROWS, costs=COSTS, ads_by_day=ADS, products=PRODUCTS)

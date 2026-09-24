@@ -91,7 +91,7 @@ push        14:01:37 UTC; Render live на 0841722: mp-analytics 14:02:22, mp-an
 09-25 (00:15 UTC) под риском `partial_ads`**, если посторонний расход не выйдет из скользящего окна к 00:31. Добор 09-14 (CPC 532 по
 `--campaign-id` + CPO за день) — днём 09-25 после ночи, по слову; CPO за день без CPC отдельного режима нет (`cpo-report-check` только
 читает и не пишет), нужен небольшой скрипт на функциях загрузчика (`fetch_all_sku_promo_csv` → `build_cpo_rows` → `save_rows` /
-`save_ad_attribution_rows`, `--target-dates 2026-09-14`) — сделаю к утру, запуск по слову.
+`save_ad_attribution_rows`, `--target-dates 2026-09-14`) — **готов: ветка `cpo-one-day` (`cae7b1c`), `scripts/ozon_cpo_one_day.py --date 2026-09-14 --fetch --write --approve-cpo-write`**, запуск и мерж по слову (сначала CPC 532, потом CPO — или наоборот, порядок не важен: типы строк разные).
 
 ### §3 — категория из карточки Ozon (`product-catalog`)
 

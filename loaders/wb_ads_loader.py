@@ -17,7 +17,8 @@ WB-6 §3а): пара (advertId, updTime) уникальна (повторов 0
 Дубль пары (advertId, updTime) в ответе или строка без advertId / updTime / updSum — отказ
 до записи, не молчаливый пропуск.
 
-Шаг в ночной прогон — отдельным решением (WB-6 §5: run_daily_pipeline.py не трогать).
+Шаг «WB: реклама» (с 09-23, по слову). С WB-8 §3 тем же шагом после списаний идёт статистика по
+номенклатурам — loaders/wb_ads_nm_loader.py (fullstats по кампаниям со списаниями окна; нет списаний — 0 обращений).
 """
 import argparse
 import os
@@ -198,8 +199,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.days_back > MAX_INTERVAL_DAYS:
         ap.error(f"--days-back не больше {MAX_INTERVAL_DAYS}: интервал метода")
-    sb = None if args.dry_run else _client()
+    sb = _client()   # и в dry-run: статистике по номенклатурам нужен список кампаний со списаниями из базы
     run(sb, days_back=args.days_back, dry_run=args.dry_run)
+    # WB-8 §3: статистика по номенклатурам (adv/v3/fullstats) — тем же шагом «WB: реклама», после списаний;
+    # обращений столько, сколько пачек кампаний со списаниями в окне (нет списаний — 0). Отказ — именованный,
+    # шаг нефатален по правилу FATAL_STEPS; списания к этому моменту уже записаны.
+    try:
+        from loaders import wb_ads_nm_loader as nm_loader
+    except ImportError:  # пайплайн зовёт как скрипт
+        import wb_ads_nm_loader as nm_loader
+    nm_loader.run(sb, days_back=min(args.days_back, nm_loader.MAX_INTERVAL_DAYS), dry_run=args.dry_run)
     return 0
 
 

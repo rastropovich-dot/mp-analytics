@@ -83,6 +83,8 @@ FIELDS = (
     ("deduction", "deduction", "n"), ("paidAcceptance", "paid_acceptance", "n"), ("vw", "vw", "n"),
     ("vwNds", "vw_nds", "n"), ("cashbackDiscount", "cashback_discount", "n"), ("cashbackAmount", "cashback_amount", "n"),
     ("cashbackCommissionChange", "cashback_commission_change", "n"),
+    # Предмет и бренд карточки — колонки с 2026-09-24 (WB-8 §2, миграция 20260924_add_wb_sales_report_subject_brand.sql).
+    ("subjectName", "subject_name", "s"), ("brandName", "brand_name", "s"),
 )
 REQUIRED = ("rrdId", "reportId", "dateFrom", "dateTo", "rrDate", "sellerOperName")
 TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)

@@ -156,6 +156,13 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         acc[d]["positions"] += qty
         acc[d]["turnover"] += D(r["buyouts_amount_seller"])
         acc[d]["commission"] += D(r["commission_amount"])
+        # соинвест Ozon (баллы за скидки + зелёные цены) = seller − buyer построчно; null у строки — записана до колонок
+        # (миграция 2026-09-24) — день не измерен: пусто, не ноль
+        bonus, coinv = r.get("bonus_amount"), r.get("coinvestment_amount")
+        if bonus is None or coinv is None:
+            acc[d]["coinvest_unknown"] += 1
+        else:
+            acc[d]["coinvest"] += D(bonus) + D(coinv)
         # Себестоимость — по ШТУКАМ, где они измерены (buyouts_units не null), иначе по позициям. null — «не
         # измерено», а не ноль: 0 штук (продажа и возврат в один день) — измеренный ноль и даёт нулевую СС.
         units = r.get("buyouts_units")
@@ -189,6 +196,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         row["revenue"] = (a["turnover"] - a["commission"]) / vat
         row["cogs"] = a["cogs"]
         row["margin"] = row["revenue"] - row["cogs"]
+        row["coinvest"] = None if a["coinvest_unknown"] else a["coinvest"]
         if ts is None:
             # Типов за день нет ни в леджере, ни в файле: статьи берём из marketplace_expenses, но эквайринг от
             # прочего не отделить, рекламы из начислений и компенсаций нет — не ноль, а пусто.
@@ -251,7 +259,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
          "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
          "cogs_index", "margin_index", "fin_result_index", "ebitda_index",
-         "ads_like_manual", "log_other_like_manual", "positions", "units"]
+         "ads_like_manual", "log_other_like_manual", "positions", "units", "coinvest"]
 
 
 def add_ratios(row):
@@ -265,6 +273,7 @@ def add_ratios(row):
     row["fin_result_with_comp_pct"] = None if row.get("fin_result_with_comp") is None else ratio(row["fin_result_with_comp"], rev)
     row["ebitda_pct"] = None if row.get("ebitda") is None else ratio(row["ebitda"], rev)
     row["ebitda_with_comp_pct"] = None if row.get("ebitda_with_comp") is None else ratio(row["ebitda_with_comp"], rev)
+    row["coinvest_pct"] = None if row.get("coinvest") is None else ratio(row["coinvest"], row["turnover"])
     return row
 
 
@@ -493,7 +502,7 @@ def types_differ(a, b):
 
 
 def load_costs(sb, snapshot):
-    orders = fetch(sb, "marketplace_orders", "id,order_date,order_schema,marketplace_sku,article,orders_qty,orders_amount_seller,"
+    orders = fetch(sb, "marketplace_orders", "id,order_date,order_schema,marketplace_sku,article,orders_qty,orders_amount_seller,orders_amount_buyer,cancelled_orders_amount_buyer,"
                                              "cancelled_orders_qty,cancelled_orders_amount_seller,observed_at",
                    [("eq", "marketplace_code", "ozon"), ("gte", "order_date", "2026-03-28")],
                    ["order_date", "marketplace_code", "marketplace_sku", "order_schema"])
@@ -554,6 +563,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
             ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
             ("справочно: Ebitda с компенсациями", "ebitda_with_comp", money), ("% Ebitda с компенсациями", "ebitda_with_comp_pct", pct),
+            ("справочно: Соинвест Ozon (баллы + зелёные цены), руб.", "coinvest", money), ("Соинвест, % от оборота", "coinvest_pct", pct),
             ("справочно: СС по индексу", "cogs_index", money), ("Маржа по индексу", "margin_index", money),
             ("Фин. рез. по индексу", "fin_result_index", money), ("Ebitda по индексу", "ebitda_index", money),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
@@ -763,6 +773,12 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name, 
             r["cogs_index"] = None if idx is None or r.get("cogs") is None else r["cogs"] * idx
             r["fin_result_index"] = None if idx is None or r.get("fin_result") is None else r["fin_result"] + r["cogs"] - r["cogs_index"]
         totals[key] = forecast.orders_total(rows)
+    # соинвест по формуле владельца — только Standard (Основная): на общий лист его доля идёт отдельной колонкой
+    std = f"platform:{PLATFORMS[0][1]}"
+    std_by_day = {r["date"]: r.get("coinvest_pct") for r in blocks.get(std, [])}
+    for r in blocks["all"]:
+        r["coinvest_standard_pct"] = std_by_day.get(r["date"])
+    totals["all"]["coinvest_standard_pct"] = totals[std]["coinvest_pct"] if std in totals else None
     # сверка плато другим разрезом: доля отмен в самой таблице заказов по дням возраста 21…50 (штуки ТОВАРА, не отправления)
     table_plateau = {}
     for schema in forecast.SCHEMAS:
@@ -849,11 +865,51 @@ def platform_note(o):
             + ". «Без площадки» — товары без артикула в карте; в общий лист входят, в листы площадок нет.")
 
 
+COINVEST_NOTE = ("Соинвест, % = (создано − оплачено покупателем) / создано по всем созданным заказам дня, с отменёнными — формула владельца (его G: только "
+                 "Standard, сутки UTC; наши — МСК). Цена покупателя: customer_price ночного списка FBS и «Оплачено покупателем» отчёта ЛК для FBO "
+                 "(с ночи после мержа coinvest-columns); день, где цены нет хоть у одной строки, или где у всех строк она равна цене продавца "
+                 "(строки до колонки), — пуст, не 0 %.")
+
+
+def check_coinvest(values_by_day, manual, days, tol=Decimal("0.01")):
+    """Наша доля соинвеста по дням против его G: |наша − его| ≤ tol — сошлось. Возвращает (сошлось, сравнимых, расходится [(день, наша, его)], без значения)."""
+    ok, cmp, off, missing = 0, 0, [], []
+    for d in days:
+        ours, his = values_by_day.get(d), (manual.get(d) or {}).get("coinvest_pct")
+        if ours is None or his is None:
+            missing.append(d); continue
+        cmp += 1
+        if abs(ours - his) <= tol:
+            ok += 1
+        else:
+            off.append((d, ours, his))
+    return ok, cmp, off, missing
+
+
+def coinvest_utc_from_reports(d1, d2, days):
+    """Доля соинвеста Standard по UTC-суткам из отчётов ЛК на диске (data/ozon_report_postings/<схема>_<d1>_<d2>.csv) — как в пробе
+    2026-09-23 (scripts/ozon_coinvest_probe.py, 20 из 22 в пределах 0,01). Файлов нет — ({}, причина); в API не идёт."""
+    import ozon_coinvest_probe as probe
+    try:
+        rows = probe.load_reports(d1, d2)
+    except SystemExit as exc:
+        return {}, str(exc)
+    table = probe.share_table(rows, set(days), probe.is_standard)
+    return {d: probe.ratio(s, p) for d, (s, p, _n) in table.items()}, ""
+
+
+def print_check_coinvest(title, result):
+    ok, cmp, off, missing = result
+    print(f"  {title}: в пределах 0,01 — {ok} из {cmp}" + (f"; без значения {len(missing)} дн." if missing else "")
+          + ("; расходится (наша / его): " + ", ".join(f"{d[5:]} {o:.4f} / {h:.4f}" for d, o, h in off) if off else ""))
+
+
 def write_orders_sheets(wb, o, styles):
     from openpyxl.styles import Alignment
     from openpyxl.utils import get_column_letter
     money, pct, bold, head_fill, young_fill = styles
     head, lines = orders_notes(o)
+    lines = lines + [COINVEST_NOTE]
     full = [("Дата заказа", "date", None), ("Возраст, сут.", "age", "0"), ("Создано, шт", "created_q", "#,##0"), ("Создано, руб.", "created_a", money),
             ("Подтверждено сейчас, шт", "conf_q", "#,##0"), ("Подтверждено сейчас, руб.", "conf_a", money), ("Отменено сейчас, шт", "canc_q", "#,##0"),
             ("Отменено сейчас, руб.", "canc_a", money), ("Отменено сейчас, % руб.", "canc_pct", pct), ("Ожидаемые отмены ещё, руб.", "expected_cancels_a", money),
@@ -867,8 +923,12 @@ def write_orders_sheets(wb, o, styles):
             ("справочно, формулы владельца: Выручка = создано × множитель площадки владельца / НДС", "owner_revenue", money), ("Маржа (созданных)", "owner_margin", money),
             ("ДРР = Реклама по образцу / (Выручка × 0,65 × НДС / 0,59)", "owner_drr_pct", pct),
             ("Фин. рез. = Маржа × 0,65 − Реклама по образцу − Выручка × 0,65 × 0,024", "owner_fin_result", money),
-            ("Наш фин. рез. − владельца", "fin_result_minus_owner", money), ("шт подтв. без себестоимости", "no_cost_q", "#,##0"), ("Примечание", "note", None)]
-    only_total = {"ads", "ads_manual", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "fin_result_index", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner"}
+            ("Наш фин. рез. − владельца", "fin_result_minus_owner", money),
+            ("Соинвест, % (Standard, формула владельца G: (создано − оплачено покупателем) / создано, все созданные)", "coinvest_standard_pct", pct),
+            ("Соинвест, % по строкам листа", "coinvest_pct", pct),
+            ("шт подтв. без себестоимости", "no_cost_q", "#,##0"), ("Примечание", "note", None)]
+    only_total = {"ads", "ads_manual", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "fin_result_index", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner",
+                  "coinvest_standard_pct"}
     part_cols = [c for c in full if c[1] not in only_total and c[0] is not None]
 
     def write_block(ws, title, cols, rows, total, note_schemas, common):
@@ -1352,14 +1412,19 @@ def main():
     sb = fbo.supabase
     flt = lambda col: [("eq", "marketplace_code", "ozon"), ("gte", col, d1), ("lte", col, d2)]  # noqa: E731
     buyout_cols = "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_amount_seller,commission_amount"
-    try:
-        buyouts = fetch(sb, "marketplace_buyouts", buyout_cols + ",buyouts_units", flt("buyout_date"), ["buyout_date", "marketplace_code", "marketplace_sku"])
-        units_column = True
-    except Exception as exc:
-        if "buyouts_units" not in str(exc):
-            raise
-        buyouts = fetch(sb, "marketplace_buyouts", buyout_cols, flt("buyout_date"), ["buyout_date", "marketplace_code", "marketplace_sku"])
-        units_column = False
+    # колонки миграций (штуки 09-21, соинвест 09-24): нет в таблице — читаем без них и говорим об этом в подвале
+    optional = ["buyouts_units", "bonus_amount", "coinvestment_amount"]
+    while True:
+        try:
+            buyouts = fetch(sb, "marketplace_buyouts", ",".join([buyout_cols] + optional), flt("buyout_date"), ["buyout_date", "marketplace_code", "marketplace_sku"])
+            break
+        except Exception as exc:
+            missing = [c for c in optional if c in str(exc)]
+            if not missing:
+                raise
+            optional = [c for c in optional if c not in missing]
+    units_column = "buyouts_units" in optional
+    coinvest_columns = "bonus_amount" in optional and "coinvestment_amount" in optional
     expenses = fetch(sb, "marketplace_expenses", "id,expense_date,marketplace_sku,expense_type,expense_amount", flt("expense_date"),
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
@@ -1494,6 +1559,9 @@ def main():
              overhead_note(days),
              cost_index_note(days, args.snapshot),
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
+             "Соинвест Ozon = bonus_amount + coinvestment_amount выкупов (баллы за скидки + зелёные цены; оборот − оплачено покупателем построчно). "
+             + ("Колонок в marketplace_buyouts ещё нет — миграция sql/20260924_add_buyouts_bonus_coinvestment.sql не применена, колонка пуста."
+                if not coinvest_columns else "null у строки — записана до колонок (2026-09-24): такой день пуст, не ноль."),
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
     out = args.out or os.path.join(OUT_DIR, f"ozon_{args.month}.xlsx")
     cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
@@ -1595,7 +1663,14 @@ def main():
         platform_rows = {name: orders["blocks"].get(f"platform:{name}", []) for _p, name in PLATFORMS}
         table_o, failures_o, decomposition = check_orders(orders["blocks"]["all"], manual_o, platform_rows, manual_p, young_days)
         print_check_orders(table_o, decomposition, young_days)
+        print_check_coinvest("соинвест G vs наша доля Standard из marketplace_orders (МСК-сутки)",
+                             check_coinvest({r["date"]: r.get("coinvest_standard_pct") for r in orders["blocks"]["all"]}, manual_o, days))
         if args.day_boundary == "utc":
+            shares_utc, why = coinvest_utc_from_reports(d1, d2, days)
+            if why:
+                print(f"  соинвест по UTC-суткам из отчётов ЛК: {why}")
+            else:
+                print_check_coinvest("соинвест G vs Standard по UTC-суткам из отчётов ЛК (как проба 09-23)", check_coinvest(shares_utc, manual_o, days))
             # сырьё окна — теми же функциями, что пересборка истории: файл history_<схема>_<от>_<до>.json есть — в API не идёт.
             # Последний UTC-день кончается в 21:00 UTC по МСК-окну, поэтому окно берётся до d2 + 1 день (не позже сегодня).
             import rebuild_ozon_orders_history as hist

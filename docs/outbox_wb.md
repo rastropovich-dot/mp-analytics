@@ -172,7 +172,13 @@ data/wb_funnel_raw` (сегодня). Дни моложе двух суток �
 ### `git log origin/main..HEAD`
 
 ```
-<GITLOG>
+350eff1 Seventh WB report: buyouts rebuilt by the owner's word (21 228 rows, +246 477 715,50, SQL control equal), nightly buyouts from the report, funnel by product (48 requests, 43 580 rows planned), «Заказы WB» sheets checked (K 16/21, Discounter B 18/21); three words pending
+e41194e Seventh WB task: buyouts from the sales report nightly (same step line; report step skips a repeat collection), funnel by product with a 14-day window and stale keys, funnel backfill, «Заказы WB» sheets with --check-orders; 46 tests
+ce951c0 Seventh WB task, question: the buyouts rebuild plan rebuilt from the live base equals the sixth (Feb–Aug line by line, September +7 keys of 09-23 unchanged); snapshot goes to data/snapshots
+d02168d Merge remote-tracking branch 'origin/main' into wb-fixes
+c4770b7 Keep the seventh WB task text as placed by the adviser
+60fe43f Sixth WB report §1: the first night of the sales-report and ads steps ran clean (12 490 rows, max rr_date 09-23 — the report for D is there on night D+1), buyout_rate on the new formula 22 of 22, no skipped steps
+(+ коммит с этим логом)
 ```
 Общие файлы: `run_daily_pipeline.py` — не трогался (строки шагов те же); `docs/owner_workbook_gaps.md` —
 статусы 2, 13, 15; `.gitignore` — `data/wb_funnel_raw/`.

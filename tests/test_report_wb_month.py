@@ -196,3 +196,106 @@ class BookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrdersSheetTests(unittest.TestCase):
+    """Листы «Заказы WB» (WB-7 §4): K = Σ orderSum × 0,58 / НДС, L = K − Σ orderCount × СС, площадка по букве `t`,
+    соинвест из отчёта реализации по продажам дня, реклама только на общем листе, приёмка по блоку J–P владельца."""
+
+    FUNNEL = [
+        {"day": "2026-09-01", "nm_id": 1, "vendor_code": "F000283615", "order_count": 2, "order_sum": 200000, "buyout_count": 1, "buyout_sum": 90000, "cancel_count": 0, "cancel_sum": 0},
+        {"day": "2026-09-01", "nm_id": 2, "vendor_code": "t000000001", "order_count": 1, "order_sum": 50000, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 1, "cancel_sum": 50000},
+        {"day": "2026-09-01", "nm_id": 3, "vendor_code": "F000009483", "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0},
+        {"day": "2026-09-02", "nm_id": 4, "vendor_code": "X1", "order_count": 1, "order_sum": 1000, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0},
+    ]
+    REPORT = [
+        row("2026-09-01", retail_price_with_disc="100000", retail_amount="57000", code="f000283615", rrd_id=1, sale_dt="2026-09-01T10:00:00Z"),
+        row("2026-09-01", retail_price_with_disc="10000", retail_amount="6000", code="t000000001", rrd_id=2, sale_dt="2026-09-01T10:00:00Z"),
+        row("2026-09-01", oper="Возврат", retail_price_with_disc="5000", retail_amount="3000", code="f000283615", rrd_id=3, sale_dt="2026-09-01T10:00:00Z"),
+    ]
+
+    def test_platform_is_the_first_letter_t(self):
+        self.assertEqual((rep.platform_of("t000000001"), rep.platform_of("T0001"), rep.platform_of("F000283615"), rep.platform_of(None)), ("discounter", "discounter", "standard", "standard"))
+
+    def test_owner_k_l_and_coinvest_on_one_day(self):
+        coinvest = rep.coinvest_by_day(self.REPORT)
+        self.assertEqual(coinvest["2026-09-01"]["all"], [D("110000"), D("63000")])          # возврат в соинвест не входит
+        self.assertEqual(coinvest["2026-09-01"]["discounter"], [D("10000"), D("6000")])
+        [r1, r2] = rep.build_orders_daily(self.FUNNEL, ["2026-09-01", "2026-09-02"], cost_base, {"2026-09-01": D("1220")}, coinvest, date(2026, 9, 10), True, "all")
+        self.assertEqual((r1["orders_qty"], r1["orders_sum"], r1["cards"]), (3, D("250000"), 3))
+        self.assertEqual(rep.q(r1["revenue"]), rep.q(D("250000") * D("0.58") / D("1.22")))   # 118 852,46 — K владельца
+        self.assertEqual(r1["cogs"], D("110") * 2)                                            # СС только у F000283615 (uniform 110); t… нет в снимке
+        self.assertEqual((r1["no_cost_qty"], r1["no_cost_sum"]), (1, D("50000")))
+        self.assertEqual(r1["margin"], r1["revenue"] - D("220"))
+        self.assertEqual(r1["ads"], D("1000"))                                                 # updSum с НДС / 1,22
+        self.assertEqual(r1["coinvest_pct"], D("0.4273"))                                      # (110 000 − 63 000) / 110 000
+        self.assertEqual((r1["funnel_buyouts_sum"], r1["funnel_cancel_qty"]), (D("90000"), 1))
+        self.assertEqual((r2["orders_qty"], r2["coinvest_pct"], r2["ads"]), (1, None, rep.Z))
+
+    def test_platform_sheets_split_the_total_and_carry_no_ads(self):
+        coinvest = rep.coinvest_by_day(self.REPORT)
+        [s] = rep.build_orders_daily(self.FUNNEL, ["2026-09-01"], cost_base, {"2026-09-01": D("1220")}, coinvest, date(2026, 9, 10), True, "standard")
+        [d] = rep.build_orders_daily(self.FUNNEL, ["2026-09-01"], cost_base, {"2026-09-01": D("1220")}, coinvest, date(2026, 9, 10), True, "discounter")
+        [a] = rep.build_orders_daily(self.FUNNEL, ["2026-09-01"], cost_base, {"2026-09-01": D("1220")}, coinvest, date(2026, 9, 10), True, "all")
+        self.assertEqual(s["revenue"] + d["revenue"], a["revenue"])                            # 'Заказы Standard'!K + 'WB Дискаунтер'!B = K
+        self.assertEqual((s["orders_sum"], d["orders_sum"]), (D("200000"), D("50000")))
+        self.assertIsNone(s["ads"]); self.assertIsNone(d["ads"])
+        self.assertEqual(d["coinvest_pct"], D("0.4000"))
+        total = rep.orders_total_row([a])
+        self.assertEqual((total["orders_qty"], total["revenue"], total["ads"]), (3, a["revenue"], D("1000")))
+
+    def test_funnel_files_are_read_like_the_table(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = {"day": "2026-09-01", "products": [
+                {"product": {"nmId": 7, "vendorCode": "t1"}, "statistic": {"selected": {"orderCount": 2, "orderSum": 300, "buyoutCount": 1, "buyoutSum": 100, "cancelCount": 0, "cancelSum": 0}}},
+                {"product": {"vendorCode": "no-nm"}, "statistic": {"selected": {"orderCount": 1, "orderSum": 1}}}]}
+            json.dump(payload, open(os.path.join(tmp, "funnel_2026-09-01.json"), "w"))
+            json.dump({"day": "2026-09-05", "products": []}, open(os.path.join(tmp, "funnel_2026-09-05.json"), "w"))
+            rows = rep.load_funnel_files(tmp, "2026-09-01", "2026-09-02")
+        self.assertEqual(rows, [{"day": "2026-09-01", "nm_id": 7, "vendor_code": "t1", "order_count": 2, "order_sum": 300, "buyout_count": 1,
+                                 "buyout_sum": 100, "cancel_count": 0, "cancel_sum": 0}])
+
+    def test_manual_block_is_read_and_checked_exact_and_within_tolerance(self):
+        import datetime
+        import openpyxl
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "owner.xlsx")
+            wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Заказы"
+            ws.append(["Статистика"]); ws.append(["День", "Выручка"])
+            ws.cell(row=3, column=10, value=datetime.datetime(2026, 9, 1)); ws.cell(row=3, column=11, value=118852.4590); ws.cell(row=3, column=12, value=100000.0)
+            ws.cell(row=3, column=14, value=0); ws.cell(row=3, column=16, value=0.4298)
+            ws.cell(row=4, column=10, value=datetime.datetime(2026, 9, 2)); ws.cell(row=4, column=11, value=999.0); ws.cell(row=4, column=16, value=0.5)
+            wb.save(path)
+            manual = rep.read_manual_orders(path, "Заказы", 9, 10, rep.ORDERS_MANUAL_JP)
+        self.assertEqual(manual["2026-09-01"]["revenue"], "118852.459")
+        self.assertIsNone(manual["2026-09-01"]["drr_pct"])
+        sheets = {"all": [
+            {"date": "2026-09-01", "revenue": D("118852.4590163934"), "margin": D("5"), "ads": rep.Z, "coinvest_pct": D("0.4273"), "young": False},
+            {"date": "2026-09-02", "revenue": D("1000"), "margin": D("5"), "ads": rep.Z, "coinvest_pct": D("0.4900"), "young": False}]}
+        table = rep.check_orders(sheets, {"all": manual})
+        by = {t["title"]: t for t in table}
+        k = by["«Заказы» K Выручка = воронка × 0,58 / НДС"]
+        self.assertEqual((k["equal_days"], k["days"], k["bad"]), (1, 2, [("2026-09-02", D("1.00"))]))
+        p = by["«Заказы» P Соинвест = (Σ цена − Σ оплачено) / Σ цена по продажам дня"]
+        self.assertEqual((p["equal_days"], p["bad"]), (1, [("2026-09-02", D("-0.0100"))]))   # 09-01: |0,4273 − 0,4298| ≤ 0,005
+        n = by["«Заказы» N Реклама"]
+        self.assertEqual((n["equal_days"], n["missing"]), (1, ["2026-09-02"]))
+
+    def test_workbook_gets_the_month_sheet_and_three_orders_sheets(self):
+        import openpyxl
+        coinvest = rep.coinvest_by_day(self.REPORT)
+        month_rows = rep.build_daily(ROWS, ["2026-09-01"], cost_base, {}, date(2026, 9, 10))
+        orders = []
+        for platform, title in rep.PLATFORMS:
+            o_rows = rep.build_orders_daily(self.FUNNEL, ["2026-09-01"], cost_base, {}, coinvest, date(2026, 9, 10), True, platform)
+            orders.append((title, o_rows, rep.orders_total_row(o_rows), ["подвал"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "b.xlsx")
+            rep.write_xlsx(path, "2026-09", month_rows, rep.total_row(month_rows), ["n"], orders=orders)
+            wb = openpyxl.load_workbook(path)
+        self.assertEqual(wb.sheetnames, ["WB - сентябрь", "Заказы WB", "Заказы WB Standard", "Заказы WB Дискаунтер"])
+        ws = wb["Заказы WB"]
+        self.assertEqual(ws.cell(row=3, column=4).value, "Выручка (× 0,58 / НДС), руб.")
+        self.assertAlmostEqual(ws.cell(row=4, column=4).value, float(D("250000") * D("0.58") / D("1.22")), places=2)
+        self.assertEqual(ws.cell(row=5, column=1).value, "Итого")

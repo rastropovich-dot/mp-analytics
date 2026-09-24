@@ -35,6 +35,38 @@ stale-deep         940b855  §5 глубокая проверка застряв
 глубокая проверка, каталог); **db_writes = 0**. Render — 0. Образцы владельца `data/owner_finrez_*.xlsx` лежат вне git (`data/owner_*.xlsx` в
 `.gitignore` — закоммичено в `product-catalog`, уедет мержем).
 
+### По слову владельца (14:0x UTC 09-24): миграция и каталог записаны, три ветки слиты, Render live
+
+```
+миграция    20260924_create_ozon_products через MCP — success (~13:58 UTC); information_schema: 16 колонок, sku pk, category / category_source / observed_at not null
+каталог     ozon_product_catalog.py --from-file data/ozon_products/catalog_20260924T132241Z.json --month 2026-09 --apply (13:59:41 → 14:00:47 UTC; снимок с
+            карточками и деревом — тот, из которого собран catalog_latest.json; в API не ходил): upsert по sku 5 320, контроль чтением — в таблице 5 320 =,
+            db_writes = 5 320. SQL после записи: кольца 3 023 · серьги 923 · подвески 514 · цепочки 429 · браслеты 319 · колье 63 · пирсинг 36 · броши 12 ·
+            прочее 1 — все category_source = card, observed_at 13:22:34 UTC
+мерж        f8a98b6 product-catalog → d6e8234 finrez-book → 0841722 stale-deep (--no-ff, конфликтов 0; origin/main новых коммитов не имел)
+тесты       полный набор на main — Ran 1048 tests, OK
+push        14:01:37 UTC; Render live на 0841722: mp-analytics 14:02:22, mp-analytics-telegram-report 14:02:19 UTC — за 10 ч до ночи; startCommand прежняя
+словарь     категорий принят владельцем (крестики и шармы — подвески, бусы — колье, шнурки — цепочки)
+```
+
+С этого момента `report_finrez.py` читает категорию из таблицы (`каталог: table`), не из файла. **Пересборка книги с WB-модулем** — после
+вечернего мержа WB-сессии: проверка `origin/main` на `scripts/report_finrez_wb.py` стоит ежечасно (в этой сессии), по появлении — сборка
+`--month-from 2026-04 --month-to 2026-09`, приёмка WB-листов, числа сюда.
+
+**Недельная глубокая проверка застрявших ключей — предложение, не запускал.** Отдельная cron-задача Render (у cron-задачи нет диска с
+сырьём, поэтому дни снимаются живым by-day):
+
+```
+имя        mp-analytics-stale-deep-weekly        расписание  0 10 * * 0  (воскресенье 10:00 UTC — вне окон ночи и алерта)
+команда    python3 scripts/stale_keys_deep_check.py --date-from 2026-03-28 --fetch-missing --tables buyouts,expenses,ledger
+цена       ~2 обращения by-day на день × ~180 дней ≈ 360 обращений Seller API за прогон, 429 через http_retry; ~15 мин; db_writes = 0
+выход      план в лог (по месяцам: ключей, ₽) и файл data/snapshots/stale_deep_plan_<UTC>.json (на Render — до конца прогона; читать лог через API);
+           удаление — только руками по слову: --apply --approve-stale-deep-delete с живой перепроверкой
+```
+
+Дешевле — раз в неделю с машины владельца по слову без `--fetch-missing` (сырьё лежит в `data/accrual_history/`, обращений 0, 3 минуты).
+Сегодняшний план: вне окна ночи удалять нечего (выкупы 0, леджер 0, расходы 6 ключей / 411,00 — в окне, снимет ночь 09-25).
+
 ### §3 — категория из карточки Ozon (`product-catalog`)
 
 Спека: `/v2/product/info/list` в `spec/ozon-seller.json` нет, актуален `/v3/product/info/list` (offer_id / product_id / sku, ≤ 1 000 в сумме за

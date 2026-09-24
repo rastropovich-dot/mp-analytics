@@ -29,8 +29,11 @@ marketplace_buyouts ниже отчёта реализации на 8,66 млн,
     «застрявшие», что чинили у Ozon); дни, где в отчёте нет ни одной продажи, — НЕ трогаются
     (правило loaders/stale_keys.py: пустой день — не истина «ноль»).
 
+Правило строки и сборка — loaders/wb_buyouts_from_report.py (ночной путь шага «WB: загрузка
+продаж/выкупов» с 2026-09-24 строит окно теми же функциями).
+
 ЧТО ДЕЛАЕТ --apply: отказ в ночном окне; снимок затрагиваемых строк базы
-(snapshots/marketplace_buyouts_wb_before_rebuild_<ts>.csv.gz + _meta.json с sha256); upsert
+(data/snapshots/marketplace_buyouts_wb_before_rebuild_<ts>.csv.gz + _meta.json с sha256, вне git); upsert
 построенных строк по 500; удаление ключей списка по id — после записи. Без
 --approve-wb-buyouts-write не пишет.
 """
@@ -55,105 +58,11 @@ from loaders import stale_keys  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 
-TABLE = "marketplace_buyouts"
-REPORT = "wb_sales_report_rows"
-MSK = timezone(timedelta(hours=3))
-LAG_DAYS = 7          # rrDate позже даты продажи: 60 строк из 32 009 на 1…3 дня, 5 на 16…115 (report_wb_month.py)
+from loaders.wb_buyouts_from_report import (  # noqa: E402  — правило строки, чтение, сборка и классификация живут в загрузчике (ночной путь тот же)
+    TABLE, REPORT, MSK, LAG_DAYS, Z, C, q, sale_day, read_report_sales, read_db, build_rows, classify, month_table,
+)
+
 COLLECTION_START = "2026-02-01"   # с этого дня отчёт лежит в базе (бэкфилл 09-23)
-Z = Decimal(0)
-C = Decimal("0.01")
-
-
-def q(v):
-    return Decimal(str(v if v is not None else 0)).quantize(C)
-
-
-def sale_day(value):
-    ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(MSK).date().isoformat()
-
-
-# ---------- чтение ----------
-
-def read_report_sales(sb, d1, d2):
-    """Строки Продажа/Возврат отчёта с датой продажи (МСК) в d1 … d2; читаем по rrDate с запасом."""
-    d2x = (date.fromisoformat(d2) + timedelta(days=LAG_DAYS)).isoformat()
-    rows = stale_keys.read_window_rows(
-        sb, REPORT, "rrd_id,rr_date,sale_dt,nm_id,vendor_code,seller_oper_name,quantity,retail_price_with_disc,retail_amount",
-        [("gte", "rr_date", d1), ("lte", "rr_date", d2x), ("in_", "seller_oper_name", ["Продажа", "Возврат"])], ["rr_date", "rrd_id"])
-    out = []
-    for r in rows:
-        if not r.get("sale_dt"):
-            raise RuntimeError(f"строка отчёта без saleDt: rrdId {r['rrd_id']}")
-        day = sale_day(r["sale_dt"])
-        if d1 <= day <= d2:
-            r["day"] = day
-            out.append(r)
-    return out
-
-
-def read_db(sb, d1, d2):
-    return stale_keys.read_window_rows(
-        sb, TABLE, "id,buyout_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_buyer,buyouts_amount_seller,buyouts_units",
-        [("eq", "marketplace_code", "wb"), ("gte", "buyout_date", d1), ("lte", "buyout_date", d2)], ["buyout_date", "marketplace_sku"])
-
-
-# ---------- сборка ----------
-
-def build_rows(sales, db_by_key):
-    """Строки таблицы из строк отчёта: ключ (день продажи МСК, nmId)."""
-    acc = {}
-    for r in sales:
-        sign = 1 if r["seller_oper_name"] == "Продажа" else -1
-        key = (r["day"], str(r["nm_id"]))
-        a = acc.setdefault(key, {"qty": Z, "seller": Z, "buyer": Z, "vendor": str(r.get("vendor_code") or "")})
-        a["qty"] += sign * Decimal(str(r.get("quantity") or 0))
-        a["seller"] += sign * Decimal(str(r.get("retail_price_with_disc") or 0))
-        a["buyer"] += sign * Decimal(str(r.get("retail_amount") or 0))
-    rows = {}
-    for key, a in acc.items():
-        old = db_by_key.get(key)
-        rows[key] = {
-            "buyout_date": key[0], "marketplace_code": "wb", "marketplace_sku": key[1],
-            "article": (old or {}).get("article") or a["vendor"].upper() or None,
-            "product_name": (old or {}).get("product_name"),
-            "buyouts_qty": float(a["qty"]), "buyouts_amount_buyer": float(q(a["buyer"])), "buyouts_amount_seller": float(q(a["seller"])),
-            "revenue_after_commission_vat": 0, "commission_amount": 0, "vat_amount": 0,
-        }
-    return rows
-
-
-def classify(rows, db_by_key, days_with_sales):
-    """add / rewrite / same / delete по ключам; ключи базы в днях без единой продажи в отчёте — untouched."""
-    out = {"add": [], "rewrite": [], "same": [], "delete": [], "untouched": []}
-    for key, row in rows.items():
-        old = db_by_key.get(key)
-        if old is None:
-            out["add"].append((key, row, None))
-        elif (q(old["buyouts_qty"]), q(old["buyouts_amount_seller"]), q(old["buyouts_amount_buyer"])) != (q(row["buyouts_qty"]), q(row["buyouts_amount_seller"]), q(row["buyouts_amount_buyer"])):
-            out["rewrite"].append((key, row, old))
-        else:
-            out["same"].append((key, row, old))
-    for key, old in db_by_key.items():
-        if key in rows:
-            continue
-        (out["delete"] if key[0] in days_with_sales else out["untouched"]).append((key, None, old))
-    return out
-
-
-def month_table(cls):
-    by = defaultdict(lambda: defaultdict(Decimal))
-    for kind, items in cls.items():
-        for key, row, old in items:
-            m = key[0][:7]
-            by[m][kind + "_n"] += 1
-            if row is not None:
-                by[m]["after_qty"] += Decimal(str(row["buyouts_qty"])); by[m]["after_amt"] += Decimal(str(row["buyouts_amount_seller"]))
-            if old is not None and kind != "untouched":
-                by[m]["before_qty"] += Decimal(str(old["buyouts_qty"] or 0)); by[m]["before_amt"] += Decimal(str(old["buyouts_amount_seller"] or 0))
-    return by
 
 
 def print_plan(cls, d1, d2, days_with_sales, db_rows):
@@ -203,9 +112,9 @@ def print_plan(cls, d1, d2, days_with_sales, db_rows):
 # ---------- запись ----------
 
 def snapshot(db_rows, label):
-    os.makedirs(os.path.join(ROOT, "snapshots"), exist_ok=True)
+    os.makedirs(os.path.join(ROOT, "data", "snapshots"), exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(ROOT, "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
+    path = os.path.join(ROOT, "data", "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
     cols = ["id", "buyout_date", "marketplace_sku", "article", "product_name", "buyouts_qty", "buyouts_amount_buyer", "buyouts_amount_seller", "buyouts_units"]
     with gzip.open(path, "wt", encoding="utf-8", newline="") as f:
         w = csv.writer(f); w.writerow(cols)

@@ -129,3 +129,27 @@ class OneRuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtraFieldsTests(unittest.TestCase):
+    """Ozon добавляет поля в ответы (2026-09: customer_price в /v3/posting/fbs/list и /v3/posting/fbs/get, чат 09-18…09-23).
+    Загрузчики берут своё по имени и на лишнее не смотрят — строки те же, что без лишних полей."""
+
+    def test_unknown_fields_on_posting_and_products_change_nothing(self):
+        plain = [posting("A", "delivered", schema="fbs"), posting("B", "cancelled", schema="fbs", price="500")]
+        noisy = [posting("A", "delivered", schema="fbs"), posting("B", "cancelled", schema="fbs", price="500")]
+        for p in noisy:
+            p["some_new_flag"] = True
+            p["financial_data"] = {"products": [{"product_id": 11, "customer_price": "700", "payout": "0", "actions": ["OA"]}]}
+            for pr in p["products"]:
+                pr["customer_price"] = "700"
+                pr["jewelry_codes"] = ["x"]
+        rows_plain, c_plain = rules.build_order_rows(plain, "fbs", observed_at="t")
+        rows_noisy, c_noisy = rules.build_order_rows(noisy, "fbs", observed_at="t")
+        self.assertEqual(rows_noisy, rows_plain)
+        self.assertEqual(c_noisy, c_plain)
+        fbo_plain = rules.build_order_rows([posting("C", "delivered")], "fbo", observed_at="t")[0]
+        noisy_fbo = posting("C", "delivered")
+        noisy_fbo["products"][0]["unknown_price_field"] = {"amount": "1", "currency": "RUB"}
+        noisy_fbo["storage_type"] = "new"
+        self.assertEqual(rules.build_order_rows([noisy_fbo], "fbo", observed_at="t")[0], fbo_plain)

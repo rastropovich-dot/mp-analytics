@@ -791,6 +791,10 @@ scripts/ozon_orders_forecast.py           кривая дозревания из
 scripts/send_ozon_month_report.py         доставка книги месяца в Telegram (sendDocument); --no-send — собрать и ничего не отправить; месяц — тот, в котором вчера
 scripts/report_ozon_month.py              генератор листа «Ozon - <месяц>» (по дням + «По SKU») → data/reports/*.xlsx; --check против ручного листа; только чтение, сырьё by-day доснимает сам (файл есть — в API не идёт)
 scripts/reconcile_manual_report_ozon.py   сверка ручного отчёта по дням: оборот, комиссия, СС, логистика, реклама, эквайринг, прочее; тождества групп
+scripts/ozon_coinvest_probe.py            соинвест Ozon по отчётам ЛК (report/postings/create, файлы в data/ozon_report_postings/): формула колонки G владельца найдена 2026-09-23 — только Standard, все созданные, UTC-сутки; только чтение
+scripts/accrual_types_owner_check.py      справочник владельца «Тип → Вид» против TYPE_TO_EXPENSE; ключ — русское название типа из accrual/types (knowledge/ozon/accrual_types_2026-09-23.json); арбитр — полотно за ноябрь 2025
+scripts/fetch_accrual_history_range.py    снять by-day за окно дат в data/accrual_history/ (глубина метода до ноября 2025 есть); только чтение
+scripts/merge_telegram_export.py          слияние экспортов чата разработчиков в knowledge/telegram/ (план без --apply); фото — в корень 09-13 по хэшу, нумерация между экспортами не сквозная
 docs/ozon_performance_limits.md         ← содержит опровергнутую «половину лимита»
 docs/ozon_finance_migration.md          миграция на accrual API, разрыв ряда, классификация,
                                         соответствие статей разрезу Ozon, правило двух суток

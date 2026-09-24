@@ -204,7 +204,9 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         res["logistics"] = -(row["logistics"] * vat) - by_sku["logistics"]
         other_total = (row["other"] + (row.get("subscription") or Z)) * vat
         res["other"] = -other_total - by_sku["other"]
-        if not any(q(v) for v in res.values()):
+        for k in list(res):
+            res[k] = q(res[k])                 # остаток — расчётный: до копейки, без хвостов Decimal вроде −5,2e-12
+        if not any(res.values()):
             del acc[(d, NO_SKU)]
     rows = []
     for (d, sku), a in sorted(acc.items()):
@@ -314,7 +316,7 @@ def build_order_rows(days, order_rows, kpi_rows, daily_rows, unit_cost, sku2art,
             stats["days_without_raw_ads"] += 1
             continue
         by_sku = sum((a["ads"] for (dd, sku), a in acc.items() if dd == d and sku != NO_SKU), Z)
-        acc[(d, NO_SKU)]["ads"] = row["ads"] * row["vat"] - by_sku
+        acc[(d, NO_SKU)]["ads"] = q(row["ads"] * row["vat"] - by_sku)
     rows = []
     for (d, sku), a in sorted(acc.items()):
         if not any(q(v) for v in a.values()):

@@ -140,7 +140,8 @@ class ExtraFieldsTests(unittest.TestCase):
         noisy = [posting("A", "delivered", schema="fbs"), posting("B", "cancelled", schema="fbs", price="500")]
         for p in noisy:
             p["some_new_flag"] = True
-            p["financial_data"] = {"products": [{"product_id": 11, "customer_price": "700", "payout": "0", "actions": ["OA"]}]}
+            # customer_price с 2026-09-24 — не шум, а цена покупателя (tests/test_coinvest_columns.py); шумом остаются прочие поля
+            p["financial_data"] = {"products": [{"product_id": 11, "payout": "0", "actions": ["OA"], "total_discount_value": 12}]}
             for pr in p["products"]:
                 pr["customer_price"] = "700"
                 pr["jewelry_codes"] = ["x"]

@@ -222,7 +222,8 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
     """Строки листа «Заказы»: {"fbo": [...], "fbs": [...], "all": [...], "platform:<площадка>": [...]} по дням заказа.
 
     orders            [{order_date, order_schema, marketplace_sku, article, orders_qty, orders_amount_seller,
-                        cancelled_orders_qty, cancelled_orders_amount_seller}]
+                        cancelled_orders_qty, cancelled_orders_amount_seller[, orders_amount_buyer, cancelled_orders_amount_buyer]}]
+                      *_amount_buyer — оплачено покупателем (соинвест Ozon внутри разницы с ценой продавца); null — не измерено
     obs_date          ночь, на которую снято состояние заказов: "YYYY-MM-DD" или {схема: "YYYY-MM-DD"}
     commission_share  {площадка: доля} с ключом "все" — запасная доля для площадки без выкупов в окне
     other_share       доля прочих расходов (с НДС) в обороте выкупов (с НДС); None — не измерена
@@ -231,6 +232,11 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
                       его формулы (ДРР, фин. рез.), чтобы сравниваться с его листом напрямую. Не задана — берётся ads_by_day
     Блоки по площадкам ("platform:Основная" …) — те же колонки без рекламы и фин. реза: леджер начислений без площадки.
     Возвращает ещё и список названных вслух обстоятельств (площадка без своей доли комиссии, схема без кривой).
+
+    Соинвест, % дня = (создано − оплачено покупателем) / создано по всем созданным (с отменёнными) — формула владельца
+    (тридцать пятая §4, у него только Standard и UTC-сутки). День пуст (None), если цена покупателя неизвестна хоть у одной
+    строки, или если у всех строк дня она равна цене продавца: до 2026-09-24 в *_amount_buyer писалась цена продавца, и
+    такой день — не «0 %», а «не измерено»; такие дни называются вслух.
     """
     ads_manual_by_day = ads_by_day if ads_manual_by_day is None else ads_manual_by_day
     blocks = {k: {d: defaultdict(Decimal) for d in days} for k in SCHEMAS + ("all",)}
@@ -251,6 +257,9 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         age = (date.fromisoformat(obs.get(schema, obs["all"])) - date.fromisoformat(d)).days
         conf_q, conf_a = D(r["orders_qty"]), D(r["orders_amount_seller"])
         canc_q, canc_a = D(r.get("cancelled_orders_qty")), D(r.get("cancelled_orders_amount_seller"))
+        buyer_conf, buyer_canc = r.get("orders_amount_buyer"), r.get("cancelled_orders_amount_buyer")
+        buyer_known = buyer_conf is not None and (buyer_canc is not None or not canc_q)
+        buyer_a = (D(buyer_conf) + D(buyer_canc)) if buyer_known else None
         r_cnt, r_amt = remaining_share(curve, schema, age, "cnt"), remaining_share(curve, schema, age, "amt")
         if r_cnt is None:
             said.add(f"для схемы {schema} кривой нет (в логе нет ночных срезов с дозревшими возрастами) — прогноза по ней нет")
@@ -267,6 +276,11 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         for key in (schema, "all", pkey):
             a = blocks[key][d]
             a["created_q"] += conf_q + canc_q; a["created_a"] += conf_a + canc_a
+            if buyer_a is None:
+                a["buyer_unknown"] += 1
+            else:
+                a["created_buyer_a"] += buyer_a; a["buyer_rows"] += 1
+                a["buyer_eq_rows"] += 1 if buyer_a == conf_a + canc_a else 0
             a["conf_q"] += conf_q; a["conf_a"] += conf_a
             a["canc_q"] += canc_q; a["canc_a"] += canc_a
             a["cogs_created"] += (conf_q + canc_q) * (uc or Z)
@@ -282,15 +296,20 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             a["revenue"] += fc_a * (1 - share) / vat
             a["cogs"] += fc_q * (uc or Z)
     out = {}
+    dup_days = []
     for key, per_day in blocks.items():
         rows = []
         for d in days:
             a, vat = per_day[d], vat_for(d)
             age = (date.fromisoformat(obs.get(key, obs["all"])) - date.fromisoformat(d)).days
             ok = not a["no_forecast"]
+            all_dup = a["buyer_rows"] > 0 and a["buyer_eq_rows"] == a["buyer_rows"]
+            if all_dup and key == "all":
+                dup_days.append(d)
             row = {"date": d, "vat": vat, "age": age, "mature": age >= MATURE_AGE,
                    "created_q": a["created_q"], "created_a": a["created_a"], "conf_q": a["conf_q"], "conf_a": a["conf_a"],
-                   "canc_q": a["canc_q"], "canc_a": a["canc_a"], "no_cost_q": a["no_cost_q"], "cogs_created": a["cogs_created"]}
+                   "canc_q": a["canc_q"], "canc_a": a["canc_a"], "no_cost_q": a["no_cost_q"], "cogs_created": a["cogs_created"],
+                   "created_buyer_a": None if a["buyer_unknown"] or all_dup else a["created_buyer_a"]}
             for k in ("fc_q", "fc_a", "commission", "revenue", "cogs"):
                 row[k] = a[k] if ok else None
             row["expected_cancels_a"] = (a["conf_a"] - a["fc_a"]) if ok else None
@@ -307,12 +326,15 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
                                                                                - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])
             rows.append(row)
         out[key] = rows
+    if dup_days:
+        said.add("цена покупателя равна цене продавца у всех строк дня — строки записаны до колонки соинвеста (2026-09-24), соинвест не измерен: "
+                 + ", ".join(dup_days))
     return out, sorted(said)
 
 
 ORDER_MONEY = ("created_q", "created_a", "conf_q", "conf_a", "canc_q", "canc_a", "fc_q", "fc_a", "expected_cancels_a", "commission", "revenue",
                "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "cogs_index", "fin_result_index",
-               "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created")
+               "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created", "created_buyer_a")
 
 
 def ratio(a, b):
@@ -333,6 +355,8 @@ def add_order_ratios(row):
     row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
     row["owner_drr_pct"] = ratio(row.get("ads_manual", row["ads"]), row["owner_revenue"] * OWNER["buyout_rate"] * vat / OWNER["after_commission"])
     row["fin_result_minus_owner"] = None if None in (row["fin_result"], row["owner_fin_result"]) else row["fin_result"] - row["owner_fin_result"]
+    # соинвест владельца: (создано − оплачено покупателем) / создано; цена покупателя неизвестна хоть у одной строки — пусто
+    row["coinvest_pct"] = None if row.get("created_buyer_a") is None else ratio(row["created_a"] - row["created_buyer_a"], row["created_a"])
     return row
 
 

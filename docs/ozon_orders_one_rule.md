@@ -22,6 +22,13 @@ observed_at                     timestamptz                    ← момент 
 check: все три cancelled_* ≥ 0
 ```
 
+**2026-09-24 (тридцать шестая §3):** `cancelled_orders_amount_buyer NOT NULL
+default 0` мешает писать null «не измерено» в цену покупателя —
+`sql/20260924_orders_buyer_nullable.sql` снимает NOT NULL и default с обеих
+колонок покупателя (по слову владельца, до мержа `coinvest-columns`). Пока
+миграция не применена, `upsert_orders` пишет строки с null без колонок
+покупателя и говорит об этом вслух — заказы не теряются.
+
 Ключ прежний: уникальный индекс `(order_date, marketplace_code,
 marketplace_sku, order_schema)` — проверено по `pg_indexes` 2026-09-16.
 Старые колонки `orders_*` сохраняют смысл «подтверждённые»; читатели
@@ -78,7 +85,21 @@ currency}` (`/v3` FBO, `/v4` FBS); чужая валюта и объект бе�
   пропуск и счётчик); окно сбора 14 → 30 дней, как у FBO — иначе отмены
   второй недели не дозревают в таблице.
 
-Тесты: `tests/test_ozon_orders_rows.py` (18), `tests/test_fbs_cursor_migration.py` (10).
+Цена покупателя (с 2026-09-24, `buyer_unit_price`): FBS —
+`financial_data.products[].customer_price` ночного `/v4`-списка
+(`product_id` = sku; за единицу — 5 260 из 5 260 пар с CSV ЛК), FBO — словарь
+`{(posting_number, sku): цена}` из отчёта ЛК `/v1/report/postings/create`
+(`loaders/ozon_postings_report.py`: create → `report/info` раз в 5 с, не
+дольше 3 минут → CSV; отказ — именованный, шаг FBO продолжается без цен).
+`*_amount_buyer` = Σ цена покупателя × кол-во, если цена известна у всех
+товаров ключа, иначе null — не ноль и не цена продавца (так было до
+09-24: дубль `*_amount_seller`). Счётчики `buyer_price_known_products` /
+`buyer_price_unknown_products` печатаются. Запись — `upsert_orders`, одна
+для обеих схем. Бэкфилл истории — `scripts/backfill_ozon_orders_buyer.py`
+(план из файлов на диске, `--apply` по слову).
+
+Тесты: `tests/test_ozon_orders_rows.py` (18), `tests/test_fbs_cursor_migration.py` (10),
+`tests/test_coinvest_columns.py` (24).
 
 ## 3. FBS на `/v4/posting/fbs/list`
 

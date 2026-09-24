@@ -137,11 +137,7 @@ def save_ozon_orders(postings, observed_at=None):
     if not rows:
         print("Нет Ozon FBS заказов для записи")
         return
-    for i in range(0, len(rows), 500):
-        supabase.table("marketplace_orders").upsert(
-            rows[i:i + 500],
-            on_conflict="order_date,marketplace_code,marketplace_sku,order_schema"
-        ).execute()
+    rules.upsert_orders(supabase, rows, "Ozon FBS")
     print(f"✅ Ozon FBS заказы записаны в marketplace_orders: {len(rows)} строк")
 
 

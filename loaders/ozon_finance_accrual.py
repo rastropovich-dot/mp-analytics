@@ -92,6 +92,7 @@ TYPE_TO_EXPENSE = {
     62: "other",  # RfbsClientDeliveryCharge — «Перечисление за доставку от покупателя» (доход, знак +)
     78: "other",  # TemporaryPlacement — «Краткосрочное размещение возврата FBS» (у владельца «Временное размещение товара в СЦ/ПВЗ»)
     82: "other",  # VolumeWeightCharacteristicsProcessing — «Дополнительная обработка ОВХ»
+    124: "other",  # RfbsBuyerDelivery — то же название ЛК «Перечисление за доставку от покупателя», что у 62 (доход, знак +)
     38: "other",  # PackageCost
     39: "other",  # PackingFee
     61: "other",  # ReviewsPin
@@ -105,6 +106,12 @@ TYPE_TO_EXPENSE = {
     15: "other",  # Disposal — утилизация, не доставка
     57: "other",  # RealizationReportCorrection
     11: "other",  # CorrectionCommission
+    # Были в полотне владельца за ноябрь 2025, в сентябре 2026 не встречались (тридцать пятая задача, §5): без строки здесь
+    # упали бы в unknown_*. По его справочнику: 3 «Продвижение бренда» → Реклама (у нас рекламной статьи из начислений нет —
+    # реклама идёт из Performance, решение 5; кладём в other, как 96, и помечаем), 14 и 77 → Прочее.
+    3:  "other",  # BrandCommission — «Продвижение бренда»; у владельца Реклама, у нас other с пометкой (как 96)
+    14: "other",  # DefectRate — «Обработка операционных ошибок продавца»
+    77: "other",  # SupplyInbound — «Обработка товара» (в ЛК владельца — «Удержание за недовложение товара»)
 }
 
 # Вне классификации: деньги идут НАМ, природа не установлена. В расходы не
@@ -380,6 +387,8 @@ def build_buyout_rows(accruals):
                     "commission_amount": 0.0,
                     "revenue_after_commission_vat": 0.0,
                     "vat_amount": 0.0,
+                    "bonus_amount": 0.0,
+                    "coinvestment_amount": 0.0,
                 }
             row = grouped[key]
             # ВНИМАНИЕ: количество. Поля штук в новой модели НЕТ — у товарной
@@ -390,7 +399,18 @@ def build_buyout_rows(accruals):
             # и НЕ подогнано: сумма, комиссия и выручка сходятся точно, а штуки
             # новая модель не отдаёт.
             row["buyouts_qty"] += 1 if sale_amount >= 0 else -1
-            row["buyouts_amount_buyer"] += sale_amount
+            # Оплачено покупателем — commission.sale_price, ЗА СТРОКУ (не за единицу: 2026-09-24, 62 из 64 строк с кол-вом > 1
+            # равны CSV ЛК «Оплачено покупателем» × кол-во); баллы за скидки и зелёные цены (соинвест Ozon) — bonus и coinvestment.
+            # Тождество построчно: sale_amount − sale_price = bonus + coinvestment (983 из 998 строк на 4 днях; остаток — счётчик).
+            # До 2026-09-24 в buyouts_amount_buyer писалась цена продавца (дубль buyouts_amount_seller).
+            sale_price = money(commission.get("sale_price"))
+            bonus = money(commission.get("bonus"))
+            coinvestment = money(commission.get("coinvestment"))
+            row["buyouts_amount_buyer"] += sale_price
+            row["bonus_amount"] += bonus
+            row["coinvestment_amount"] += coinvestment
+            if round(sale_amount - sale_price - bonus - coinvestment, 2) != 0:
+                counters["coinvest_identity_broken"] += 1
             row["buyouts_amount_seller"] += sale_amount
             # Комиссия в таблице хранится положительной у продажи.
             row["commission_amount"] += -sale_commission
@@ -409,8 +429,8 @@ def build_buyout_rows(accruals):
     rows = []
     for row in grouped.values():
         for field in ("buyouts_amount_buyer", "buyouts_amount_seller",
-                      "commission_amount", "revenue_after_commission_vat"):
+                      "commission_amount", "revenue_after_commission_vat", "bonus_amount", "coinvestment_amount"):
             row[field] = round(row[field], 2)
-        if any(row[f] for f in ("buyouts_qty", "buyouts_amount_buyer", "commission_amount")):
+        if any(row[f] for f in ("buyouts_qty", "buyouts_amount_seller", "buyouts_amount_buyer", "commission_amount")):
             rows.append(row)
     return rows, dict(counters)

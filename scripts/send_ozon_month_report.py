@@ -69,7 +69,25 @@ def pct(value):
     return "—" if value is None else f"{float(value) * 100:.1f} %".replace(".", ",")
 
 
-def build_caption(month, date_to, summary, orders_failed):
+def add_wb_sheet_nonfatal(path, month, date_to):
+    """Лист «WB - <месяц>» в собранную книгу (scripts/book_wb_sheet.py — строки функциями report_wb_month, из базы, без обращений к WB API).
+
+    Нефатально: без листа книга Ozon уходит как раньше, а строка подписи говорит, что WB не собран и почему.
+    Возвращает строку для подписи."""
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import book_wb_sheet
+        total, info = book_wb_sheet.add_wb_sheet(path, month, date_to)
+        print(f"лист WB: строк отчёта {info['rows']}, дней {info['days']}, молодых {len(info['young'])}; оборот {total['turnover']:,.2f}, "
+              f"комиссия {total['commission']:,.2f}, логистика {total['logistics']:,.2f}, фин. рез. {total['fin_result']:,.2f}")
+        return (f"WB: оборот {mln(total['turnover'])}, выручка {mln(total['revenue'])}, фин. рез. {mln(total['fin_result'])}"
+                + (f", Ebitda {mln(total['ebitda'])}" if total.get("ebitda") is not None else ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"лист WB НЕ собран: {type(exc).__name__}: {exc}")
+        return f"⚠️ Лист «WB - месяц» не собран: {type(exc).__name__}: {str(exc)[:120]}"
+
+
+def build_caption(month, date_to, summary, orders_failed, wb_line=None):
     last = date.fromisoformat(date_to)
     lines = [f"Ozon — {MONTHS[last.month - 1]} {last.year}, по {last.day} {MONTHS_GENITIVE[last.month - 1]}"]
     b, o = (summary or {}).get("buyouts") or {}, (summary or {}).get("orders") or {}
@@ -80,6 +98,8 @@ def build_caption(month, date_to, summary, orders_failed):
         lines.append(f"Заказы: создано {mln(o.get('created'))}, прогноз подтв. {mln(o.get('forecast_confirmed'))}, "
                      f"ДРР {pct(o.get('drr_created'))} от созданного / {pct(o.get('drr_forecast'))} от прогноза, фин. рез. прогноз {mln(o.get('fin_result'))}")
         lines.append(f"Кривая дозревания: ночи {o.get('curve_nights')}; дней в прогнозе {o.get('forecast_days')}, дозревших {o.get('mature_days')}")
+    if wb_line:
+        lines.append(wb_line)
     if orders_failed:
         lines.append("⚠️ Лист «Заказы» не собран — причина на самом листе; остальные листы на месте.")
     if (summary or {}).get("warnings"):
@@ -188,7 +208,8 @@ def main(argv=None):
         return fail(f"{type(exc).__name__}: {exc}")
     if path is None:
         return fail(f"генератор завершился с кодом {code}: …{tail[-300:]}")
-    caption = build_caption(month, date_to, summary, code == ORDERS_SHEET_FAILED)
+    wb_line = add_wb_sheet_nonfatal(path, month, date_to)
+    caption = build_caption(month, date_to, summary, code == ORDERS_SHEET_FAILED, wb_line)
     size = os.path.getsize(path)
     sha = sha256_of(path)
     print(f"\nкнига: {path}, {size:,} байт".replace(",", " ") + f", sha256 {sha}")

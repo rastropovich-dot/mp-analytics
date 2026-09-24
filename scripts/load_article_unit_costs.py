@@ -173,7 +173,10 @@ def apply_rows(sb, rows):
 
 
 def coverage_check(sb, snapshot_date, marketplace_code, days=90, today=None):
-    """Ключи marketplace_orders за N дней против таблицы. Ожидание 2026-09-14: 4 621 из 4 622, 99,997 % выручки."""
+    """Ключи marketplace_orders за N дней против таблицы. Ожидание 2026-09-14: 4 621 из 4 622, 99,997 % выручки.
+
+    Вес ключа — выручка по цене продавца (orders_amount_seller). До 2026-09-24 читалась orders_amount_buyer, тогда — дубль
+    цены продавца; с тридцать шестой в ней оплачено покупателем (или null) — как вес покрытия она занижала бы дорогие SKU."""
     today = today or date.today()
     since = (today - timedelta(days=days)).isoformat()
     keys = defaultdict(lambda: Decimal(0))
@@ -181,13 +184,13 @@ def coverage_check(sb, snapshot_date, marketplace_code, days=90, today=None):
     # ORDER BY обязателен: range без сортировки у PostgREST отдаёт страницы с
     # повторами и пропусками (поймано 2026-09-15 на реализации — мнимые
     # расхождения 09-01 и 09-08 при нулевых по SKU).
-    query = (sb.table("marketplace_orders").select("marketplace_sku,article,orders_amount_buyer")
+    query = (sb.table("marketplace_orders").select("marketplace_sku,article,orders_amount_seller")
              .eq("marketplace_code", marketplace_code).gte("order_date", since)
              .order("order_date").order("marketplace_sku").order("order_schema"))
     while True:
         res = query.range(page * 1000, page * 1000 + 999).execute()
         for r in res.data:
-            keys[(str(r["marketplace_sku"] or ""), str(r["article"] or ""))] += Decimal(str(r["orders_amount_buyer"] or 0))
+            keys[(str(r["marketplace_sku"] or ""), str(r["article"] or ""))] += Decimal(str(r["orders_amount_seller"] or 0))
         if len(res.data) < 1000:
             break
         page += 1

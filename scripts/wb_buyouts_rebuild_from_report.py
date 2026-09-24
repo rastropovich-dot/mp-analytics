@@ -30,7 +30,7 @@ marketplace_buyouts ниже отчёта реализации на 8,66 млн,
     (правило loaders/stale_keys.py: пустой день — не истина «ноль»).
 
 ЧТО ДЕЛАЕТ --apply: отказ в ночном окне; снимок затрагиваемых строк базы
-(snapshots/marketplace_buyouts_wb_before_rebuild_<ts>.csv.gz + _meta.json с sha256); upsert
+(data/snapshots/marketplace_buyouts_wb_before_rebuild_<ts>.csv.gz + _meta.json с sha256, вне git); upsert
 построенных строк по 500; удаление ключей списка по id — после записи. Без
 --approve-wb-buyouts-write не пишет.
 """
@@ -203,9 +203,9 @@ def print_plan(cls, d1, d2, days_with_sales, db_rows):
 # ---------- запись ----------
 
 def snapshot(db_rows, label):
-    os.makedirs(os.path.join(ROOT, "snapshots"), exist_ok=True)
+    os.makedirs(os.path.join(ROOT, "data", "snapshots"), exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(ROOT, "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
+    path = os.path.join(ROOT, "data", "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
     cols = ["id", "buyout_date", "marketplace_sku", "article", "product_name", "buyouts_qty", "buyouts_amount_buyer", "buyouts_amount_seller", "buyouts_units"]
     with gzip.open(path, "wt", encoding="utf-8", newline="") as f:
         w = csv.writer(f); w.writerow(cols)

@@ -521,21 +521,25 @@ def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
 
 
 def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None,
-                           products=None, only_with_orders=False):
+                           products=None, only_with_orders=True):
     """Заказы WB по (день, nmId) для общего листа «Заказы»: созданные из воронки, выручка по правилу владельца
     (orderSum × 0,58 / НДС, WB-6 §2), СС снимка по базовому артикулу × штуки, реклама номенклатуры (updSum дня × доля
     fullstats); buyout_* воронки — по дню заказа. Пустые строки (orderSum 0, заказов 0, рекламы 0) не отдаются — их в
     воронке большинство, и книга Ozon-сессии собиралась 34 мин вместо 6 (WB-8 §6); keep_empty=True возвращает всё.
     stats (dict) получает строк было / стало и Σ orderSum по месяцам до и после — они обязаны совпасть.
 
-    WB-10 §3.2 (по слову, по умолчанию выключено): only_with_orders=True читает воронку фильтром на сервере (только
-    карточки с заказами), а пары (день, nmId) с рекламой номенклатуры без строки воронки собирает из словаря products
-    (nmId → vendor_code / title / brand / subject; у таких карточек buyout_* и cancel_* воронки = 0 — проверено на
-    27 287 парах 04-01 … 09-24). products= работает и без фильтра: тогда добираются только пары без строки воронки в тот
-    день (83 пары, 33,07 ₽ рекламы за 04-01 … 09-24), которые прежде терялись; stats["synthesized"] — сколько собрано."""
+    WB-10 §3.2 (включено по умолчанию словом владельца 09-25): only_with_orders=True читает воронку фильтром на сервере
+    (только карточки с заказами, ~23 страницы вместо 493), а пары (день, nmId) с рекламой номенклатуры без строки
+    воронки собирает из словаря products (nmId → vendor_code / title / brand / subject; у таких карточек buyout_* и
+    cancel_* воронки = 0 — проверено на 27 287 парах 04-01 … 09-24); products не передан — словарь читается из вьюхи
+    wb_funnel_products_latest (откат — таблица окном). С готовыми funnel_rows словарь добирает только пары без строки
+    воронки в тот день (83 пары, 33,14 ₽ рекламы за 04-01 … 09-24), которые прежде терялись; приёмка 09-25: три сборки
+    дали одни Σ orderSum по месяцам, выручку и СС, реклама +33,14. stats["synthesized"] — сколько собрано."""
     sb = _sb(sb) if funnel_rows is None or costs is None else sb
     funnel_rows = load_funnel_products(date_from, date_to, sb, only_with_orders=only_with_orders) if funnel_rows is None else funnel_rows
     exact, uniform = wbm.load_costs(sb) if costs is None else costs
+    if products is None and hasattr(sb, "table"):
+        products = load_product_dictionary(sb, date_from, date_to)
     if ads_by_day is None and sb is not None and ads_nm_by_day is None:
         try:
             ads_by_day, _u = wbm.load_ads_db(sb, date_from, date_to)
@@ -659,6 +663,21 @@ def buyout_rate_for_finrez(month_from, month_to, sb=None, rows=None, orders_by_m
     if td:
         out["итого"] = ratio(tn, td)
     return out
+
+
+def buyout_rate_caption(month_from, month_to, sb=None, rows=None, orders_by_month=None, today=None):
+    """Подпись для книги и алерта: «Выкуп по когорте (зрелые дни ≥ 25 сут.): апр 0,5188, …; итого 0,4981; незрелые
+    (прогноз по зрелым дням): сен» — одно определение с листом «Коэффициенты» (WB-10 §2)."""
+    det = {}
+    rates = buyout_rate_for_finrez(month_from, month_to, sb, rows=rows, orders_by_month=orders_by_month, today=today, details=det)
+    mature = [m for m, d in det.items() if d["mature"] and d["rate"] is not None]
+    immature = [m for m, d in det.items() if not d["mature"]]
+    text = f"Выкуп по когорте (зрелые дни ≥ {BUYOUT_RATE_MATURE_DAYS} сут.): " + (", ".join(f"{month_label(m + '-01')} {det[m]['rate']}" for m in mature) or "зрелых месяцев нет")
+    if "итого" in rates:
+        text += f"; итого {rates['итого']}"
+    if immature:
+        text += "; незрелые (прогноз по зрелым дням): " + ", ".join(month_label(m + "-01") for m in immature)
+    return text
 
 
 # ---------- приёмка против «WB - месяц» ----------
@@ -839,7 +858,9 @@ def main(argv=None):
                  "Отличие от образца: эквайринг V заполнен (у второго кабинета 0). Логистика ₽ = deliveryService (возмещение издержек по перевозке — не берём, справочно в «Данных»); Ост. расходы = penalty + deduction − additionalPayment.",
                  "Реклама — списания дня (wb_ad_spend_daily, биллинг, с НДС), разнесённые по артикулам долями из статистики по номенклатурам (fullstats, нормировка к списаниям дня; Σ по дню = списаниям), где статистики нет — пропорционально продажам дня.",
                  f"Себестоимость — снимок 1С {wbm.SNAP} по базовому артикулу. Ярлыки одни с Ozon: категория — предмет строки отчёта / карточки по словарю владельца "
-                 "(строчными), прочее — вслух; бренд — по первой букве артикула (t → Топаз, иначе KARATOV); «Неопознанный товар» — как строки без товара."]
+                 "(строчными), прочее — вслух; бренд — по первой букве артикула (t → Топаз, иначе KARATOV); «Неопознанный товар» — как строки без товара.",
+                 buyout_rate_caption(args.month_from, args.month_to, sb)]
+        print(notes[-1])
         write_xlsx(args.xlsx, rows, month_rows, split_brand, split_category, notes)
         print(f"записано: {args.xlsx}")
     print("db_writes = 0")

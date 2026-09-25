@@ -18,7 +18,8 @@ class StepTests(unittest.TestCase):
 
     def test_step_runs_right_after_the_sales_report_and_before_ozon_and_kpi(self):
         titles = [title for title, _ in pipeline.build_steps()]
-        self.assertEqual(titles.index(STEP), titles.index("WB: отчёт реализации") + 1)
+        self.assertGreater(titles.index(STEP), titles.index("WB: отчёт реализации"))
+        self.assertEqual(titles.index(STEP), titles.index("WB: выкуп по когорте") + 1)   # между отчётом и рекламой — шаг когорты (WB-10, слово 09-25)
         for later in ("WB: загрузка остатков", "Ozon: загрузка FBS заказов", "KPI: расчет SKU"):
             self.assertLess(titles.index(STEP), titles.index(later))
 

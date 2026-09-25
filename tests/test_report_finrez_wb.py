@@ -331,6 +331,20 @@ class DictionaryViewAndFilteredFunnelTests(unittest.TestCase):
         self.assertEqual((r9["article"], r9["brand"], r9["category"], r9["orders_qty"], r9["ads"], r9["funnel_buyouts_qty"]), ("T9", "Топаз", "подвески", 0, D("20.00"), 0))
         rows_full_plus = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, products=products)
         self.assertEqual([r["nm_id"] for r in rows_full_plus], [1, 3, 9])                 # без фильтра словарь добирает только потерянную пару
+        # по умолчанию (слово 09-25): фильтр включён, словарь — из вьюхи
+        view = [{"nm_id": n, "day": "2026-09-01", "vendor_code": p["vendor_code"], "title": p["title"], "brand": p["brand"], "subject_name": p["subject"]} for n, p in products.items()]
+        sb = FakeSb({fr.wbm.FUNNEL_TABLE: funnel, fr.FUNNEL_LATEST_VIEW: view})
+        st = {}
+        rows_default = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=sb, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, stats=st)
+        self.assertEqual(([r["nm_id"] for r in rows_default], st["synthesized"], st["ads_total"]), ([1, 3, 9], 2, D("100.00")))
+        self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1]); self.assertEqual(sb.calls[1][0], fr.FUNNEL_LATEST_VIEW)
+
+    def test_buyout_rate_caption_names_mature_months_total_and_immature(self):
+        rows = [{"seller_oper_name": "Продажа", "order_dt": "2026-08-10T10:00:00Z", "sale_dt": "2026-08-14T10:00:00Z", "retail_price_with_disc": "800", "quantity": 1},
+                {"seller_oper_name": "Продажа", "order_dt": "2026-09-03T10:00:00Z", "sale_dt": "2026-09-05T10:00:00Z", "retail_price_with_disc": "500", "quantity": 1}]
+        orders = {"2026-08": (D("2000"), 5), "2026-09": (D("1000"), 2)}
+        text = fr.buyout_rate_caption("2026-08", "2026-09", sb=object(), rows=rows, orders_by_month=orders, today="2026-09-25")
+        self.assertEqual(text, "Выкуп по когорте (зрелые дни ≥ 25 сут.): авг 0.4000; итого 0.4000; незрелые (прогноз по зрелым дням): сен")
 
 
 if __name__ == "__main__":

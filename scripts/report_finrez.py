@@ -649,8 +649,12 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
             funnel += wbfin.load_funnel_products(d, d, sb=sb_wb)
         lap(f"воронка по товарам по дням ({len(days)} окон, {len(funnel)} строк)")
         costs = wbfin.wbm.load_costs(sb_wb)
-        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb, funnel_rows=funnel, costs=costs)
+        ostats = {}
+        # модуль с 2026-09-25 (WB-8 §6) сам не отдаёт пустые строки и кладёт рекламу номенклатуры в строку (updSum дня × доля fullstats)
+        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb, funnel_rows=funnel, costs=costs, stats=ostats)
         lap("orders_rows_for_finrez")
+        if ostats:
+            print(f"  заказы WB модулем: строк было {ostats.get('rows_before')}, стало {ostats.get('rows_after')}; Σ orderSum по месяцам до = после: {ostats.get('equal')}")
         try:
             ads_by_day, _undated = wbfin.wbm.load_ads_db(sb_wb, d1, d2)
         except Exception as exc:  # noqa: BLE001 — реклама не обязана ронять блок заказов
@@ -708,7 +712,7 @@ def wb_orders_as_data_rows(orders):
     for r in orders:
         out.append({"date": r["date"], "month": r["month"], "platform": r["platform"], "brand": r.get("brand"), "category": r.get("category"),
                     "article": r.get("article"), "sku": str(r["nm_id"]), "name": r.get("title"), "created_a": D(r["orders_sum"]), "created_q": D(r["orders_qty"]),
-                    "confirmed_a": D(r.get("funnel_buyouts_sum")), "buyer_a": None, "ads": None, "cogs_created": r.get("cogs"), "vat": vat_for(r["date"])})
+                    "confirmed_a": D(r.get("funnel_buyouts_sum")), "buyer_a": None, "ads": D(r.get("ads")), "cogs_created": r.get("cogs"), "vat": vat_for(r["date"])})
     return out
 
 
@@ -772,13 +776,17 @@ def build_order_data_rows(order_rows, wb_parts, coef, days):
         keep(order_data_row(r, order_commission(coef, r["date"]), comm_all, buyout_all, "Ozon", SHOP), "Ozon")
     if wb_parts and not wb_parts.get("error"):
         wb_comm = 1 - wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
+        ads_in_rows = defaultdict(Decimal)
         for r in wb_orders_as_data_rows(wb_parts["orders"]):
             if r["cogs_created"] is None:
                 stats["wb_rows_without_cost"] += 1
+            ads_in_rows[r["date"]] += r["ads"] or Z
             keep(order_data_row(r, wb_comm, wb_comm, Decimal(1), "WB", wbfin.SHOP), "WB")
         for d in days:
+            # реклама дня сверх строк номенклатур (модуль разносит updSum дня по nmId долями fullstats; день без долей — целиком сюда)
             ads = (wb_parts.get("ads_by_day") or {}).get(d)
-            if ads is not None and D(ads):
+            ads = None if ads is None else D(ads) - ads_in_rows[d]
+            if ads is not None and ads:
                 r = {"date": d, "month": month_label(d), "brand": "", "category": "", "article": "(без nmId)", "sku": "", "name": "", "created_a": Z,
                      "created_q": Z, "confirmed_a": None, "buyer_a": None, "ads": D(ads), "cogs_created": Z, "vat": vat_for(d), "platform_name": None}
                 keep(order_data_row(r, wb_comm, wb_comm, Decimal(1), "WB", wbfin.SHOP), "WB")

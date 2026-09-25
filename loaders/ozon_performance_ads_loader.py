@@ -3,6 +3,7 @@ import copy
 import csv
 import hashlib
 import io
+import inspect
 import json
 import os
 import random
@@ -693,9 +694,12 @@ def build_statistics_usage_event(
         "account_signature": account_signature,
         "request_kind": request_kind,
         "request_count": max(0, int(request_count or 0)),
-        # Опросы и скачивания расходуют лимит запросов, но не кампанийный бюджет.
-        # units здесь обязаны быть нулём, иначе поедет daily_budget_used_today.
-        "campaign_units": 0,
+        # Опросы и скачивания расходуют лимит запросов, но не кампанийный бюджет —
+        # у них units ноль. Отправка statistics/json тратит по кампании за выгрузку:
+        # units берём из контекста (число кампаний пачки). До 2026-09-25 здесь стоял
+        # ноль для всех видов, и 54 отправки добора 09-14 (532 выгрузки) легли в
+        # леджер невидимыми для would_fit_daily_limit (тридцать восьмая §6).
+        "campaign_units": int(context.get("campaign_units") or 0) if request_kind == "submit" else 0,
         "http_status": http_status,
         "response_kind": response_kind,
         "retry_after_seconds": retry_after_seconds,
@@ -806,8 +810,8 @@ def record_stateless_statistics_usage(
 ):
     """Одна строка ledger на stateless submit/download recovery-воркера.
 
-    campaign_units здесь остаётся нулём: этот путь никогда не попадал в
-    daily_budget_used_today, и учёт запросов не должен менять бюджет в units.
+    campaign_units у отправки — число кампаний пачки из usage_context (с 2026-09-25;
+    раньше ноль, и выгрузки cpc-recovery не входили в расход квоты); у скачивания — ноль.
     """
     try:
         client.record_statistics_json_usage_event(
@@ -5981,7 +5985,12 @@ def run_cpc_recovery_mode(
             }
         )
     else:
+        fetcher_takes_context = "usage_context" in getattr(inspect.signature(batch_fetcher), "parameters", {}) or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in getattr(inspect.signature(batch_fetcher), "parameters", {}).values()
+        )
         for batch_index, campaign_batch in enumerate(plan["cpc_batches"]):
+            # контекст леджера: режим, дата, пачка и её units — иначе строка submit ложится с mode null и units 0
+            usage_context = build_cpc_recovery_usage_context(target_date, batch_index, campaign_batch)
             try:
                 batch_result = batch_fetcher(
                     client=client,
@@ -5989,6 +5998,7 @@ def run_cpc_recovery_mode(
                     date_from=target_date,
                     date_to=target_date,
                     group_by=group_by,
+                    **({"usage_context": usage_context} if fetcher_takes_context else {}),
                 )
             except OzonReportTimeoutError as exc:
                 # Тот же принцип, что и в основном цикле: таймаут — наш предел
@@ -6108,6 +6118,19 @@ def run_cpc_recovery_mode(
     summary["marketplace_expenses_rows"] = expense_rows
     summary["ad_attribution_rows"] = ad_attribution_rows
     return summary
+
+
+def build_cpc_recovery_usage_context(target_date, batch_index, campaign_batch):
+    """Контекст строки леджера для пачки cpc-recovery: mode, дата, load_date, индекс пачки, units = кампании пачки."""
+    campaigns = [str(c) for c in campaign_batch]
+    return {
+        "mode": "cpc-recovery",
+        "target_date": target_date,
+        "load_date": today_local().isoformat(),
+        "batch_index": batch_index,
+        "campaign_units": len(campaigns),
+        "campaign_ids_hash": payload_hash(campaigns),
+    }
 
 
 def fetch_cpc_recovery_batch_stateless(

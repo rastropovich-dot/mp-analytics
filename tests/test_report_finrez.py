@@ -306,3 +306,44 @@ class Book(unittest.TestCase):
             self.assertEqual(list(next(wb["Коэффициенты"].iter_rows(min_row=1, max_row=1, values_only=True)))[:5], ["МП", "% выкупа", None, "МП", "Комиссия"])
             self.assertEqual(counts, {"long_rows": len(long_rows), "order_rows": len(data)})
             self.assertIn("Данные заказы", timings)
+
+
+class WbCoefficient(unittest.TestCase):
+    """Тридцать восьмая §3: блок WB «Свода» и строки WB «Данных заказы» считаются формулами Ozon с коэффициентом выкупа модуля; «Свод» = Σ строк."""
+
+    def parts(self):
+        days = ["2026-08-01", "2026-09-01"]
+        orders = [{"date": "2026-08-01", "month": "авг", "platform": "WB", "shop": "KARATOV", "article": "F1", "nm_id": 11, "title": "Кольцо", "brand": "KARATOV", "category": "кольца",
+                   "orders_qty": 2, "orders_sum": D(1220), "revenue": D(1220) * D("0.58") / D("1.22"), "cogs": D(300), "ads": D("61"), "funnel_buyouts_sum": D(610)},
+                  {"date": "2026-09-01", "month": "сен", "platform": "WB", "shop": "KARATOV", "article": "T2", "nm_id": 22, "title": "Серьги", "brand": "Топаз", "category": "серьги",
+                   "orders_qty": 1, "orders_sum": D(2440), "revenue": D(2440) * D("0.58") / D("1.22"), "cogs": None, "ads": D(0), "funnel_buyouts_sum": D(0)}]
+        ads_by_day = {"2026-08-01": D("122"), "2026-09-01": D("244")}      # 08-01: 61 в строке + 61 остаток дня; 09-01: всё в остаток
+        rate = {"авг": D("0.5"), "итого": D("0.5")}
+        piv = fr.pivot_orders_wb(orders, days, ads_by_day, rate["итого"])
+        wb_parts = {"orders": orders, "ads_by_day": ads_by_day, "buyout": rate, "orders_pivot": piv}
+        return days, orders, ads_by_day, rate, piv, wb_parts
+
+    def test_wb_pivot_uses_ozon_formulas_with_the_coefficient(self):
+        days, orders, ads_by_day, rate, piv, _ = self.parts()
+        a = piv["авг"]
+        net = D(1220) / D("1.22")
+        self.assertEqual((a["buyout"], a["commission_pct"]), (D("0.5"), D("0.42")))
+        self.assertEqual(a["revenue"], net * D("0.5") * D("0.58"))
+        self.assertEqual(a["cogs"], D(300) * D("0.5"))
+        self.assertEqual(a["margin"], a["revenue"] - a["cogs"])
+        self.assertEqual(a["ads_net"], D(122) / D("1.22"))
+        self.assertEqual(a["gross_fin"], a["margin"] - a["ads_net"])
+        base = fr.pivot_orders_wb(orders, days, ads_by_day, None)["авг"]
+        self.assertEqual(rep.q(a["revenue"] / base["revenue"]), rep.q(D("0.5")))            # до / после — ровно коэффициент
+
+    def test_wb_data_rows_carry_the_coefficient_and_sum_to_the_pivot(self):
+        days, orders, ads_by_day, rate, piv, wb_parts = self.parts()
+        coef = {"buyout": {"все": D("0.6")}, "commission": {"все": D("0.4"), "авг": D("0.4"), "сен": D("0.4")}}
+        data, stats = fr.build_order_data_rows([], wb_parts, coef, days)
+        wb = [r for r in data if r["mp"] == "WB"]
+        self.assertEqual(len(wb), 4)                                                        # 2 строки товаров + 2 строки рекламы дня «(без nmId)»
+        self.assertTrue(all(r["buyout"] == D("0.5") and r["commission"] == D("0.42") for r in wb))
+        remainder = {r["date"]: r["ads"] for r in wb if r["article"] == "(без nmId)"}
+        self.assertEqual(remainder, {"2026-08-01": D(61), "2026-09-01": D(244)})
+        table = fr.check_orders_data(data, days, None, piv)
+        self.assertEqual([t for t in table if t[5]], [])

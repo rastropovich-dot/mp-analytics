@@ -58,3 +58,6 @@ data/owner_*.xlsx
 
 # карточки Ozon (product/info/list, дерево категорий, разбор) — снимки вне git
 data/ozon_products/
+
+# сырой CSV отчёта CPO «Все» за один день (scripts/ozon_cpo_one_day.py) — вне git
+data/ozon_cpo_raw/

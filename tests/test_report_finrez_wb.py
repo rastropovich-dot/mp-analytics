@@ -7,6 +7,7 @@ Y = P − R − T − V − X); Σ брендов = Σ категорий = об
 """
 import unittest
 from decimal import Decimal
+from unittest import mock
 
 import scripts.report_finrez_wb as fr
 
@@ -50,7 +51,7 @@ class DataRowsTests(unittest.TestCase):
         r1 = by[("2026-09-01", 1)]
         self.assertEqual((r1["sales"], r1["commission"], r1["coinvest"], r1["acquiring"], r1["qty"]), (D("900"), D("378.00"), D("360"), D("10.98"), 0))
         self.assertEqual((r1["logistics"], r1["rebill"], r1["other"], r1["cogs"], r1["storage"]), (D("122"), D("24.4"), D("40.2"), D("0"), D("0")))   # rebill — не берём
-        self.assertEqual((r1["article"], r1["brand"], r1["category"], r1["title"], r1["month"], r1["platform"]), ("F000283615", "KARATOV", "Серьги", "Серьги", "сен", "WB"))
+        self.assertEqual((r1["article"], r1["brand"], r1["category"], r1["title"], r1["month"], r1["month_no"], r1["platform"]), ("F000283615", "KARATOV", "Серьги", "Серьги", "сен", 9, "WB"))
         r2 = by[("2026-09-01", 2)]
         self.assertEqual((r2["sales"], r2["qty"], r2["brand"], r2["category"], r2["no_cost_qty"], r2["cogs"]), (D("1200"), 2, "КОЮЗ Топаз", "прочее", 2, D("0")))
         none = by[("2026-09-01", None)]
@@ -92,6 +93,18 @@ class DataRowsTests(unittest.TestCase):
         self.assertEqual((r1["category"], r1["brand"]), ("Кольца", "КОЮЗ Топаз"))          # строка отчёта важнее словаря карточек
         r3 = [r for r in rows if r["nm_id"] == 3][0]
         self.assertEqual(r3["category"], "прочее (нет предмета)")
+
+    def test_subject_falls_back_to_other_rows_of_the_same_nm_then_to_a_targeted_fetch(self):
+        rows_with = [dict(r, subject_name="Ювелирные кольца", brand_name="KARATOV") if (r["nm_id"] == 1 and r["rrd_id"] == 2) else r for r in ROWS]
+        rows = fr.build_rows("2026-09", "2026-09", None, sb=object(), rows=rows_with, costs=COSTS, ads_by_day=None, products={})
+        r1 = [r for r in rows if r["nm_id"] == 1 and r["date"] == "2026-09-01"][0]
+        self.assertEqual((r1["category"], r1["brand"]), ("Кольца", "KARATOV"))            # предмет взят с другой строки того же nmId
+        with mock.patch.object(fr, "fetch_subjects_for", return_value={3: {"subject": "Ювелирные броши", "brand": "КОЮЗ Топаз"}}) as fetch:
+            rows = fr.build_rows("2026-09", "2026-09", None, sb=mock.Mock(), rows=ROWS, costs=COSTS, ads_by_day=None, products={})
+        fetch.assert_called_once()
+        self.assertEqual(sorted(fetch.call_args[0][1]), [1, 2, 3])
+        r3 = [r for r in rows if r["nm_id"] == 3][0]
+        self.assertEqual((r3["category"], r3["brand"]), ("Броши", "КОЮЗ Топаз"))
 
     def test_date_to_cuts_the_period(self):
         rows = fr.build_rows("2026-09", "2026-09", "2026-09-01", sb=object(), rows=ROWS, costs=COSTS, ads_by_day=ADS, products=PRODUCTS)
@@ -136,7 +149,11 @@ class FormTests(unittest.TestCase):
         for k in ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "k_turnover", "l_commission", "m_commission_pct", "n_revenue",
                   "o_cogs", "p_margin", "q_margin_pct", "r_logistics", "s_logistics_pct", "t_ads", "u_drr_pct", "v_acquiring", "w_acquiring_pct", "x_other", "y_fin", "z_fin_pct"):
             self.assertIn(k, keys)
-        self.assertEqual([h for h, _k, _f in fr.DATA_COLS][:9], ["Дата", "Месяц", "Площадка", "Магазин", "Артикул", "nmId", "Наименование", "Бренд", "Категория"])
+        self.assertEqual(tuple(h for h, _k, _f in fr.DATA_COLS[:15]), fr.OWNER_DATA_FIELDS)     # 15 полей кэша владельца слово в слово
+        self.assertEqual(fr.OWNER_DATA_FIELDS, ("Дата", "Месяц", "Магазин", "Артикул поставщика", "Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽",
+                                                "Себес-ть, ₽", "Хранение, ₽", "Ост.расходы и компенсации МП, ₽", "Наименование", "Бренд", "Статус", "Месяцы"))
+        self.assertEqual([k for _h, k, _f in fr.DATA_COLS[:15]], ["date", "month", "shop", "article", "sales", "ads", "commission", "logistics", "cogs", "storage", "other", "title", "brand", "category", "month_no"])
+        self.assertEqual([h for h, _k, _f in fr.DATA_COLS[15:19]], ["nmId", "Эквайринг, ₽", "Соинвест, ₽", "Штуки"])
 
 
 class OrdersRowsTests(unittest.TestCase):
@@ -154,3 +171,62 @@ class OrdersRowsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeysetAndOrdersTests(unittest.TestCase):
+    class Sb:
+        """Таблица из 25 строк (day, nm_id); отдаёт страницы по ключу, как PostgREST с фильтром or(day.gt, and(day.eq, nm_id.gt))."""
+        def __init__(self):
+            self.rows = [{"day": d, "nm_id": n, "vendor_code": f"F{n}", "title": "t", "brand": "KARATOV", "subject_name": "Ювелирные кольца"} for d in ("2026-09-01", "2026-09-02") for n in range(1, 13)] + [{"day": "2026-09-03", "nm_id": 1, "vendor_code": "F1", "title": "t3", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}]
+            self.calls = []
+
+        def table(self, _name):
+            sb = self
+
+            class Q:
+                def __init__(self):
+                    self.after, self.limit_n, self.d1, self.d2 = None, None, None, None
+
+                def select(self, *_a): return self
+                def gte(self, _c, v): self.d1 = v; return self
+                def lte(self, _c, v): self.d2 = v; return self
+                def order(self, *_a): return self
+                def limit(self, n): self.limit_n = n; return self
+                def or_(self, expr):
+                    import re
+                    m = re.match(r"day\.gt\.(\S+?),and\(day\.eq\.(\S+?),nm_id\.gt\.(\d+)\)", expr)
+                    self.after = (m.group(1), int(m.group(3))); return self
+                def execute(self):
+                    rows = [r for r in sb.rows if self.d1 <= r["day"] <= self.d2]
+                    if self.after:
+                        rows = [r for r in rows if (r["day"], r["nm_id"]) > self.after]
+                    rows = sorted(rows, key=lambda r: (r["day"], r["nm_id"]))[: self.limit_n]
+                    sb.calls.append((self.after, len(rows)))
+                    return type("R", (), {"data": rows})()
+            return Q()
+
+    def test_keyset_pages_walk_the_window_by_primary_key(self):
+        sb = self.Sb()
+        rows = fr.read_keyset(sb, "t", "day,nm_id", "2026-09-01", "2026-09-02", page=10)
+        self.assertEqual(len(rows), 24)
+        self.assertEqual([c[1] for c in sb.calls], [10, 10, 4])
+        self.assertEqual(sb.calls[1][0], ("2026-09-01", 10))
+        with mock.patch.object(fr, "DICT_PAGE", 10):
+            products = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-03")
+        self.assertEqual(len(products), 12)
+        self.assertEqual(products[1]["subject"], "Ювелирные серьги")            # более поздний день побеждает
+        self.assertEqual(fr.load_product_dictionary(sb), {})                      # без окна словарь не читается
+
+    def test_orders_rows_drop_empty_cards_keep_sums_and_carry_nm_ads(self):
+        funnel = [{"day": "2026-09-01", "nm_id": n, "vendor_code": f"F00000948{n}", "title": "t", "brand": "KARATOV", "subject_name": "Ювелирные кольца",
+                   "order_count": (2 if n == 1 else 0), "order_sum": (2000 if n == 1 else 0), "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0} for n in (1, 2, 3)]
+        stats = {}
+        rows = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS,
+                                         ads_by_day={"2026-09-01": D("100")}, ads_nm_by_day={"2026-09-01": {1: D("30"), 3: D("10")}}, stats=stats)
+        self.assertEqual([r["nm_id"] for r in rows], [1, 3])                     # 2 — пустая карточка, 3 — без заказов, но с рекламой
+        self.assertEqual((rows[0]["ads"], rows[1]["ads"], rows[1]["orders_qty"], rows[1]["orders_sum"]), (D("75.00"), D("25.00"), 0, D("0")))
+        self.assertEqual((stats["rows_before"], stats["rows_after"], stats["equal"]), (3, 2, True))
+        self.assertEqual(stats["sum_before"], {"2026-09": D("2000")}); self.assertEqual(stats["sum_after"], {"2026-09": D("2000")})
+        self.assertEqual(rows[0]["month_no"], 9)
+        all_rows = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS, ads_by_day={}, ads_nm_by_day={}, keep_empty=True)
+        self.assertEqual(len(all_rows), 3)

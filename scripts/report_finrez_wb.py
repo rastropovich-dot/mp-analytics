@@ -77,15 +77,20 @@ SELECT = wbm.SELECT + ",additional_payment,subject_name,brand_name"   # поля
 ADS_NM_TABLE = "wb_ad_spend_nm_daily"
 FUNNEL_SELECT = "day,nm_id,vendor_code,title,brand,subject_name,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
 
+# «Данные WB выкупы» — первые 15 полей ровно как в кэше сводной владельца (WB-8 §6, дополнение владельца 24.09):
+# «Статус» = категория (статус у владельца не задействован), «Месяцы» = номер месяца; наши добавки — справа после 15-го.
+OWNER_DATA_FIELDS = ("Дата", "Месяц", "Магазин", "Артикул поставщика", "Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽", "Себес-ть, ₽",
+                     "Хранение, ₽", "Ост.расходы и компенсации МП, ₽", "Наименование", "Бренд", "Статус", "Месяцы")
 DATA_COLS = [
-    ("Дата", "date", "date"), ("Месяц", "month", None), ("Площадка", "platform", None), ("Магазин", "shop", None),
-    ("Артикул", "article", None), ("nmId", "nm_id", "int"), ("Наименование", "title", None), ("Бренд", "brand", None), ("Категория", "category", None),
+    ("Дата", "date", "date"), ("Месяц", "month", None), ("Магазин", "shop", None), ("Артикул поставщика", "article", None),
     ("Продажи, ₽", "sales", "money"), ("Реклама, ₽", "ads", "money"), ("Комиссия, ₽", "commission", "money"), ("Логистика, ₽", "logistics", "money"),
-    ("Себес-ть, ₽", "cogs", "money"), ("Хранение, ₽", "storage", "money"), ("Ост. расходы и компенсации МП, ₽", "other", "money"),
-    ("Эквайринг, ₽", "acquiring", "money"), ("Соинвест, ₽", "coinvest", "money"), ("Штуки", "qty", "int"),
+    ("Себес-ть, ₽", "cogs", "money"), ("Хранение, ₽", "storage", "money"), ("Ост.расходы и компенсации МП, ₽", "other", "money"),
+    ("Наименование", "title", None), ("Бренд", "brand", None), ("Статус", "category", None), ("Месяцы", "month_no", "int"),
+    ("nmId", "nm_id", "int"), ("Эквайринг, ₽", "acquiring", "money"), ("Соинвест, ₽", "coinvest", "money"), ("Штуки", "qty", "int"),
     ("справочно: Возмещение ПВЗ, ₽ (в форму не входит)", "ppvz_reward", "money"), ("справочно: возмещение издержек по перевозке (rebillLogisticCost), ₽ — не берём", "rebill", "money"),
     ("реклама разнесена по", "ads_allocated", None), ("без СС, шт", "no_cost_qty", "int"),
 ]
+assert tuple(h for h, _k, _f in DATA_COLS[:15]) == OWNER_DATA_FIELDS
 SHEET_COLS = [
     ("Названия строк", "label", None),
     ("Продажи, ₽", "sales", "money"), ("Комиссия, ₽", "commission", "money"), ("Себес-ть, ₽", "cogs", "money"), ("Реклама, ₽", "ads", "money"),
@@ -149,29 +154,60 @@ def load_report_rows(sb, d1, d2):
     return stale_keys.read_window_rows(sb, report_loader.TABLE, SELECT, [("gte", "rr_date", d1), ("lte", "rr_date", wbm.window_end(d2))], ["rr_date", "rrd_id"])
 
 
-def load_product_dictionary(sb):
-    """nmId → {title, brand, subject} из воронки по товарам (последний день карточки); откат — product_name выкупов (там предмет)."""
+DICT_PAGE = 1_000   # PostgREST отдаёт не больше 1 000 строк на ответ, limit больше — молча урежет (how-we-work); страницы — по ключу
+
+
+def read_keyset(sb, table, select, d1, d2, page=DICT_PAGE, day_col="day", id_col="nm_id"):
+    """Страницы по первичному ключу (day, nm_id): фильтр «после последнего ключа», без offset — на 490 тыс. строк
+    offset и один запрос упирались в statement_timeout (WB-8 §6). Только окно дней d1 … d2."""
+    out, last = [], None
+    while True:
+        qb = sb.table(table).select(select).gte(day_col, d1).lte(day_col, d2).order(day_col).order(id_col).limit(page)
+        if last is not None:
+            qb = qb.or_(f"{day_col}.gt.{last[0]},and({day_col}.eq.{last[0]},{id_col}.gt.{last[1]})")
+        data = qb.execute().data or []
+        out.extend(data)
+        if len(data) < page:
+            return out
+        last = (str(data[-1][day_col]), int(data[-1][id_col]))
+
+
+def fetch_subjects_for(sb, nm_ids, batch=200):
+    """Предмет и бренд для nmId, которых нет ни в строках окна, ни в воронке: адресно из wb_sales_report_rows
+    (любая строка с subject_name — колонки с WB-8), пачками по batch id. {nmId: {subject, brand}}."""
     out = {}
-    try:
-        rows = stale_keys.read_window_rows(sb, wbm.FUNNEL_TABLE, "day,nm_id,title,brand,subject_name", [], ["nm_id", "day"])
-    except Exception as error:
-        print(f"словарь товаров: не прочитать {wbm.FUNNEL_TABLE} — {str(error)[:120]}; категория и название — по откату", flush=True)
-        rows = []
-    for r in rows:   # отсортировано по nm_id, day — последняя запись побеждает
-        out[int(r["nm_id"])] = {"title": r.get("title"), "brand": r.get("brand"), "subject": r.get("subject_name")}
-    try:
-        buy = stale_keys.read_window_rows(sb, "marketplace_buyouts", "marketplace_sku,product_name",
-                                          [("eq", "marketplace_code", "wb"), ("neq", "product_name", None)], ["marketplace_sku"])
-    except Exception as error:
-        print(f"словарь товаров: не прочитать marketplace_buyouts — {str(error)[:120]}", flush=True)
-        buy = []
-    for r in buy:
+    ids = sorted({int(n) for n in nm_ids})
+    for i in range(0, len(ids), batch):
         try:
-            nm = int(r["marketplace_sku"])
-        except (TypeError, ValueError):
-            continue
-        if r.get("product_name") and not out.get(nm, {}).get("subject"):
-            out.setdefault(nm, {"title": None, "brand": None, "subject": None})["subject"] = r["product_name"]
+            data = (sb.table(report_loader.TABLE).select("nm_id,subject_name,brand_name").in_("nm_id", ids[i:i + batch])
+                    .not_.is_("subject_name", "null").order("nm_id").order("rr_date", desc=True).limit(DICT_PAGE).execute().data or [])
+        except Exception as error:
+            print(f"предмет по nmId из {report_loader.TABLE}: не прочитать — {str(error)[:120]}", flush=True)
+            return out
+        for r in data:
+            nm = int(r["nm_id"])
+            if nm not in out:
+                out[nm] = {"subject": r.get("subject_name"), "brand": r.get("brand_name")}
+    return out
+
+
+def load_product_dictionary(sb, d1=None, d2=None):
+    """nmId → {title, brand, subject, vendor_code} из воронки по товарам за окно книги d1 … d2 (последний день карточки
+    побеждает). Читается страницами по ключу; nmId, которых в воронке нет, получают предмет и бренд из строки отчёта
+    реализации (subject_name / brand_name с WB-8) — это делает build_rows, словарь тут ни при чём."""
+    out = {}
+    if not (d1 and d2):
+        return out
+    started = datetime.now(timezone.utc)
+    try:
+        rows = read_keyset(sb, wbm.FUNNEL_TABLE, "day,nm_id,vendor_code,title,brand,subject_name", d1, d2)
+    except Exception as error:
+        print(f"словарь товаров: не прочитать {wbm.FUNNEL_TABLE} за {d1} … {d2} — {str(error)[:160]}; название — пусто, предмет и бренд — из строк отчёта", flush=True)
+        return out
+    for r in rows:   # отсортировано по day, nm_id — более поздний день побеждает
+        out[int(r["nm_id"])] = {"title": r.get("title"), "brand": r.get("brand"), "subject": r.get("subject_name"), "vendor_code": r.get("vendor_code")}
+    print(f"словарь товаров: {wbm.FUNNEL_TABLE} {d1} … {d2} — строк {len(rows)}, nmId {len(out)}, "
+          f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с, страниц по {DICT_PAGE}: {max(1, (len(rows) + DICT_PAGE - 1) // DICT_PAGE)}", flush=True)
     return out
 
 
@@ -204,8 +240,13 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
         except RuntimeError as error:
             print(f"реклама не прочитана: {error}; колонка «Реклама» пуста", flush=True)
             ads_by_day = None
-    products = load_product_dictionary(sb) if products is None else products
+    products = load_product_dictionary(sb, d1, d2) if products is None else products
     ads_nm_by_day = load_ads_nm_db(sb, d1, d2) if (ads_nm_by_day is None and ads_by_day is not None) else (ads_nm_by_day or {})
+    nm_subject = {}                                       # nmId → (предмет, бренд) из ЛЮБОЙ загруженной строки отчёта (окно + запас)
+    for r in rows:
+        nm = r.get("nm_id")
+        if nm not in (None, "", 0, "0") and r.get("subject_name") and int(nm) not in nm_subject:
+            nm_subject[int(nm)] = (r["subject_name"], r.get("brand_name"))
     acc = {}
     for r in rows:
         day = wbm.row_day(r)
@@ -279,11 +320,19 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                 a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
             a["ads"] += ads
             ads_source[day] = "(без товара)"
+    missing = sorted({nm for (_d, nm), a in acc.items() if nm is not None and not (a["subject"] or nm_subject.get(nm) or products.get(nm, {}).get("subject"))})
+    fetched = fetch_subjects_for(sb, missing) if (missing and hasattr(sb, "table")) else {}
+    if missing:
+        print(f"предмет не найден ни в строках окна, ни в воронке у {len(missing)} nmId; адресно из отчёта добрано {len(fetched)}", flush=True)
     out = []
     for (day, nm), a in sorted(acc.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         p = products.get(nm, {}) if nm is not None else {}
+        if nm is not None:
+            fb = nm_subject.get(nm) or (fetched.get(nm, {}).get("subject"), fetched.get(nm, {}).get("brand"))
+            a["subject"] = a["subject"] or fb[0] or p.get("subject")
+            a["brand"] = a["brand"] or fb[1] or p.get("brand")
         vendor = a["vendor"] or (p.get("vendor_code") or "")
-        row = {"date": day, "month": month_label(day), "platform": PLATFORM, "shop": SHOP,
+        row = {"date": day, "month": month_label(day), "month_no": int(day[5:7]), "platform": PLATFORM, "shop": SHOP,
                "article": (vendor.upper() or None) if nm is not None else NO_PRODUCT, "nm_id": nm,
                "title": p.get("title") if nm is not None else NO_PRODUCT,
                "brand": brand_of(vendor, a["brand"] or p.get("brand")) if nm is not None else NO_PRODUCT,
@@ -364,25 +413,60 @@ def load_funnel_products(date_from, date_to, sb=None):
     return stale_keys.read_window_rows(_sb(sb), wbm.FUNNEL_TABLE, FUNNEL_SELECT, [("gte", "day", date_from), ("lte", "day", date_to)], ["day", "nm_id"])
 
 
-def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None):
+def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
+    """{(день, nmId): реклама ₽} — списания дня (updSum) × доля номенклатуры из fullstats (Σ по дню = списаниям)."""
+    out = {}
+    for day, shares in (ads_nm_by_day or {}).items():
+        total_day = (ads_by_day or {}).get(day, Z)
+        weights = {nm: v for nm, v in shares.items() if v > 0}
+        total = sum(weights.values(), Z)
+        if not total_day or not total:
+            continue
+        spent = Z
+        ordered = sorted(weights)
+        for nm in ordered[:-1]:
+            share = q(total_day * weights[nm] / total); out[(day, nm)] = share; spent += share
+        out[(day, ordered[-1])] = total_day - spent
+    return out
+
+
+def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None):
     """Заказы WB по (день, nmId) для общего листа «Заказы»: созданные из воронки, выручка по правилу владельца
-    (orderSum × 0,58 / НДС, WB-6 §2), СС снимка по базовому артикулу × штуки; buyout_* воронки — по дню заказа."""
+    (orderSum × 0,58 / НДС, WB-6 §2), СС снимка по базовому артикулу × штуки, реклама номенклатуры (updSum дня × доля
+    fullstats); buyout_* воронки — по дню заказа. Пустые строки (orderSum 0, заказов 0, рекламы 0) не отдаются — их в
+    воронке большинство, и книга Ozon-сессии собиралась 34 мин вместо 6 (WB-8 §6); keep_empty=True возвращает всё.
+    stats (dict) получает строк было / стало и Σ orderSum по месяцам до и после — они обязаны совпасть."""
     sb = _sb(sb) if funnel_rows is None or costs is None else sb
     funnel_rows = load_funnel_products(date_from, date_to, sb) if funnel_rows is None else funnel_rows
     exact, uniform = wbm.load_costs(sb) if costs is None else costs
-    out = []
+    if ads_by_day is None and sb is not None and ads_nm_by_day is None:
+        try:
+            ads_by_day, _u = wbm.load_ads_db(sb, date_from, date_to)
+            ads_nm_by_day = load_ads_nm_db(sb, date_from, date_to)
+        except RuntimeError as error:
+            print(f"реклама для заказов не прочитана: {error}", flush=True); ads_by_day, ads_nm_by_day = {}, {}
+    nm_ads = nm_ads_by_day_and_nm(ads_by_day or {}, ads_nm_by_day or {})
+    out, before, after = [], defaultdict(Decimal), defaultdict(Decimal)
+    n_before = 0
     for r in funnel_rows:
         qty = int(r.get("order_count") or 0)
-        cost, _src = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), None, "base")
         day = str(r["day"])
-        vat = wbm.vat_for(day)
         order_sum = D(r.get("order_sum"))
-        out.append({"date": day, "month": month_label(day), "platform": PLATFORM, "shop": SHOP, "article": (str(r.get("vendor_code") or "").upper() or None),
+        ads = nm_ads.get((day, int(r["nm_id"])), Z)
+        n_before += 1; before[day[:7]] += order_sum
+        if not keep_empty and qty == 0 and order_sum == 0 and ads == 0:
+            continue
+        cost, _src = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), None, "base")
+        vat = wbm.vat_for(day)
+        after[day[:7]] += order_sum
+        out.append({"date": day, "month": month_label(day), "month_no": int(day[5:7]), "platform": PLATFORM, "shop": SHOP, "article": (str(r.get("vendor_code") or "").upper() or None),
                     "nm_id": int(r["nm_id"]), "title": r.get("title"), "brand": brand_of(r.get("vendor_code"), r.get("brand")),
-                    "category": category_of(r.get("subject_name")), "orders_qty": qty, "orders_sum": order_sum,
+                    "category": category_of(r.get("subject_name")), "orders_qty": qty, "orders_sum": order_sum, "ads": ads,
                     "revenue": order_sum * wbm.OWNER_ORDERS_AFTER_COMMISSION / vat, "cogs": (cost * qty) if cost is not None else None,
                     "no_cost": cost is None and qty > 0, "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
                     "funnel_cancel_qty": int(r.get("cancel_count") or 0), "funnel_cancel_sum": D(r.get("cancel_sum"))})
+    if stats is not None:
+        stats.update({"rows_before": n_before, "rows_after": len(out), "sum_before": dict(before), "sum_after": dict(after), "equal": dict(before) == dict(after)})
     return out
 
 
@@ -502,7 +586,7 @@ def main(argv=None):
         ads_by_day, _u = wbm.load_ads_db(sb, d1, d2)
     except RuntimeError as error:
         print(f"реклама не прочитана: {error}; колонка «Реклама» пуста"); ads_by_day = None
-    products = load_product_dictionary(sb)
+    products = load_product_dictionary(sb, d1, d2)
     ads_nm_by_day = load_ads_nm_db(sb, d1, d2) if ads_by_day is not None else {}
     rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day)
     from_row = sum(1 for r in report_rows if r.get("subject_name"))
@@ -513,6 +597,9 @@ def main(argv=None):
     cats = defaultdict(int)
     for r in with_product:
         cats[r["category"]] += 1
+    no_cat = [r for r in with_product if r["category"] == CATEGORY_UNKNOWN]
+    print(f"категория есть у {len(with_product) - len(no_cat)} из {len(with_product)} строк «Данных» с товаром ({(1 - len(no_cat) / len(with_product)) if with_product else 1:.2%})"
+          + (f"; без предмета: " + ", ".join(f"{r['date']} nmId {r['nm_id']} {r['article']}" for r in no_cat[:20]) if no_cat else ""))
     print(f"строк отчёта {len(report_rows)}; «Данные» {len(rows)} строк: с товаром {len(with_product)} (ключей день × nmId), «{NO_PRODUCT}» {len(rows) - len(with_product)}; "
           f"словарь товаров {len(products)} nmId; категории: " + ", ".join(f"{k} {v}" for k, v in sorted(cats.items(), key=lambda kv: -kv[1]))
           + f"; без СС {sum(r['no_cost_qty'] for r in rows)} шт; реклама {'разнесена по продажам дня' if ads_by_day is not None else 'не прочитана'}")

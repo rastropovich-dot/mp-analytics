@@ -183,14 +183,16 @@ class SameNightSkipTests(unittest.TestCase):
             return T()
 
     def test_fresh_collection_for_yesterday_skips_the_api(self):
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
         now = datetime(2026, 9, 25, 0, 20, 0, tzinfo=timezone.utc)
         sb = self.Sb("2026-09-25T00:19:20+00:00")
         self.assertIsNotNone(loader.collected_recently(sb, "2026-09-24", now))
         self.assertIsNone(loader.collected_recently(self.Sb("2026-09-24T00:19:20+00:00"), "2026-09-24", now))   # сутки назад — не эта ночь
         self.assertIsNone(loader.collected_recently(self.Sb(None), "2026-09-24", now))
+        # run() берёт настоящее «сейчас» — сбор кладём на минуту назад, иначе тест стареет вместе с календарём (упал 09-25)
+        fresh = self.Sb((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())
         with mock.patch.object(loader.requests, "post") as post:
-            result = loader.run(sb, days_back=21, today=date(2026, 9, 25), sleep_fn=lambda _s: None)
+            result = loader.run(fresh, days_back=21, today=date(2026, 9, 25), sleep_fn=lambda _s: None)
         post.assert_not_called()
         self.assertTrue(result["skipped"])
         self.assertEqual((result["requests"], result["written"], result["window"]), (0, 0, ("2026-09-04", "2026-09-24")))

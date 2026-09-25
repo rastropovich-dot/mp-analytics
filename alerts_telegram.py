@@ -690,6 +690,60 @@ def build_intraday_alerts(current_snapshots):
 
 
 
+WB_COHORT_TABLE = "wb_buyout_cohort_daily"
+WB_COHORT_MATURE_DAYS = 25
+MONTHS_RU = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
+
+
+def get_wb_buyout_cohort_rows(days_back=120):
+    """Последние дни таблицы выкупа по когорте (WB-10 §2: продажи отчёта по дню заказа / заказы воронки того дня)."""
+    res = (supabase.table(WB_COHORT_TABLE).select("day,created_sum,sold_sum,mature,rate_sum,forecast_rate_sum,forecast_window")
+           .order("day", desc=True).limit(days_back).execute())
+    return res.data or []
+
+
+def format_wb_buyout_cohort(rows):
+    """«Выкуп по когорте: август 42,2 % (зрелые дни ≥ 25 сут.), прогноз для последних 30 дней 41,8 % по зрелым 02.08 … 31.08.»
+    Месяц — последний, у которого все календарные дни зрелые; прогноз — из самого свежего незрелого дня."""
+    import calendar
+    if not rows:
+        return f"Выкуп по когорте: нет данных (таблица {WB_COHORT_TABLE} пуста)."
+    by_month = {}
+    for r in rows:
+        if not r.get("mature"):
+            continue
+        m = str(r["day"])[:7]
+        a = by_month.setdefault(m, {"days": 0, "created": 0.0, "sold": 0.0})
+        a["days"] += 1; a["created"] += num(r.get("created_sum")); a["sold"] += num(r.get("sold_sum"))
+    full = [m for m, a in by_month.items() if a["days"] >= calendar.monthrange(int(m[:4]), int(m[5:7]))[1] and a["created"] > 0]
+    if full:
+        m = max(full); a = by_month[m]
+        month_part = f"{MONTHS_RU[int(m[5:7]) - 1]} {a['sold'] / a['created'] * 100:.1f} % (зрелые дни ≥ {WB_COHORT_MATURE_DAYS} сут.)"
+    elif by_month:
+        m = max(by_month); a = by_month[m]
+        month_part = (f"{MONTHS_RU[int(m[5:7]) - 1]} {a['sold'] / a['created'] * 100:.1f} % по {a['days']} зрелым дням (≥ {WB_COHORT_MATURE_DAYS} сут.)"
+                      if a["created"] > 0 else "зрелых дней с заказами нет")
+    else:
+        month_part = "зрелых дней нет"
+    fresh = [r for r in rows if not r.get("mature") and r.get("forecast_rate_sum") is not None]
+    if fresh:
+        r = max(fresh, key=lambda x: str(x["day"]))
+        win = str(r.get("forecast_window") or "")
+        win_text = " … ".join(f"{p[8:10]}.{p[5:7]}" for p in win.split(" … ")) if win else "—"
+        forecast_part = f", прогноз для последних 30 дней {num(r['forecast_rate_sum']) * 100:.1f} % по зрелым {win_text}"
+    else:
+        forecast_part = ""
+    return f"Выкуп по когорте: {month_part}{forecast_part}."
+
+
+def get_wb_buyout_cohort_summary(target_date=None):
+    """Строка блока «WB вчера»; таблицы нет или отказ — строка с причиной, алерт не падает."""
+    try:
+        return format_wb_buyout_cohort(get_wb_buyout_cohort_rows())
+    except Exception as error:  # noqa: BLE001 — нефатально для алерта
+        return f"Выкуп по когорте: нет данных ({str(error)[:80]})."
+
+
 def overlay_wb_orders_from_sales_funnel(kpi_rows):
     """
     Подменяет WB-заказы в KPI на данные WB Sales Funnel.
@@ -795,7 +849,8 @@ def build_executive_summary(kpi_rows, target_date=None):
                 f"🟣 <b>WB вчера</b>\n"
                 f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
                 f"Выкупы: {buyouts:.0f} / {fmt_money(buyouts_amount)} руб.\n"
-                f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."
+                f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}.\n"
+                f"{get_wb_buyout_cohort_summary(target_date)}"
             )
         else:
             if not ozon_completeness.get("complete"):

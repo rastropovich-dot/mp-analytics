@@ -14,6 +14,58 @@ import scripts.report_finrez_wb as fr
 D = Decimal
 
 
+class FakeSb:
+    """Заглушка PostgREST над списками строк по таблицам: gte / lte / eq / gt / in_ / not_.is_ / or_ (только фильтр
+    карточек с заказами), order, limit, range; calls — (таблица, условия) на каждый execute; errors — текст ошибки по таблице."""
+
+    def __init__(self, tables, errors=None):
+        self.tables, self.errors, self.calls = tables, errors or {}, []
+
+    def table(self, name):
+        sb = self
+
+        class Q:
+            def __init__(self):
+                self.conds, self.orders, self.lim, self.rng, self.neg = [], [], None, None, False
+
+            def select(self, *_a): return self
+            def gte(self, c, v): self.conds.append(("gte", c, v)); return self
+            def lte(self, c, v): self.conds.append(("lte", c, v)); return self
+            def eq(self, c, v): self.conds.append(("eq", c, v)); return self
+            def gt(self, c, v): self.conds.append(("gt", c, v)); return self
+            def in_(self, c, v): self.conds.append(("in", c, list(v))); return self
+            @property
+            def not_(self): self.neg = True; return self
+            def is_(self, c, v): self.conds.append(("not_is" if self.neg else "is", c, v)); self.neg = False; return self
+            def or_(self, expr): self.conds.append(("or_", expr)); return self
+            def order(self, c, desc=False): self.orders.append((c, desc)); return self
+            def limit(self, n): self.lim = n; return self
+            def range(self, a, b): self.rng = (a, b); return self
+
+            def execute(self):
+                sb.calls.append((name, list(self.conds)))
+                if name in sb.errors:
+                    raise Exception(sb.errors[name])
+                rows = list(sb.tables.get(name, []))
+                for cond in self.conds:
+                    if cond[0] == "or_":
+                        assert cond[1] == fr.ACTIVE_FUNNEL_FILTER, cond[1]
+                        rows = [r for r in rows if (r.get("order_count") or 0) > 0 or (r.get("order_sum") or 0) > 0]
+                        continue
+                    op, c, v = cond
+                    test = {"gte": lambda x: x >= v, "lte": lambda x: x <= v, "eq": lambda x: x == v, "gt": lambda x: x > v, "in": lambda x: x in v,
+                            "is": lambda x: (x is None) if v == "null" else x == v, "not_is": lambda x: (x is not None) if v == "null" else x != v}[op]
+                    rows = [r for r in rows if test(r.get(c))]
+                for c, desc in reversed(self.orders):
+                    rows.sort(key=lambda r: r.get(c), reverse=desc)
+                if self.rng is not None:
+                    rows = rows[self.rng[0]: self.rng[1] + 1]
+                elif self.lim is not None:
+                    rows = rows[: self.lim]
+                return type("R", (), {"data": rows})()
+        return Q()
+
+
 def rep(day_ts, nm, oper="Продажа", price="1000", amount="600", pct="42", vendor="f000283615", size="17,5", rrd=1, **extra):
     base = {"rrd_id": rrd, "rr_date": day_ts[:10], "sale_dt": day_ts, "seller_oper_name": oper, "doc_type": "", "vendor_code": vendor, "tech_size": size,
             "nm_id": nm, "quantity": 1, "retail_price_with_disc": price, "retail_amount": amount, "for_pay": "500", "commission_percent": pct,
@@ -228,39 +280,71 @@ class LabelsAndBuyoutRateTests(unittest.TestCase):
             fr.buyout_rate_for_finrez("2026-08", "2026-08", sb=object(), rows=rows, orders_by_month=orders, by="pcs")
 
     def test_report_rows_are_read_by_keyset_on_rr_date_and_rrd_id(self):
-        class Sb:
-            def __init__(self):
-                self.rows = [{"rr_date": f"2026-09-{d:02d}", "rrd_id": i} for d in (1, 2) for i in range(1, 8)]
-                self.exprs, self.selects = [], []
-
-            def table(self, _name):
-                sb = self
-
-                class Q:
-                    def __init__(self): self.after, self.n, self.d1, self.d2 = None, None, None, None
-                    def select(self, s): sb.selects.append(s); return self
-                    def gte(self, _c, v): self.d1 = v; return self
-                    def lte(self, _c, v): self.d2 = v; return self
-                    def order(self, *_a): return self
-                    def limit(self, n): self.n = n; return self
-                    def or_(self, expr):
-                        import re
-                        sb.exprs.append(expr)
-                        m = re.match(r"rr_date\.gt\.(\S+?),and\(rr_date\.eq\.(\S+?),rrd_id\.gt\.(\d+)\)", expr); self.after = (m.group(1), int(m.group(3))); return self
-                    def execute(self):
-                        rows = [r for r in sb.rows if self.d1 <= r["rr_date"] <= self.d2]
-                        if self.after:
-                            rows = [r for r in rows if (r["rr_date"], r["rrd_id"]) > self.after]
-                        return type("R", (), {"data": sorted(rows, key=lambda r: (r["rr_date"], r["rrd_id"]))[: self.n]})()
-                return Q()
-        sb = Sb()
+        sb = FakeSb({fr.report_loader.TABLE: [{"rr_date": f"2026-09-{d:02d}", "rrd_id": i} for d in (1, 2) for i in range(1, 8)]})
         with mock.patch.object(fr, "DICT_PAGE", 5):
             rows = fr.load_report_rows(sb, "2026-09-01", "2026-09-01")
-        self.assertEqual(len(rows), 14)                                                  # окно rr_date 09-01 … 09-08 (запас 7 дней)
-        self.assertEqual([(r["rr_date"], r["rrd_id"]) for r in rows], sorted((r["rr_date"], r["rrd_id"]) for r in sb.rows))
-        self.assertEqual(sb.exprs, ["rr_date.gt.2026-09-01,and(rr_date.eq.2026-09-01,rrd_id.gt.5)", "rr_date.gt.2026-09-02,and(rr_date.eq.2026-09-02,rrd_id.gt.3)"])
-        self.assertEqual(sb.selects[0], fr.SELECT)
+        self.assertEqual(len(rows), 14)                                                            # окно rr_date 09-01 … 09-08 (запас 7 дней)
+        self.assertEqual([(r["rr_date"], r["rrd_id"]) for r in rows], [(f"2026-09-{d:02d}", i) for d in (1, 2) for i in range(1, 8)])
+        conds = [c[1] for c in sb.calls]
+        self.assertEqual(len(conds), 5)                                                            # 5 + 2, 5 + 2, пустой диапазон с 09-03
+        self.assertEqual(conds[1], [("eq", "rr_date", "2026-09-01"), ("gt", "rrd_id", 5)])
+        self.assertEqual(conds[4], [("gte", "rr_date", "2026-09-03"), ("lte", "rr_date", "2026-09-08")])
         self.assertNotIn("for_pay", fr.BUILD_SELECT); self.assertIn("for_pay", fr.SELECT)
+
+
+class DictionaryViewAndFilteredFunnelTests(unittest.TestCase):
+    """WB-10 §3: словарь из вьюхи «последняя карточка» с откатом на таблицу; воронка фильтром + строки с рекламой из словаря."""
+
+    def test_dictionary_prefers_the_view_and_falls_back_to_the_table_when_the_view_is_missing(self):
+        view = [{"nm_id": 2, "day": "2026-09-03", "vendor_code": "t2", "title": "из вьюхи", "brand": "КОЮЗ Топаз", "subject_name": "Ювелирные кольца"},
+                {"nm_id": 1, "day": "2026-09-01", "vendor_code": "F1", "title": "t1", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}]
+        table = [{"day": "2026-09-01", "nm_id": 1, "vendor_code": "F1", "title": "старое", "brand": "KARATOV", "subject_name": "Ювелирные серьги", "order_count": 0, "order_sum": 0},
+                 {"day": "2026-09-02", "nm_id": 1, "vendor_code": "F1", "title": "новое", "brand": "KARATOV", "subject_name": "Ювелирные серьги", "order_count": 1, "order_sum": 5}]
+        sb = FakeSb({fr.FUNNEL_LATEST_VIEW: view, fr.wbm.FUNNEL_TABLE: table})
+        with mock.patch.object(fr, "DICT_PAGE", 1):
+            d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02")
+        self.assertEqual((d[2]["title"], d[1]["title"], sorted(d)), ("из вьюхи", "t1", [1, 2]))
+        self.assertEqual([c[0] for c in sb.calls], [fr.FUNNEL_LATEST_VIEW] * 3)          # 2 строки по 1 + пустая страница; таблица не читалась
+        sb = FakeSb({fr.wbm.FUNNEL_TABLE: table}, errors={fr.FUNNEL_LATEST_VIEW: "{'code': 'PGRST205', 'message': \"Could not find the table 'public.wb_funnel_products_latest'\"}"})
+        d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02")
+        self.assertEqual((d[1]["title"], [c[0] for c in sb.calls][:2]), ("новое", [fr.FUNNEL_LATEST_VIEW, fr.wbm.FUNNEL_TABLE]))   # откат: последний день побеждает
+        self.assertEqual(fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02", use_view=False)[1]["title"], "новое")
+        with self.assertRaises(Exception):
+            fr.read_latest_cards(FakeSb({}, errors={fr.FUNNEL_LATEST_VIEW: "statement timeout"}))   # не «нет вьюхи» — не глотаем
+
+    def test_filtered_funnel_plus_rows_from_the_dictionary_keep_sums_and_add_only_lost_ad_pairs(self):
+        funnel = [{"day": "2026-09-01", "nm_id": 1, "vendor_code": "F1", "title": "a", "brand": "KARATOV", "subject_name": "Ювелирные серьги", "order_count": 2, "order_sum": 2000, "buyout_count": 1, "buyout_sum": 900, "cancel_count": 0, "cancel_sum": 0},
+                  {"day": "2026-09-01", "nm_id": 2, "vendor_code": "F2", "title": "b", "brand": "KARATOV", "subject_name": "Ювелирные кольца", "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0},
+                  {"day": "2026-09-01", "nm_id": 3, "vendor_code": "F3", "title": "c", "brand": "KARATOV", "subject_name": "Ювелирные кольца", "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0}]
+        products = {1: {"vendor_code": "F1", "title": "a", "brand": "KARATOV", "subject": "Ювелирные серьги"}, 3: {"vendor_code": "F3", "title": "c", "brand": "KARATOV", "subject": "Ювелирные кольца"},
+                    9: {"vendor_code": "t9", "title": "z", "brand": "КОЮЗ Топаз", "subject": "Ювелирные подвески"}}
+        ads, nm_ads = {"2026-09-01": D("100")}, {"2026-09-01": {1: D("30"), 3: D("10"), 9: D("10")}}
+        full, filt = {}, {}
+        rows_full = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, stats=full)
+        self.assertEqual(([r["nm_id"] for r in rows_full], full["ads_total"], full["synthesized"]), ([1, 3], D("80.00"), 0))   # nmId 9 без строки воронки — реклама 20 теряется
+        sb = FakeSb({fr.wbm.FUNNEL_TABLE: funnel})
+        rows_filt = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=sb, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, stats=filt, products=products, only_with_orders=True)
+        self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1])                   # воронка прочитана фильтром на сервере
+        self.assertEqual(([r["nm_id"] for r in rows_filt], filt["synthesized"], filt["ads_total"]), ([1, 3, 9], 2, D("100.00")))   # 3 и 9 собраны из словаря
+        self.assertEqual((filt["sum_before"], filt["sum_after"], filt["equal"]), ({"2026-09": D("2000")}, {"2026-09": D("2000")}, True))
+        r9 = rows_filt[-1]
+        self.assertEqual((r9["article"], r9["brand"], r9["category"], r9["orders_qty"], r9["ads"], r9["funnel_buyouts_qty"]), ("T9", "Топаз", "подвески", 0, D("20.00"), 0))
+        rows_full_plus = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, products=products)
+        self.assertEqual([r["nm_id"] for r in rows_full_plus], [1, 3, 9])                 # без фильтра словарь добирает только потерянную пару
+        # по умолчанию (слово 09-25): фильтр включён, словарь — из вьюхи
+        view = [{"nm_id": n, "day": "2026-09-01", "vendor_code": p["vendor_code"], "title": p["title"], "brand": p["brand"], "subject_name": p["subject"]} for n, p in products.items()]
+        sb = FakeSb({fr.wbm.FUNNEL_TABLE: funnel, fr.FUNNEL_LATEST_VIEW: view})
+        st = {}
+        rows_default = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=sb, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, stats=st)
+        self.assertEqual(([r["nm_id"] for r in rows_default], st["synthesized"], st["ads_total"]), ([1, 3, 9], 2, D("100.00")))
+        self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1]); self.assertEqual(sb.calls[1][0], fr.FUNNEL_LATEST_VIEW)
+
+    def test_buyout_rate_caption_names_mature_months_total_and_immature(self):
+        rows = [{"seller_oper_name": "Продажа", "order_dt": "2026-08-10T10:00:00Z", "sale_dt": "2026-08-14T10:00:00Z", "retail_price_with_disc": "800", "quantity": 1},
+                {"seller_oper_name": "Продажа", "order_dt": "2026-09-03T10:00:00Z", "sale_dt": "2026-09-05T10:00:00Z", "retail_price_with_disc": "500", "quantity": 1}]
+        orders = {"2026-08": (D("2000"), 5), "2026-09": (D("1000"), 2)}
+        text = fr.buyout_rate_caption("2026-08", "2026-09", sb=object(), rows=rows, orders_by_month=orders, today="2026-09-25")
+        self.assertEqual(text, "Выкуп по когорте (зрелые дни ≥ 25 сут.): авг 0.4000; итого 0.4000; незрелые (прогноз по зрелым дням): сен")
 
 
 if __name__ == "__main__":
@@ -268,48 +352,25 @@ if __name__ == "__main__":
 
 
 class KeysetAndOrdersTests(unittest.TestCase):
-    class Sb:
-        """Таблица из 25 строк (day, nm_id); отдаёт страницы по ключу, как PostgREST с фильтром or(day.gt, and(day.eq, nm_id.gt))."""
-        def __init__(self):
-            self.rows = [{"day": d, "nm_id": n, "vendor_code": f"F{n}", "title": "t", "brand": "KARATOV", "subject_name": "Ювелирные кольца"} for d in ("2026-09-01", "2026-09-02") for n in range(1, 13)] + [{"day": "2026-09-03", "nm_id": 1, "vendor_code": "F1", "title": "t3", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}]
-            self.calls = []
+    ROWS25 = [{"day": d, "nm_id": n, "vendor_code": f"F{n}", "title": "t", "brand": "KARATOV", "subject_name": "Ювелирные кольца"} for d in ("2026-09-01", "2026-09-02") for n in range(1, 13)] \
+        + [{"day": "2026-09-03", "nm_id": 1, "vendor_code": "F1", "title": "t3", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}]
 
-        def table(self, _name):
-            sb = self
-
-            class Q:
-                def __init__(self):
-                    self.after, self.limit_n, self.d1, self.d2 = None, None, None, None
-
-                def select(self, *_a): return self
-                def gte(self, _c, v): self.d1 = v; return self
-                def lte(self, _c, v): self.d2 = v; return self
-                def order(self, *_a): return self
-                def limit(self, n): self.limit_n = n; return self
-                def or_(self, expr):
-                    import re
-                    m = re.match(r"day\.gt\.(\S+?),and\(day\.eq\.(\S+?),nm_id\.gt\.(\d+)\)", expr)
-                    self.after = (m.group(1), int(m.group(3))); return self
-                def execute(self):
-                    rows = [r for r in sb.rows if self.d1 <= r["day"] <= self.d2]
-                    if self.after:
-                        rows = [r for r in rows if (r["day"], r["nm_id"]) > self.after]
-                    rows = sorted(rows, key=lambda r: (r["day"], r["nm_id"]))[: self.limit_n]
-                    sb.calls.append((self.after, len(rows)))
-                    return type("R", (), {"data": rows})()
-            return Q()
-
-    def test_keyset_pages_walk_the_window_by_primary_key(self):
-        sb = self.Sb()
+    def test_keyset_pages_walk_the_window_by_primary_key_with_index_only_queries(self):
+        sb = FakeSb({"t": self.ROWS25, fr.wbm.FUNNEL_TABLE: self.ROWS25}, errors={fr.FUNNEL_LATEST_VIEW: "PGRST205: Could not find the table"})
         rows = fr.read_keyset(sb, "t", "day,nm_id", "2026-09-01", "2026-09-02", page=10)
         self.assertEqual(len(rows), 24)
-        self.assertEqual([c[1] for c in sb.calls], [10, 10, 4])
-        self.assertEqual(sb.calls[1][0], ("2026-09-01", 10))
+        self.assertEqual([(r["day"], r["nm_id"]) for r in rows], sorted((r["day"], r["nm_id"]) for r in self.ROWS25 if r["day"] <= "2026-09-02"))
+        conds = [c[1] for c in sb.calls]
+        self.assertEqual(len(conds), 4)                                                        # диапазон, тот же день, диапазон, тот же день (день 2 исчерпан, день 3 вне окна)
+        self.assertEqual(conds[0], [("gte", "day", "2026-09-01"), ("lte", "day", "2026-09-02")])
+        self.assertEqual(conds[1], [("eq", "day", "2026-09-01"), ("gt", "nm_id", 10)])
+        self.assertEqual(conds[2], [("gte", "day", "2026-09-02"), ("lte", "day", "2026-09-02")])
+        self.assertFalse(any(c[0] == "or_" for cs in conds for c in cs))                        # ни одного or(day.gt, and(day.eq, …))
+        sb.calls.clear()
         with mock.patch.object(fr, "DICT_PAGE", 10):
             products = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-03")
-        self.assertEqual(len(products), 12)
-        self.assertEqual(products[1]["subject"], "Ювелирные серьги")            # более поздний день побеждает
-        self.assertEqual(fr.load_product_dictionary(sb), {})                      # без окна словарь не читается
+        self.assertEqual((len(products), products[1]["subject"], sb.calls[0][0]), (12, "Ювелирные серьги", fr.FUNNEL_LATEST_VIEW))   # вьюхи нет → таблица; поздний день побеждает
+        self.assertEqual(fr.load_product_dictionary(sb), {})                                       # без окна словарь не читается
 
     def test_orders_rows_drop_empty_cards_keep_sums_and_carry_nm_ads(self):
         funnel = [{"day": "2026-09-01", "nm_id": n, "vendor_code": f"F00000948{n}", "title": "t", "brand": "KARATOV", "subject_name": "Ювелирные кольца",

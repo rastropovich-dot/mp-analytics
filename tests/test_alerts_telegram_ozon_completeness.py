@@ -207,6 +207,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("ozon"),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": False,
                 "blockers": ["ozon_daily_sku_organic_missing", "ozon_ads_layer_missing"],
@@ -227,6 +228,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("wb", "2026-05-18", orders_qty=30, buyouts_qty=24),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": False,
                 "blockers": ["ozon_ads_layer_missing"],
@@ -243,6 +245,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("ozon"),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": False,
                 "blockers": ["ozon_daily_sku_organic_missing"],
@@ -257,6 +260,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("ozon"),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": False,
                 "blockers": ["ozon_daily_sku_organic_missing", "ozon_ads_layer_missing"],
@@ -276,6 +280,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("ozon", "2026-05-19", orders_qty=20, buyouts_qty=15),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_kpi_rows", return_value=kpi_rows), \
             mock.patch.object(alerts, "overlay_wb_orders_from_sales_funnel", side_effect=lambda rows: rows), \
             mock.patch.object(alerts, "save_today_snapshot", return_value=[]), \
@@ -299,6 +304,7 @@ class OzonCompletenessGateTests(unittest.TestCase):
             _kpi_row("ozon"),
         ]
         with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": True,
                 "blockers": [],

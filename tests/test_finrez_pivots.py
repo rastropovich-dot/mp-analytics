@@ -33,6 +33,11 @@ class Transforms(unittest.TestCase):
         pt = fp.remap_formats('<format dxfId="1"/><dataField numFmtId="165"/><dataField numFmtId="3"/>', offset2, fmap2)
         self.assertEqual(pt, '<format dxfId="3"/><dataField numFmtId="166"/><dataField numFmtId="3"/>')
 
+    def test_source_fields_exclude_groups(self):
+        cd = ('<c><cacheField name="Дата" numFmtId="0"><fieldGroup par="2" base="0"><rangePr groupBy="days" startDate="2026-04-01T00:00:00" endDate="2026-09-21T00:00:00"/></fieldGroup></cacheField>'
+              '<cacheField name="МП" numFmtId="0"><sharedItems/></cacheField><cacheField name="Месяцы" numFmtId="0" databaseField="0"><fieldGroup base="0"><rangePr groupBy="months"/></fieldGroup></cacheField></c>')
+        self.assertEqual(fp.source_fields(cd), (["Дата", "МП"], ["Месяцы"]))     # «Дата» с fieldGroup — колонка источника; «Месяцы» (databaseField=0) — нет
+
     def test_col_letter(self):
         self.assertEqual([fp.col_letter(n) for n in (1, 15, 26, 27, 30)], ["A", "O", "Z", "AA", "AD"])
 
@@ -53,7 +58,9 @@ class Integration(unittest.TestCase):
                 ws = wb.create_sheet(title); ws.append([h for h, _k, _f in cols]); ws.append(row)
             wb.save(path)
             rep = fp.transplant(path, path, row_counts={"Данные Ozon выкупы": 2, "Данные WB выкупы": 2, "Данные заказы": 2})
-            self.assertEqual([r["ref"] for r in rep], ["A1:O2", "A1:O2", "A1:AD2"])
+            self.assertEqual([r["ref"] for r in rep], ["A1:M2", "A1:N2", "A1:U2"])           # колонки источника: 13 / 14 / 21
+            self.assertEqual([r["group_fields"] for r in rep][:2], [["Дни (Дата начисления)", "Месяцы (Дата начисления)"], ["Месяцы"]])
+            self.assertEqual(rep[2]["group_fields"], ["Месяцы", "Маржа, руб без НДС", "Маржинальность, %", "ДДР, %", "Соинвест, %", "Комиссия сред", "Фин.рез", "Цена", "Фин.рез %"])
             errors, info = fp.check(path)
             self.assertEqual(errors, [], errors)
             self.assertEqual(openpyxl.load_workbook(path, read_only=True).sheetnames[-3:], ["Сводная Ozon выкупы", "Сводная WB выкупы", "Сводная заказы"])

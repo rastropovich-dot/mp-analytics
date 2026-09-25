@@ -253,6 +253,7 @@ class OrdersData(unittest.TestCase):
         self.assertEqual(r["drr_pct"], r["ads_net"] / net)
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][:4], ["Дата", "МП", "Магазин", "Артикул поставщика"])
         self.assertEqual(len(fr.ORDER_DATA_COLS), 33)
+        self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][28:31], ["Фин.рез %", "Месяцы", "SKU/nmId"])      # «Месяцы» — после 29 полей владельца
         self.assertEqual(stats, {})
 
     def test_svod_equals_sum_of_data_rows_all_13_columns(self):
@@ -363,3 +364,44 @@ class LabelsCheck(unittest.TestCase):
         self.assertEqual(res["categories"], {"Ozon": {"кольца"}, "WB": {"кольца", "серьги"}})
         self.assertEqual(res["brandless_ozon"], {fr.NO_SKU: 1})
         self.assertFalse(res["equal"])
+
+
+class WbForm(unittest.TestCase):
+    """Тридцать девятая §2: листы WB в форме владельца из дневных строк модуля — месяцы, дни последнего месяца, «Общий итог»; = build_month_sheet / build_split."""
+
+    def rows(self):
+        def r(day, brand, cat, sales, comm, cogs, ads, storage, logi, other, acq, qty):
+            return {"date": day, "brand": brand, "category": cat, "sales": D(sales), "commission": D(comm), "cogs": D(cogs), "ads": D(ads), "storage": D(storage),
+                    "logistics": D(logi), "other": D(other), "acquiring": D(acq), "coinvest": D(0), "qty": qty}
+        return [r("2026-08-30", "KARATOV", "кольца", 1000, 400, 300, 10, 5, 50, 7, 3, 1), r("2026-09-01", "KARATOV", "кольца", 2000, 800, 600, 20, 6, 60, 8, 4, 2),
+                r("2026-09-01", "Топаз", "серьги", 500, 200, 100, 0, 1, 10, 2, 1, 1), r("2026-09-02", "Топаз", "серьги", 700, 280, 200, 5, 2, 20, 3, 2, 1)]
+
+    def test_months_and_total_equal_the_module_days_sum_to_month(self):
+        rows, days = self.rows(), ["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]
+        piv, order = fr.wb_pivot(rows, days)
+        self.assertEqual(order, ["авг", "сен", "01.сен", "02.сен", "Общий итог"])
+        bad, n = fr.check_wb_pivot_against_module(piv, order, fr.wbfin.build_month_sheet(rows), days)
+        self.assertEqual(bad, [])
+        self.assertGreater(n, 40)
+        self.assertEqual(piv["сен"]["sales"], D(3200))
+        self.assertEqual(piv["01.сен"]["sales"] + piv["02.сен"]["sales"], piv["сен"]["sales"])
+        self.assertEqual(piv["Общий итог"]["y_fin"], fr.wbfin.build_month_sheet(rows)[-1]["y_fin"])
+        self.assertEqual(piv["01.сен"]["n_revenue"], (D(2500) - D(1000)) / D("1.22"))
+        by_brand = fr.wb_pivots_by_group(rows, days, "brand")
+        self.assertEqual(set(by_brand), {"KARATOV", "Топаз"})
+        mod = {}
+        for m in fr.wbfin.build_split(rows, "brand"):
+            mod.setdefault(m["group"], []).append(m)
+        for g, (p_, o_) in by_brand.items():
+            b_, _n = fr.check_wb_pivot_against_module(p_, o_, mod[g], days)
+            self.assertEqual(b_, [], g)
+
+    def test_block_layout(self):
+        rows, days = self.rows(), ["2026-08-30", "2026-09-01", "2026-09-02"]
+        piv, order = fr.wb_pivot(rows, days)
+        g = fr.Grid()
+        nxt = fr.write_wb_pivot_block(g, 9, "Все бренды и категории", piv, order)
+        self.assertEqual((g.cells[(7, 1)][0], g.cells[(9, 2)][0], g.cells[(11, 1)][0], g.cells[(11, 2)][0], g.cells[(12, 1)][0]),
+                         ("Все бренды и категории", "Названия столбцов", "Названия строк", "Продажи, ₽", "авг"))
+        self.assertEqual(g.cells[(12, 2)][0], 1000.0)
+        self.assertEqual(nxt, 9 + 3 + len(order) + 2)

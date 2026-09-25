@@ -361,8 +361,10 @@ def main(argv=None):
     kinds = load_kinds(sb, [r["offer_id"] for r in rows])
     vs_name, vs_1c = compare(rows, kinds)
     print_report(rows, counters, other_types, turnover, vs_name, vs_1c, month)
-    latest = os.path.join(OUT_DIR, "catalog_latest.json")
-    json.dump({"observed_at": observed_at, "rows": rows}, open(latest, "w"), ensure_ascii=False, default=str)
+    # catalog_latest.json — полный разбор (запасной источник книги, когда таблицы нет); частичный --only-missing его не затирает
+    latest = os.path.join(OUT_DIR, "catalog_latest.json" if not args.only_missing else f"catalog_missing_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
+    with open(latest, "w", encoding="utf-8") as fh:
+        json.dump({"observed_at": observed_at, "rows": rows}, fh, ensure_ascii=False, default=str)
     print(f"разбор → {latest} ({len(rows)} строк)")
     if args.apply:
         apply(sb, rows)

@@ -94,8 +94,10 @@ def main(argv=None):
               f"запись — source-таблица, затем расходы типа {ads.SELECTED_CPO_MARKETPLACE_EXPENSE_TYPE} и атрибуция {ads.SELECTED_CPO_AD_SOURCE} только за {args.date}; "
               f"ожидание по леджеру: {(ledger_sum - total_before).quantize(Q):,.2f}. db_writes = 0")
         return 0
-    if not ads.ENABLE_OZON_SELECTED_CPO_DAILY:
-        raise SystemExit("ENABLE_OZON_SELECTED_CPO_DAILY выключен — Selected CPO в этой среде не собирается")
+    # флаги ENABLE_/APPROVE_OZON_SELECTED_CPO_DAILY* гейтят НОЧНОЙ шаг и живут в переменных Render (в локальном .env их нет);
+    # ручной запуск за дату разрешает слово владельца (--approve-selected-cpo-write), флаги только называются
+    print(f"флаги ночного шага в этой среде: ENABLE_OZON_SELECTED_CPO_DAILY={ads.ENABLE_OZON_SELECTED_CPO_DAILY}, "
+          f"APPROVE_OZON_SELECTED_CPO_DAILY_WRITE={ads.APPROVE_OZON_SELECTED_CPO_DAILY_WRITE} — на ручной запуск не влияют")
     client = ads.OzonPerformanceClient()
     client.save_state = lambda *a, **k: None
     http_before = len(client.state.get("request_history", []) or [])

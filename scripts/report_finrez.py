@@ -721,6 +721,95 @@ def pivot_orders_wb(orders, days, ads_by_day, buyout=None):
     return out
 
 
+def wb_pivot(rows, days):
+    """{метка: строка формы K … Z} для листа «Выкупы WB» из ДНЕВНЫХ строк модуля (build_rows): месяцы, дни последнего месяца, «Общий итог» —
+    каждая метка — «Итого» модульного build_month_sheet по её строкам, поэтому строки месяцев и общий итог равны build_month_sheet модуля до копейки
+    (тот же код, те же строки), а Σ дней последнего месяца = строке месяца по сложению. Модуль не меняется."""
+    order, of = labels_for(days)
+    dayset = set(days)
+    by_label = defaultdict(list)
+    for r in rows:
+        d = str(r["date"])
+        if d in dayset:
+            for lab in of(d):
+                by_label[lab].append(r)
+    out = {}
+    for lab in order:
+        rs = by_label.get(lab)
+        if rs:
+            row = dict(wbfin.build_month_sheet(rs)[-1]); row["label"] = lab
+        else:
+            row = {"label": lab}
+        out[lab] = row
+    return out, order
+
+
+def wb_pivots_by_group(rows, days, by):
+    """{группа: ({метка: строка}, порядок)} — блоки «по брендам» / «по категориям»; группа — brand / category строки модуля («—» если пусто)."""
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r.get(by) or "—"].append(r)
+    return {g: wb_pivot(rs, days) for g, rs in groups.items()}
+
+
+def check_wb_pivot_against_module(piv, order, month_rows, days):
+    """§2.3: строки месяцев и «Общий итог» формы против build_month_sheet модуля по всем колонкам SHEET_COLS; Σ дней последнего месяца = строке месяца.
+    Возвращает список расхождений (пусто — сошлось) и число сравнённых ячеек."""
+    keys = [k for _h, k, _f in wbfin.SHEET_COLS if k and k != "label"]
+    module = {r["label"]: r for r in month_rows}
+    bad, n = [], 0
+    for lab in order:
+        if "." in lab:
+            continue
+        m = module.get("Итого" if lab == "Общий итог" else lab)
+        if m is None:
+            if piv.get(lab, {}).get("sales") is None:
+                continue                                   # у группы нет строк в этом месяце — модуль строки не даёт, у формы метка пустая
+            bad.append((lab, "нет строки в build_month_sheet", None)); continue
+        for k in keys:
+            a, b = piv.get(lab, {}).get(k), m.get(k)
+            n += 1
+            if (a is None) != (b is None) or (a is not None and q(D(a) - D(b)) != 0):
+                bad.append((lab, k, (a, b)))
+    last_month = days[-1][:7]
+    month_lab = month_label(days[-1])
+    for k in ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "acquiring"):
+        vals = [piv.get(day_label(d), {}).get(k) for d in days if d.startswith(last_month)]
+        if all(v is None for v in vals):
+            continue
+        s = sum((D(v) for v in vals if v is not None), Z)
+        n += 1
+        if q(s - D(piv[month_lab].get(k) or 0)) != 0:
+            bad.append((f"Σ дней {month_lab}", k, (s, piv[month_lab].get(k))))
+    return bad, n
+
+
+def write_wb_pivot_block(g, r_cols, title, piv, order):
+    """Блок формы владельца для WB — как write_pivot_block у Ozon: заголовок блока на две строки выше, «Названия столбцов» в r_cols, «Названия строк»
+    и шапка семи денег формы + наши расчётные K … Z в r_cols + 2, строки меток с r_cols + 3. Возвращает следующую свободную строку."""
+    money = [(h, k, f) for h, k, f in wbfin.SHEET_COLS[1:8]]
+    calc = [(h, k, f) for h, k, f in wbfin.SHEET_COLS[8:] if k]
+    g.set(r_cols - 2, 1, title, bold=True)
+    g.set(r_cols, 2, "Названия столбцов", bold=True)
+    g.set(r_cols + 1, 2, "Значения", bold=True)
+    g.set(r_cols + 2, 1, "Названия строк", bold=True)
+    for j, (h, _k, _f) in enumerate(money):
+        g.set(r_cols + 2, 2 + j, h, bold=True)
+    calc0 = 2 + len(money) + 2
+    for j, (h, _k, _f) in enumerate(calc):
+        g.set(r_cols + 2, calc0 + j, h, bold=True, fill=True, wrap=True)
+    g.heights[r_cols + 2] = 45
+    for i, lab in enumerate(order):
+        r = r_cols + 3 + i
+        m = piv.get(lab) or {}
+        g.set(r, 1, lab, bold=(lab == "Общий итог"))
+        for j, (_h, k, f) in enumerate(money):
+            g.set(r, 2 + j, m.get(k), f)
+        for j, (_h, k, f) in enumerate(calc):
+            g.set(r, calc0 + j, m.get(k), f)
+    return r_cols + 3 + len(order) + 2
+
+
 def wb_orders_as_data_rows(orders):
     """Строки заказов WB в колонках «Данные заказы» (ORDER_DATA_COLS): подтверждено — выкупы воронки по дню заказа, цена покупателя — нет."""
     out = []
@@ -743,10 +832,11 @@ ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Маг�
                    ("Наименование", "name", None), ("Бренд", "brand", None), ("Статус", "category", None), ("Заказы, руб без НДС", "created_net", "money"),
                    ("Реклама, руб без НДС", "ads_net", "money"), ("СПП,%", "spp", "pct"), ("Заказы, руб c СПП", "with_spp", "money"), ("Комиссия", "commission", "pct"),
                    ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Комиссия, руб", "commission_rub", "money"), ("Выкуплено", "buyout", "pct"),
-                   ("Неделя года", "week", "int"), ("День", "day_num", "int"), ("Месяцы", "month_num", "int"), ("Маржа, руб без НДС", "margin", "money"),
+                   ("Неделя года", "week", "int"), ("День", "day_num", "int"), ("Маржа, руб без НДС", "margin", "money"),
                    ("Маржинальность, %", "margin_pct", "pct"), ("ДДР, %", "drr_pct", "pct"), ("Соинвест, %", "coinvest_pct", "pct"), ("Комиссия сред", "commission_avg", "pct"),
                    ("Фин.рез", "fin", "money"), ("Цена", "price", "money"), ("Фин.рез %", "fin_pct", "pct"),
-                   ("SKU/nmId", "sku", None), ("Подтверждено сейчас, руб.", "confirmed_a", "money"), ("Площадка Ozon", "platform_name", None)]   # 30 + 3 наших
+                   ("Месяцы", "month_num", "int"),        # у владельца — поле ГРУППИРОВКИ сводной (fieldGroup по «Дата»), не колонка источника: справочно, после его 29
+                   ("SKU/nmId", "sku", None), ("Подтверждено сейчас, руб.", "confirmed_a", "money"), ("Площадка Ozon", "platform_name", None)]   # 29 владельца + «Месяцы» + 3 наших
 ORDER_CHECK_COLS = [("Оборот (с НДС)", "created_a"), ("Заказы, шт", "created_q"), ("Цена продавца", "price"), ("Комиссия %", "commission_pct"), ("Выручка", "revenue"),
                     ("Себестоимость", "cogs"), ("Маржа", "margin"), ("М-ть, %", "margin_pct"), ("Реклама", "ads_net"), ("ДДР, %", "drr_pct"),
                     ("Соинвест, %", "coinvest_pct"), ("Гр.фин.рез", "gross_fin"), ("Гр.фин.рез, %", "gross_fin_pct")]
@@ -1097,12 +1187,14 @@ def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
         line(label, lambda c, col=col: f"=SUMIFS({W_}!${col}:${col},{W_}!$D:$D,$B$1,{W_}!$B:$B,{c}$4)")
     ws.append([None]); row += 1
     O_ = "'Данные заказы'"
+    L = {k: get_column_letter(i) for i, (_h, k, _f) in enumerate(ORDER_DATA_COLS, 1)}      # буквы колонок «Данных заказы» — по ключам
     head("Заказы (площадка — B2; месяц — по номеру в строке 3)")
-    for label, col, fmt in (("Заказы, ₽", "E", "money"), ("Заказы, шт", "F", "int"), ("Реклама, ₽", "G", "money"), ("Заказы, руб c СПП", "O", "money"),
-                            ("Выручка, руб без НДС с учетом комиссии", "Q", "money"), ("Маржа, руб без НДС", "W", "money"), ("Фин.рез", "AB", "money")):
-        line(label, lambda c, col=col: f"=SUMIFS({O_}!${col}:${col},{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3)", fmt)
+    for label, key, fmt in (("Заказы, ₽", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Реклама, ₽", "ads", "money"), ("Заказы, руб c СПП", "with_spp", "money"),
+                            ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Маржа, руб без НДС", "margin", "money"), ("Фин.рез", "fin", "money")):
+        line(label, lambda c, col=L[key]: f"=SUMIFS({O_}!${col}:${col},{O_}!${L['article']}:${L['article']},$B$1,{O_}!${L['mp']}:${L['mp']},$B$2,{O_}!${L['month_num']}:${L['month_num']},{c}$3)", fmt)
     line("Соинвест, % (по строкам с измеренной ценой покупателя)",
-         lambda c: f'=IFERROR(1-SUMIFS({O_}!$O:$O,{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3)/SUMIFS({O_}!$E:$E,{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3,{O_}!$O:$O,"<>"),"")', "pct")
+         lambda c: f'=IFERROR(1-SUMIFS({O_}!${L["with_spp"]}:${L["with_spp"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3)'
+                   f'/SUMIFS({O_}!${L["created_a"]}:${L["created_a"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3,{O_}!${L["with_spp"]}:${L["with_spp"]},"<>"),"")', "pct")
     ws.append([None]); row += 1
     ws.append(["Список артикулов — лист «Списки» (скрыт); при открытии Excel пересчитывает формулы по текущим листам «Данные»."])
 
@@ -1141,9 +1233,23 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     n_long = write_data_sheet(wb, "Данные Ozon выкупы", LONG_COLS, long_rows, widths={13: 48})
     lap("Данные Ozon выкупы")
     if wb_parts and not wb_parts.get("error"):
-        write_data_sheet(wb, "Выкупы WB", wbfin.SHEET_COLS, wb_parts["month"])
-        write_data_sheet(wb, "Выкупы WB по брендам", wbfin.SPLIT_COLS, wb_parts["split_brand"])
-        write_data_sheet(wb, "Выкупы WB по категориям", wbfin.SPLIT_COLS, wb_parts["split_category"])
+        # форма владельца, как у Ozon (тридцать девятая §2): месяцы, дни последнего месяца, «Общий итог»; блоки по бренду / категории
+        piv, order = wb_pivot(wb_parts["rows"], days)
+        g = Grid()
+        g.set(1, 1, "Выкупы WB — форма «Свод» второго кабинета на наших данных (строки модуля WB-сессии по дням)", bold=True)
+        g.set(2, 1, "строки 3 … 8 — место блока фильтров сводной владельца; «Названия столбцов» — строка 9, «Названия строк» — 11, как у Ozon; K … Z — тождества второго кабинета (R включает хранение)")
+        nxt = write_wb_pivot_block(g, 9, "Все бренды и категории", piv, order)
+        for n, line in enumerate(notes.get("wb") or ()):
+            g.set(nxt + n, 1, line)
+        _grid_sheet(wb, "Выкупы WB", g, freeze="B12")
+        for title, by in (("Выкупы WB по брендам", "brand"), ("Выкупы WB по категориям", "category")):
+            g = Grid()
+            g.set(1, 1, title, bold=True)
+            g.set(2, 1, "блоки — по группе; в каждом «Названия столбцов» на две строки ниже заголовка блока")
+            r_cols = 9
+            for name, (p_, o_) in sorted(wb_pivots_by_group(wb_parts["rows"], days, by).items(), key=lambda kv: (kv[0] == "—", kv[0])):
+                r_cols = write_wb_pivot_block(g, r_cols, name, p_, o_) + 2
+            _grid_sheet(wb, title, g)
         write_data_sheet(wb, "Данные WB выкупы", wbfin.DATA_COLS, wb_parts["rows"], widths={7: 48})
     else:
         g = Grid()
@@ -1419,6 +1525,20 @@ def main(argv=None):
               f"комиссия {wt['commission']:,.2f}, логистика + хранение без НДС {wt['r_logistics']:,.2f}, фин. рез. {wt['y_fin']:,.2f}"
               + (f"; {wb_parts['ads_note']}" if wb_parts["ads_note"] else ""))
         rate = (wb_parts.get("buyout") or {}).get("итого")
+        piv_wb, order_wb = wb_pivot(wb_parts["rows"], days)
+        bad_wb, n_wb = check_wb_pivot_against_module(piv_wb, order_wb, wb_parts["month"], days)
+        print(f"  форма «Выкупы WB»: строки месяцев и «Общий итог» против build_month_sheet модуля — ячеек {n_wb}, расхождений {len(bad_wb)}"
+              + (f" {bad_wb[:5]}" if bad_wb else "") + "; Σ дней последнего месяца = строке месяца — в том же счёте")
+        for by in ("brand", "category"):
+            piv_g = wb_pivots_by_group(wb_parts["rows"], days, by)
+            mod = defaultdict(list)
+            for r in wbfin.build_split(wb_parts["rows"], by):
+                mod[r["group"]].append(r)
+            bad_g, n_g = 0, 0
+            for gname, (p_, o_) in piv_g.items():
+                b_, k_ = check_wb_pivot_against_module(p_, o_, mod.get(gname, []), days)
+                bad_g += len(b_); n_g += k_
+            print(f"  форма «Выкупы WB по {'брендам' if by == 'brand' else 'категориям'}»: групп {len(piv_g)}, против build_split модуля — ячеек {n_g}, расхождений {bad_g}")
         print("  коэффициент выкупа WB (модуль): " + (", ".join(f"{k} {v * 100:.2f} %" for k, v in wb_parts["buyout"].items()) if wb_parts.get("buyout") else "нет зрелых месяцев")
               + (f"; {wb_parts['buyout_note']}" if wb_parts.get("buyout_note") else ""))
         if rate is not None:

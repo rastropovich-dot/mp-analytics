@@ -6,8 +6,8 @@
 
 Из оригиналов владельца (data/owner_finrez_*_pivot.xlsx: лист со сводной, pivotTable, pivotCacheDefinition, для заказов — срезы) в нашу книгу
 добавляются три листа — «Сводная Ozon выкупы», «Сводная WB выкупы», «Сводная заказы». Источник кэша меняется с внешнего (Power Query) на
-worksheetSource: лист «Данные …», ref = ровно поля владельца (первые 15 / 15 / 30 колонок с шапкой до последней строки; наши добавки справа в
-диапазон не входят — cacheFields не меняются); refreshOnLoad="1", recordCount="0", pivotCacheRecords пустой: Excel пересчитывает сводную при
+worksheetSource: лист «Данные …», ref = ровно колонки ИСТОЧНИКА владельца (13 / 14 / 29 — поля кэша без fieldGroup; «Дни …» / «Месяцы» — группировка
+сводной по дате, Excel строит их сам; наши колонки справа в диапазон не входят — cacheFields не меняются, rangePr группировок — autoStart / autoEnd); refreshOnLoad="1", recordCount="0", pivotCacheRecords пустой: Excel пересчитывает сводную при
 открытии по нашим данным и сохраняет все фильтры страниц и срезы. connections.xml / queryTables / customXml запроса не переносятся.
 
 Что правится в копируемых частях: ячейки листа сводной — стили сняты (индексы его styles.xml), строки из sharedStrings развёрнуты в inlineStr,
@@ -43,10 +43,25 @@ CT = {
     "drawing": "application/vnd.openxmlformats-officedocument.drawing+xml",
 }
 SPECS = [
-    {"owner": "data/owner_finrez_ozon_buyouts_pivot.xlsx", "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 15},
-    {"owner": "data/owner_finrez_wb_buyouts_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 15},
-    {"owner": "data/owner_finrez_orders_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 30},
+    # ncols — колонки ИСТОЧНИКА владельца: поля кэша без fieldGroup («Дни …» / «Месяцы» — группировка сводной по дате, Excel строит их сам)
+    {"owner": "data/owner_finrez_ozon_buyouts_pivot.xlsx", "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 13},
+    {"owner": "data/owner_finrez_wb_buyouts_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 14},
+    # заказы: 21 колонка источника (Дата … День); «Месяцы» — группировка, «Маржа …» … «Фин.рез %» (8) — ВЫЧИСЛЯЕМЫЕ поля сводной (formula в кэше),
+    # Excel считает их сам из полей источника по именам; в нашем листе одноимённые колонки остаются справа от ref справочно
+    {"owner": "data/owner_finrez_orders_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 21},
 ]
+
+
+def source_fields(cache_xml):
+    """Имена полей кэша из источника и имена полей НЕ из источника (databaseField="0"): групповые («Месяцы» / «Дни …» — Excel строит из даты)
+    и вычисляемые (formula= в кэше, у заказов их 8: «Маржа …» … «Фин.рез %»). Поле «Дата» источника тоже несёт fieldGroup (сгруппировано по
+    дням, par — «Месяцы»), но в источнике есть — признак только databaseField."""
+    src, grp = [], []
+    for m in re.finditer(r'<cacheField ([^>]*)>', cache_xml):
+        attrs = m.group(1)
+        name = re.search(r'name="([^"]+)"', attrs).group(1).replace("&amp;", "&")
+        (grp if 'databaseField="0"' in attrs else src).append(name)
+    return src, grp
 EMPTY_RECORDS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<pivotCacheRecords xmlns="%s" xmlns:r="%s" count="0"/>' % (NS_MAIN, NS_R)).encode()
 
 
@@ -233,6 +248,11 @@ def transplant(book, out, specs=SPECS, row_counts=None):
         cd_xml = re.sub(r'<cacheSource[^>]*/>|<cacheSource[^>]*>.*?</cacheSource>',
                         f'<cacheSource type="worksheet"><worksheetSource ref="{ref}" sheet="{escape(spec["source_sheet"])}"/></cacheSource>', cd_xml, count=1, flags=re.S)
         cd_xml = re.sub(r'\s+recordCount="\d+"', ' recordCount="0"', cd_xml, count=1)
+        src_fields, grp_fields = source_fields(cd_xml)
+        if len(src_fields) != spec["ncols"]:
+            raise SystemExit(f"{spec['owner']}: полей источника в кэше {len(src_fields)}, в SPECS {spec['ncols']} — {src_fields}")
+        # группировка по дате: диапазон — из данных, а не из дат владельца (autoStart / autoEnd), иначе дни за его endDate не попадут в группы
+        cd_xml = re.sub(r'<rangePr groupBy="([^"]+)"[^/]*/>', r'<rangePr autoStart="1" autoEnd="1" groupBy="\1"/>', cd_xml)
         if 'refreshOnLoad="1"' not in cd_xml:
             cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="1" ', 1)
         cd_xml = re.sub(r'numFmtId="(\d+)"', lambda m: f'numFmtId="{numfmt_map.get(int(m.group(1)), int(m.group(1)))}"', cd_xml)
@@ -285,7 +305,8 @@ def transplant(book, out, specs=SPECS, row_counts=None):
         new_ct += [(f"/{sheet_part}", CT["worksheet"]), (f"/{pt_part}", CT["pivotTable"]),
                    (f"/xl/pivotCache/pivotCacheDefinition{k}.xml", CT["pivotCacheDefinition"]), (f"/xl/pivotCache/pivotCacheRecords{k}.xml", CT["pivotCacheRecords"])]
         report.append({"sheet": spec["new_sheet"], "source": spec["source_sheet"], "ref": ref, "rows": nrows, "cache_id": cache_id, "sheet_id": sheet_id,
-                       "fields": len(re.findall(r'<cacheField ', cd_xml)), "slicers": len(parts["slicers"]), "dxf": len(re.findall(r'<dxf>', oz.read("xl/styles.xml").decode("utf-8")))})
+                       "fields": len(re.findall(r'<cacheField ', cd_xml)), "source_fields": len(src_fields), "group_fields": grp_fields, "slicers": len(parts["slicers"]),
+                       "dxf": len(re.findall(r'<dxf>', oz.read("xl/styles.xml").decode("utf-8")))})
     # workbook.xml
     wb_xml = wb_xml.replace("</sheets>", "".join(new_sheets) + "</sheets>", 1)
     if dnames:
@@ -350,7 +371,7 @@ def check(book):
         if not ws:
             errors.append(f"{cdef[0]}: нет worksheetSource"); continue
         ref, src_sheet = ws.group(1), ws.group(2).replace("&amp;", "&")
-        fields = re.findall(r'<cacheField name="([^"]+)"', cd)
+        fields, grp_fields = source_fields(cd)
         src = [s for s in sheets if s[0] == src_sheet]
         if not src:
             errors.append(f"{cdef[0]}: лист-источник «{src_sheet}» отсутствует"); continue
@@ -367,7 +388,12 @@ def check(book):
         last_col = re.match(r"A1:([A-Z]+)(\d+)", ref).group(1)
         if headers[:len(fields)] != fields:
             diff = [(i, a, b) for i, (a, b) in enumerate(zip(headers[:len(fields)], fields), 1) if a != b]
-            errors.append(f"{cdef[0]}: шапка «{src_sheet}» ≠ cacheFields: {diff[:5]}")
+            errors.append(f"{cdef[0]}: шапка «{src_sheet}» ≠ полям источника кэша: {diff[:5]}")
+        inside = [h for h in headers[:len(fields)] if h in grp_fields]
+        if inside:
+            errors.append(f"{cdef[0]}: в ref сводной есть колонки с именами групповых / вычисляемых полей: {inside}")
+        if re.search(r'<rangePr [^>]*(startDate|endDate)=', cd):
+            errors.append(f"{cdef[0]}: rangePr со startDate / endDate владельца — дни за его границей не сгруппируются")
         if col_letter(len(fields)) != last_col:
             errors.append(f"{cdef[0]}: ref {ref} не по числу полей {len(fields)}")
         nrows = count_rows(z, src_part)
@@ -375,7 +401,7 @@ def check(book):
             errors.append(f"{cdef[0]}: ref {ref}, а строк на листе {nrows}")
         if 'refreshOnLoad="1"' not in cd:
             errors.append(f"{cdef[0]}: нет refreshOnLoad")
-        info.append(f"{part}: cacheId {cid}, источник «{src_sheet}» {ref}, полей {len(fields)}, строк {nrows}")
+        info.append(f"{part}: cacheId {cid}, источник «{src_sheet}» {ref}, полей источника {len(fields)} (+ не из источника {len(grp_fields)}: {grp_fields}), строк {nrows}")
     for part in sorted(n for n in names if n.startswith("xl/slicerCaches/")):
         sc = z.read(part).decode("utf-8")
         tab = re.search(r'<pivotTable tabId="(\d+)" name="([^"]+)"', sc)

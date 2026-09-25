@@ -627,20 +627,40 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
     """Листы WB по договору с report_finrez_wb: строки данных, лист выкупов, разрезы, заказы для общего листа. Ошибка — {'error': …}."""
     if wbfin is None:
         return {"error": f"модуль report_finrez_wb не импортирован: {WB_IMPORT_ERROR}"}
+    t = time.time()
+    timings = {}
+
+    def lap(name):
+        nonlocal t
+        timings[name] = round(time.time() - t, 1)
+        t = time.time()
+
     try:
         sb_wb = wbfin.report_loader._client()
         rows = wbfin.build_rows(month_from, month_to, date_to, sb=sb_wb)
+        lap("build_rows (отчёт реализации, словарь товаров, реклама по nm)")
         month = wbfin.build_month_sheet(rows)
         split_brand, split_cat = wbfin.build_split(rows, "brand"), wbfin.build_split(rows, "category")
-        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb)
+        lap("сводные WB")
+        # воронка по товарам — по одному дню за вызов: одно окно на 177 дней (~490 тыс. строк) читается OFFSET-страницами, глубокие страницы
+        # упираются в statement_timeout 8 с (2026-09-25: APIError 57014 после 1 480 с, книга без WB); по дню — страницы мелкие, тот же читатель модуля
+        funnel = []
+        for d in days:
+            funnel += wbfin.load_funnel_products(d, d, sb=sb_wb)
+        lap(f"воронка по товарам по дням ({len(days)} окон, {len(funnel)} строк)")
+        costs = wbfin.wbm.load_costs(sb_wb)
+        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb, funnel_rows=funnel, costs=costs)
+        lap("orders_rows_for_finrez")
         try:
             ads_by_day, _undated = wbfin.wbm.load_ads_db(sb_wb, d1, d2)
         except Exception as exc:  # noqa: BLE001 — реклама не обязана ронять блок заказов
             ads_by_day, ads_note = None, f"реклама WB не прочитана: {exc}"
         else:
             ads_note = ""
+        lap("реклама WB по дням")
+        print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
-                "ads_by_day": ads_by_day, "ads_note": ads_note, "orders_pivot": pivot_orders_wb(orders, days, ads_by_day)}
+                "ads_by_day": ads_by_day, "ads_note": ads_note, "orders_pivot": pivot_orders_wb(orders, days, ads_by_day), "timings": timings}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -1272,6 +1292,9 @@ def main(argv=None):
     print("коэффициенты: выкуп " + ", ".join(f"{k} {v * 100:.2f} %" for k, v in coef["buyout"].items() if v is not None)
           + "; комиссия " + ", ".join(f"{k} {v * 100:.2f} %" for k, v in coef["commission"].items() if v is not None))
     skipped = {k: v for k, v in bstats.items() if k.startswith("unknown_type") or k in ("raw_foreign_date", "days_without_daily_row")}
+    print("остатки дня без SKU по статьям (дней / Σ): " + "; ".join(f"{OWNER_ARTICLE[k]} {bstats.get(f'residual_{k}_days', 0)} / {bstats.get(f'residual_{k}_sum', Z):,.2f}" for k in WIDE_KEYS)
+          + f"; дней из сырья {bstats.get('days_from_raw', 0)}, из таблиц {bstats.get('days_from_tables', 0)}; ключей (день, SKU) с разложенными штуками {bstats.get('units_reallocated_keys', 0)}; "
+            f"строк услуг рекламы пропущено {bstats.get('raw_ads_lines_skipped', 0)}, компенсаций {bstats.get('raw_compensation_lines_skipped', 0)}")
     if unknown or skipped:
         print(f"незнакомые статьи / типы: build_daily {unknown}; сырьё {skipped}")
     code = 0

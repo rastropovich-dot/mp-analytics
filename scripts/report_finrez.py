@@ -446,21 +446,46 @@ def long_identity(long_rows, pivot, order):
 # ---------- сводные ----------
 
 def labels_for(days):
-    """Метки строк сводной: месяцы, дни последнего месяца, «Общий итог»; day → [метки]."""
-    months = []
+    """Метки строк формы: каждый месяц, под ним его дни (day_label), в конце «Общий итог» — дни у всех месяцев (сороковая §3; на листах они
+    свёрнуты под месяцем плюсом); of(d) → [месяц, день, «Общий итог»]."""
+    order, seen = [], set()
     for d in days:
-        if month_label(d) not in months:
-            months.append(month_label(d))
-    last_month = days[-1][:7]
-    day_labels = [day_label(d) for d in days if d.startswith(last_month)]
-    order = months + day_labels + ["Общий итог"]
+        m = d[:7]
+        if m not in seen:
+            seen.add(m)
+            order.append(month_label(d))
+            order.extend(day_label(x) for x in days if x[:7] == m)
+    order.append("Общий итог")
 
     def of(d):
-        out = [month_label(d), "Общий итог"]
-        if d.startswith(last_month):
-            out.insert(1, day_label(d))
-        return out
+        return [month_label(d), day_label(d), "Общий итог"]
     return order, of
+
+
+def label_kind(lab):
+    return "total" if lab == "Общий итог" else ("day" if "." in lab else "month")
+
+
+def check_days_sum(piv, order, keys):
+    """§3: Σ дней каждого месяца = строке месяца по каждому ключу. Возвращает расхождения [(месяц, ключ, Σ дней, месяц)] и число сравнений."""
+    bad, n, month, days_of = [], 0, None, defaultdict(list)
+    for lab in order:
+        kind = label_kind(lab)
+        if kind == "month":
+            month = lab
+        elif kind == "day":
+            days_of[month].append(lab)
+    for m, dl in days_of.items():
+        for key in keys:
+            vals = [(piv.get(d) or {}).get(key) for d in dl]
+            if all(v is None for v in vals):
+                continue
+            s = sum((D(v) for v in vals if v is not None), Z)
+            mv = (piv.get(m) or {}).get(key)
+            n += 1
+            if q(s - D(mv or 0)) != 0:
+                bad.append((m, key, s, mv))
+    return bad, n
 
 
 BUYOUT_KEYS = ("turnover", "commission", "logistics", "ads", "acquiring", "other", "cogs", "coinvest", "units",
@@ -575,48 +600,44 @@ def order_commission(coef, day):
     return coef["commission"].get(month_label(day)) or coef["commission"].get("все")
 
 
-def pivot_orders(rows, days, coef, daily_rows):
-    """Лист «Заказы» (блок Ozon): формулы владельца на наших коэффициентах, ПОСТРОЧНО (выручка, комиссия, СС считаются по строке и складываются —
-    так «Свод» = Σ «Данных заказы» и в «Общем итоге», где месяцы с разной комиссией)."""
+def svod_from_data(data_rows, days, mp):
+    """Лист «Заказы» («Свод») для площадки — на СУММАХ строк «Данных заказы» по формулам вычисляемых полей сводной владельца (сороковая §2):
+    Выручка = Σ Выручка (по всем созданным, без коэффициента выкупа); Себестоимость = Σ Себ-ть Реал; Маржа = Выручка − Себестоимость; М-ть = Маржа /
+    Выручка; Реклама = Σ Реклама без НДС; ДДР = Реклама / Σ Выкуплено (рубли); Соинвест = (Σ без НДС − Σ с СПП) / Σ без НДС по измеренным строкам;
+    Комиссия % = Σ Комиссия руб / Σ ₽; Гр.фин.рез = Σ Выкуплено − Σ Себ-ть × (Σ Выкуплено / Σ Выручка) − Реклама; Гр.фин.рез % = Гр.фин.рез / Σ Выкуплено;
+    Цена = Σ ₽ / Σ шт. Коэффициент выкупа входит только через рубли «Выкуплено»."""
     order, of = labels_for(days)
     acc = {lab: defaultdict(Decimal) for lab in order}
-    ads_by_day = {r["date"]: r.get("ads") for r in daily_rows}
-    buyout_all = coef["buyout"].get("все")
-    for r in rows:
-        comm = order_commission(coef, r["date"])
-        net = r["created_a"] / r["vat"]
+    for r in data_rows:
+        if r["mp"] != mp:
+            continue
         for lab in of(r["date"]):
             a = acc[lab]
-            a["created_a"] += r["created_a"]; a["created_q"] += r["created_q"]; a["turnover_net"] += net
-            if r["sku"] != NO_SKU and r["buyer_a"] is not None:
-                a["buyer_a"] += r["buyer_a"]; a["buyer_base"] += r["created_a"]      # доля — по измеренным строкам, покрытие — рядом
-            if buyout_all is not None and comm is not None:
-                a["revenue"] += net * buyout_all * (1 - comm); a["comm_rub"] += net * buyout_all * comm; a["base"] += net * buyout_all
-                a["cogs"] += r["cogs_created"] * buyout_all; a["priced"] += 1
-    for d in days:
-        ads = ads_by_day.get(d)
-        if ads is not None:
-            for lab in of(d):
-                acc[lab]["ads_net"] += ads
+            a["created_a"] += r["created_a"]; a["created_q"] += r["created_q"]; a["net"] += r["created_net"]; a["ads_net"] += r["ads_net"]
+            a["cogs"] += r.get("cogs_real") or Z
+            if r.get("revenue") is not None:
+                a["revenue"] += r["revenue"]; a["comm_rub"] += r["commission_rub"]; a["priced"] += 1
+            if r.get("buyout_rub") is not None:
+                a["buyout_rub"] += r["buyout_rub"]
+            if r.get("with_spp") is not None:
+                a["spp_base_a"] += r["created_a"]; a["spp_buyer_a"] += (r.get("buyer_a") if r.get("buyer_a") is not None else r["with_spp"] * r["vat"])
     out = {}
     for lab in order:
-        a = acc[lab]
-        month_key = lab if lab in coef["commission"] else (lab.split(".")[-1] if "." in lab else "все")
-        m = {"created_a": a["created_a"], "created_q": a["created_q"], "price": rep.ratio(a["created_a"], a["created_q"]), "buyout": buyout_all,
-             "commission_pct": rep.ratio(a["comm_rub"], a["base"]) if a["base"] else (coef["commission"].get(month_key) or coef["commission"].get("все"))}
-        if buyout_all is None or not a["priced"]:
-            m.update({k: None for k in ("revenue", "cogs", "margin", "margin_pct", "gross_fin", "gross_fin_pct")})
+        a, priced = acc[lab], bool(acc[lab]["priced"])
+        m = {"created_a": a["created_a"], "created_q": a["created_q"], "price": rep.ratio(a["created_a"], a["created_q"]),
+             "commission_pct": rep.ratio(a["comm_rub"], a["created_a"]) if priced else None, "ads_net": a["ads_net"],
+             "coinvest_pct": rep.ratio(a["spp_base_a"] - a["spp_buyer_a"], a["spp_base_a"]) if a["spp_base_a"] else None,   # (без НДС − с СПП) / без НДС = (₽ − покупатель) / ₽
+             "coinvest_cover": rep.ratio(a["spp_base_a"], a["created_a"]), "buyout_rub": a["buyout_rub"] if priced else None,
+             "buyout": rep.ratio(a["buyout_rub"], a["revenue"]) if priced and a["revenue"] else None}
+        if not priced:
+            m.update({k: None for k in ("revenue", "cogs", "margin", "margin_pct", "drr_pct", "gross_fin", "gross_fin_pct")})
         else:
             m["revenue"], m["cogs"] = a["revenue"], a["cogs"]
             m["margin"] = a["revenue"] - a["cogs"]
-            m["margin_pct"] = rep.ratio(m["margin"], m["revenue"])
-        m["ads_net"] = a["ads_net"]
-        m["drr_pct"] = rep.ratio(a["ads_net"], a["turnover_net"])
-        m["coinvest_pct"] = rep.ratio(a["buyer_base"] - a["buyer_a"], a["buyer_base"]) if a["buyer_base"] else None
-        m["coinvest_cover"] = rep.ratio(a["buyer_base"], a["created_a"])                 # какая доля созданного оборота измерена по цене покупателя
-        if m.get("margin") is not None:
-            m["gross_fin"] = m["margin"] - a["ads_net"]
-            m["gross_fin_pct"] = rep.ratio(m["gross_fin"], m["revenue"])
+            m["margin_pct"] = rep.ratio(m["margin"], a["revenue"])
+            m["drr_pct"] = rep.ratio(a["ads_net"], a["buyout_rub"]) if a["buyout_rub"] else None
+            m["gross_fin"] = a["buyout_rub"] - a["cogs"] * (a["buyout_rub"] / a["revenue"] if a["revenue"] else Z) - a["ads_net"]
+            m["gross_fin_pct"] = rep.ratio(m["gross_fin"], a["buyout_rub"]) if a["buyout_rub"] else None
         out[lab] = m
     return out, order
 
@@ -670,55 +691,14 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
             buyout, buyout_note = {}, f"коэффициент выкупа WB не прочитан: {exc}"
         lap("коэффициент выкупа WB (модуль)")
         print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
-        rate = buyout.get("итого")
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
-                "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note,
-                "orders_pivot": pivot_orders_wb(orders, days, ads_by_day, rate), "orders_pivot_no_rate": pivot_orders_wb(orders, days, ads_by_day, None),
-                "timings": timings}
+                "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
-def pivot_orders_wb(orders, days, ads_by_day, buyout=None):
-    """Блок WB листа «Заказы» по меткам — теми же формулами, что Ozon (решение владельца 2026-09-25): Выручка = Заказы без НДС × Выкуплено ×
-    (1 − Комиссия), Комиссия = 1 − 0,58 модуля, Себестоимость = СС модуля × Выкуплено, Маржа = Выручка − Себестоимость, Гр. фин. рез = Маржа − Реклама;
-    Выкуплено — итог зрелых месяцев buyout_rate_for_finrez модуля (одно число на площадку); buyout None — 100 % (по созданным, как до 09-25).
-    Реклама — списания дня wb_ad_spend_daily без НДС; построчно — так «Свод» = Σ «Данных заказы»."""
-    order, of = labels_for(days)
-    acc = {lab: defaultdict(Decimal) for lab in order}
-    dayset = set(days)
-    comm = (1 - wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION) if wbfin else Decimal("0.42")
-    b = buyout if buyout is not None else Decimal(1)
-    for r in orders:
-        if r["date"] not in dayset:
-            continue
-        net = D(r["orders_sum"]) / vat_for(r["date"])
-        for lab in of(r["date"]):
-            a = acc[lab]
-            a["created_a"] += D(r["orders_sum"]); a["created_q"] += D(r["orders_qty"]); a["turnover_net"] += net
-            a["revenue"] += net * b * (1 - comm); a["comm_rub"] += net * b * comm; a["base"] += net * b
-            if r.get("cogs") is not None:
-                a["cogs"] += D(r["cogs"]) * b
-            else:
-                a["no_cost_q"] += D(r["orders_qty"])
-    if ads_by_day:
-        for d in days:
-            ads = ads_by_day.get(d)
-            if ads is not None:
-                for lab in of(d):
-                    acc[lab]["ads_net"] += D(ads) / vat_for(d)
-    out = {}
-    for lab in order:
-        a = acc[lab]
-        m = {"created_a": a["created_a"], "created_q": a["created_q"], "price": rep.ratio(a["created_a"], a["created_q"]),
-             "commission_pct": comm, "buyout": b, "revenue": a["revenue"], "cogs": a["cogs"],
-             "margin": a["revenue"] - a["cogs"], "ads_net": a["ads_net"] if ads_by_day else None, "coinvest_pct": None, "no_cost_q": a["no_cost_q"]}
-        m["margin_pct"] = rep.ratio(m["margin"], a["revenue"])
-        m["drr_pct"] = rep.ratio(m["ads_net"], a["turnover_net"]) if m["ads_net"] is not None else None
-        m["gross_fin"] = (m["margin"] - m["ads_net"]) if m["ads_net"] is not None else None
-        m["gross_fin_pct"] = rep.ratio(m["gross_fin"], a["revenue"]) if m["gross_fin"] is not None else None
-        out[lab] = m
-    return out
+def _removed_pivot_orders_wb():
+    return None
 
 
 def wb_pivot(rows, days):
@@ -771,43 +751,38 @@ def check_wb_pivot_against_module(piv, order, month_rows, days):
             n += 1
             if (a is None) != (b is None) or (a is not None and q(D(a) - D(b)) != 0):
                 bad.append((lab, k, (a, b)))
-    last_month = days[-1][:7]
-    month_lab = month_label(days[-1])
-    for k in ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "acquiring"):
-        vals = [piv.get(day_label(d), {}).get(k) for d in days if d.startswith(last_month)]
-        if all(v is None for v in vals):
-            continue
-        s = sum((D(v) for v in vals if v is not None), Z)
-        n += 1
-        if q(s - D(piv[month_lab].get(k) or 0)) != 0:
-            bad.append((f"Σ дней {month_lab}", k, (s, piv[month_lab].get(k))))
-    return bad, n
+    bad_days, n_days = check_days_sum(piv, order, ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "acquiring"))
+    bad += [(f"Σ дней {m}", k, (s, mv)) for m, k, s, mv in bad_days]
+    return bad, n + n_days
 
 
-def write_wb_pivot_block(g, r_cols, title, piv, order):
-    """Блок формы владельца для WB — как write_pivot_block у Ozon: заголовок блока на две строки выше, «Названия столбцов» в r_cols, «Названия строк»
-    и шапка семи денег формы + наши расчётные K … Z в r_cols + 2, строки меток с r_cols + 3. Возвращает следующую свободную строку."""
+def write_wb_pivot_block(g, r0, title, piv, order):
+    """Блок формы второго кабинета для WB, компактно: [заголовок группы] → шапка («Названия строк» в A, семь денег формы, правее K … Z) →
+    строки меток: месяц, его дни (outline 1, свёрнуты), «Общий итог». Возвращает следующую свободную строку."""
     money = [(h, k, f) for h, k, f in wbfin.SHEET_COLS[1:8]]
     calc = [(h, k, f) for h, k, f in wbfin.SHEET_COLS[8:] if k]
-    g.set(r_cols - 2, 1, title, bold=True)
-    g.set(r_cols, 2, "Названия столбцов", bold=True)
-    g.set(r_cols + 1, 2, "Значения", bold=True)
-    g.set(r_cols + 2, 1, "Названия строк", bold=True)
+    r = r0
+    if title:
+        g.set(r, 1, title, bold=True); r += 1
+    g.set(r, 1, "Названия строк", bold=True)
     for j, (h, _k, _f) in enumerate(money):
-        g.set(r_cols + 2, 2 + j, h, bold=True)
-    calc0 = 2 + len(money) + 2
+        g.set(r, 2 + j, h, bold=True)
+    calc0 = 2 + len(money)
     for j, (h, _k, _f) in enumerate(calc):
-        g.set(r_cols + 2, calc0 + j, h, bold=True, fill=True, wrap=True)
-    g.heights[r_cols + 2] = 45
-    for i, lab in enumerate(order):
-        r = r_cols + 3 + i
-        m = piv.get(lab) or {}
-        g.set(r, 1, lab, bold=(lab == "Общий итог"))
+        g.set(r, calc0 + j, h, bold=True, fill=True, wrap=True)
+    g.heights[r] = 45
+    r += 1
+    for lab in order:
+        kind, m = label_kind(lab), (piv.get(lab) or {})
+        g.set(r, 1, lab, bold=(kind != "day"))
+        if kind == "day":
+            g.outline[r] = 1
         for j, (_h, k, f) in enumerate(money):
             g.set(r, 2 + j, m.get(k), f)
         for j, (_h, k, f) in enumerate(calc):
             g.set(r, calc0 + j, m.get(k), f)
-    return r_cols + 3 + len(order) + 2
+        r += 1
+    return r
 
 
 def wb_orders_as_data_rows(orders):
@@ -831,7 +806,7 @@ ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Маг�
                    ("Заказы, ₽", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Реклама, ₽", "ads", "money"), ("Себ-ть Реал", "cogs_real", "money"),
                    ("Наименование", "name", None), ("Бренд", "brand", None), ("Статус", "category", None), ("Заказы, руб без НДС", "created_net", "money"),
                    ("Реклама, руб без НДС", "ads_net", "money"), ("СПП,%", "spp", "pct"), ("Заказы, руб c СПП", "with_spp", "money"), ("Комиссия", "commission", "pct"),
-                   ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Комиссия, руб", "commission_rub", "money"), ("Выкуплено", "buyout", "pct"),
+                   ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Комиссия, руб", "commission_rub", "money"), ("Выкуплено", "buyout_rub", "money"),
                    ("Неделя года", "week", "int"), ("День", "day_num", "int"), ("Маржа, руб без НДС", "margin", "money"),
                    ("Маржинальность, %", "margin_pct", "pct"), ("ДДР, %", "drr_pct", "pct"), ("Соинвест, %", "coinvest_pct", "pct"), ("Комиссия сред", "commission_avg", "pct"),
                    ("Фин.рез", "fin", "money"), ("Цена", "price", "money"), ("Фин.рез %", "fin_pct", "pct"),
@@ -843,23 +818,34 @@ ORDER_CHECK_COLS = [("Оборот (с НДС)", "created_a"), ("Заказы, �
 
 
 def order_data_row(r, comm, comm_avg, buyout, mp, shop):
-    """Строка «Данные заказы» по формулам «Свод»: Выручка = Заказы без НДС × Выкуплено × (1 − Комиссия); Комиссия, руб = Заказы без НДС × Выкуплено ×
-    Комиссия; Маржа = Выручка − Себ-ть Реал × Выкуплено; Фин.рез = Маржа − Реклама без НДС; СПП = 1 − цена покупателя / цена продавца, где измерено;
-    Выкуплено и Комиссия — коэффициенты площадки (лист «Коэффициенты»); проценты строки — от её же чисел."""
+    """Строка «Данные заказы» в семантике источника сводной владельца (сороковая §2): Заказы без НДС = ₽ / НДС; Выручка = Заказы без НДС ×
+    (1 − Комиссия) — по всем созданным, без коэффициента выкупа; Комиссия, руб = Заказы ₽ × Комиссия (на базе с НДС — так его «Комиссия сред» =
+    Комиссия руб / Заказы ₽ показывает коэффициент); Выкуплено = Выручка × коэффициент выкупа площадки — РУБЛИ; Себ-ть Реал = СС × шт × индекс по
+    всем заказам; Заказы, руб c СПП — цена покупателя без НДС (как и «без НДС» рядом, иначе его Соинвест % делит суммы с разным НДС). Наши восемь
+    колонок 22 … 29 — ровно по формулам вычисляемых полей его сводной построчно: Маржа = Выручка − Себ-ть; М-ть = Маржа / Выручка; ДДР = Реклама
+    без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС; Комиссия сред = Комиссия руб / Заказы ₽; Фин.рез = Выкуплено − Себ-ть × (Выкуплено /
+    Выручка) − Реклама без НДС; Цена = ₽ / шт; Фин.рез % = Фин.рез / Выкуплено. comm_avg — не используется (оставлен ради подписи), buyout — коэффициент."""
+    del comm_avg
     vat, created, qty, ads = r["vat"], r["created_a"], r["created_q"], (r.get("ads") or Z)
     net, ads_net, buyer, cogs_real = created / vat, ads / vat, r.get("buyer_a"), r.get("cogs_created")
     spp = (1 - buyer / created) if (buyer is not None and created) else None
-    priced = buyout is not None and comm is not None
-    revenue = net * buyout * (1 - comm) if priced else None
-    margin = revenue - (cogs_real or Z) * buyout if priced else None
-    fin = margin - ads_net if priced else None
+    with_spp = (buyer / vat) if buyer is not None else None
+    cogs_v = cogs_real if cogs_real is not None else Z
+    revenue = net * (1 - comm) if comm is not None else None
+    commission_rub = created * comm if comm is not None else None
+    buyout_rub = revenue * buyout if (revenue is not None and buyout is not None) else None
+    margin = (revenue - cogs_v) if revenue is not None else None
+    fin = (buyout_rub - cogs_v * (buyout_rub / revenue if revenue else Z) - ads_net) if buyout_rub is not None else None
     d = r["date"]
     return {"date": d, "mp": mp, "shop": shop, "article": r["article"], "created_a": created, "created_q": qty, "ads": ads, "cogs_real": cogs_real,
-            "name": r["name"], "brand": r["brand"], "category": r["category"], "created_net": net, "ads_net": ads_net, "spp": spp, "with_spp": buyer,
-            "commission": comm, "revenue": revenue, "commission_rub": net * buyout * comm if priced else None, "buyout": buyout,
+            "name": r["name"], "brand": r["brand"], "category": r["category"], "created_net": net, "ads_net": ads_net, "spp": spp, "with_spp": with_spp,
+            "commission": comm, "revenue": revenue, "commission_rub": commission_rub, "buyout_rub": buyout_rub, "buyout_rate": buyout,
             "week": date.fromisoformat(d).isocalendar()[1], "day_num": int(d[8:10]), "month_num": int(d[5:7]), "margin": margin,
-            "margin_pct": rep.ratio(margin, revenue) if priced else None, "drr_pct": rep.ratio(ads_net, net), "coinvest_pct": spp, "commission_avg": comm_avg,
-            "fin": fin, "price": rep.ratio(created, qty), "fin_pct": rep.ratio(fin, revenue) if priced else None, "sku": r["sku"],
+            "margin_pct": rep.ratio(margin, revenue) if revenue else None, "drr_pct": rep.ratio(ads_net, buyout_rub) if buyout_rub else None,
+            "coinvest_pct": spp,          # = (без НДС − с СПП) / без НДС, считано на суммах с НДС — без пыли Decimal от деления на НДС
+            "buyer_a": buyer,
+            "commission_avg": rep.ratio(commission_rub, created) if (commission_rub is not None and created) else comm,
+            "fin": fin, "price": rep.ratio(created, qty), "fin_pct": rep.ratio(fin, buyout_rub) if buyout_rub else None, "sku": r["sku"],
             "confirmed_a": r.get("confirmed_a"), "platform_name": r.get("platform_name"), "month": r["month"], "vat": vat}
 
 
@@ -916,43 +902,45 @@ def check_labels(data_rows):
 
 
 def sum_order_data(data_rows, days, mp):
-    """Σ «Данных заказы» по меткам сводной для площадки: деньги суммой, проценты — от сумм (как в «Свод»)."""
+    """Приёмка §2.3 (а): формулы вычисляемых полей сводной владельца, буквально, на простых суммах полей источника по метке — независимо от
+    svod_from_data. Маржа = Выручка − Себ-ть; М-ть = Маржа / Выручка; ДДР = Реклама без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС;
+    Комиссия сред = Комиссия руб / Заказы ₽; Фин.рез = Выкуплено − Себ-ть × (Выкуплено / Выручка) − Реклама без НДС; Цена = ₽ / шт; Фин.рез % = Фин.рез / Выкуплено."""
     order, of = labels_for(days)
-    acc = {lab: defaultdict(Decimal) for lab in order}
+    keys = ("created_a", "created_q", "ads_net", "cogs_real", "created_net", "revenue", "commission_rub", "buyout_rub")
+    s = {lab: {k: Z for k in keys} | {"spp_net": Z, "spp_with": Z, "rows": 0} for lab in order}
     for r in data_rows:
         if r["mp"] != mp:
             continue
         for lab in of(r["date"]):
-            a = acc[lab]
-            a["created_a"] += r["created_a"]; a["created_q"] += r["created_q"]; a["net"] += r["created_net"]; a["ads_net"] += r["ads_net"]
-            if r["revenue"] is not None:
-                a["revenue"] += r["revenue"]; a["comm_rub"] += r["commission_rub"]; a["base"] += r["created_net"] * r["buyout"]
-                a["cogs"] += (r["cogs_real"] or Z) * r["buyout"]; a["margin"] += r["margin"]; a["fin"] += r["fin"]; a["priced"] += 1
-            if r["spp"] is not None:
-                a["spp_base"] += r["created_a"]; a["spp_buyer"] += r["with_spp"]
+            a = s[lab]; a["rows"] += 1
+            for k in keys:
+                a[k] += r.get(k) or Z
+            if r.get("with_spp") is not None:
+                a["spp_net"] += r["created_net"]; a["spp_with"] += r["with_spp"]
     out = {}
     for lab in order:
-        a, priced = acc[lab], bool(acc[lab]["priced"])
+        a = s[lab]
+        if not a["rows"]:
+            out[lab] = {}; continue
+        margin = a["revenue"] - a["cogs_real"]
+        fin = a["buyout_rub"] - a["cogs_real"] * (a["buyout_rub"] / a["revenue"] if a["revenue"] else Z) - a["ads_net"]
         out[lab] = {"created_a": a["created_a"], "created_q": a["created_q"], "price": rep.ratio(a["created_a"], a["created_q"]),
-                    "commission_pct": rep.ratio(a["comm_rub"], a["base"]) if a["base"] else None,
-                    "revenue": a["revenue"] if priced else None, "cogs": a["cogs"] if priced else None, "margin": a["margin"] if priced else None,
-                    "margin_pct": rep.ratio(a["margin"], a["revenue"]) if priced else None, "ads_net": a["ads_net"], "drr_pct": rep.ratio(a["ads_net"], a["net"]),
-                    "coinvest_pct": rep.ratio(a["spp_base"] - a["spp_buyer"], a["spp_base"]) if a["spp_base"] else None,
-                    "gross_fin": a["fin"] if priced else None, "gross_fin_pct": rep.ratio(a["fin"], a["revenue"]) if priced else None}
+                    "commission_pct": rep.ratio(a["commission_rub"], a["created_a"]), "revenue": a["revenue"], "cogs": a["cogs_real"], "margin": margin,
+                    "margin_pct": rep.ratio(margin, a["revenue"]), "ads_net": a["ads_net"], "drr_pct": rep.ratio(a["ads_net"], a["buyout_rub"]),
+                    "coinvest_pct": rep.ratio(a["spp_net"] - a["spp_with"], a["spp_net"]) if a["spp_net"] else None,
+                    "gross_fin": fin, "gross_fin_pct": rep.ratio(fin, a["buyout_rub"])}
     return out
 
 
 def check_orders_data(data_rows, days, piv_ozon, piv_wb):
-    """«Свод» против Σ «Данных заказы» по месяцам, итогу и площадкам: [(площадка, метка, колонка, свод, данные, разница)] по 13 колонкам.
-    Деньги сравниваются до копейки, проценты — до 0,01 п. п."""
+    """«Свод» (svod_from_data) против формул владельца на Σ «Данных заказы» (sum_order_data) по всем меткам и площадкам: [(площадка, метка, колонка,
+    свод, формулы, разница)] по 13 колонкам. Деньги до копейки, проценты до 0,01 п. п."""
     out = []
     for mp, piv in (("Ozon", piv_ozon), ("WB", piv_wb)):
         if not piv:
             continue
         sums = sum_order_data(data_rows, days, mp)
         for lab in sums:
-            if "." in lab:
-                continue
             for title, k in ORDER_CHECK_COLS:
                 a, b = (piv.get(lab) or {}).get(k), sums[lab].get(k)
                 pct = k.endswith("_pct")
@@ -982,16 +970,38 @@ def _styles():
 
 
 class Grid:
-    """Разреженная сетка для сводных листов: ячейки ставятся по (строка, колонка), лист пишется построчно (write_only)."""
+    """Разреженная сетка для листов формы: ячейки по (строка, колонка), лист пишется построчно (write_only); outline — уровень группировки строки
+    (дни под месяцем, свёрнуты); ширины колонок — по содержимому (без строк примечаний)."""
 
     def __init__(self):
-        self.cells, self.max_r, self.max_c, self.heights = {}, 0, 0, {}
+        self.cells, self.max_r, self.max_c, self.heights, self.outline = {}, 0, 0, {}, {}
 
-    def set(self, r, c, v, fmt=None, bold=False, fill=False, wrap=False):
+    def set(self, r, c, v, fmt=None, bold=False, fill=False, wrap=False, note=False):
         if isinstance(v, Decimal):
             v = float(v)
-        self.cells[(r, c)] = (v, fmt, bold, fill, wrap)
+        self.cells[(r, c)] = (v, fmt, bold, fill, wrap, note)
         self.max_r, self.max_c = max(self.max_r, r), max(self.max_c, c)
+
+    def widths(self):
+        """{колонка: ширина} по самому длинному значению: числа с разделителями, проценты, текст; шапка с переносом — не шире 18."""
+        w = defaultdict(lambda: 9)
+        for (r, c), (v, fmt, bold, fill, wrap, note) in self.cells.items():
+            if v is None or v == "" or note:
+                continue
+            if fmt == "money":
+                n = len(f"{float(v):,.2f}") + 1
+            elif fmt == "int":
+                n = len(f"{float(v):,.0f}") + 1
+            elif fmt == "pct":
+                n = 8
+            elif fmt == "date":
+                n = 11
+            elif wrap:
+                n = min(len(str(v)), 18)
+            else:
+                n = min(len(str(v)) + 1, 60)
+            w[c] = max(w[c], n)
+        return dict(w)
 
     def flush(self, ws):
         from openpyxl.cell import WriteOnlyCell
@@ -1000,13 +1010,16 @@ class Grid:
         for r in range(1, self.max_r + 1):
             if r in self.heights:
                 ws.row_dimensions[r].height = self.heights[r]
+            if r in self.outline:
+                ws.row_dimensions[r].outlineLevel = self.outline[r]
+                ws.row_dimensions[r].hidden = True
             row = []
             for c in range(1, self.max_c + 1):
                 cell = self.cells.get((r, c))
                 if cell is None:
                     row.append(None)
                     continue
-                v, fmt, bold, fill, wrap = cell
+                v, fmt, bold, fill, wrap, _note = cell
                 if not (fmt or bold or fill or wrap):
                     row.append(v)
                     continue
@@ -1063,25 +1076,29 @@ def write_data_sheet(wb, title, cols, rows, widths=None, freeze="A2"):
     return n
 
 
-def write_pivot_block(g, r_cols, title, pivot, order):
-    """Блок сводной владельца: заголовок блока на две строки выше, «Названия столбцов» в строке r_cols (как у него — 9-я на «Вывод данных»),
-    статьи r_cols + 1, «Названия строк» и подзаголовки r_cols + 2, строки меток с r_cols + 3. Возвращает следующую свободную строку."""
-    g.set(r_cols - 2, 1, title, bold=True)
-    g.set(r_cols, 2, "Названия столбцов", bold=True)
+def write_pivot_block(g, r0, title, pivot, order):
+    """Блок формы владельца (Ozon), компактно (сороковая §3): [заголовок группы] → строка статей («Названия столбцов» в A) → строка подзаголовков
+    «Начисления / Ст-ть продаж» и наших расчётных («Названия строк» в A) → строки меток: месяц, под ним его дни (outline 1, свёрнуты), в конце
+    «Общий итог». Пустых строк и колонок внутри блока нет. Возвращает следующую свободную строку."""
+    r = r0
+    if title:
+        g.set(r, 1, title, bold=True); r += 1
+    g.set(r, 1, "Названия столбцов", bold=True); g.set(r + 1, 1, "Названия строк", bold=True)
     c = 2
     for art in ARTICLES:
-        g.set(r_cols + 1, c, art, bold=True)
-        g.set(r_cols + 2, c, " Начисления"); g.set(r_cols + 2, c + 1, " Ст-ть продаж в себ-ти")
+        g.set(r, c, art, bold=True)
+        g.set(r + 1, c, " Начисления"); g.set(r + 1, c + 1, " Ст-ть продаж в себ-ти")
         c += 2
-    g.set(r_cols + 2, 1, "Названия строк", bold=True)
-    calc0 = c + 2
+    calc0 = c
     for j, (h, _k, _f) in enumerate(PIVOT_CALC + PIVOT_EXTRA):
-        g.set(r_cols + 2, calc0 + j, h, bold=True, fill=True, wrap=True)
-    g.heights[r_cols + 2] = 45
-    for i, lab in enumerate(order):
-        r = r_cols + 3 + i
-        m = pivot.get(lab) or {}
-        g.set(r, 1, lab, bold=(lab == "Общий итог"))
+        g.set(r + 1, calc0 + j, h, bold=True, fill=True, wrap=True)
+    g.heights[r + 1] = 45
+    r += 2
+    for lab in order:
+        kind, m = label_kind(lab), (pivot.get(lab) or {})
+        g.set(r, 1, lab, bold=(kind != "day"))
+        if kind == "day":
+            g.outline[r] = 1
         c = 2
         for art in ARTICLES:
             g.set(r, c, m.get(PIVOT_ARTICLE_KEYS[art], Z), "money")
@@ -1091,14 +1108,21 @@ def write_pivot_block(g, r_cols, title, pivot, order):
         vals["commission_abs"] = -m.get("commission", Z) if m else None
         for j, (_h, k, f) in enumerate(PIVOT_CALC + PIVOT_EXTRA):
             g.set(r, calc0 + j, vals.get(k), f)
-    return r_cols + 3 + len(order) + 2
+        r += 1
+    return r
 
 
-def _grid_sheet(wb, title, g, widths=15, ncols=40, freeze=None):
+def _grid_sheet(wb, title, g, widths=None, ncols=None, freeze=None):
+    """Лист из сетки: ширины — по содержимому (widths — {колонка: ширина} поверх), группировка строк с плюсом у строки месяца (summaryBelow=False)."""
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.properties import Outline
     ws = wb.create_sheet(title)
-    for j in range(1, ncols + 1):
-        ws.column_dimensions[get_column_letter(j)].width = widths
+    auto = g.widths()
+    auto.update(widths or {})
+    for c, w in auto.items():
+        ws.column_dimensions[get_column_letter(c)].width = w
+    if g.outline:
+        ws.sheet_properties.outlinePr = Outline(summaryBelow=False, summaryRight=False)
     if freeze:
         ws.freeze_panes = freeze
     g.flush(ws)
@@ -1201,8 +1225,9 @@ def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
 
 def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coef, notes, catalog_source, today, wb=None, order_data_rows=None, timings=None):
     """Книга в форме владельца. Порядок листов: Выкупы Ozon · × бренд · × категория · Данные Ozon выкупы · Выкупы WB · по брендам · по категориям ·
-    Данные WB выкупы · Заказы · Коэффициенты · Данные заказы · Примечания. Выравнивание с образцом: «Названия столбцов» — строка 9 на листах выкупов,
-    строка 7 на «Заказы»; служебные подписи — выше. order_data_rows None — лист «Данные заказы» не пишется (--no-orders-data)."""
+    Данные WB выкупы · Заказы · Коэффициенты · Данные заказы · Списки · Артикул · Примечания (+ три «Сводная …» пост-обработкой). Листы формы компактны
+    (сороковая §3): подпись — строка 1, шапка — со 2-й, данные под ней; дни каждого месяца под ним, свёрнуты (outline); «Общий итог» последним.
+    order_data_rows None — лист «Данные заказы» не пишется (--no-orders-data)."""
     import openpyxl
     timings = timings if timings is not None else {}
     t = time.time()
@@ -1215,20 +1240,18 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     wb_parts = wb
     wb = openpyxl.Workbook(write_only=True)
     g = Grid()
-    g.set(1, 1, "Выкупы Ozon — форма «Вывод данных» владельца на наших данных", bold=True)
-    g.set(2, 1, "строки 3 … 8 — место блока фильтров сводной владельца; «Названия столбцов» — строка 9, «Названия строк» — 11, как в образце")
-    nxt = write_pivot_block(g, 9, "Все бренды и категории", pivots["all"][0]["Ozon"], pivots["all"][1])
+    g.set(1, 1, "Выкупы Ozon — форма «Вывод данных» владельца на наших данных; дни каждого месяца — под ним, раскрываются «+» (фильтры — на листе «Сводная Ozon выкупы»)", bold=True, note=True)
+    nxt = write_pivot_block(g, 2, None, pivots["all"][0]["Ozon"], pivots["all"][1])
     for n, line in enumerate(notes["buyouts"]):
-        g.set(nxt + n, 1, line)
-    _grid_sheet(wb, "Выкупы Ozon", g, freeze="B12")
+        g.set(nxt + 1 + n, 1, line, note=True)
+    _grid_sheet(wb, "Выкупы Ozon", g, freeze="B4")
     for title, key in (("Выкупы Ozon × бренд", "brand"), ("Выкупы Ozon × категория", "category")):
         g = Grid()
-        g.set(1, 1, title, bold=True)
-        g.set(2, 1, "блоки — по группе; в каждом «Названия столбцов» на две строки ниже заголовка блока")
-        r_cols, piv, order = 9, pivots[key][0], pivots[key][1]
+        g.set(1, 1, title + " — блоки по группе; дни каждого месяца — под ним, раскрываются «+»", bold=True, note=True)
+        r_cols, piv, order = 2, pivots[key][0], pivots[key][1]
         for name in sorted(piv, key=lambda n: (n == "", n)):
-            r_cols = write_pivot_block(g, r_cols, name or "(без признака)", piv[name], order) + 2
-        _grid_sheet(wb, title, g)
+            r_cols = write_pivot_block(g, r_cols, name or "(без признака)", piv[name], order) + 1
+        _grid_sheet(wb, title, g, freeze="B2")
     lap("сводные выкупов")
     n_long = write_data_sheet(wb, "Данные Ozon выкупы", LONG_COLS, long_rows, widths={13: 48})
     lap("Данные Ozon выкупы")
@@ -1236,53 +1259,54 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
         # форма владельца, как у Ozon (тридцать девятая §2): месяцы, дни последнего месяца, «Общий итог»; блоки по бренду / категории
         piv, order = wb_pivot(wb_parts["rows"], days)
         g = Grid()
-        g.set(1, 1, "Выкупы WB — форма «Свод» второго кабинета на наших данных (строки модуля WB-сессии по дням)", bold=True)
-        g.set(2, 1, "строки 3 … 8 — место блока фильтров сводной владельца; «Названия столбцов» — строка 9, «Названия строк» — 11, как у Ozon; K … Z — тождества второго кабинета (R включает хранение)")
-        nxt = write_wb_pivot_block(g, 9, "Все бренды и категории", piv, order)
+        g.set(1, 1, "Выкупы WB — форма «Свод» второго кабинета на наших данных (строки модуля WB-сессии по дням); дни каждого месяца — под ним, «+»; K … Z — тождества второго кабинета (R включает хранение)", bold=True, note=True)
+        nxt = write_wb_pivot_block(g, 2, None, piv, order)
         for n, line in enumerate(notes.get("wb") or ()):
-            g.set(nxt + n, 1, line)
-        _grid_sheet(wb, "Выкупы WB", g, freeze="B12")
+            g.set(nxt + 1 + n, 1, line, note=True)
+        _grid_sheet(wb, "Выкупы WB", g, freeze="B3")
         for title, by in (("Выкупы WB по брендам", "brand"), ("Выкупы WB по категориям", "category")):
             g = Grid()
-            g.set(1, 1, title, bold=True)
-            g.set(2, 1, "блоки — по группе; в каждом «Названия столбцов» на две строки ниже заголовка блока")
-            r_cols = 9
+            g.set(1, 1, title + " — блоки по группе; дни каждого месяца — под ним, «+»", bold=True, note=True)
+            r_cols = 2
             for name, (p_, o_) in sorted(wb_pivots_by_group(wb_parts["rows"], days, by).items(), key=lambda kv: (kv[0] == "—", kv[0])):
-                r_cols = write_wb_pivot_block(g, r_cols, name, p_, o_) + 2
-            _grid_sheet(wb, title, g)
+                r_cols = write_wb_pivot_block(g, r_cols, name, p_, o_) + 1
+            _grid_sheet(wb, title, g, freeze="B2")
         write_data_sheet(wb, "Данные WB выкупы", wbfin.DATA_COLS, wb_parts["rows"], widths={7: 48})
     else:
         g = Grid()
         g.set(1, 1, "Лист WB не собран: " + str((wb_parts or {}).get("error") or "модуля WB нет"))
         _grid_sheet(wb, "Выкупы WB", g)
     lap("листы WB")
-    # заказы — форма «Свод»: «Названия столбцов» строка 7, площадки 8, «Названия строк» 9, данные с 10
+    # заказы — форма «Свод», компактно: подпись 1, площадки 2, шапка 3, данные с 4; дни под месяцем свёрнуты
     g = Grid()
-    g.set(1, 1, "Заказы — форма «Свод» владельца; блок Ozon на наших коэффициентах (лист «Коэффициенты»), блок WB — модуль WB-сессии", bold=True)
-    g.set(2, 1, "строки 2 … 6 — место блока фильтров сводной владельца; «Названия столбцов» — строка 7, как в образце")
-    g.set(7, 2, "Названия столбцов", bold=True)
-    g.set(8, 2, "Ozon", bold=True); g.set(8, 2 + len(ORDER_COLS), "WB", bold=True)
-    g.set(9, 1, "Названия строк", bold=True)
+    g.set(1, 1, "Заказы — форма «Свод» владельца на суммах «Данных заказы» по формулам его вычисляемых полей; блок Ozon и блок WB — одним кодом; дни каждого месяца — под ним, «+»", bold=True, note=True)
+    g.set(2, 1, "Названия столбцов", bold=True)
+    g.set(2, 2, "Ozon", bold=True); g.set(2, 2 + len(ORDER_COLS), "WB", bold=True)
+    g.set(3, 1, "Названия строк", bold=True)
     for blk in (0, 1):
         for j, (h, _k, _f) in enumerate(ORDER_COLS):
-            g.set(9, 2 + blk * len(ORDER_COLS) + j, h, bold=True, fill=True)
+            g.set(3, 2 + blk * len(ORDER_COLS) + j, h, bold=True, fill=True, wrap=True)
     piv, order = orders_pivot
-    extra_col = 2 + 2 * len(ORDER_COLS) + 1
-    g.set(9, extra_col, "справочно: соинвест Ozon — доля созданного оборота с измеренной ценой покупателя", bold=True, fill=True)
-    for i, lab in enumerate(order):
-        r = 10 + i
-        g.set(r, 1, lab, bold=(lab == "Общий итог"))
+    extra_col = 2 + 2 * len(ORDER_COLS)
+    g.set(3, extra_col, "справочно: соинвест Ozon — доля созданного оборота с измеренной ценой покупателя", bold=True, fill=True, wrap=True)
+    g.heights[3] = 45
+    wm_all = (wb_parts or {}).get("orders_pivot") or {}
+    r = 4
+    for lab in order:
+        kind = label_kind(lab)
+        g.set(r, 1, lab, bold=(kind != "day"))
+        if kind == "day":
+            g.outline[r] = 1
         for j, (_h, k, f) in enumerate(ORDER_COLS):
-            g.set(r, 2 + j, piv[lab].get(k), f)
-        g.set(r, extra_col, piv[lab].get("coinvest_cover"), "pct")
-        if wb_parts and not wb_parts.get("error"):
-            wm = wb_parts["orders_pivot"].get(lab) or {}
-            for j, (_h, k, f) in enumerate(ORDER_COLS):
-                g.set(r, 2 + len(ORDER_COLS) + j, wm.get(k), f)
-    base = 10 + len(order) + 2
+            g.set(r, 2 + j, (piv.get(lab) or {}).get(k), f)
+        g.set(r, extra_col, (piv.get(lab) or {}).get("coinvest_cover"), "pct")
+        wm = wm_all.get(lab) or {}
+        for j, (_h, k, f) in enumerate(ORDER_COLS):
+            g.set(r, 2 + len(ORDER_COLS) + j, wm.get(k), f)
+        r += 1
     for n, line in enumerate(notes["orders"]):
-        g.set(base + n, 1, line)
-    _grid_sheet(wb, "Заказы", g, widths=14, ncols=30, freeze="B10")
+        g.set(r + 1 + n, 1, line, note=True)
+    _grid_sheet(wb, "Заказы", g, freeze="B4")
     # коэффициенты: сверху две таблички владельца с нашими числами, ниже — развёрнутая
     g = Grid()
     for j, h in enumerate(["МП", "% выкупа", None, "МП", "Комиссия"], 1):
@@ -1334,7 +1358,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
         g.set(r, 1, name + " — образец владельца"); g.set(r, 5, v, "pct"); r += 1
     for n, line in enumerate(notes["coef"], 1):
         g.set(r + n, 1, line)
-    _grid_sheet(wb, "Коэффициенты", g, widths=30, ncols=6)
+    _grid_sheet(wb, "Коэффициенты", g, widths={1: 44})
     lap("Заказы и Коэффициенты")
     n_orders = None
     if order_data_rows is not None:
@@ -1348,7 +1372,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     for sheet, key in (("Данные Ozon выкупы", "buyout_data"), ("Данные заказы", "order_data"), ("Выкупы WB / Данные WB выкупы", "wb"), ("Заказы", "orders"), ("Коэффициенты", "coef")):
         for line in notes.get(key) or ():
             g.set(r, 1, sheet); g.set(r, 2, line); r += 1
-    _grid_sheet(wb, "Примечания", g, widths=40, ncols=2)
+    _grid_sheet(wb, "Примечания", g, widths={1: 40, 2: 140})
     os.makedirs(os.path.dirname(path), exist_ok=True)
     wb.save(path)
     lap("save")
@@ -1467,8 +1491,7 @@ def main(argv=None):
     phase("выкупы: длинные строки из сырья и сводные")
     order_data, ostats = build_order_rows(days, order_rows, kpi, daily_rows, unit_cost, sku2art, catalog, names, today)
     coef = coefficients(order_data, buyout_rows, days)
-    orders_pivot = pivot_orders(order_data, days, coef, daily_rows)
-    phase("заказы Ozon: строки, коэффициенты, свод")
+    phase("заказы Ozon: строки, коэффициенты")
     idx_note = "; ".join(f"с {vf} × {v}" for vf, v in rep.COST_INDEX)
     residual_note = "; ".join(f"{OWNER_ARTICLE[k]} — дней {bstats.get(f'residual_{k}_days', 0)}, Σ {bstats.get(f'residual_{k}_sum', Z):,.2f}"
                               for k in WIDE_KEYS if bstats.get(f"residual_{k}_days"))
@@ -1489,7 +1512,12 @@ def main(argv=None):
                         + (f": {residual_note}" if residual_note else ": по всем статьям, кроме рекламы, остаток 0,00 на всех днях") + ").",
                         "Количество — только у строк Товарооборот: позиции ±1 по знаку продажи, измеренные штуки (buyouts_units) разложены по строкам (день, SKU) — "
                         f"разница к первой строке продажи, ключей с разницей {bstats.get('units_reallocated_keys', 0)}; Ст-ть продаж = количество × СС × индекс."],
-        "orders": ["Оборот — созданные заказы (подтверждённые + отменённые) по цене продавца, с НДС; Заказы, шт — созданные штуки; Цена продавца = оборот / шт.",
+        "orders": ["Семантика источника сводной владельца (решение 25.09): Выручка = Σ Заказы без НДС × (1 − Комиссия) по ВСЕМ созданным заказам, без коэффициента выкупа; Себестоимость = Σ Себ-ть Реал "
+                   "(СС × шт × индекс, все заказы); «Выкуплено» — рубли = Выручка × коэффициент выкупа площадки (Ozon измеренный, WB — модуль); коэффициент входит только в Гр.фин.рез.",
+                   "Формулы его вычисляемых полей на суммах по метке: Маржа = Выручка − Себестоимость; М-ть = Маржа / Выручка; ДДР = Реклама без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС "
+                   "по измеренным строкам; Комиссия % = Σ Комиссия руб / Σ ₽ (Комиссия руб = Заказы ₽ × коэффициент); Гр.фин.рез = Выкуплено − Себестоимость × (Выкуплено / Выручка) − Реклама; "
+                   "Гр.фин.рез % = Гр.фин.рез / Выкуплено; Цена = ₽ / шт.",
+                   "Оборот — созданные заказы (подтверждённые + отменённые) по цене продавца, с НДС; Заказы, шт — созданные штуки; Цена продавца = оборот / шт.",
                    "Комиссия % — наша фактическая за месяц дня (Σ комиссии / Σ оборота выкупов); % выкупа — наш измеренный (лист «Коэффициенты»). Построчно: "
                    "Выручка = Заказы без НДС × % выкупа × (1 − комиссия); Себестоимость = СС созданного × % выкупа; Маржа = Выручка − Себестоимость; свод — Σ строк.",
                    "Реклама — начисления 41 + 54 по дню заказа без НДС; ДДР = Реклама / (Оборот / НДС); Соинвест % = (создано − оплачено покупателем) / создано по строкам "
@@ -1541,20 +1569,14 @@ def main(argv=None):
             print(f"  форма «Выкупы WB по {'брендам' if by == 'brand' else 'категориям'}»: групп {len(piv_g)}, против build_split модуля — ячеек {n_g}, расхождений {bad_g}")
         print("  коэффициент выкупа WB (модуль): " + (", ".join(f"{k} {v * 100:.2f} %" for k, v in wb_parts["buyout"].items()) if wb_parts.get("buyout") else "нет зрелых месяцев")
               + (f"; {wb_parts['buyout_note']}" if wb_parts.get("buyout_note") else ""))
-        if rate is not None:
-            print("  блок WB «Заказов» до (выкуп 100 %) → после (выкуп итог) по месяцам: выручка, себестоимость, маржа, гр. фин. рез.; отношение = коэффициенту")
-            p0, p1 = wb_parts["orders_pivot_no_rate"], wb_parts["orders_pivot"]
-            for lab in [l for l in p1 if "." not in l]:
-                a, b = p0[lab], p1[lab]
-                if not a.get("revenue"):
-                    continue
-                print(f"    {lab:11} выручка {a['revenue']:>16,.2f} → {b['revenue']:>16,.2f} ({b['revenue'] / a['revenue']:.6f}); СС {a['cogs']:>16,.2f} → {b['cogs']:>16,.2f}; "
-                      f"маржа {a['margin']:>16,.2f} → {b['margin']:>16,.2f}; гр. фин. рез. {(a.get('gross_fin') or Z):>16,.2f} → {(b.get('gross_fin') or Z):>16,.2f}")
         notes["wb"] = [f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "
                        "K … Z — тождества второго кабинета (R = (логистика + хранение) / НДС). Приёмка — его --check (мост к «WB - месяц»).",
                        "Блок WB листа «Заказы»: созданные из воронки wb_funnel_products_daily; формулы как у Ozon — выручка = Заказы без НДС × выкуп × 0,58, СС модуля × выкуп, "
                        "маржа, гр. фин. рез = маржа − реклама (списания дня wb_ad_spend_daily без НДС); выкуп — итог зрелых месяцев модуля (лист «Коэффициенты»); соинвест WB не измеряется."]
-    order_data_rows, dstats = (None, {}) if args.no_orders_data else build_order_data_rows(order_data, wb_parts, coef, days)
+    order_data_rows, dstats = build_order_data_rows(order_data, wb_parts, coef, days)       # нужны и для «Свода»: он считается на их суммах
+    orders_pivot = svod_from_data(order_data_rows, days, "Ozon")
+    if not wb_parts.get("error"):
+        wb_parts["orders_pivot"] = svod_from_data(order_data_rows, days, "WB")[0]
     if order_data_rows is not None:
         total_before = len(order_data) + (len(wb_parts["orders"]) if not wb_parts.get("error") else 0)
         print(f"«Данные заказы»: строк {len(order_data_rows)} (Ozon {sum(1 for r in order_data_rows if r['mp'] == 'Ozon')}, WB {sum(1 for r in order_data_rows if r['mp'] == 'WB')}); "
@@ -1590,6 +1612,7 @@ def main(argv=None):
           f"без ID {sum(1 for r in long_rows if not r.accrual_id)}: реклама Performance по SKU {sum(1 for r in long_rows if not r.accrual_id and r.sku and r.key == 'ads')}, "
           f"остатки дня {sum(1 for r in long_rows if not r.accrual_id and not r.sku)}, дни без сырья {sum(1 for r in long_rows if not r.accrual_id and r.sku and r.key != 'ads')}); "
           f"«Данные заказы» {counts['order_rows']}; итого оборот {tot['turnover']:,.2f}, комиссия {-tot['commission']:,.2f}, СС {tot['cogs']:,.2f}, фин. рез. {tot['fin_result']:,.2f}")
+    code = 0
     print("время записи по листам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
     print("коэффициенты: выкуп " + ", ".join(f"{k} {v * 100:.2f} %" for k, v in coef["buyout"].items() if v is not None)
           + "; комиссия " + ", ".join(f"{k} {v * 100:.2f} %" for k, v in coef["commission"].items() if v is not None))
@@ -1599,20 +1622,46 @@ def main(argv=None):
             f"строк услуг рекламы пропущено {bstats.get('raw_ads_lines_skipped', 0)}, компенсаций {bstats.get('raw_compensation_lines_skipped', 0)}")
     if unknown or skipped:
         print(f"незнакомые статьи / типы: build_daily {unknown}; сырьё {skipped}")
-    code = 0
     bad_identity = long_identity(long_rows, pivots["all"][0]["Ozon"], pivots["all"][1])
     print(f"тождество «Данные Ozon выкупы» → «Выкупы Ozon» (Σ Начисления по (метка, статья), Σ Ст-ть продаж = Себестоимость): "
           f"{'да' if not bad_identity else 'НЕТ ' + str(bad_identity[:6])}")
     code = 1 if bad_identity else code
     if order_data_rows is not None:
+        # §2.3 (в): Σ Выкуплено / Σ Выручка по площадке = коэффициенту площадки
+        for mp_ in ("Ozon", "WB"):
+            rs = [r for r in order_data_rows if r["mp"] == mp_ and r.get("buyout_rub") is not None]
+            if rs:
+                rev = sum((r["revenue"] for r in rs), Z); bo = sum((r["buyout_rub"] for r in rs), Z)
+                print(f"«Данные заказы» {mp_}: Σ Выкуплено {bo:,.2f} / Σ Выручка {rev:,.2f} = {(bo / rev) if rev else Z:.6f}; коэффициент площадки "
+                      f"{(coef['buyout'].get('все') if mp_ == 'Ozon' else (wb_parts.get('buyout') or {}).get('итого', Decimal(1))) or Z:.6f}")
+        # §3: Σ дней каждого месяца = строке месяца на всех листах формы
+        days_checks = [("Выкупы Ozon", pivots["all"][0]["Ozon"], pivots["all"][1], BUYOUT_KEYS[:9])]
+        for key in ("brand", "category"):
+            for name, pv in pivots[key][0].items():
+                days_checks.append((f"Выкупы Ozon × {key} / {name or '(без признака)'}", pv, pivots[key][1], BUYOUT_KEYS[:9]))
+        if not wb_parts.get("error"):
+            wb_keys = ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "acquiring")
+            pw, ow = wb_pivot(wb_parts["rows"], days)
+            days_checks.append(("Выкупы WB", pw, ow, wb_keys))
+            for by in ("brand", "category"):
+                for name, (p_, o_) in wb_pivots_by_group(wb_parts["rows"], days, by).items():
+                    days_checks.append((f"Выкупы WB по {by} / {name}", p_, o_, wb_keys))
+            days_checks.append(("Заказы / WB", wb_parts["orders_pivot"], orders_pivot[1], ("created_a", "created_q", "revenue", "cogs", "ads_net", "buyout_rub")))
+        days_checks.append(("Заказы / Ozon", orders_pivot[0], orders_pivot[1], ("created_a", "created_q", "revenue", "cogs", "ads_net", "buyout_rub")))
+        bad_d, n_d = [], 0
+        for name, pv, od, keys in days_checks:
+            b_, k_ = check_days_sum(pv, od, keys)
+            bad_d += [(name,) + x for x in b_]; n_d += k_
+        print(f"§3 Σ дней каждого месяца = строке месяца: листов / блоков {len(days_checks)}, сравнений {n_d}, расхождений {len(bad_d)}" + (f" {bad_d[:5]}" if bad_d else ""))
+        code = 1 if bad_d else code
         lab = check_labels(order_data_rows)
         print("ярлыки «Данных заказы» по площадкам: бренды " + "; ".join(f"{m}: {sorted(v)}" for m, v in sorted(lab["brands"].items()))
               + " | категории " + "; ".join(f"{m}: {sorted(v)}" for m, v in sorted(lab["categories"].items()))
               + f" | множества Ozon = WB: {'да' if lab['equal'] else 'НЕТ'}; строк Ozon без бренда по артикулу: {lab['brandless_ozon'] or 0}")
         table = check_orders_data(order_data_rows, days, orders_pivot[0], None if wb_parts.get("error") else wb_parts["orders_pivot"])
         bad = [t for t in table if t[5]]
-        print(f"приёмка «Свод» = Σ «Данных заказы» по 13 колонкам × {len({(t[0], t[1]) for t in table})} (площадка, метка): не сошлось {len(bad)} из {len(table)}")
-        for mp, lab, title, a, b, diff in (bad if not args.check else table):
+        print(f"приёмка §2.3 (а): «Свод» = формулы владельца на Σ «Данных заказы» по 13 колонкам × {len({(t[0], t[1]) for t in table})} (площадка, метка): не сошлось {len(bad)} из {len(table)}")
+        for mp, lab, title, a, b, diff in (bad if not args.check else [t for t in table if label_kind(t[1]) != "day"]):
             if diff or args.check:
                 print(f"   {mp:5} {lab:12} {title:16} свод {('' if a is None else f'{D(a):,.4f}'):>20} данные {('' if b is None else f'{D(b):,.4f}'):>20} разница {diff:,.4f}")
         code = 1 if bad else code

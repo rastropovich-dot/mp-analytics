@@ -4,8 +4,10 @@
     venv/bin/python3 scripts/ozon_product_catalog.py --collect [--tree-file data/ozon_products/category_tree.json]   снять и разобрать, в БД не писать
     venv/bin/python3 scripts/ozon_product_catalog.py --from-file data/ozon_products/catalog_latest.json              разбор из снимка, в API не ходить
     venv/bin/python3 scripts/ozon_product_catalog.py --from-file … --apply                                            записать ozon_products (по слову)
+    venv/bin/python3 scripts/ozon_product_catalog.py --plan                                                           без API: SKU, чего нет в таблице, сколько обращений
+    venv/bin/python3 scripts/ozon_product_catalog.py --collect --only-missing --tree-file … --apply                    снять только недостающие SKU и записать (по слову)
 
-SKU — все из marketplace_orders ∪ marketplace_buyouts (Ozon, ≈ 5 300). Карточки — POST /v3/product/info/list по 1 000 SKU за
+SKU — все из marketplace_orders ∪ marketplace_buyouts (Ozon, ≈ 5 300) плюс SKU с расходом Performance без заказов (daily_sku_kpi, ad_spend > 0; тридцать восьмая §2). Карточки — POST /v3/product/info/list по 1 000 SKU за
 обращение (≈ 6), имена категорий и типов — POST /v1/description-category/tree (1 обращение; --tree-file — взять снятое ранее).
 Категория владельца — словарь TYPE_TO_CATEGORY по type_name карточки; тип, которого в словаре нет, — «прочее» И называется
 вслух со счётчиком. SKU без карточки в ответе — категория по названию (NAME_RULES), category_source = 'name'.
@@ -124,6 +126,20 @@ def sku_universe(sb):
         info[sku]["article"] = max(sorted(a.items()), key=lambda kv: kv[1])[0]
     buyouts = rep.fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,article,product_name,buyouts_amount_seller",
                         [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", "2026-03-28")], ["buyout_date", "marketplace_code", "marketplace_sku"])
+    for r in buyouts:
+        sku = str(r["marketplace_sku"])
+        info.setdefault(sku, {"article": str(r.get("article") or ""), "name": r.get("product_name") or "", "turnover": Z})
+    for sku in info:
+        info[sku]["source"] = "orders_buyouts"
+    # третий источник (тридцать восьмая §2): SKU с расходом Performance без единого заказа и выкупа — в «Данных заказы» они
+    # без артикула и бренда, потому что артикул берётся из заказов или из карточки, а карточки таких SKU не снимались
+    ads = rep.fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,product_name,ad_spend",
+                    [("eq", "marketplace_code", "ozon"), ("gte", "kpi_date", "2026-03-28"), ("gt", "ad_spend", 0)], ["kpi_date", "marketplace_code", "marketplace_sku"])
+    for r in ads:
+        sku = str(r["marketplace_sku"] or "")
+        if not sku or sku in info:
+            continue
+        info[sku] = {"article": "", "name": r.get("product_name") or "", "turnover": Z, "source": "ads_only"}
     return info, orders, buyouts
 
 
@@ -253,6 +269,17 @@ def print_report(rows, counters, other_types, turnover, vs_name, vs_1c, month):
         print(f"   sku {ex[0]}: тип «{ex[1]}» → {ex[2]}, 1С «{ex[3]}» — {ex[4]}")
 
 
+def table_skus(sb):
+    """Множество sku в ozon_products (страницы с сортировкой по ключу)."""
+    out, page = set(), 0
+    while True:
+        res = sb.table(TABLE).select("sku").order("sku").range(page * 1000, page * 1000 + 999).execute()
+        out.update(str(r["sku"]) for r in res.data)
+        if len(res.data) < 1000:
+            return out
+        page += 1
+
+
 def table_exists(sb):
     try:
         sb.table(TABLE).select("sku").limit(1).execute()
@@ -280,7 +307,9 @@ def apply(sb, rows):
         if len(res.data) < 1000:
             break
         page += 1
-    print(f"записано (upsert по sku) {len(payload)}; в таблице {have} строк {'=' if have >= len(payload) else '≠ ОШИБКА'}")
+    want = {str(r["sku"]) for r in payload}
+    got = table_skus(sb) & want
+    print(f"записано (upsert по sku) {len(payload)}; в таблице {have} строк, из записанных найдено {len(got)} из {len(want)} {'=' if len(got) == len(want) else '≠ ОШИБКА'}")
     print(f"db_writes = {len(payload)}")
 
 
@@ -291,21 +320,36 @@ def main(argv=None):
     ap.add_argument("--tree-file", help="файл дерева категорий (не снимать заново)")
     ap.add_argument("--month", default=None, help="месяц для колонки «оборот выкупов» (YYYY-MM), по умолчанию текущий")
     ap.add_argument("--apply", action="store_true", help="записать ozon_products (по слову владельца)")
+    ap.add_argument("--plan", action="store_true", help="без API: сколько SKU в базе, сколько нет в ozon_products, сколько обращений нужно")
+    ap.add_argument("--only-missing", action="store_true", help="с --collect: снять карточки только SKU, которых нет в ozon_products (обращений по 1 000 SKU)")
     args = ap.parse_args(argv)
-    if not args.collect and not args.from_file:
-        raise SystemExit("нужен --collect или --from-file")
+    if not args.collect and not args.from_file and not args.plan:
+        raise SystemExit("нужен --collect, --from-file или --plan")
     from loaders.ozon_fbo_orders_loader import supabase as sb   # тот же клиент, что у ночных шагов и генератора
     month = args.month or date.today().isoformat()[:7]
     info, _orders, buyouts = sku_universe(sb)
     turnover = month_turnover(buyouts, month)
     stats = {}
     os.makedirs(OUT_DIR, exist_ok=True)
+    by_source = Counter(m.get("source") for m in info.values())
+    in_table = table_skus(sb) if table_exists(sb) else set()
+    missing = sorted(s for s in info if s not in in_table)
+    print(f"SKU в базе {len(info)}: заказы ∪ выкупы {by_source.get('orders_buyouts', 0)}, только реклама {by_source.get('ads_only', 0)}; "
+          f"в {TABLE} {len(in_table)}; нет в таблице {len(missing)} (из них только реклама {sum(1 for s in missing if info[s].get('source') == 'ads_only')})")
+    if args.plan:
+        full = (len(info) + BATCH - 1) // BATCH
+        part = (len(missing) + BATCH - 1) // BATCH
+        print(f"план обращений к /v3/product/info/list: все SKU — {full} (+ дерево 1 без --tree-file); только недостающие (--only-missing) — {part}; db_writes = 0")
+        return 0
     if args.from_file:
         snap = json.load(open(args.from_file))
         items, tree, observed_at = snap["items"], snap["tree"], snap["observed_at"]
         print(f"снимок {args.from_file}: карточек {len(items)}, снято {observed_at}; в API не ходил")
     else:
         observed_at = datetime.now(timezone.utc).isoformat()
+        if args.only_missing:
+            info = {s: info[s] for s in missing}
+            print(f"--only-missing: карточки только для {len(info)} SKU")
         items = fetch_cards(sorted(info), stats)
         tree = json.load(open(args.tree_file)) if args.tree_file else fetch_tree(stats)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -317,8 +361,10 @@ def main(argv=None):
     kinds = load_kinds(sb, [r["offer_id"] for r in rows])
     vs_name, vs_1c = compare(rows, kinds)
     print_report(rows, counters, other_types, turnover, vs_name, vs_1c, month)
-    latest = os.path.join(OUT_DIR, "catalog_latest.json")
-    json.dump({"observed_at": observed_at, "rows": rows}, open(latest, "w"), ensure_ascii=False, default=str)
+    # catalog_latest.json — полный разбор (запасной источник книги, когда таблицы нет); частичный --only-missing его не затирает
+    latest = os.path.join(OUT_DIR, "catalog_latest.json" if not args.only_missing else f"catalog_missing_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
+    with open(latest, "w", encoding="utf-8") as fh:
+        json.dump({"observed_at": observed_at, "rows": rows}, fh, ensure_ascii=False, default=str)
     print(f"разбор → {latest} ({len(rows)} строк)")
     if args.apply:
         apply(sb, rows)

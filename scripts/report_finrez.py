@@ -1030,8 +1030,9 @@ def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
         if month_label(d) not in months:
             months.append(month_label(d))
     month_no = {month_label(d): int(d[5:7]) for d in days}
-    articles = sorted({r.article for r in long_rows if r.article and r.article != NO_SKU} | {r["article"] for r in (order_data_rows or []) if r.get("article") and not str(r["article"]).startswith("(")}
-                      | ({str(r.get("article") or "") for r in (wb_parts or {}).get("rows", []) if r.get("article")} if wb_parts and not wb_parts.get("error") else set()))
+    articles = sorted(a for a in ({r.article for r in long_rows if r.article} | {str(r.get("article") or "") for r in (order_data_rows or [])}
+                                  | ({str(r.get("article") or "") for r in (wb_parts or {}).get("rows", [])} if wb_parts and not wb_parts.get("error") else set()))
+                      if a and not a.startswith("("))          # служебные «(без SKU)», «(без nmId)», «(без товара)» — не артикулы
     ls = wb.create_sheet("Списки")
     ls.sheet_state = "hidden"
     ls.append(["Артикул", "МП"])

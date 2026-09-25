@@ -57,7 +57,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 
-from loaders import stale_keys  # noqa: E402
+from loaders import keyset, stale_keys  # noqa: E402
 import loaders.wb_sales_report_loader as report_loader  # noqa: E402
 import report_wb_month as wbm  # noqa: E402  — те же строки отчёта, СС, реклама и НДС, что у «WB - месяц»
 
@@ -186,19 +186,10 @@ DICT_PAGE = 1_000   # PostgREST отдаёт не больше 1 000 строк 
 
 
 def read_keyset(sb, table, select, d1, d2, page=None, day_col="day", id_col="nm_id"):
-    """Страницы по первичному ключу (day, nm_id): фильтр «после последнего ключа», без offset — на 490 тыс. строк
-    offset и один запрос упирались в statement_timeout (WB-8 §6). Только окно дней d1 … d2. page — по умолчанию DICT_PAGE."""
-    page = page or DICT_PAGE
-    out, last = [], None
-    while True:
-        qb = sb.table(table).select(select).gte(day_col, d1).lte(day_col, d2).order(day_col).order(id_col).limit(page)
-        if last is not None:
-            qb = qb.or_(f"{day_col}.gt.{last[0]},and({day_col}.eq.{last[0]},{id_col}.gt.{last[1]})")
-        data = qb.execute().data or []
-        out.extend(data)
-        if len(data) < page:
-            return out
-        last = (str(data[-1][day_col]), int(data[-1][id_col]))
+    """Страницы по первичному ключу (day, id) только индексными запросами — loaders.keyset (WB-10 §3: прежняя форма
+    or(day.gt, and(day.eq, id.gt)) упиралась в statement_timeout на глубоких страницах). Только окно дней d1 … d2;
+    page — по умолчанию DICT_PAGE."""
+    return keyset.read_keyset(sb, table, select, d1, d2, day_col=day_col, id_col=id_col, page=page or DICT_PAGE)
 
 
 def fetch_subjects_for(sb, nm_ids, batch=200):
@@ -220,14 +211,57 @@ def fetch_subjects_for(sb, nm_ids, batch=200):
     return out
 
 
-def load_product_dictionary(sb, d1=None, d2=None):
-    """nmId → {title, brand, subject, vendor_code} из воронки по товарам за окно книги d1 … d2 (последний день карточки
-    побеждает). Читается страницами по ключу; nmId, которых в воронке нет, получают предмет и бренд из строки отчёта
+FUNNEL_LATEST_VIEW = "wb_funnel_products_latest"   # sql/20260926_create_wb_funnel_products_latest.sql — по слову; нет вьюхи → чтение таблицы окном
+
+
+def _missing_relation(error):
+    """PostgREST про несуществующую таблицу/вьюху: PGRST205 (нет в кэше схемы) или 42P01 (relation does not exist)."""
+    text = str(error)
+    return "PGRST205" in text or "42P01" in text or "does not exist" in text
+
+
+def read_latest_cards(sb, page=None):
+    """Строки вьюхи «последняя карточка по nmId» страницами по ключу nm_id (одна строка на nmId). Нет вьюхи — None."""
+    page = page or DICT_PAGE
+    out, last = [], None
+    while True:
+        qb = sb.table(FUNNEL_LATEST_VIEW).select("nm_id,day,vendor_code,title,brand,subject_name").order("nm_id").limit(page)
+        if last is not None:
+            qb = qb.gt("nm_id", last)
+        try:
+            data = qb.execute().data or []
+        except Exception as error:
+            if _missing_relation(error):
+                return None
+            raise
+        out.extend(data)
+        if len(data) < page:
+            return out
+        last = int(data[-1]["nm_id"])
+
+
+def load_product_dictionary(sb, d1=None, d2=None, use_view=True):
+    """nmId → {title, brand, subject, vendor_code}: сначала вьюха wb_funnel_products_latest (последняя карточка по nmId,
+    ~6 страниц; WB-10 §3.1), нет вьюхи — воронка по товарам за окно книги d1 … d2 страницами по ключу (последний день
+    карточки побеждает; 493 страницы за 6 месяцев). nmId, которых в воронке нет, получают предмет и бренд из строки отчёта
     реализации (subject_name / brand_name с WB-8) — это делает build_rows, словарь тут ни при чём."""
     out = {}
     if not (d1 and d2):
         return out
     started = datetime.now(timezone.utc)
+    if use_view:
+        try:
+            rows = read_latest_cards(sb)
+        except Exception as error:
+            print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} не прочитана — {str(error)[:160]}; читаю {wbm.FUNNEL_TABLE} окном", flush=True)
+            rows = None
+        if rows is not None:
+            for r in rows:
+                out[int(r["nm_id"])] = {"title": r.get("title"), "brand": r.get("brand"), "subject": r.get("subject_name"), "vendor_code": r.get("vendor_code")}
+            print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} — строк {len(rows)}, nmId {len(out)}, "
+                  f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с, страниц по {DICT_PAGE}: {max(1, (len(rows) + DICT_PAGE - 1) // DICT_PAGE)}", flush=True)
+            return out
+        print(f"словарь товаров: вьюхи {FUNNEL_LATEST_VIEW} нет (миграция по слову) — читаю {wbm.FUNNEL_TABLE} за {d1} … {d2} окном", flush=True)
     try:
         rows = read_keyset(sb, wbm.FUNNEL_TABLE, "day,nm_id,vendor_code,title,brand,subject_name", d1, d2)
     except Exception as error:
@@ -456,9 +490,17 @@ def build_split(rows, by="brand"):
 
 # ---------- §4: воронка по товарам для общего листа «Заказы» ----------
 
-def load_funnel_products(date_from, date_to, sb=None):
-    """Строки wb_funnel_products_daily за окно (день заказа МСК), с сортировкой по ключу."""
-    return stale_keys.read_window_rows(_sb(sb), wbm.FUNNEL_TABLE, FUNNEL_SELECT, [("gte", "day", date_from), ("lte", "day", date_to)], ["day", "nm_id"])
+ACTIVE_FUNNEL_FILTER = "order_count.gt.0,order_sum.gt.0"   # WB-10 §3.2: только карточки с заказами — 22 719 строк из 492 128 за 04-01 … 09-24
+
+
+def load_funnel_products(date_from, date_to, sb=None, only_with_orders=False):
+    """Строки wb_funnel_products_daily за окно (день заказа МСК), отсортированные по ключу; страницы — индексными запросами
+    (loaders.keyset): offset-страницы на 492 тыс. строк умирают на глубине по statement_timeout (57014 — у Ozon-сессии
+    09-25 и в приёмке WB-10). only_with_orders=True — фильтр на сервере `or(order_count.gt.0,order_sum.gt.0)` (WB-10 §3.2):
+    ~23 страницы вместо 493 за 6 месяцев; карточки без заказов, но с рекламой номенклатуры тогда собирает
+    orders_rows_for_finrez из словаря (products=)."""
+    filters = [("or_", ACTIVE_FUNNEL_FILTER)] if only_with_orders else None
+    return keyset.read_keyset(_sb(sb), wbm.FUNNEL_TABLE, FUNNEL_SELECT, date_from, date_to, day_col="day", id_col="nm_id", page=DICT_PAGE, filters=filters)
 
 
 def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
@@ -478,14 +520,21 @@ def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
     return out
 
 
-def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None):
+def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None,
+                           products=None, only_with_orders=False):
     """Заказы WB по (день, nmId) для общего листа «Заказы»: созданные из воронки, выручка по правилу владельца
     (orderSum × 0,58 / НДС, WB-6 §2), СС снимка по базовому артикулу × штуки, реклама номенклатуры (updSum дня × доля
     fullstats); buyout_* воронки — по дню заказа. Пустые строки (orderSum 0, заказов 0, рекламы 0) не отдаются — их в
     воронке большинство, и книга Ozon-сессии собиралась 34 мин вместо 6 (WB-8 §6); keep_empty=True возвращает всё.
-    stats (dict) получает строк было / стало и Σ orderSum по месяцам до и после — они обязаны совпасть."""
+    stats (dict) получает строк было / стало и Σ orderSum по месяцам до и после — они обязаны совпасть.
+
+    WB-10 §3.2 (по слову, по умолчанию выключено): only_with_orders=True читает воронку фильтром на сервере (только
+    карточки с заказами), а пары (день, nmId) с рекламой номенклатуры без строки воронки собирает из словаря products
+    (nmId → vendor_code / title / brand / subject; у таких карточек buyout_* и cancel_* воронки = 0 — проверено на
+    27 287 парах 04-01 … 09-24). products= работает и без фильтра: тогда добираются только пары без строки воронки в тот
+    день (83 пары, 33,07 ₽ рекламы за 04-01 … 09-24), которые прежде терялись; stats["synthesized"] — сколько собрано."""
     sb = _sb(sb) if funnel_rows is None or costs is None else sb
-    funnel_rows = load_funnel_products(date_from, date_to, sb) if funnel_rows is None else funnel_rows
+    funnel_rows = load_funnel_products(date_from, date_to, sb, only_with_orders=only_with_orders) if funnel_rows is None else funnel_rows
     exact, uniform = wbm.load_costs(sb) if costs is None else costs
     if ads_by_day is None and sb is not None and ads_nm_by_day is None:
         try:
@@ -494,6 +543,17 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         except RuntimeError as error:
             print(f"реклама для заказов не прочитана: {error}", flush=True); ads_by_day, ads_nm_by_day = {}, {}
     nm_ads = nm_ads_by_day_and_nm(ads_by_day or {}, ads_nm_by_day or {})
+    synthesized = 0
+    if products:
+        seen = {(str(r["day"]), int(r["nm_id"])) for r in funnel_rows}
+        extra = []
+        for (day, nm), ads in sorted(nm_ads.items()):
+            if ads and (day, nm) not in seen and nm in products and date_from <= day <= date_to:
+                p = products[nm]
+                extra.append({"day": day, "nm_id": nm, "vendor_code": p.get("vendor_code"), "title": p.get("title"), "brand": p.get("brand"), "subject_name": p.get("subject"),
+                              "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0})
+        synthesized = len(extra)
+        funnel_rows = sorted(list(funnel_rows) + extra, key=lambda r: (str(r["day"]), int(r["nm_id"])))
     out, before, after = [], defaultdict(Decimal), defaultdict(Decimal)
     n_before = 0
     for r in funnel_rows:
@@ -514,7 +574,8 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
                     "no_cost": cost is None and qty > 0, "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
                     "funnel_cancel_qty": int(r.get("cancel_count") or 0), "funnel_cancel_sum": D(r.get("cancel_sum"))})
     if stats is not None:
-        stats.update({"rows_before": n_before, "rows_after": len(out), "sum_before": dict(before), "sum_after": dict(after), "equal": dict(before) == dict(after)})
+        stats.update({"rows_before": n_before, "rows_after": len(out), "sum_before": dict(before), "sum_after": dict(after), "equal": dict(before) == dict(after),
+                      "synthesized": synthesized, "ads_total": sum((r["ads"] for r in out), Z)})
     return out
 
 

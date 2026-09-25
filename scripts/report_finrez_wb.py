@@ -11,6 +11,10 @@
     SHEET_COLS, DATA_COLS                                     -> (заголовок, ключ, формат) для записи листов
     load_funnel_products(date_from, date_to, sb=None)         -> строки wb_funnel_products_daily за окно (для общего листа «Заказы»)
     orders_rows_for_finrez(date_from, date_to, sb=None)       -> строки заказов WB по (день, nmId) для общего листа «Заказы»
+    buyout_rate_for_finrez(month_from, month_to, sb=None)     -> {ярлык месяца: Decimal, "итого": Decimal} — коэффициент выкупа WB (₽, когорта
+                                                                 месяца заказа, только зрелые месяцы) для листа «Коэффициенты» (WB-9 §3)
+    Ярлыки бренда и категории — одни с Ozon (WB-9 §2): KARATOV / Топаз / «(без товара)»; кольца · серьги · подвески · цепочки · браслеты ·
+    пирсинг · колье · броши · прочее (BRAND_LABELS, CATEGORY_LABELS).
 
 ФОРМА (образец — книга второго кабинета `data/owner_finrez_wb_buyouts.xlsx`, лист «Свод», сводная без формул; тождества
 проверены по значениям на четырёх месяцах, WB-8 §2): B Продажи · C Комиссия · D Себес-ть · E Реклама · F Хранение ·
@@ -62,18 +66,30 @@ C2 = Decimal("0.01")
 PLATFORM = "WB"
 SHOP = "KARATOV"                       # кабинет; имя магазина в книге владельца — уточнить (WB-8 §2 вопрос)
 DISCOUNTER_LETTER = "t"
-BRAND_BY_LETTER = {DISCOUNTER_LETTER: "КОЮЗ Топаз"}
+# Ярлыки бренда и категории — одни на обе площадки, как у Ozon-скрипта (WB-9 §2): бренд по первой букве артикула
+# (t → «Топаз», иначе KARATOV; бренд WB — только когда артикула нет, и тогда нормализуется), категория — словарь владельца
+# строчными (= scripts/ozon_product_catalog.OWNER_CATEGORIES, тест на равенство).
+BRAND_TOPAZ = "Топаз"
+BRAND_BY_LETTER = {DISCOUNTER_LETTER: BRAND_TOPAZ}
 BRAND_DEFAULT = "KARATOV"
+BRAND_NORMALIZE = {"коюз топаз": BRAND_TOPAZ, "топаз": BRAND_TOPAZ, "karatov": BRAND_DEFAULT}
+UNIDENTIFIED = "неопознанный товар"    # артикул и бренд WB у операций без опознанного товара — считаем строками без товара
 NO_PRODUCT = "(без товара)"
 MONTHS_SHORT = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
-# Предмет WB → категория листа владельца (список из задачи WB-8); всё остальное — «прочее», считается вслух.
+OWNER_CATEGORIES = ("кольца", "серьги", "подвески", "цепочки", "браслеты", "пирсинг", "колье", "броши")   # = ozon_product_catalog.OWNER_CATEGORIES
+# Предмет WB → категория владельца; всё остальное — «прочее», считается вслух (в данных на 09-25: иконы, упаковки, запонки).
 CATEGORY_BY_SUBJECT = {
-    "Ювелирные кольца": "Кольца", "Ювелирные серьги": "Серьги", "Ювелирные подвески": "Подвески", "Ювелирные цепочки": "Цепочки",
-    "Ювелирные браслеты": "Браслеты", "Ювелирный пирсинг": "Пирсинг", "Ювелирные колье": "Колье", "Ювелирные броши": "Броши",
+    "Ювелирные кольца": "кольца", "Ювелирные серьги": "серьги", "Ювелирные подвески": "подвески", "Ювелирные цепочки": "цепочки",
+    "Ювелирные браслеты": "браслеты", "Ювелирный пирсинг": "пирсинг", "Ювелирные колье": "колье", "Ювелирные броши": "броши",
 }
 CATEGORY_OTHER = "прочее"
 CATEGORY_UNKNOWN = "прочее (нет предмета)"
+BRAND_LABELS = frozenset({BRAND_DEFAULT, BRAND_TOPAZ, NO_PRODUCT})
+CATEGORY_LABELS = frozenset(OWNER_CATEGORIES) | {CATEGORY_OTHER, CATEGORY_UNKNOWN, NO_PRODUCT}
 SELECT = wbm.SELECT + ",additional_payment,subject_name,brand_name"   # поля «WB - месяц» (мост зовёт его build_daily) + доплаты, предмет, бренд
+# build_rows читает только то, что использует: без doc_type, for_pay, cashback_discount (они нужны мосту через build_daily — main читает SELECT). WB-9 §4.
+BUILD_SELECT = ("rrd_id,rr_date,sale_dt,seller_oper_name,vendor_code,tech_size,nm_id,quantity,retail_price_with_disc,retail_amount,commission_percent,"
+                "ppvz_reward,rebill_logistic_cost,delivery_service,acquiring_fee,paid_storage,penalty,deduction,additional_payment,subject_name,brand_name")
 ADS_NM_TABLE = "wb_ad_spend_nm_daily"
 FUNNEL_SELECT = "day,nm_id,vendor_code,title,brand,subject_name,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
 
@@ -131,10 +147,21 @@ def month_bounds(month_from, month_to, date_to=None):
     return d1, last
 
 
+def is_unidentified(vendor_code=None, brand=None):
+    """«Неопознанный товар» WB (артикул или бренд) — операции без опознанного товара, как строки без nmId."""
+    return str(vendor_code or "").strip().lower() == UNIDENTIFIED or str(brand or "").strip().lower() == UNIDENTIFIED
+
+
 def brand_of(vendor_code, funnel_brand=None):
-    if funnel_brand:
-        return funnel_brand
-    return BRAND_BY_LETTER.get(str(vendor_code or "").strip()[:1].lower(), BRAND_DEFAULT)
+    """Ярлык бренда владельца: первая буква артикула первична (t → «Топаз», иначе KARATOV); бренд WB (строка отчёта /
+    карточка) — только когда артикула нет, и тогда нормализуется («КОЮЗ Топаз» → «Топаз»), неизвестный бренд без
+    артикула — KARATOV; «Неопознанный товар» — «(без товара)»."""
+    code = str(vendor_code or "").strip()
+    if is_unidentified(code, funnel_brand):
+        return NO_PRODUCT
+    if code:
+        return BRAND_BY_LETTER.get(code[:1].lower(), BRAND_DEFAULT)
+    return BRAND_NORMALIZE.get(str(funnel_brand or "").strip().lower(), BRAND_DEFAULT)
 
 
 def category_of(subject_name):
@@ -149,17 +176,19 @@ def _sb(sb):
     return sb or report_loader._client()
 
 
-def load_report_rows(sb, d1, d2):
-    """Строки отчёта по rrDate d1 … d2 + запас под дату продажи (как в report_wb_month)."""
-    return stale_keys.read_window_rows(sb, report_loader.TABLE, SELECT, [("gte", "rr_date", d1), ("lte", "rr_date", wbm.window_end(d2))], ["rr_date", "rrd_id"])
+def load_report_rows(sb, d1, d2, select=SELECT):
+    """Строки отчёта по rrDate d1 … d2 + запас под дату продажи (как в report_wb_month); страницы по ключу
+    (rr_date, rrd_id), без offset — offset на 330 тыс. строк дорожает с глубиной (WB-9 §4)."""
+    return read_keyset(sb, report_loader.TABLE, select, d1, wbm.window_end(d2), day_col="rr_date", id_col="rrd_id")
 
 
 DICT_PAGE = 1_000   # PostgREST отдаёт не больше 1 000 строк на ответ, limit больше — молча урежет (how-we-work); страницы — по ключу
 
 
-def read_keyset(sb, table, select, d1, d2, page=DICT_PAGE, day_col="day", id_col="nm_id"):
+def read_keyset(sb, table, select, d1, d2, page=None, day_col="day", id_col="nm_id"):
     """Страницы по первичному ключу (day, nm_id): фильтр «после последнего ключа», без offset — на 490 тыс. строк
-    offset и один запрос упирались в statement_timeout (WB-8 §6). Только окно дней d1 … d2."""
+    offset и один запрос упирались в statement_timeout (WB-8 §6). Только окно дней d1 … d2. page — по умолчанию DICT_PAGE."""
+    page = page or DICT_PAGE
     out, last = [], None
     while True:
         qb = sb.table(table).select(select).gte(day_col, d1).lte(day_col, d2).order(day_col).order(id_col).limit(page)
@@ -213,8 +242,8 @@ def load_product_dictionary(sb, d1=None, d2=None):
 
 def load_ads_nm_db(sb, d1, d2):
     """{день: {nmId: Σ sum}} из wb_ad_spend_nm_daily (fullstats, с НДС) — доли для разнесения списаний дня. Таблицы нет — {} вслух."""
-    try:
-        rows = stale_keys.read_window_rows(sb, ADS_NM_TABLE, "day,nm_id,sum", [("gte", "day", d1), ("lte", "day", d2)], ["day", "advert_id", "app_type", "nm_id"])
+    try:   # sum > 0: строки с нулём в доли не входят (weights берут только v > 0), отрицательных в таблице нет (min 0, WB-9 §4) — треть страниц долой
+        rows = stale_keys.read_window_rows(sb, ADS_NM_TABLE, "day,nm_id,sum", [("gte", "day", d1), ("lte", "day", d2), ("gt", "sum", 0)], ["day", "advert_id", "app_type", "nm_id"])
     except Exception as error:
         print(f"статистика по номенклатурам не прочитана ({ADS_NM_TABLE}): {str(error)[:120]} — реклама разносится по продажам дня", flush=True)
         return {}
@@ -226,13 +255,14 @@ def load_ads_nm_db(sb, d1, d2):
 
 # ---------- «Данные WB выкупы» ----------
 
-def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=None, ads_by_day=None, products=None, ads_nm_by_day=None):
+def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=None, ads_by_day=None, products=None, ads_nm_by_day=None, stats=None):
     """Строки «Данные WB выкупы» за месяцы month_from … month_to (до date_to включительно, если задано).
 
-    rows / costs / ads_by_day / products — для тестов и повторных сборок; по умолчанию читаются из базы."""
+    rows / costs / ads_by_day / products — для тестов и повторных сборок; по умолчанию читаются из базы.
+    stats (dict) получает счётчики ярлыков (categories, brands, rows_unknown_category) и строки «Неопознанный товар» (unidentified)."""
     sb = _sb(sb) if rows is None or costs is None or ads_by_day is None or products is None else sb
     d1, d2 = month_bounds(month_from, month_to, date_to)
-    rows = load_report_rows(sb, d1, d2) if rows is None else rows
+    rows = load_report_rows(sb, d1, d2, select=BUILD_SELECT) if rows is None else rows
     exact, uniform = wbm.load_costs(sb) if costs is None else costs
     if ads_by_day is None:
         try:
@@ -247,6 +277,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
         nm = r.get("nm_id")
         if nm not in (None, "", 0, "0") and r.get("subject_name") and int(nm) not in nm_subject:
             nm_subject[int(nm)] = (r["subject_name"], r.get("brand_name"))
+    unidentified = {"rows": 0, "days": set(), "sales": Z, "logistics": Z, "rebill": Z, "storage": Z, "other": Z}   # «Неопознанный товар» → «(без товара)»
     acc = {}
     for r in rows:
         day = wbm.row_day(r)
@@ -254,6 +285,13 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
             continue
         nm = r.get("nm_id")
         nm = int(nm) if nm not in (None, "", 0, "0") else None
+        if nm is not None and is_unidentified(r.get("vendor_code"), r.get("brand_name")):   # WB-9 §2: как строки без товара, вслух
+            u = unidentified
+            u["rows"] += 1; u["days"].add(day)
+            u["sales"] += (1 if r["seller_oper_name"] == "Продажа" else -1) * D(r.get("retail_price_with_disc")) if r["seller_oper_name"] in ("Продажа", "Возврат") else Z
+            u["logistics"] += D(r.get("delivery_service")); u["rebill"] += D(r.get("rebill_logistic_cost")); u["storage"] += D(r.get("paid_storage"))
+            u["other"] += D(r.get("penalty")) + D(r.get("deduction")) - D(r.get("additional_payment"))
+            nm = None
         key = (day, nm)
         a = acc.get(key)
         if a is None:
@@ -320,6 +358,10 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                 a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
             a["ads"] += ads
             ads_source[day] = "(без товара)"
+    if unidentified["rows"]:
+        print(f"«{UNIDENTIFIED}» в строках отчёта: {unidentified['rows']} строк за {len(unidentified['days'])} дн., продажи {unidentified['sales']:,.2f}, "
+              f"логистика {unidentified['logistics']:,.2f}, rebill {unidentified['rebill']:,.2f}, хранение {unidentified['storage']:,.2f}, прочее {unidentified['other']:,.2f} "
+              f"— учтены в строках «{NO_PRODUCT}»", flush=True)
     missing = sorted({nm for (_d, nm), a in acc.items() if nm is not None and not (a["subject"] or nm_subject.get(nm) or products.get(nm, {}).get("subject"))})
     fetched = fetch_subjects_for(sb, missing) if (missing and hasattr(sb, "table")) else {}
     if missing:
@@ -341,6 +383,12 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
         for k in MONEY_KEYS:
             row[k] = a[k] if (k != "ads" or ads_by_day is not None) else None
         out.append(row)
+    if stats is not None:
+        cats, brands = defaultdict(int), defaultdict(int)
+        for r in out:
+            cats[r["category"]] += 1; brands[r["brand"]] += 1
+        stats.update({"categories": dict(cats), "brands": dict(brands), "rows_unknown_category": cats.get(CATEGORY_UNKNOWN, 0),
+                      "unidentified": {k: (sorted(v) if isinstance(v, set) else v) for k, v in unidentified.items()}})
     return out
 
 
@@ -470,6 +518,88 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
     return out
 
 
+# ---------- §3 (WB-9): коэффициент выкупа WB для листа «Коэффициенты» ----------
+
+BUYOUT_RATE_MATURE_DAYS = 25   # когорта месяца заказа дособрана к 25-му дню после конца месяца: апрель … июль 2026 — 99,95 … 100,1 % ₽ итога (WB-9 §3)
+RATE_SELECT = "rrd_id,rr_date,sale_dt,order_dt,seller_oper_name,retail_price_with_disc,quantity"
+ANALYTICS_TABLE = "marketplace_orders_analytics"
+
+
+def _msk_month(ts):
+    """YYYY-MM момента в московском времени (orderDt / saleDt отчёта); пусто или не дата — None."""
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.astimezone(wbm.MSK).date().isoformat()[:7]
+
+
+def months_between(month_from, month_to):
+    out, y, m = [], int(month_from[:4]), int(month_from[5:7])
+    while f"{y}-{m:02d}" <= month_to:
+        out.append(f"{y}-{m:02d}"); y, m = y + (m == 12), m % 12 + 1
+    return out
+
+
+def load_orders_by_month(sb, month_from, month_to):
+    """{YYYY-MM: (Σ orderSum, Σ заказов)} из marketplace_orders_analytics — сводки дней воронки (= Σ wb_funnel_products_daily
+    по месяцам: апрель … сентябрь 2026 до рубля, WB-9 §3); одна страница вместо 490 тыс. строк по товарам."""
+    d1, d2 = month_bounds(month_from, month_to)
+    rows = stale_keys.read_window_rows(sb, ANALYTICS_TABLE, "order_date,orders_amount,orders_qty",
+                                       [("eq", "marketplace_code", "wb"), ("gte", "order_date", d1), ("lte", "order_date", d2)], ["order_date", "id"])
+    out = defaultdict(lambda: [Z, 0])
+    for r in rows:
+        m = str(r["order_date"])[:7]
+        out[m][0] += D(r.get("orders_amount")); out[m][1] += int(D(r.get("orders_qty")))
+    return {m: (v[0], v[1]) for m, v in out.items()}
+
+
+def buyout_rate_for_finrez(month_from, month_to, sb=None, rows=None, orders_by_month=None, today=None, by="rub", details=None):
+    """Коэффициент выкупа WB для листа «Коэффициенты»: {ярлык месяца: Decimal, "итого": Decimal}.
+
+    Числитель — продажи отчёта реализации (Продажа − Возврат по retailPriceWithDisc; by="qty" — штуки) по МЕСЯЦУ ЗАКАЗА
+    (orderDt в МСК) — та же когорта, что и знаменатель: Σ orderSum воронки за месяц (marketplace_orders_analytics).
+    Календарный вариант (продажи по saleDt / заказы месяца) смешивает когорты: 11 … 35 % продаж месяца — заказы прошлого
+    месяца (WB-9 §3). Только зрелые месяцы: конец месяца + BUYOUT_RATE_MATURE_DAYS ≤ today; незрелые в ответ не входят
+    (в details — с пометкой mature=False). «итого» — Σ числителей / Σ знаменателей по зрелым месяцам. Отчёт читается с 1-го
+    числа month_from по today: продажа заказа проходит и через 40 дней после конца месяца. Только чтение."""
+    if by not in ("rub", "qty"):
+        raise ValueError("by: rub | qty")
+    today = date.fromisoformat(today) if isinstance(today, str) else (today or date.today())
+    sb = _sb(sb) if rows is None or orders_by_month is None else sb
+    d1, _d2 = month_bounds(month_from, month_to)
+    if rows is None:
+        rows = read_keyset(sb, report_loader.TABLE, RATE_SELECT, d1, today.isoformat(), day_col="rr_date", id_col="rrd_id")
+    orders_by_month = load_orders_by_month(sb, month_from, month_to) if orders_by_month is None else orders_by_month
+    num = defaultdict(Decimal)
+    for r in rows:
+        op = r.get("seller_oper_name")
+        if op not in ("Продажа", "Возврат"):
+            continue
+        om = _msk_month(r.get("order_dt"))
+        if om is None:
+            continue
+        num[om] += (1 if op == "Продажа" else -1) * (D(r.get("retail_price_with_disc")) if by == "rub" else Decimal(int(r.get("quantity") or 1)))
+    out, tn, td = {}, Z, Z
+    for mo in months_between(month_from, month_to):
+        y, mm = int(mo[:4]), int(mo[5:7])
+        mature_from = date(y + (mm == 12), mm % 12 + 1, 1) - timedelta(days=1) + timedelta(days=BUYOUT_RATE_MATURE_DAYS)
+        mature = mature_from <= today
+        den = D(orders_by_month.get(mo, (Z, 0))[0 if by == "rub" else 1])
+        rate = ratio(num.get(mo, Z), den) if den else None
+        if details is not None:
+            details[mo] = {"numerator": num.get(mo, Z), "denominator": den, "rate": rate, "mature": mature, "mature_from": mature_from.isoformat()}
+        if mature and den:
+            out[month_label(f"{mo}-01")] = rate; tn += num.get(mo, Z); td += den
+    if td:
+        out["итого"] = ratio(tn, td)
+    return out
+
+
 # ---------- приёмка против «WB - месяц» ----------
 
 def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day):
@@ -577,6 +707,7 @@ def main(argv=None):
     ap.add_argument("--date-to", help="последний день (внутри month-to); по умолчанию — конец месяца")
     ap.add_argument("--xlsx", help="куда писать книгу")
     ap.add_argument("--check", action="store_true", help="мост к «WB - месяц» за тот же период")
+    ap.add_argument("--buyout-rate", action="store_true", help="WB-9 §3: коэффициент выкупа по месяцам (когорта месяца заказа), ₽ и штуки")
     args = ap.parse_args(argv)
     sb = report_loader._client()
     d1, d2 = month_bounds(args.month_from, args.month_to, args.date_to)
@@ -588,7 +719,8 @@ def main(argv=None):
         print(f"реклама не прочитана: {error}; колонка «Реклама» пуста"); ads_by_day = None
     products = load_product_dictionary(sb, d1, d2)
     ads_nm_by_day = load_ads_nm_db(sb, d1, d2) if ads_by_day is not None else {}
-    rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day)
+    bstats = {}
+    rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day, stats=bstats)
     from_row = sum(1 for r in report_rows if r.get("subject_name"))
     print(f"предмет в строках отчёта: {from_row} из {len(report_rows)}; дней со статистикой по номенклатурам: {len(ads_nm_by_day)}; "
           f"реклама разнесена (строк «Данных»): " + (", ".join(f"{k} — {v}" for k, v in sorted(__import__('collections').Counter(r['ads_allocated'] for r in rows if r['ads_allocated']).items())) or "нет списаний"))
@@ -611,7 +743,30 @@ def main(argv=None):
     tot = month_rows[-1]
     sb_tot = sum((r["sales"] for r in split_brand if r["label"] == "Итого"), Z); sc_tot = sum((r["sales"] for r in split_category if r["label"] == "Итого"), Z)
     print(f"Σ брендов {sb_tot:,.2f} = Σ категорий {sc_tot:,.2f} = общий {tot['sales']:,.2f}: {'да' if sb_tot == sc_tot == tot['sales'] else 'НЕТ'}")
-    code = 0
+    by_month_total = {r["label"]: r["sales"] for r in month_rows if r["label"] != "Итого"}
+    cat_by_month = defaultdict(Decimal)
+    for r in split_category:
+        if r["label"] != "Итого":
+            cat_by_month[r["label"]] += r["sales"]
+    cat_ok = set(cat_by_month) == set(by_month_total) and all(cat_by_month[m] == v for m, v in by_month_total.items())
+    print(f"Σ категорий по месяцам = общему по месяцам: {'да' if cat_ok else 'НЕТ'} — " + ", ".join(f"{m} {v:,.2f}" for m, v in by_month_total.items()))
+    labels_b, labels_c = set(bstats.get("brands", {})), set(bstats.get("categories", {}))
+    labels_ok = labels_b <= BRAND_LABELS and labels_c <= CATEGORY_LABELS
+    print(f"ярлыки (WB-9 §2): бренды {sorted(labels_b)} ⊆ владельца — {'да' if labels_b <= BRAND_LABELS else 'НЕТ'}; категории {sorted(labels_c)} ⊆ владельца — "
+          f"{'да' if labels_c <= CATEGORY_LABELS else 'НЕТ'}; строк «{CATEGORY_UNKNOWN}» {bstats.get('rows_unknown_category', 0)}; «{UNIDENTIFIED}»: строк отчёта {bstats.get('unidentified', {}).get('rows', 0)}")
+    code = 0 if (cat_ok and labels_ok) else 1
+    if args.buyout_rate:
+        today = date.today().isoformat()
+        rate_rows = read_keyset(sb, report_loader.TABLE, RATE_SELECT, f"{args.month_from}-01", today, day_col="rr_date", id_col="rrd_id")
+        obm = load_orders_by_month(sb, args.month_from, args.month_to)
+        for by in ("rub", "qty"):
+            det = {}
+            res = buyout_rate_for_finrez(args.month_from, args.month_to, sb, rows=rate_rows, orders_by_month=obm, today=today, by=by, details=det)
+            print(f"коэффициент выкупа WB ({'₽' if by == 'rub' else 'шт'}; когорта месяца заказа, зрелость {BUYOUT_RATE_MATURE_DAYS} дн. после конца месяца, на {today}): "
+                  + (", ".join(f"{k} {v}" for k, v in res.items()) or "зрелых месяцев нет"))
+            for m, d in det.items():
+                print(f"  {m}: {d['numerator']:,.2f} / {d['denominator']:,.2f} = {d['rate']}" + ("" if d["mature"] else f" — незрелый, зрел с {d['mature_from']}"))
+        print(f"строк отчёта для коэффициента {len(rate_rows)} (rr_date {args.month_from}-01 … {today}), месяцев заказов {len(obm)}")
     if args.check:
         table, _m, (ppvz, rebill) = bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day)
         failures = print_bridge(table, d1, d2)
@@ -622,7 +777,8 @@ def main(argv=None):
                  "Форма — книга второго кабинета (лист «Свод»): N = (K − L)/НДС, R = (Логистика + Хранение)/НДС, T = E/НДС, X = H/НДС, Y = P − R − T − V − X, доли от N.",
                  "Отличие от образца: эквайринг V заполнен (у второго кабинета 0). Логистика ₽ = deliveryService (возмещение издержек по перевозке — не берём, справочно в «Данных»); Ост. расходы = penalty + deduction − additionalPayment.",
                  "Реклама — списания дня (wb_ad_spend_daily, биллинг, с НДС), разнесённые по артикулам долями из статистики по номенклатурам (fullstats, нормировка к списаниям дня; Σ по дню = списаниям), где статистики нет — пропорционально продажам дня.",
-                 f"Себестоимость — снимок 1С {wbm.SNAP} по базовому артикулу; категория — предмет карточки (воронка / выкупы) по списку владельца, прочее — вслух."]
+                 f"Себестоимость — снимок 1С {wbm.SNAP} по базовому артикулу. Ярлыки одни с Ozon: категория — предмет строки отчёта / карточки по словарю владельца "
+                 "(строчными), прочее — вслух; бренд — по первой букве артикула (t → Топаз, иначе KARATOV); «Неопознанный товар» — как строки без товара."]
         write_xlsx(args.xlsx, rows, month_rows, split_brand, split_category, notes)
         print(f"записано: {args.xlsx}")
     print("db_writes = 0")

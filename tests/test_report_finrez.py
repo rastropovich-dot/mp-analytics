@@ -146,3 +146,163 @@ class Orders(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------- §7: длинный формат из сырья, «Данные заказы» в полях владельца, раскладка книги ----------
+
+import json
+import tempfile
+
+RAW_DAY = "2026-09-01"
+
+
+def raw_accruals(d=RAW_DAY):
+    """Синтетическое сырьё by-day: отправление с продажей (sku 11, услуга доставки) и возвратом (sku 22); эквайринг по товару; подписка без SKU;
+    реклама и компенсация (в лист не входят); начисление чужой даты."""
+    m = lambda v: {"amount": v, "currency": "RUB"}  # noqa: E731
+    return [
+        {"accrual_id": 1, "date": d, "accrued_category": "POSTING", "posting": {"products": [
+            {"sku": 11, "commission": {"sale_amount": m("1000.00"), "sale_commission": m("-400.00"), "bonus": m("10.00"), "coinvestment": m("1.00")},
+             "delivery": {"services": [{"type_id": 32, "accrued": m("-50.00")}]}},
+            {"sku": 22, "commission": {"sale_amount": m("-500.00"), "sale_commission": m("200.00"), "bonus": m("0"), "coinvestment": m("0")}}]}},
+        {"accrual_id": 2, "date": d, "accrued_category": "ITEM", "item_fees": {"fees": [{"sku": 11, "fees": [{"type_id": 1, "accrued": m("-20.00")}]}]}},
+        {"accrual_id": 3, "date": d, "accrued_category": "NON_ITEM", "non_item_fee": {"fees": [{"type_id": 51, "accrued": m("-100.00")}]}},
+        {"accrual_id": 4, "date": d, "accrued_category": "NON_ITEM", "non_item_fee": {"fees": [{"type_id": 41, "accrued": m("-300.00")}, {"type_id": 25, "accrued": m("10.00")}]}},
+        {"accrual_id": 5, "date": "2026-08-31", "posting": {"products": [{"sku": 11, "commission": {"sale_amount": m("7.00"), "sale_commission": m("-1.00")}}]}},
+    ]
+
+
+def daily_for_raw(d=RAW_DAY):
+    """Строка build_daily того же дня (без НДС): оборот 500, комиссия 200, логистика 50, эквайринг 20, подписка 100, реклама 300, прочее 0."""
+    vat = D("1.22")
+    row = {"date": d, "vat": vat, "turnover": D(500), "commission": D(200), "revenue": (D(500) - D(200)) / vat, "cogs": D(200),
+           "logistics": D(50) / vat, "acquiring": D(20) / vat, "subscription": D(100) / vat, "other": D(0), "ads": D(300) / vat}
+    row["cogs_index"] = D(200) * fr.cogs_index(d)
+    return row
+
+
+class LongRows(unittest.TestCase):
+    def build(self, tmp):
+        with open(os.path.join(tmp, f"{RAW_DAY}.json"), "w", encoding="utf-8") as fh:
+            json.dump({"date": RAW_DAY, "accruals": raw_accruals()}, fh)
+        buyouts = [dict(buyout(RAW_DAY, "11", "1000", "400", units=2), buyouts_qty=1), dict(buyout(RAW_DAY, "22", "-500", "-200"), buyouts_units=None, buyouts_qty=-1)]
+        kpi = [{"kpi_date": RAW_DAY, "marketplace_sku": "11", "ad_spend": "100"}]
+        return fr.build_buyout_long_rows([RAW_DAY], tmp, buyouts, [], kpi, [daily_for_raw()], UNIT_COST, {"11": "F1", "22": "T2"}, CATALOG, {})
+
+    def test_raw_day_rows_signs_ids_qty_and_residual(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows, wide, stats = self.build(tmp)
+        by = {(r.accrual_id, r.sku, r.kind): r for r in rows}
+        self.assertEqual(len(rows), 9, [(r.accrual_id, r.sku, r.kind, r.amount) for r in rows])
+        t11 = by[(1, "11", "Товарооборот")]
+        self.assertEqual((t11.amount, t11.qty, t11.coinvest, t11.cogs), (D(1000), D(2), D(11), D(2) * D(100) * fr.cogs_index(RAW_DAY)))   # штуки 2 измерены → на строку продажи
+        self.assertEqual((t11.article, t11.brand, t11.brand_cc, t11.category, t11.month, t11.day_num, t11.month_num, t11.platform), ("F1", "KARATOV", "KARATOV", "кольца", "сен", 1, 9, "Ozon"))
+        self.assertEqual(by[(1, "11", "Комиссия")].amount, D(-400))
+        self.assertEqual((by[(1, "22", "Товарооборот")].amount, by[(1, "22", "Товарооборот")].qty, by[(1, "22", "Комиссия")].amount), (D(-500), D(-1), D(200)))
+        self.assertEqual(by[(1, "11", "Логистика")].amount, D(-50))
+        self.assertEqual(by[(2, "11", "Эквайринг")].amount, D(-20))
+        self.assertEqual((by[(3, "", "Прочее")].amount, by[(3, "", "Прочее")].article), (D(-100), fr.NO_SKU))
+        self.assertEqual(by[("", "11", "Реклама")].amount, D(-100))                          # Performance по SKU — без ID
+        self.assertEqual(by[("", "", "Реклама")].amount, D(-200))                            # остаток дня: 300 леджера − 100 по SKU
+        self.assertEqual((stats["raw_ads_lines_skipped"], stats["raw_compensation_lines_skipped"], stats["raw_foreign_date"]), (1, 1, 1))
+        self.assertEqual((stats["units_reallocated_keys"], stats["positions_without_cost"], stats["days_from_raw"]), (1, 1, 1))
+        self.assertFalse([k for k in stats if k.startswith("residual_") and k != "residual_ads_days" and k != "residual_ads_sum"], stats)
+        w = {r["sku"]: r for r in wide}
+        self.assertEqual((w["11"]["turnover"], w["11"]["commission"], w["11"]["logistics"], w["11"]["acquiring"], w["11"]["ads"], w["11"]["units"]), (D(1000), D(-400), D(-50), D(-20), D(-100), D(2)))
+        self.assertEqual((w[fr.NO_SKU]["other"], w[fr.NO_SKU]["ads"]), (D(-100), D(-200)))
+        table = fr.check_against_month(wide, [daily_for_raw()], [RAW_DAY])
+        self.assertEqual([t[3] for t in table], [D(0)] * len(table), table)
+        piv, order = fr.pivot_buyouts(wide, [RAW_DAY])
+        self.assertEqual(fr.long_identity(rows, piv["Ozon"], order), [])
+
+    def test_day_without_raw_falls_back_to_tables_without_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            buyouts = [buyout(RAW_DAY, "11", "1000", "400")]
+            kpi = [{"kpi_date": RAW_DAY, "marketplace_sku": "11", "ad_spend": "100"}]
+            rows, wide, stats = fr.build_buyout_long_rows([RAW_DAY], tmp, buyouts, [expense(RAW_DAY, "11", "logistics", "8")], kpi, [daily(RAW_DAY)], UNIT_COST, {"11": "F1"}, CATALOG, {})
+        self.assertEqual(stats["days_from_tables"], 1)
+        self.assertTrue(all(r.accrual_id == "" for r in rows))
+        kinds = {(r.sku, r.kind): r.amount for r in rows}
+        self.assertEqual((kinds[("11", "Товарооборот")], kinds[("11", "Комиссия")], kinds[("11", "Логистика")], kinds[("11", "Реклама")]), (D(1000), D(-400), D(-8), D(-100)))
+        self.assertEqual(kinds[("", "Реклама")], D("-48.84"))
+        self.assertEqual([r for r in rows if r.kind == "Товарооборот"][0].qty, D(1))
+
+
+class OrdersData(unittest.TestCase):
+    def parts(self):
+        rows, _ = Orders().data()
+        days = ["2026-08-01", "2026-09-01"]
+        coef = fr.coefficients(rows, [], days)
+        coef["commission"] = {"сен": D("0.4"), "авг": D("0.3"), "все": D("0.35")}
+        dl = [daily("2026-08-01", ads="0"), daily("2026-09-01")]
+        return rows, days, coef, dl, fr.pivot_orders(rows, days, coef, dl)
+
+    def test_row_formulas_are_the_pivot_formulas(self):
+        rows, days, coef, dl, (piv, order) = self.parts()
+        data, stats = fr.build_order_data_rows(rows, None, coef, days)
+        r = next(x for x in data if x["date"] == "2026-09-01" and x["sku"] == "11")
+        net = D(1500) / D("1.22")
+        self.assertEqual((r["mp"], r["shop"], r["article"], r["created_a"], r["created_q"], r["created_net"]), ("Ozon", "KARATOV", "F1", D(1500), D(2), net))
+        self.assertEqual((r["commission"], r["commission_avg"], r["buyout"]), (D("0.4"), D("0.35"), D("0.8")))
+        self.assertEqual(r["revenue"], net * D("0.8") * D("0.6"))
+        self.assertEqual(r["commission_rub"], net * D("0.8") * D("0.4"))
+        self.assertEqual(r["margin"], r["revenue"] - r["cogs_real"] * D("0.8"))
+        self.assertEqual(r["fin"], r["margin"] - r["ads_net"])
+        self.assertEqual((r["spp"], r["coinvest_pct"], r["with_spp"]), (D("0.4"), D("0.4"), D(900)))
+        self.assertEqual((r["week"], r["day_num"], r["month_num"]), (36, 1, 9))
+        self.assertEqual(r["drr_pct"], r["ads_net"] / net)
+        self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][:4], ["Дата", "МП", "Магазин", "Артикул поставщика"])
+        self.assertEqual(len(fr.ORDER_DATA_COLS), 33)
+        self.assertEqual(stats, {})
+
+    def test_svod_equals_sum_of_data_rows_all_13_columns(self):
+        rows, days, coef, dl, (piv, order) = self.parts()
+        data, _ = fr.build_order_data_rows(rows, None, coef, days)
+        table = fr.check_orders_data(data, days, piv, None)
+        self.assertEqual({t[1] for t in table}, {"авг", "сен", "Общий итог"})
+        self.assertEqual([t for t in table if t[5]], [])
+        # «Общий итог» — комиссия взвешенная, месяцы с разной комиссией складываются построчно
+        self.assertNotEqual(piv["Общий итог"]["commission_pct"], D("0.35"))
+        self.assertEqual(rep.q(piv["Общий итог"]["revenue"]), rep.q(piv["авг"]["revenue"] + piv["сен"]["revenue"]))
+
+    def test_zero_rows_are_dropped_and_counted(self):
+        rows, days, coef, dl, _ = self.parts()
+        zero = {"date": "2026-09-01", "month": "сен", "brand": "", "category": "", "article": "X", "sku": "99", "name": "", "created_a": D(0), "created_q": D(0),
+                "confirmed_a": D(5), "buyer_a": None, "ads": D(0), "cogs_created": D(0), "vat": D("1.22"), "platform_name": "Основная"}
+        data, stats = fr.build_order_data_rows(rows + [zero], None, coef, days)
+        self.assertEqual((stats["dropped_zero_Ozon"], stats["dropped_confirmed_Ozon"]), (1, D(5)))
+        self.assertFalse([r for r in data if r["sku"] == "99"])
+
+
+class Book(unittest.TestCase):
+    def test_layout_rows_and_column_order(self):
+        import openpyxl
+        rows, _ = BuyoutRows().rows()
+        long_rows = [x for w in rows for x in fr.explode_wide(w)]
+        days = ["2026-09-01"]
+        pivots = {"all": fr.pivot_buyouts(rows, days), "brand": fr.pivot_buyouts(rows, days, lambda r: r["brand"]), "category": fr.pivot_buyouts(rows, days, lambda r: r["category"])}
+        orows, _ = Orders().data()
+        odays = ["2026-08-01", "2026-09-01"]
+        coef = fr.coefficients(orows, rows, odays)
+        coef["commission"] = {"сен": D("0.4"), "все": D("0.4")}
+        piv = fr.pivot_orders(orows, odays, coef, [daily("2026-08-01", ads="0"), daily("2026-09-01")])
+        data, _ = fr.build_order_data_rows(orows, None, coef, odays)
+        notes = {k: [f"примечание {k}"] for k in ("buyouts", "buyout_data", "orders", "coef", "order_data", "wb")}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "book.xlsx")
+            timings = {}
+            counts = fr.write_book(path, days, long_rows, pivots, orows, piv, coef, notes, "test", "2026-09-10", wb={"error": "нет"}, order_data_rows=data, timings=timings)
+            wb = openpyxl.load_workbook(path, read_only=True)
+            self.assertEqual(wb.sheetnames, ["Выкупы Ozon", "Выкупы Ozon × бренд", "Выкупы Ozon × категория", "Данные Ozon выкупы", "Выкупы WB", "Заказы", "Коэффициенты", "Данные заказы", "Примечания"])
+            v = lambda ws, r, c: ws.cell(row=r, column=c).value  # noqa: E731
+            ws = wb["Выкупы Ozon"]
+            cells = {(r, c): x for r, row in enumerate(ws.iter_rows(min_row=1, max_row=14, values_only=True), 1) for c, x in enumerate(row, 1)}
+            self.assertEqual((cells[(9, 2)], cells[(10, 2)], cells[(11, 1)], cells[(11, 2)], cells[(12, 1)]), ("Названия столбцов", "Комиссия", "Названия строк", " Начисления", "сен"))
+            wo = wb["Заказы"]
+            cells = {(r, c): x for r, row in enumerate(wo.iter_rows(min_row=1, max_row=12, values_only=True), 1) for c, x in enumerate(row, 1)}
+            self.assertEqual((cells[(7, 2)], cells[(8, 2)], cells[(8, 15)], cells[(9, 1)], cells[(9, 2)], cells[(10, 1)]), ("Названия столбцов", "Ozon", "WB", "Названия строк", "Оборот (с НДС)", "авг"))
+            self.assertEqual(list(next(wb["Данные Ozon выкупы"].iter_rows(min_row=1, max_row=1, values_only=True))), [h for h, _k, _f in fr.LONG_COLS])
+            self.assertEqual(list(next(wb["Данные заказы"].iter_rows(min_row=1, max_row=1, values_only=True))), [h for h, _k, _f in fr.ORDER_DATA_COLS])
+            self.assertEqual(list(next(wb["Коэффициенты"].iter_rows(min_row=1, max_row=1, values_only=True)))[:5], ["МП", "% выкупа", None, "МП", "Комиссия"])
+            self.assertEqual(counts, {"long_rows": len(long_rows), "order_rows": len(data)})
+            self.assertIn("Данные заказы", timings)

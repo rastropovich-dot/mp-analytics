@@ -8,7 +8,7 @@
 
 ---
 
-## 2026-09-25, девятая задача WB — §2–§4 сделаны в ветке (ярлыки одни с Ozon, коэффициент выкупа `buyout_rate_for_finrez`, время `build_rows` 988 → 915 с); §1 — утром 09-26 по будильнику 07:47 UTC
+## 2026-09-25, девятая задача WB — §2–§4 слиты в `main` по слову (`8e3dba3`, Render live 13:20 UTC; ярлыки одни с Ozon, коэффициент выкупа `buyout_rate_for_finrez`, время `build_rows` 988 → 915 с); §1 — утром 09-26 по будильнику 07:47 UTC
 
 Обращений к WB API — **0**, 429 — **0**; **db_writes = 0** (всё — чтение базы через PostgREST и `execute_sql`, файлы на диске).
 Будильник поставлен: одноразовый cron в сессии на 07:47 UTC 09-26 (10:47 МСК), §1 — по чек-листу восьмой. Ветка `wb-fixes`
@@ -128,12 +128,31 @@
    артикулам пачками ≈ 45 обращений и в 40 раз меньше данных → ~−20 с; мелко, не делал.
 4. Один проход за окно книги для всех месяцев — уже так: Ozon-скрипт зовёт `build_rows` один раз на всё окно.
 
+### §5. Мерж в `main` — готово, main = `8e3dba3`, Render live 13:20 UTC (слово владельца 13:1x UTC)
+
+`origin/main` перед мержем — `37c3ecc` (тридцать седьмая Ozon-сессии, 13 коммитов после `e78b822`, live 12:07:57 UTC);
+влит в ветку без конфликтов (`92dba3e`, 12 файлов Ozon). Новый `report_finrez.py` зовёт модуль так: `build_rows(…, sb=)`,
+`build_month_sheet`, `build_split`, `load_funnel_products(d, d, sb=)` по дню, `orders_rows_for_finrez(d1, d2, sb=,
+funnel_rows=, costs=, stats=)` — все сигнатуры и ключи `stats` на месте. Полный набор на голове ветки — **1 088 OK**.
+Мерж-коммит `--no-ff` плюмбингом **`8e3dba3`** (родители `37c3ecc` + `92dba3e`, дерево = ветке) — **push в `main`
+13:19:52–13:19:55 UTC**; ветка `wb-fixes` переведена на него и запушена. **Render по API (6 обращений `GET
+/v1/services/{id}/deploys`): `mp-analytics` — live 13:20:41 UTC, `mp-analytics-telegram-report` — live 13:20:37 UTC**, оба
+на `8e3dba3`, за 10 ч 55 мин до 00:15. Ночь 09-26 для модуля ничего нового не несёт (ночной пайплайн его не зовёт; книга
+утром 09-26 в 07:30 UTC соберётся уже на ярлыках владельца и с `--buyout-rate`-функцией в контракте — Ozon-скрипт её
+подхватит своей задачей).
+
 ### `git log origin/main..HEAD`
 
 ```
-(этот коммит)  Ninth WB task: §2 one set of brand/category labels with Ozon, §3 buyout_rate_for_finrez (order-month cohort, mature months), §4 keyset report read + sum>0 nm filter (988 → 915 s, numbers equal; narrow SELECT no gain); 18 module tests, 1 077 total
+(этот коммит)  Ninth WB report §5: merged into main (8e3dba3), Render live 13:20 UTC
+```
+После мержа `origin/main..HEAD` — только этот коммит отчёта; до мержа ветка несла `c0f9413` (§2–§4) и `d4fb322` (восьмая, §7):
+
+```
+c0f9413 Ninth WB task: §2 one set of brand/category labels with Ozon, §3 buyout_rate_for_finrez (order-month cohort, mature months), §4 keyset report read + sum>0 nm filter (988 → 915 s, numbers equal; narrow SELECT no gain); 18 module tests, 1 077 total
 d4fb322 Eighth WB report §7: §6 merged into main (e78b822), Render live 09:40 UTC
 ```
+
 
 ### Что не сошлось — одной строкой
 

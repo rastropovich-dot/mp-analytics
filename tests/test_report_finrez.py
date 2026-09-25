@@ -293,7 +293,12 @@ class Book(unittest.TestCase):
             timings = {}
             counts = fr.write_book(path, days, long_rows, pivots, orows, piv, coef, notes, "test", "2026-09-10", wb={"error": "нет"}, order_data_rows=data, timings=timings)
             wb = openpyxl.load_workbook(path, read_only=True)
-            self.assertEqual(wb.sheetnames, ["Выкупы Ozon", "Выкупы Ozon × бренд", "Выкупы Ozon × категория", "Данные Ozon выкупы", "Выкупы WB", "Заказы", "Коэффициенты", "Данные заказы", "Примечания"])
+            self.assertEqual(wb.sheetnames, ["Выкупы Ozon", "Выкупы Ozon × бренд", "Выкупы Ozon × категория", "Данные Ozon выкупы", "Выкупы WB", "Заказы", "Коэффициенты", "Данные заказы", "Списки", "Артикул", "Примечания"])
+            wa = wb["Артикул"]
+            rows_a = list(wa.iter_rows(min_row=1, max_row=8, values_only=True))
+            self.assertEqual((rows_a[0][0][:7], rows_a[3][0], rows_a[3][1]), ("Артикул", "Показатель", "сен"))
+            self.assertTrue(str(rows_a[5][1]).startswith("=SUMIFS('Данные Ozon выкупы'!$L:$L"))
+            self.assertEqual(wb["Списки"].sheet_state, "hidden")
             v = lambda ws, r, c: ws.cell(row=r, column=c).value  # noqa: E731
             ws = wb["Выкупы Ozon"]
             cells = {(r, c): x for r, row in enumerate(ws.iter_rows(min_row=1, max_row=14, values_only=True), 1) for c, x in enumerate(row, 1)}
@@ -347,3 +352,14 @@ class WbCoefficient(unittest.TestCase):
         self.assertEqual(remainder, {"2026-08-01": D(61), "2026-09-01": D(244)})
         table = fr.check_orders_data(data, days, None, piv)
         self.assertEqual([t for t in table if t[5]], [])
+
+
+class LabelsCheck(unittest.TestCase):
+    def test_label_sets_by_platform_and_brandless_rows(self):
+        rows = [{"mp": "Ozon", "brand": "KARATOV", "category": "кольца", "article": "F1", "created_a": D(1)}, {"mp": "WB", "brand": "KARATOV", "category": "кольца", "article": "F2", "created_a": D(1)},
+                {"mp": "Ozon", "brand": "", "category": "", "article": fr.NO_SKU, "created_a": D(0)}, {"mp": "WB", "brand": "Топаз", "category": "серьги", "article": "T1", "created_a": D(1)}]
+        res = fr.check_labels(rows)
+        self.assertEqual(res["brands"], {"Ozon": {"KARATOV"}, "WB": {"KARATOV", "Топаз"}})
+        self.assertEqual(res["categories"], {"Ozon": {"кольца"}, "WB": {"кольца", "серьги"}})
+        self.assertEqual(res["brandless_ozon"], {fr.NO_SKU: 1})
+        self.assertFalse(res["equal"])

@@ -810,6 +810,21 @@ def build_order_data_rows(order_rows, wb_parts, coef, days):
     return out, dict(stats)
 
 
+def check_labels(data_rows):
+    """Ярлыки «Данных заказы» по площадкам (§5): множества «Бренд» и «Статус» у Ozon и WB, строки Ozon без бренда по артикулу."""
+    brands, cats, brandless = defaultdict(set), defaultdict(set), defaultdict(int)
+    for r in data_rows:
+        if r.get("brand"):
+            brands[r["mp"]].add(r["brand"])
+        elif r["mp"] == "Ozon":
+            brandless[r.get("article") or ""] += 1
+        if r.get("category"):
+            cats[r["mp"]].add(r["category"])
+    mps = sorted(brands) or ["Ozon"]
+    equal = all(brands[m] == brands[mps[0]] and cats[m] == cats[mps[0]] for m in mps)
+    return {"brands": {m: set(v) for m, v in brands.items()}, "categories": {m: set(v) for m, v in cats.items()}, "brandless_ozon": dict(brandless), "equal": equal}
+
+
 def sum_order_data(data_rows, days, mp):
     """Σ «Данных заказы» по меткам сводной для площадки: деньги суммой, проценты — от сумм (как в «Свод»)."""
     order, of = labels_for(days)
@@ -1000,6 +1015,97 @@ def _grid_sheet(wb, title, g, widths=15, ncols=40, freeze=None):
     return ws
 
 
+ARTICLE_BUYOUT_KINDS = ("Товарооборот", "Комиссия", "Логистика", "Реклама", "Эквайринг", "Прочее")
+
+
+def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
+    """Запасной лист «Артикул» (§4.3): выпадающий список артикулов (лист «Списки», скрытый), площадка заказов, формулы SUMIFS по «Данным» —
+    экономика артикула по месяцам: выкупы Ozon по статьям, СС, соинвест, штуки, фин. рез.; выкупы WB по статьям; заказы по площадке.
+    Считает Excel при открытии; в openpyxl формулы не вычисляются."""
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.worksheet.datavalidation import DataValidation
+    fmts, bold, fill = _styles()
+    months = []
+    for d in days:
+        if month_label(d) not in months:
+            months.append(month_label(d))
+    month_no = {month_label(d): int(d[5:7]) for d in days}
+    articles = sorted({r.article for r in long_rows if r.article and r.article != NO_SKU} | {r["article"] for r in (order_data_rows or []) if r.get("article") and not str(r["article"]).startswith("(")}
+                      | ({str(r.get("article") or "") for r in (wb_parts or {}).get("rows", []) if r.get("article")} if wb_parts and not wb_parts.get("error") else set()))
+    ls = wb.create_sheet("Списки")
+    ls.sheet_state = "hidden"
+    ls.append(["Артикул", "МП"])
+    for i, a in enumerate(articles):
+        ls.append([a, ("Ozon", "WB")[i] if i < 2 else None])
+    if len(articles) < 2:
+        for i in range(len(articles), 2):
+            ls.append([None, ("Ozon", "WB")[i]])
+    ws = wb.create_sheet("Артикул")
+    from openpyxl.utils import get_column_letter
+    ws.column_dimensions["A"].width = 44
+    for j in range(2, 12):
+        ws.column_dimensions[get_column_letter(j)].width = 16
+    ws.freeze_panes = "B5"
+    dv_art = DataValidation(type="list", formula1=f"=Списки!$A$2:$A${max(2, len(articles) + 1)}", allow_blank=False)
+    dv_mp = DataValidation(type="list", formula1="=Списки!$B$2:$B$3", allow_blank=False)
+    ws.data_validations.append(dv_art); ws.data_validations.append(dv_mp)
+    dv_art.add("B1"); dv_mp.add("B2")
+
+    def cell(v, fmt=None, b=False, f=False):
+        c = WriteOnlyCell(ws, value=v)
+        if fmt:
+            c.number_format = fmts[fmt]
+        if b:
+            c.font = bold
+        if f:
+            c.fill = fill
+        return c
+
+    ws.append([cell("Артикул (выберите из списка ↓)", b=True), articles[0] if articles else "", "экономика артикула по месяцам — формулы SUMIFS по листам «Данные»; считает Excel"])
+    ws.append([cell("Площадка заказов (МП)", b=True), "Ozon", "для блока «Заказы»: Ozon / WB"])
+    ws.append([cell("№ месяца", b=True)] + [month_no[m] for m in months] + [None])
+    ws.append([cell("Показатель", b=True, f=True)] + [cell(m, b=True, f=True) for m in months] + [cell("Итого", b=True, f=True)])
+    row = 5
+    cols = [get_column_letter(j) for j in range(2, 2 + len(months))]
+    total_col = get_column_letter(2 + len(months))
+
+    def line(label, formula_of, fmt="money"):
+        nonlocal row
+        cells = [cell(label)] + [cell(formula_of(c), fmt) for c in cols] + [cell(f"=SUM({cols[0]}{row}:{cols[-1]}{row})", fmt)]
+        ws.append(cells); row += 1
+
+    def head(label):
+        nonlocal row
+        ws.append([cell(label, b=True, f=True)] + [cell(None, f=True)] * (len(months) + 1)); row += 1
+
+    D_ = "'Данные Ozon выкупы'"
+    head("Выкупы Ozon (с НДС, знак сводной владельца: списания < 0)")
+    first = row
+    for kind in ARTICLE_BUYOUT_KINDS:
+        line(kind, lambda c, k=kind: f'=SUMIFS({D_}!$L:$L,{D_}!$C:$C,$B$1,{D_}!$H:$H,{c}$4,{D_}!$F:$F,"{k}")')
+    last = row - 1
+    line("Ст-ть продаж в себ-ти", lambda c: f"=SUMIFS({D_}!$I:$I,{D_}!$C:$C,$B$1,{D_}!$H:$H,{c}$4)")
+    cogs_row = row - 1
+    line("Соинвест (баллы + зелёные цены)", lambda c: f"=SUMIFS({D_}!$P:$P,{D_}!$C:$C,$B$1,{D_}!$H:$H,{c}$4)")
+    line("Штуки", lambda c: f"=SUMIFS({D_}!$E:$E,{D_}!$C:$C,$B$1,{D_}!$H:$H,{c}$4)", "int")
+    line("Фин. рез. с НДС (Σ статей − Ст-ть продаж)", lambda c: f"=SUM({c}{first}:{c}{last})-{c}{cogs_row}")
+    ws.append([None]); row += 1
+    W_ = "'Данные WB выкупы'"
+    head("Выкупы WB (с НДС, модуль WB-сессии: продажи +, статьи как в его листе)")
+    for label, col in (("Продажи, ₽", "E"), ("Реклама, ₽", "F"), ("Комиссия, ₽", "G"), ("Логистика, ₽", "H"), ("Себес-ть, ₽", "I"), ("Хранение, ₽", "J"), ("Ост.расходы и компенсации МП, ₽", "K")):
+        line(label, lambda c, col=col: f"=SUMIFS({W_}!${col}:${col},{W_}!$D:$D,$B$1,{W_}!$B:$B,{c}$4)")
+    ws.append([None]); row += 1
+    O_ = "'Данные заказы'"
+    head("Заказы (площадка — B2; месяц — по номеру в строке 3)")
+    for label, col, fmt in (("Заказы, ₽", "E", "money"), ("Заказы, шт", "F", "int"), ("Реклама, ₽", "G", "money"), ("Заказы, руб c СПП", "O", "money"),
+                            ("Выручка, руб без НДС с учетом комиссии", "Q", "money"), ("Маржа, руб без НДС", "W", "money"), ("Фин.рез", "AB", "money")):
+        line(label, lambda c, col=col: f"=SUMIFS({O_}!${col}:${col},{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3)", fmt)
+    line("Соинвест, % (по строкам с измеренной ценой покупателя)",
+         lambda c: f'=IFERROR(1-SUMIFS({O_}!$O:$O,{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3)/SUMIFS({O_}!$E:$E,{O_}!$D:$D,$B$1,{O_}!$B:$B,$B$2,{O_}!$V:$V,{c}$3,{O_}!$O:$O,"<>"),"")', "pct")
+    ws.append([None]); row += 1
+    ws.append(["Список артикулов — лист «Списки» (скрыт); при открытии Excel пересчитывает формулы по текущим листам «Данные»."])
+
+
 def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coef, notes, catalog_source, today, wb=None, order_data_rows=None, timings=None):
     """Книга в форме владельца. Порядок листов: Выкупы Ozon · × бренд · × категория · Данные Ozon выкупы · Выкупы WB · по брендам · по категориям ·
     Данные WB выкупы · Заказы · Коэффициенты · Данные заказы · Примечания. Выравнивание с образцом: «Названия столбцов» — строка 9 на листах выкупов,
@@ -1127,6 +1233,8 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     if order_data_rows is not None:
         n_orders = write_data_sheet(wb, "Данные заказы", ORDER_DATA_COLS, order_data_rows, widths={9: 48})
         lap("Данные заказы")
+    write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts)
+    lap("Артикул")
     g = Grid()
     g.set(1, 1, "Лист", bold=True, fill=True); g.set(1, 2, "Примечание", bold=True, fill=True)
     r = 2
@@ -1198,6 +1306,7 @@ def main(argv=None):
     ap.add_argument("--book", help="утренняя книга Ozon (xlsx) — сверка заказов с её листом «Заказы»")
     ap.add_argument("--no-orders-data", action="store_true", help="не писать лист «Данные заказы» (запасной флаг; по умолчанию пишется)")
     ap.add_argument("--no-wb", action="store_true", help="без WB-части (модуль WB-сессии не зовётся)")
+    ap.add_argument("--no-pivots", action="store_true", help="не пересаживать сводные владельца (scripts/finrez_pivots.py) в книгу")
     args = ap.parse_args(argv)
     t_start, t_last = time.time(), time.time()
 
@@ -1336,6 +1445,23 @@ def main(argv=None):
     timings = {}
     counts = write_book(out, days, long_rows, pivots, order_data, orders_pivot, coef, notes, catalog_source, today, wb=wb_parts, order_data_rows=order_data_rows, timings=timings)
     phase("запись книги")
+    if not args.no_pivots:
+        import finrez_pivots
+        missing = [s["owner"] for s in finrez_pivots.SPECS if not os.path.exists(os.path.join(ROOT, s["owner"]))]
+        if missing:
+            print(f"сводные владельца не пересажены: нет файлов {missing}")
+        else:
+            counts_by_sheet = {"Данные Ozon выкупы": counts["long_rows"] + 1, "Данные WB выкупы": (len(wb_parts["rows"]) + 1) if not wb_parts.get("error") else None,
+                               "Данные заказы": (counts["order_rows"] or 0) + 1}
+            specs = [s for s in finrez_pivots.SPECS if counts_by_sheet.get(s["source_sheet"])]
+            rep_ = finrez_pivots.transplant(out, out, specs=specs, row_counts={k: v for k, v in counts_by_sheet.items() if v})
+            for r_ in rep_:
+                print(f"сводная «{r_['sheet']}» ← «{r_['source']}» {r_['ref']}: cacheId {r_['cache_id']}, sheetId {r_['sheet_id']}, полей {r_['fields']}, срезов {r_['slicers']}")
+            errs, info_ = finrez_pivots.check(out)
+            print("проверка сводных: " + ("сошлось" if not errs else "ошибок " + str(len(errs))) + "; " + "; ".join(info_[-1:]))
+            for e in errs:
+                print("  ✗ " + e)
+            phase("сводные владельца (пересадка + проверка)")
     size = os.path.getsize(out)
     sha = hashlib.sha256(open(out, "rb").read()).hexdigest()
     tot = pivots["all"][0]["Ozon"]["Общий итог"]
@@ -1358,6 +1484,10 @@ def main(argv=None):
           f"{'да' if not bad_identity else 'НЕТ ' + str(bad_identity[:6])}")
     code = 1 if bad_identity else code
     if order_data_rows is not None:
+        lab = check_labels(order_data_rows)
+        print("ярлыки «Данных заказы» по площадкам: бренды " + "; ".join(f"{m}: {sorted(v)}" for m, v in sorted(lab["brands"].items()))
+              + " | категории " + "; ".join(f"{m}: {sorted(v)}" for m, v in sorted(lab["categories"].items()))
+              + f" | множества Ozon = WB: {'да' if lab['equal'] else 'НЕТ'}; строк Ozon без бренда по артикулу: {lab['brandless_ozon'] or 0}")
         table = check_orders_data(order_data_rows, days, orders_pivot[0], None if wb_parts.get("error") else wb_parts["orders_pivot"])
         bad = [t for t in table if t[5]]
         print(f"приёмка «Свод» = Σ «Данных заказы» по 13 колонкам × {len({(t[0], t[1]) for t in table})} (площадка, метка): не сошлось {len(bad)} из {len(table)}")

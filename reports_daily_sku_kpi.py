@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from loaders import stale_keys
+from loaders import wb_buyout_cohort as cohort
 
 load_dotenv()
 
@@ -216,7 +217,18 @@ def fill_articles(grouped, article_map):
     return filled
 
 
-def build_kpi():
+def load_wb_cohort():
+    """(по дням, по ключам) выкупа WB по когорте для строк WB витрины (WB-11 §3); отказ — ({}, {}) вслух, WB на календарном правиле."""
+    try:
+        daily, sku = cohort.read_daily_rates(supabase), cohort.read_sku_rates(supabase)
+        print(f"Выкуп WB по когорте: дней {len(daily)}, зрелых ключей {len(sku)}")
+        return daily, sku
+    except Exception as error:  # noqa: BLE001
+        print(f"⚠️ выкуп WB по когорте не прочитан ({str(error)[:120]}) — строки WB на календарном правиле")
+        return {}, {}
+
+
+def build_kpi(wb_cohort=None, with_source=False):
     orders = load_orders()
     buyouts = load_buyouts()
     expenses = load_expenses()
@@ -326,11 +338,19 @@ def build_kpi():
     print(f"Артикул: дописан по карте sku → article из заказов у {filled} строк; с артикулом {with_article} из {len(grouped)}")
 
     rows = []
+    wb_daily, wb_sku = load_wb_cohort() if wb_cohort is None else wb_cohort
+    sources = {"cohort": 0, "cohort_forecast": 0, "calendar": 0}
 
     for row in grouped.values():
         orders_qty = row["orders_qty"]
         buyouts_qty = row["buyouts_qty"]
         row["buyout_rate"] = buyout_rate(buyouts_qty, row.pop(CREATED_QTY, 0))
+        source = "calendar"
+        if row["marketplace_code"] == "wb":      # WB-11 §3: когорта дня заказа; ключ без когорты (день раньше 04-01) — как было
+            row["buyout_rate"], source = cohort.showcase_rate(row["kpi_date"], wb_daily, row["buyout_rate"], sku=wb_sku, nm=row["marketplace_sku"])
+            sources[source] += 1
+        if with_source:
+            row["buyout_rate_source"] = source
 
         orders_amount = row["orders_amount_seller"]
         ad_spend = row.get("ad_spend") or 0
@@ -354,6 +374,8 @@ def build_kpi():
 
         rows.append(row)
 
+    print(f"buyout_rate WB: когорта {sources['cohort']}, прогноз {sources['cohort_forecast']}, календарное {sources['calendar']}"
+          + ("" if with_source else " (колонки buyout_rate_source нет — источник не пишется)"))
     if unknown_expense_types:
         print("⚠️  НЕЗНАКОМЫЕ ТИПЫ РАСХОДА (учтены в прочих, но не классифицированы):")
         for name, amount in sorted(unknown_expense_types.items(), key=lambda x: -abs(x[1])):
@@ -427,7 +449,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="собрать витрину и план чистки ключей; в БД не писать ни строки")
     args = ap.parse_args()
-    rows = build_kpi()
+    rows = build_kpi(with_source=cohort.table_has_column(supabase, "daily_sku_kpi", "buyout_rate_source"))
     if args.dry_run:
         print(f"--dry-run: витрина собрана ({len(rows)} строк), не записываю")
     else:

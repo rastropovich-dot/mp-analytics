@@ -13,6 +13,8 @@
     orders_rows_for_finrez(date_from, date_to, sb=None)       -> строки заказов WB по (день, nmId) для общего листа «Заказы»
     buyout_rate_for_finrez(month_from, month_to, sb=None)     -> {ярлык месяца: Decimal, "итого": Decimal} — коэффициент выкупа WB (₽, когорта
                                                                  месяца заказа, только зрелые месяцы) для листа «Коэффициенты» (WB-9 §3)
+    coinvest_share_by_month(month_from, month_to, sb=None)    -> {ярлык месяца: Decimal, "итого": Decimal} — доля соинвеста WB по месяцу продажи
+                                                                 (P владельца: (Σ price − Σ amount) / Σ price по продажам и возвратам со знаком; WB-11 §2)
     Ярлыки бренда и категории — одни с Ozon (WB-9 §2): KARATOV / Топаз / «(без товара)»; кольца · серьги · подвески · цепочки · браслеты ·
     пирсинг · колье · броши · прочее (BRAND_LABELS, CATEGORY_LABELS).
 
@@ -662,6 +664,40 @@ def buyout_rate_for_finrez(month_from, month_to, sb=None, rows=None, orders_by_m
             out[month_label(f"{mo}-01")] = rate; tn += num.get(mo, Z); td += den
     if td:
         out["итого"] = ratio(tn, td)
+    return out
+
+
+COINVEST_SELECT = "rrd_id,rr_date,sale_dt,seller_oper_name,retail_price_with_disc,retail_amount"
+
+
+def coinvest_share_by_month(month_from, month_to, sb=None, rows=None, date_to=None):
+    """Доля соинвеста WB по месяцам — {ярлык месяца: Decimal, "итого": Decimal} (WB-11 §2, для строк заказов Ozon-скрипта
+    без измеренной цены покупателя). Формула P владельца по отчёту реализации: (Σ retailPriceWithDisc − Σ retailAmount) /
+    Σ retailPriceWithDisc по строкам «Продажа» (+) и «Возврат» (−), день — saleDt МСК, месяц — месяц этого дня (как в мосте
+    и в build_rows: coinvest = Σ sign × (price − amount)). Отчёт читается узким SELECT по ключу (rr_date, rrd_id) за
+    rr_date month_from-01 … конец month_to + 7 дней (запас под дату продажи, как у листа); rows= — для тестов и повторов."""
+    d1, d2 = month_bounds(month_from, month_to, date_to)
+    sb = _sb(sb) if rows is None else sb
+    if rows is None:
+        rows = read_keyset(sb, report_loader.TABLE, COINVEST_SELECT, d1, wbm.window_end(d2), day_col="rr_date", id_col="rrd_id")
+    num, den = defaultdict(Decimal), defaultdict(Decimal)
+    for r in rows:
+        op = r.get("seller_oper_name")
+        if op not in ("Продажа", "Возврат"):
+            continue
+        day = wbm.row_day(r)
+        if not (d1 <= day <= d2):
+            continue
+        sign = 1 if op == "Продажа" else -1
+        price, amount = D(r.get("retail_price_with_disc")), D(r.get("retail_amount"))
+        num[day[:7]] += sign * (price - amount); den[day[:7]] += sign * price
+    out = {}
+    for m in months_between(month_from, month_to):
+        if den.get(m):
+            out[month_label(f"{m}-01")] = ratio(num[m], den[m])
+    total_den = sum(den.values(), Z)
+    if total_den:
+        out["итого"] = ratio(sum(num.values(), Z), total_den)
     return out
 
 

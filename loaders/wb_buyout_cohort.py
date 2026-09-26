@@ -172,3 +172,51 @@ def read_showcase_by_month(sb, day_from, day_to):
     for m in out.values():
         m["rate"] = ratio(m["buyouts_qty"], m["created_qty"])
     return dict(sorted(out.items()))
+
+
+# ---------- витрины (WB-11 §3): buyout_rate строк WB — из когорты, не календарный ----------
+
+def _f(v):
+    return None if v in (None, "") else round(float(v), 4)
+
+
+def read_daily_rates(sb):
+    """{день: {"mature", "rate", "forecast"}} из wb_buyout_cohort_daily (≈ 180 строк, страницы по дню)."""
+    rows = stale_keys.read_window_rows(sb, DAILY_TABLE, "day,mature,rate_sum,forecast_rate_sum", [], ["day"])
+    return {str(r["day"]): {"mature": bool(r.get("mature")), "rate": _f(r.get("rate_sum")), "forecast": _f(r.get("forecast_rate_sum"))} for r in rows}
+
+
+def read_sku_rates(sb):
+    """{(день, str(nmId)): ставка зрелого ключа} из wb_buyout_cohort_sku_daily (только mature, ≈ 22 тыс. строк по ключу); nmId строкой — как marketplace_sku витрины."""
+    rows = keyset.read_keyset(sb, SKU_TABLE, "day,nm_id,rate_sum", "2000-01-01", "2100-12-31", day_col="day", id_col="nm_id", filters=[("eq", "mature", True)])
+    return {(str(r["day"]), str(r["nm_id"])): _f(r.get("rate_sum")) for r in rows}
+
+
+def showcase_rate(day, daily, calendar, sku=None, nm=None):
+    """(buyout_rate, источник) для строки витрины WB.
+
+    День есть в когорте: зрелый — ставка когорты (по площадке — rate_sum дня; по SKU — ставка ключа, ключа без заказов в
+    этот день нет → 0, как у правила «нет созданных»), незрелый — прогноз дня (по SKU — тот же прогноз площадки: по одному
+    nmId прогноза нет). Дня в когорте нет (раньше 2026-04-01, таблица пуста или не прочитана) — календарное значение
+    как было, источник «calendar»."""
+    d = daily.get(str(day)) if daily else None
+    if d is None:
+        return calendar, "calendar"
+    if not d["mature"]:
+        return (d["forecast"] if d["forecast"] is not None else 0), "cohort_forecast"
+    if nm is not None:
+        rate = (sku or {}).get((str(day), str(nm)))
+        return (rate if rate is not None else 0), "cohort"
+    return (d["rate"] if d["rate"] is not None else 0), "cohort"
+
+
+def table_has_column(sb, table, column):
+    """Есть ли колонка (например, buyout_rate_source — миграция по слову): одна строка select; PGRST204 / 42703 — нет."""
+    try:
+        sb.table(table).select(column).limit(1).execute()
+        return True
+    except Exception as error:  # noqa: BLE001
+        text = str(error)
+        if "PGRST204" in text or "42703" in text or column in text:
+            return False
+        raise

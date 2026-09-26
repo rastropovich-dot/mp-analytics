@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 
+from loaders import wb_buyout_cohort as cohort
 from reports_daily_sku_kpi import buyout_rate, created_orders_qty, read_all_by_id
 
 load_dotenv()
@@ -39,10 +40,22 @@ def load_created_orders_qty():
     return out
 
 
-def build_marketplace_kpi(created=None):
+def load_wb_cohort_daily():
+    """Выкуп WB по когорте дня заказа для строк WB витрины (WB-11 §3). Отказ чтения — {} вслух: WB остаётся на календарном правиле."""
+    try:
+        daily = cohort.read_daily_rates(supabase)
+        print(f"Выкуп WB по когорте: дней {len(daily)}, зрелых {sum(1 for d in daily.values() if d['mature'])}")
+        return daily
+    except Exception as error:  # noqa: BLE001 — витрина не должна упасть из-за когорты
+        print(f"⚠️ выкуп WB по когорте не прочитан ({str(error)[:120]}) — строки WB на календарном правиле")
+        return {}
+
+
+def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
     sku_rows = load_daily_sku_kpi()
     print(f"Строк daily_sku_kpi загружено: {len(sku_rows)}")
     created = load_created_orders_qty() if created is None else created
+    wb_cohort = load_wb_cohort_daily() if wb_cohort is None else wb_cohort
 
     grouped = {}
 
@@ -108,8 +121,15 @@ def build_marketplace_kpi(created=None):
 
     rows = []
 
+    sources = {"cohort": 0, "cohort_forecast": 0, "calendar": 0}
     for row in grouped.values():
         row["buyout_rate"] = buyout_rate(row["buyouts_qty"], created.get((row["kpi_date"], row["marketplace_code"]), 0))
+        source = "calendar"
+        if row["marketplace_code"] == "wb":      # WB-11 §3: когорта дня заказа вместо «выкупы по дню продажи / созданные»
+            row["buyout_rate"], source = cohort.showcase_rate(row["kpi_date"], wb_cohort, row["buyout_rate"])
+            sources[source] += 1
+        if with_source:
+            row["buyout_rate_source"] = source
 
         if row["buyouts_amount_seller"] > 0:
             row["gross_margin_percent"] = round(row["gross_margin_amount"] / row["buyouts_amount_seller"], 4)
@@ -131,7 +151,8 @@ def build_marketplace_kpi(created=None):
 
         rows.append(row)
 
-    print(f"Строк daily_marketplace_kpi к записи: {len(rows)}")
+    print(f"Строк daily_marketplace_kpi к записи: {len(rows)}; buyout_rate WB: когорта {sources['cohort']}, прогноз {sources['cohort_forecast']}, "
+          f"календарное {sources['calendar']}" + ("" if with_source else " (колонки buyout_rate_source нет — источник не пишется)"))
     return rows
 
 
@@ -150,5 +171,5 @@ def save_marketplace_kpi(rows):
 
 
 if __name__ == "__main__":
-    rows = build_marketplace_kpi()
+    rows = build_marketplace_kpi(with_source=cohort.table_has_column(supabase, "daily_marketplace_kpi", "buyout_rate_source"))
     save_marketplace_kpi(rows)

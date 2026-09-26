@@ -8,7 +8,7 @@
 
 ---
 
-## 2026-09-26, одиннадцатая задача WB — §2 и §3 сделаны в ветке (доля соинвеста по месяцам в контракте; выкуп WB в витринах и отчётах 7/60 дней — когорта вместо календарного); мерж — по слову; §1 — утром 09-27 по будильнику 07:47 UTC
+## 2026-09-26, одиннадцатая задача WB — §2 и §3 слиты в `main` по слову (`07463b2`, Render live 14:24 UTC; колонка `buyout_rate_source` применена); §1 — утром 09-27 по будильнику 07:47 UTC
 
 Обращений к WB API — **0**, 429 — **0**; **db_writes = 0** (чтение: PostgREST, `execute_sql`; сухой прогон KPI по SKU без записи). Будильник
 сессии на 07:47 UTC 09-27 поставлен заново (одноразовый cron; 09-26 такой же не сработал — владелец дал строку). Полный набор
@@ -80,10 +80,27 @@
 **Что нужно от владельца:** мерж (§4) — после него ночь 09-27 перепишет обе витрины KPI-шагами; колонка `buyout_rate_source` — по
 желанию (без неё всё работает).
 
+### Выполнено по слову (14:22–14:24 UTC): миграция колонки, мерж, Render
+
+1. **Миграция `add_buyout_rate_source`** — через MCP `apply_migration`, `success: true` (~14:22 UTC); контроль `information_schema`:
+   `buyout_rate_source text` есть в обеих витринах. С этой ночи KPI-шаги пишут источник: у строк WB `cohort` / `cohort_forecast` /
+   `calendar` (до 04-01), у Ozon — `calendar`.
+2. **Мерж:** `origin/main` перед мержем — `4998f53` (сорок первая Ozon-сессии, 5 коммитов: сводные в Excel, соинвест
+   незамеренных строк), влит в ветку без конфликтов (`cb610b1`, 6 файлов Ozon); полный набор на голове **1 119 OK (1 skipped — их
+   тест)**. Мерж-коммит `--no-ff` плюмбингом **`07463b2`** (родители `4998f53` + `cb610b1`, дерево = ветке) — **push в `main`
+   14:23:13–14:23:16 UTC**; ветка переведена и запушена. **Render (6 обращений `/deploys`): `mp-analytics` live 14:23:59 UTC,
+   `mp-analytics-telegram-report` live 14:23:57 UTC**, оба на `07463b2`; запас до 00:15 UTC — **9 ч 51 мин**.
+3. **Что смотреть утром 09-27 (§1):** в логе шага «KPI: расчет SKU» строка `buyout_rate WB: когорта ~30 800, прогноз ~900,
+   календарное 6 897` без хвоста «колонки нет», в «KPI: расчет маркетплейсов» — `когорта 154 … прогноз ~25, календарное 59`;
+   в базе `daily_marketplace_kpi` WB за 09-19 … 09-26 — `buyout_rate` = `wb_buyout_cohort_daily` (прогноз ночи, ~0,415) и
+   `buyout_rate_source = 'cohort_forecast'`, у дней до 04-01 — `'calendar'`, у Ozon — `'calendar'`; отчёт 7 дней покажет
+   ~41,5 % на всех днях WB.
+
 ### `git log origin/main..HEAD`
 
 ```
-(этот коммит)  Eleventh WB task: §2 coinvest_share_by_month in the module contract (Apr–Sep 0.3299 … 0.4239, total 0.3391; Sept 1–21 0.4250), §3 cohort buyout_rate for WB rows of both KPI showcases (+ 7/60-day captions, optional source column), 1 119 tests
+(этот коммит)  Eleventh WB report: merged into main (07463b2), Render live 14:24 UTC
+7bc34da Eleventh WB task: §2 coinvest_share_by_month in the module contract (Apr–Sep 0.3299 … 0.4239, total 0.3391; Sept 1–21 0.4250), §3 cohort buyout_rate for WB rows of both KPI showcases (+ 7/60-day captions, optional source column), 1 119 tests
 7ef436e Tenth WB report §1: observed_at fix merged into main (4241881), Render live 11:34 UTC
 ```
 

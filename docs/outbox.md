@@ -145,6 +145,16 @@ refresh all                     ок    7,2 с — три сводные пер�
 срезы 2, вычисляемые 8 / 8, плюсики 178 → 0). Скрипт — `finrez-excel-check` 748e97e, `finrez-coinvest-fill` перебазирована на него (ae11b84); обе ветки
 сливаются в main c0bc307 без конфликтов (merge-tree), полный набор — 1 123 теста OK. В файл ни один прогон не писал; книга в Excel закрыта.
 
+### По слову владельца (21:20 UTC): мержи `finrez-excel-check` и `finrez-coinvest-fill` в `main`
+
+```
+271db87  Merge finrez-excel-check --no-ff (748e97e: §2 — скрипт живой проверки, починка rangePr в пересадке, --excel-check в сборке, reports_model §7б), конфликтов 0
+8c9f5e9  Merge finrez-coinvest-fill --no-ff (ae11b84: §4 — соинвест по выкупам месяца, «СПП источник», формула «Артикула»), конфликтов 0
+тесты    полный набор на main после обоих мержей — Ran 1132 tests in 0.738s, OK (1 123 веток + 9 тестов WB-11, слитых в main 14:23 UTC)
+push     21:21:02 UTC; Render live на 8c9f5e9: mp-analytics 21:21:46, mp-analytics-telegram-report 21:21:44 UTC; startCommand не менялись
+книга    не пересобиралась — на диске итоговая сборка 14:37 UTC на 8dac815 (тот же код §4 и починки), sha256 d8c2aa5b…; следующая сборка пойдёт с main
+```
+
 Ниже — блок предыдущей сборки 12:58 (числа §4 те же).
 
 ### §5 — пересборка книги с §4 (worktree на 4fa0741, `--date-to 2026-09-25 --check --book ozon_2026-09_to_2026-09-25.xlsx`)

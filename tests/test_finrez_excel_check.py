@@ -93,10 +93,21 @@ class Compare(unittest.TestCase):
                 ["Заказы (площадка — B2; месяц — по номеру в строке 3)", None, None], ["Заказы, ₽", 1500, 0, 1500], ["Фин.рез", 10, 0, 10]]
         buy = {("F1", "апр"): {"Товарооборот": D(1000), "Комиссия": D(-400), "Ст-ть продаж в себ-ти": D(300)}}
         orders = {("F1", "Ozon", 4): {"Заказы, ₽": D(1500), "Фин.рез": D(11)}}
-        table = x.compare_article_sheet(grid, "F1", "Ozon", buy, orders)
+        wbb = {("F1", "апр"): {"Продажи, ₽": D(7)}}
+        table = x.compare_article_sheet(grid, "F1", "Ozon", buy, orders, wbb)
         bad = [t for t in table if t[5]]
         self.assertEqual(bad, [("orders", "Фин.рез", "апр", D(10), D(11), D("-1.00"))])
-        self.assertEqual(len(table), 5)                                                 # май везде 0 и пусто — не сравнивается
+        self.assertEqual(len(table), 6)                                                 # май везде 0 и пусто — не сравнивается; блок WB — 1
+
+    def test_month_labels_of_excel(self):
+        self.assertEqual([x.month_key(v) for v in ("сен", "сент", "сент.", "мая", "апр.", "Sep", "Общий итог", "01.сент", 4, None)],
+                         ["сен", "сен", "сен", "май", "апр", "сен", None, None, None, None])
+        st = {"апр": {"Товарооборот": D(1)}, "сен": {"Товарооборот": D(2)}}
+        grid = [["Названия строк", "Начисления"], [None, "Товарооборот"], ["Названия строк", "Начисления"], ["апр", 1], ["сент", 2], ["Общий итог", 3]]
+        table = x.compare(st, grid, ("Товарооборот",), article_header=True)
+        self.assertEqual([t for t in table if t[4]], [])                                # «сент» области = «сен» листа
+        table = x.compare({"апр": {"Товарооборот": D(1)}, "май": {"Товарооборот": D(9)}}, grid, ("Товарооборот",), article_header=True)
+        self.assertIn("меток статичного листа нет в области сводной: ['май']", table[-1][4])
 
 
 class Run(unittest.TestCase):

@@ -163,8 +163,27 @@ def dec(v):
         return None
 
 
+EXCEL_MONTHS = {"янв": "янв", "фев": "фев", "мар": "мар", "апр": "апр", "мая": "май", "май": "май", "июн": "июн", "июл": "июл", "авг": "авг",
+                "сен": "сен", "окт": "окт", "ноя": "ноя", "дек": "дек"}
+
+
+def month_key(v):
+    """Метка месяца из наших листов («сен») и из области сводной Excel («сент», «сент.», «мая», «Sep») → «сен»; иначе None."""
+    if not isinstance(v, str):
+        return None
+    t = v.strip().rstrip(".").lower()
+    if t in MONTHS:
+        return t
+    en = {"jan": "янв", "feb": "фев", "mar": "мар", "apr": "апр", "may": "май", "jun": "июн", "jul": "июл", "aug": "авг", "sep": "сен", "oct": "окт", "nov": "ноя", "dec": "дек"}
+    if t[:3] in en and len(t) <= 4 and t.isascii():
+        return en[t[:3]]
+    if len(t) <= 5 and t[:3] in EXCEL_MONTHS and not any(ch.isdigit() for ch in t):
+        return EXCEL_MONTHS[t[:3]]
+    return None
+
+
 def is_month(v):
-    return isinstance(v, str) and v.strip() in MONTHS
+    return month_key(v) is not None
 
 
 def static_ozon_buyouts(rows):
@@ -179,7 +198,7 @@ def static_ozon_buyouts(rows):
     out = {}
     for r in rows[3:]:
         if r and is_month(r[0]):
-            out[r[0].strip()] = {a: dec(r[j]) for a, j in cols.items()}
+            out[month_key(r[0])] = {a: dec(r[j]) for a, j in cols.items()}
         if r and r[0] == "Общий итог":
             out["Общий итог"] = {a: dec(r[j]) for a, j in cols.items()}
     return out
@@ -195,7 +214,7 @@ def static_by_header(rows, header_row, money):
     out = {}
     for r in rows[header_row:]:
         if r and (is_month(r[0]) or r[0] == "Общий итог"):
-            out[str(r[0]).strip()] = {k: dec(r[j]) for k, j in cols.items()}
+            out[month_key(r[0]) or "Общий итог"] = {k: dec(r[j]) for k, j in cols.items()}
     return out
 
 
@@ -214,7 +233,7 @@ def static_orders(rows):
                 h = heads[j] if j < len(heads) else None
                 if h and str(h).strip() in ORDER_MONEY + ORDER_PCT and str(h).strip() not in vals:
                     vals[str(h).strip()] = dec(r[j]) if j < len(r) else None
-            out[(mp, str(r[0]).strip())] = vals
+            out[(mp, month_key(r[0]) or "Общий итог")] = vals
     return out
 
 
@@ -226,7 +245,7 @@ def find_labels(grid):
     header_idx = None
     for i, r in enumerate(grid):
         if r and is_month(r[0]):
-            rows[str(r[0]).strip()] = i
+            rows[month_key(r[0])] = i
             if header_idx is None:
                 header_idx = i - 1
         elif r and r[0] == "Общий итог":
@@ -274,6 +293,9 @@ def compare(static, pivot_grid, names, article_header=None, pct=(), tol_pct=Deci
             out.append((lab, name, a, b, diff))
     if not cols:
         out.append(("—", "—", None, None, f"колонки {names} не найдены в шапке сводной: {pivot_grid[header_idx][:12]}"))
+    missing = [lab for lab in static if lab not in rows]
+    if missing:
+        out.append(("—", "—", None, None, f"меток статичного листа нет в области сводной: {missing}; в области: {list(rows)}"))
     return out
 
 
@@ -310,27 +332,41 @@ def sums_for_articles(path, articles):
             key = (a, str(r[ix["МП"]]), int(r[ix["Месяцы"]] or 0))
             for h in ("Заказы, ₽", "Заказы, шт", "Реклама, ₽", "Заказы, руб c СПП", "Выручка, руб без НДС с учетом комиссии", "Маржа, руб без НДС", "Фин.рез"):
                 orders[key][h] += dec(r[ix[h]]) or Z
+    wbb = defaultdict(lambda: defaultdict(Decimal))
+    ws = wb["Данные WB выкупы"]
+    it = ws.iter_rows(values_only=True)
+    heads = [str(h) if h is not None else "" for h in next(it)]
+    ix = {h: i for i, h in enumerate(heads)}
+    for r in it:
+        a = r[ix["Артикул поставщика"]]
+        if a in arts:
+            key = (a, month_key(r[ix["Месяц"]]) or str(r[ix["Месяц"]]))
+            for h in WB_BLOCK.values():
+                wbb[key][h] += dec(r[ix[h]]) or Z
     wb.close()
-    return buy, orders
+    return buy, orders, wbb
 
 
+WB_BLOCK = {h: h for h in ("Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽", "Себес-ть, ₽", "Хранение, ₽", "Ост.расходы и компенсации МП, ₽")}
 ARTICLE_BLOCK = {"Товарооборот": "Товарооборот", "Комиссия": "Комиссия", "Логистика": "Логистика", "Реклама": "Реклама", "Эквайринг": "Эквайринг", "Прочее": "Прочее",
                  "Ст-ть продаж": "Ст-ть продаж в себ-ти", "Соинвест": "Соинвест", "Штуки": "Количество"}
 ORDER_BLOCK = {"Заказы, ₽": "Заказы, ₽", "Заказы, шт": "Заказы, шт", "Реклама, ₽": "Реклама, ₽", "Заказы, руб c СПП": "Заказы, руб c СПП",
                "Выручка": "Выручка, руб без НДС с учетом комиссии", "Маржа": "Маржа, руб без НДС", "Фин.рез": "Фин.рез"}
 
 
-def compare_article_sheet(grid, article, mp, buy, orders):
-    """Блоки листа «Артикул» (значения после пересчёта Excel) против Σ «Данных»: [(блок, показатель, месяц, лист, данные, разница)]."""
+def compare_article_sheet(grid, article, mp, buy, orders, wbb=None):
+    """Блоки листа «Артикул» (значения после пересчёта Excel) против Σ «Данных»: [(блок, показатель, месяц, лист, данные, разница)] —
+    выкупы Ozon, выкупы WB (wbb) и заказы площадки mp."""
     months = None
     out = []
     block = None
+    wbb = wbb or {}
     for r in grid:
         if not r:
             continue
         lab = str(r[0]).strip() if r[0] is not None else ""
         if lab == "Показатель":
-            months = [(j, str(v).strip()) for j, v in enumerate(r) if is_month(v)]
+            months = [(j, month_key(v)) for j, v in enumerate(r) if is_month(v)]
             continue
         if lab.startswith("Выкупы Ozon ("):
             block = "buy"; continue
@@ -338,15 +374,18 @@ def compare_article_sheet(grid, article, mp, buy, orders):
             block = "orders"; continue
         if lab.startswith("Выкупы WB ("):
             block = "wb"; continue
-        if not months or block not in ("buy", "orders"):
+        if not months or block not in ("buy", "orders", "wb"):
             continue
-        key = next((k for k in (ARTICLE_BLOCK if block == "buy" else ORDER_BLOCK) if lab == k or lab.startswith(k + " ")), None)
+        table = ARTICLE_BLOCK if block == "buy" else (ORDER_BLOCK if block == "orders" else WB_BLOCK)
+        key = next((k for k in table if lab == k or lab.startswith(k + " ")), None)
         if key is None:
             continue
         for j, mo in months:
             got = dec(r[j]) if j < len(r) else None
             if block == "buy":
                 exp = buy.get((article, mo), {}).get(ARTICLE_BLOCK[key], Z)
+            elif block == "wb":
+                exp = wbb.get((article, mo), {}).get(WB_BLOCK[key], Z)
             else:
                 exp = orders.get((article, mp, MONTHS.index(mo) + 1), {}).get(ORDER_BLOCK[key], Z)
             if not got and exp == 0:
@@ -458,7 +497,7 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
         # раскрытие месяца на «Сводная WB выкупы»
         try:
             fields = ex('return name of every pivot field of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
-            mf = next((str(f) for f in fields if "Месяц" in str(f)), None)
+            mf = next((str(f) for f in fields if str(f).startswith("Месяцы")), None)      # групповое поле сводной, не колонка «Месяц» источника
             if mf is None:
                 raise ExcelError(f"поля месяцев нет среди {fields}")
             items = ex(f'return name of every pivot item of pivot field {q(mf)} of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
@@ -511,15 +550,16 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
         # «Артикул»
         if articles:
             try:
-                buy, orders = sums_for_articles(path, articles)
+                buy, orders, wbb = sums_for_articles(path, articles)
                 for art in articles:
                     t = time.time()
                     grid = ex(f'set sh to sheet "Артикул" of active workbook\nset value of range "B1" of sh to {q(art)}\nset value of range "B2" of sh to {q(mp)}\n'
                               f'calculate\nreturn value of range "A1:H60" of sh', 300)
                     dt = time.time() - t
-                    table = compare_article_sheet(grid, art, mp, buy, orders)
+                    table = compare_article_sheet(grid, art, mp, buy, orders, wbb)
                     bad = [x for x in table if x[5]]
-                    rec(f"Артикул {art} ({mp})", bool(table) and not bad, f"пересчёт {dt:.1f} с, сравнений {len(table)}, расхождений {len(bad)}" + (f": {bad[:6]}" if bad else ""))
+                    blocks = {x[0] for x in table}
+                    rec(f"Артикул {art} ({mp})", bool(table) and not bad, f"пересчёт {dt:.1f} с, сравнений {len(table)} (блоки {sorted(blocks)}), расхождений {len(bad)}" + (f": {bad[:6]}" if bad else ""))
             except Exception as e:  # noqa: BLE001
                 rec("Артикул", False, f"{type(e).__name__}: {e}")
         # плюсики: summary row сверху, дни скрыты, show levels раскрывает

@@ -8,7 +8,7 @@
 
 ---
 
-## 2026-09-26, десятая задача WB — §1 утро 09-26: первая ночь шага «WB: выкуп по когорте» прошла (4 042 ключа, 60 дней, 21 с), строка когорты в алерте есть, ночь чистая; один дефект найден и починен в ветке (`observed_at` когорты)
+## 2026-09-26, десятая задача WB — §1 утро 09-26: первая ночь шага «WB: выкуп по когорте» прошла (4 042 ключа, 60 дней, 21 с), строка когорты в алерте есть, ночь чистая; правка `observed_at` когорты слита в `main` по слову (`4241881`, Render live 11:34 UTC)
 
 Будильник сессии (одноразовый cron 07:47 UTC) не сработал — §1 запущен словом владельца 11:21 UTC. Только чтение: лог ночи и лог
 алерта с Render (`GET /v1/logs`: ночь — 1 600 строк за 18 обращений, один 429 Render API повторён; алерт — 91 строка за 1),
@@ -51,6 +51,16 @@
 в книге «Фин рез» Ozon-скрипта (модуль, приёмка v6 вчера: бренды {KARATOV, Топаз, (без товара)}, категории строчными); в утренней
 книге их проверять нечего.
 
+### Мерж по слову (11:33–11:35 UTC): main = `4241881`, Render live 11:34 UTC, запас до 00:15 — 12 ч 40 мин
+
+`origin/main` перед мержем — `250f843` (тридцать девятая и сороковая Ozon-сессии, 7 коммитов; листы WB книги «Фин рез» в форме
+владельца поверх модуля, `build_month_sheet` по меткам), влит в ветку без конфликтов (`a6a249b`, 9 файлов Ozon); полный набор на
+голове — **1 113 OK (1 skipped — их тест)**. Мерж-коммит `--no-ff` плюмбингом **`4241881`** (родители `250f843` + `a6a249b`, дерево =
+ветке) — **push в `main` 11:33:54–11:33:55 UTC**; ветка переведена и запушена. **Render (6 обращений `/deploys`): `mp-analytics`
+live 11:34:35 UTC, `mp-analytics-telegram-report` live 11:34:36 UTC**, оба на `4241881`. Ночь 09-27 — первая с `observed_at` времени
+записи: у всех ~4 200 ключей окна когорты `observed_at` станет ночным (проверка: `count(*) where observed_at >= '2026-09-27'` в
+`wb_buyout_cohort_sku_daily` ≈ 4 000, в `_daily` = 60).
+
 ### Отличия от 09-25 — одной строкой
 
 Новый шаг когорты между отчётом и рекламой (21 с, 0 обращений); в алерте пятая строка WB; застрявших карточек воронки 9 (было 10), другие
@@ -60,7 +70,8 @@ Ozon `accrual/postings` 12 повторов 429 (вчера 1); прогон з�
 ### `git log origin/main..HEAD`
 
 ```
-(этот коммит)  Tenth WB report §1 (morning 09-26): first night of the cohort step clean, alert line live; observed_at stamped on every cohort write
+(этот коммит)  Tenth WB report §1: observed_at fix merged into main (4241881), Render live 11:34 UTC
+500b5a2 Tenth WB report §1 (morning 09-26): first night of the cohort step clean, alert line live; observed_at stamped on every cohort write
 221a230 Tenth WB report §6: the (nm_id, day desc) index applied by word — the dictionary view reads in 6 pages / 4 … 15 s (57014 — 0) instead of 493 pages / 252 … 301 s; default orders path 123,7 s / 244 requests, sums equal to the acceptance
 e875181 Tenth WB report: the word executed — view and cohort tables migrated, cohort written (22 719 / 177, monthly = plan), step and alert line live, merged into main (329fe77, Render live 17:39 UTC, 6 h 36 min to 00:15); the view times out through PostgREST without an (nm_id, day desc) index — SQL prepared, fallback works, log wording fixed
 ```

@@ -1438,6 +1438,8 @@ def main(argv=None):
     ap.add_argument("--no-orders-data", action="store_true", help="не писать лист «Данные заказы» (запасной флаг; по умолчанию пишется)")
     ap.add_argument("--no-wb", action="store_true", help="без WB-части (модуль WB-сессии не зовётся)")
     ap.add_argument("--no-pivots", action="store_true", help="не пересаживать сводные владельца (scripts/finrez_pivots.py) в книгу")
+    ap.add_argument("--excel-check", action="store_true", help="после сборки открыть книгу в Excel for Mac (osascript) и проверить сводные, срезы, «+/−», «Артикул» — scripts/finrez_excel_check.py; в файл не пишет")
+    ap.add_argument("--excel-articles", help="с --excel-check: артикулы для листа «Артикул» через запятую")
     args = ap.parse_args(argv)
     t_start, t_last = time.time(), time.time()
 
@@ -1597,7 +1599,7 @@ def main(argv=None):
             counts_by_sheet = {"Данные Ozon выкупы": counts["long_rows"] + 1, "Данные WB выкупы": (len(wb_parts["rows"]) + 1) if not wb_parts.get("error") else None,
                                "Данные заказы": (counts["order_rows"] or 0) + 1}
             specs = [s for s in finrez_pivots.SPECS if counts_by_sheet.get(s["source_sheet"])]
-            rep_ = finrez_pivots.transplant(out, out, specs=specs, row_counts={k: v for k, v in counts_by_sheet.items() if v})
+            rep_ = finrez_pivots.transplant(out, out, specs=specs, row_counts={k: v for k, v in counts_by_sheet.items() if v}, date_range=(d1, d2))
             for r_ in rep_:
                 print(f"сводная «{r_['sheet']}» ← «{r_['source']}» {r_['ref']}: cacheId {r_['cache_id']}, sheetId {r_['sheet_id']}, полей {r_['fields']}, срезов {r_['slicers']}")
             errs, info_ = finrez_pivots.check(out)
@@ -1605,6 +1607,15 @@ def main(argv=None):
             for e in errs:
                 print("  ✗ " + e)
             phase("сводные владельца (пересадка + проверка)")
+    if args.excel_check:
+        import finrez_excel_check
+        print("\nживая проверка в Excel (сорок первая §2):")
+        try:
+            xcode = finrez_excel_check.run(out, [a for a in (args.excel_articles or "").split(",") if a])
+            print(f"  Excel-проверка: код {xcode}")
+        except Exception as exc:  # noqa: BLE001 — проверка не должна ронять сборку
+            print(f"  Excel-проверка не выполнена: {type(exc).__name__}: {exc}")
+        phase("Excel-проверка")
     size = os.path.getsize(out)
     sha = hashlib.sha256(open(out, "rb").read()).hexdigest()
     tot = pivots["all"][0]["Ozon"]["Общий итог"]

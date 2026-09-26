@@ -605,7 +605,8 @@ def svod_from_data(data_rows, days, mp):
     Выручка = Σ Выручка (по всем созданным, без коэффициента выкупа); Себестоимость = Σ Себ-ть Реал; Маржа = Выручка − Себестоимость; М-ть = Маржа /
     Выручка; Реклама = Σ Реклама без НДС; ДДР = Реклама / Σ Выкуплено (рубли); Соинвест = (Σ без НДС − Σ с СПП) / Σ без НДС по измеренным строкам;
     Комиссия % = Σ Комиссия руб / Σ ₽; Гр.фин.рез = Σ Выкуплено − Σ Себ-ть × (Σ Выкуплено / Σ Выручка) − Реклама; Гр.фин.рез % = Гр.фин.рез / Σ Выкуплено;
-    Цена = Σ ₽ / Σ шт. Коэффициент выкупа входит только через рубли «Выкуплено»."""
+    Цена = Σ ₽ / Σ шт. Коэффициент выкупа входит только через рубли «Выкуплено». Соинвест — по всем строкам с «Заказы, руб c СПП»: измеренным и
+    подставленным по выкупам месяца (сорок первая §4); coinvest_measured_cover — доля созданного ₽ с измеренной ценой покупателя."""
     order, of = labels_for(days)
     acc = {lab: defaultdict(Decimal) for lab in order}
     for r in data_rows:
@@ -621,13 +622,16 @@ def svod_from_data(data_rows, days, mp):
                 a["buyout_rub"] += r["buyout_rub"]
             if r.get("with_spp") is not None:
                 a["spp_base_a"] += r["created_a"]; a["spp_buyer_a"] += (r.get("buyer_a") if r.get("buyer_a") is not None else r["with_spp"] * r["vat"])
+                if r.get("buyer_a") is not None:
+                    a["spp_measured_a"] += r["created_a"]        # сорок первая §4: измеренная цена покупателя отдельно от подстановки по выкупам месяца
     out = {}
     for lab in order:
         a, priced = acc[lab], bool(acc[lab]["priced"])
         m = {"created_a": a["created_a"], "created_q": a["created_q"], "price": rep.ratio(a["created_a"], a["created_q"]),
              "commission_pct": rep.ratio(a["comm_rub"], a["created_a"]) if priced else None, "ads_net": a["ads_net"],
              "coinvest_pct": rep.ratio(a["spp_base_a"] - a["spp_buyer_a"], a["spp_base_a"]) if a["spp_base_a"] else None,   # (без НДС − с СПП) / без НДС = (₽ − покупатель) / ₽
-             "coinvest_cover": rep.ratio(a["spp_base_a"], a["created_a"]), "buyout_rub": a["buyout_rub"] if priced else None,
+             "coinvest_cover": rep.ratio(a["spp_base_a"], a["created_a"]), "coinvest_measured_cover": rep.ratio(a["spp_measured_a"], a["created_a"]),
+             "buyout_rub": a["buyout_rub"] if priced else None,
              "buyout": rep.ratio(a["buyout_rub"], a["revenue"]) if priced and a["revenue"] else None}
         if not priced:
             m.update({k: None for k in ("revenue", "cogs", "margin", "margin_pct", "drr_pct", "gross_fin", "gross_fin_pct")})
@@ -640,6 +644,56 @@ def svod_from_data(data_rows, days, mp):
             m["gross_fin_pct"] = rep.ratio(m["gross_fin"], a["buyout_rub"]) if a["buyout_rub"] else None
         out[lab] = m
     return out, order
+
+
+SPP_MEASURED, SPP_FILLED = "измерено", "по выкупам месяца"
+
+
+def coinvest_share_by_month(pivot_ozon, wb_rows):
+    """Доля соинвеста месяца по РЕАЛЬНЫМ выкупам площадки (сорок первая §4, решение владельца 26.09): Ozon — Σ (bonus + coinvestment) / Σ цены
+    продавца по строкам marketplace_buyouts месяца = «Соинвест, % от оборота» сводной «Выкупы Ozon» (coinvest_pct метки месяца); WB — Σ Соинвест /
+    Σ Продажи дневных строк модуля WB-сессии за месяц (Σ retailPriceWithDisc − Σ retailAmount) / Σ retailPriceWithDisc, Продажа − Возврат со знаком —
+    формула P владельца. {площадка: {метка месяца: доля}}; месяц без оборота — доли нет."""
+    out = {"Ozon": {}, "WB": {}}
+    for lab, m in (pivot_ozon or {}).items():
+        if label_kind(lab) == "month" and m.get("coinvest_pct") is not None:
+            out["Ozon"][lab] = m["coinvest_pct"]
+    sales, coinv = defaultdict(Decimal), defaultdict(Decimal)
+    for r in wb_rows or ():
+        lab = month_label(str(r["date"]))
+        sales[lab] += D(r.get("sales")); coinv[lab] += D(r.get("coinvest"))
+    for lab in sales:
+        share = rep.ratio(coinv[lab], sales[lab])
+        if share is not None:
+            out["WB"][lab] = share
+    return out
+
+
+def check_coinvest_fill(data_rows, days, svods, shares):
+    """§4.3: Соинвест % «Свода» по месяцам и «Общему итогу» против доли месяца по выкупам и против значения только по измеренным строкам:
+    [(площадка, метка, свод, доля месяца, по измеренным, доля измеренного ₽, разница свод − ожидание)], ожидание — доля месяца там, где измеренных строк нет,
+    и «по измеренным» там, где измерены все строки; смешанные месяцы — обе величины рядом, ожидания нет (взвешенное)."""
+    order, of = labels_for(days)
+    out = []
+    for mp, svod in svods.items():
+        if not svod:
+            continue
+        meas_base, meas_buyer = defaultdict(Decimal), defaultdict(Decimal)
+        for r in data_rows:
+            if r["mp"] == mp and r.get("buyer_a") is not None:
+                for lab in of(r["date"]):
+                    meas_base[lab] += r["created_a"]; meas_buyer[lab] += r["buyer_a"]
+        for lab in order:
+            if label_kind(lab) == "day":
+                continue
+            m = svod.get(lab) or {}
+            got, cover = m.get("coinvest_pct"), m.get("coinvest_measured_cover")
+            measured = rep.ratio(meas_base[lab] - meas_buyer[lab], meas_base[lab]) if meas_base[lab] else None
+            share = (shares.get(mp) or {}).get(lab)
+            expect = share if not cover else (measured if cover == 1 else None)
+            diff = (D(got) - D(expect)).quantize(Decimal("0.0001")) if (got is not None and expect is not None) else None
+            out.append((mp, lab, got, share, measured, cover, diff))
+    return out
 
 
 # ---------- WB-часть — модулем WB-сессии ----------
@@ -811,25 +865,33 @@ ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Маг�
                    ("Маржинальность, %", "margin_pct", "pct"), ("ДДР, %", "drr_pct", "pct"), ("Соинвест, %", "coinvest_pct", "pct"), ("Комиссия сред", "commission_avg", "pct"),
                    ("Фин.рез", "fin", "money"), ("Цена", "price", "money"), ("Фин.рез %", "fin_pct", "pct"),
                    ("Месяцы", "month_num", "int"),        # у владельца — поле ГРУППИРОВКИ сводной (fieldGroup по «Дата»), не колонка источника: справочно, после его 29
-                   ("SKU/nmId", "sku", None), ("Подтверждено сейчас, руб.", "confirmed_a", "money"), ("Площадка Ozon", "platform_name", None)]   # 29 владельца + «Месяцы» + 3 наших
+                   ("SKU/nmId", "sku", None), ("Подтверждено сейчас, руб.", "confirmed_a", "money"), ("Площадка Ozon", "platform_name", None),
+                   ("СПП источник", "spp_source", None)]   # 29 владельца + «Месяцы» + 4 наших («СПП источник» — сорок первая §4: измерено / по выкупам месяца)
 ORDER_CHECK_COLS = [("Оборот (с НДС)", "created_a"), ("Заказы, шт", "created_q"), ("Цена продавца", "price"), ("Комиссия %", "commission_pct"), ("Выручка", "revenue"),
                     ("Себестоимость", "cogs"), ("Маржа", "margin"), ("М-ть, %", "margin_pct"), ("Реклама", "ads_net"), ("ДДР, %", "drr_pct"),
                     ("Соинвест, %", "coinvest_pct"), ("Гр.фин.рез", "gross_fin"), ("Гр.фин.рез, %", "gross_fin_pct")]
 
 
-def order_data_row(r, comm, comm_avg, buyout, mp, shop):
+def order_data_row(r, comm, comm_avg, buyout, mp, shop, fill=None):
     """Строка «Данные заказы» в семантике источника сводной владельца (сороковая §2): Заказы без НДС = ₽ / НДС; Выручка = Заказы без НДС ×
     (1 − Комиссия) — по всем созданным, без коэффициента выкупа; Комиссия, руб = Заказы ₽ × Комиссия (на базе с НДС — так его «Комиссия сред» =
     Комиссия руб / Заказы ₽ показывает коэффициент); Выкуплено = Выручка × коэффициент выкупа площадки — РУБЛИ; Себ-ть Реал = СС × шт × индекс по
     всем заказам; Заказы, руб c СПП — цена покупателя без НДС (как и «без НДС» рядом, иначе его Соинвест % делит суммы с разным НДС). Наши восемь
     колонок 22 … 29 — ровно по формулам вычисляемых полей его сводной построчно: Маржа = Выручка − Себ-ть; М-ть = Маржа / Выручка; ДДР = Реклама
     без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС; Комиссия сред = Комиссия руб / Заказы ₽; Фин.рез = Выкуплено − Себ-ть × (Выкуплено /
-    Выручка) − Реклама без НДС; Цена = ₽ / шт; Фин.рез % = Фин.рез / Выкуплено. comm_avg — не используется (оставлен ради подписи), buyout — коэффициент."""
+    Выручка) − Реклама без НДС; Цена = ₽ / шт; Фин.рез % = Фин.рез / Выкуплено. comm_avg — не используется (оставлен ради подписи), buyout — коэффициент.
+    fill — доля соинвеста месяца по выкупам площадки (сорок первая §4): у строки БЕЗ измеренной цены покупателя СПП % = fill, «Заказы, руб c СПП» =
+    Заказы без НДС × (1 − fill), «СПП источник» = «по выкупам месяца»; измеренная строка — «измерено», нетронута; без того и другого — пусто.
+    Строка без оборота (реклама дня) — пусто всегда: подставлять и мерить нечего."""
     del comm_avg
     vat, created, qty, ads = r["vat"], r["created_a"], r["created_q"], (r.get("ads") or Z)
     net, ads_net, buyer, cogs_real = created / vat, ads / vat, r.get("buyer_a"), r.get("cogs_created")
-    spp = (1 - buyer / created) if (buyer is not None and created) else None
-    with_spp = (buyer / vat) if buyer is not None else None
+    if buyer is not None and created:
+        spp, with_spp, spp_source = 1 - buyer / created, buyer / vat, SPP_MEASURED
+    elif fill is not None and created:
+        spp, with_spp, spp_source = fill, net * (1 - fill), SPP_FILLED
+    else:
+        spp, with_spp, spp_source = None, None, None
     cogs_v = cogs_real if cogs_real is not None else Z
     revenue = net * (1 - comm) if comm is not None else None
     commission_rub = created * comm if comm is not None else None
@@ -846,14 +908,19 @@ def order_data_row(r, comm, comm_avg, buyout, mp, shop):
             "buyer_a": buyer,
             "commission_avg": rep.ratio(commission_rub, created) if (commission_rub is not None and created) else comm,
             "fin": fin, "price": rep.ratio(created, qty), "fin_pct": rep.ratio(fin, buyout_rub) if buyout_rub else None, "sku": r["sku"],
-            "confirmed_a": r.get("confirmed_a"), "platform_name": r.get("platform_name"), "month": r["month"], "vat": vat}
+            "confirmed_a": r.get("confirmed_a"), "platform_name": r.get("platform_name"), "month": r["month"], "vat": vat, "spp_source": spp_source}
 
 
-def build_order_data_rows(order_rows, wb_parts, coef, days):
+def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
     """Строки «Данные заказы»: Ozon из широких строк, WB — строки модуля WB-сессии плюс строка рекламы WB на день без nmId (реклама у модуля — по дням).
-    Нулевые строки (Заказы ₽ = 0, шт = 0, Реклама ₽ = 0) выбрасываются и считаются — для сводной они пусты."""
+    Нулевые строки (Заказы ₽ = 0, шт = 0, Реклама ₽ = 0) выбрасываются и считаются — для сводной они пусты. shares — coinvest_share_by_month:
+    строкам без измеренной цены покупателя СПП подставляется долей месяца площадки (сорок первая §4), счётчики spp_measured_* / spp_filled_* / spp_empty_*."""
     buyout_all, comm_all = coef["buyout"].get("все"), coef["commission"].get("все")
     out, stats = [], defaultdict(int)
+    shares = shares or {}
+
+    def fill_for(mp, d):
+        return (shares.get(mp) or {}).get(month_label(d))
 
     def keep(row, mp):
         if not row["created_a"] and not row["created_q"] and not row["ads"]:
@@ -861,10 +928,12 @@ def build_order_data_rows(order_rows, wb_parts, coef, days):
             if row.get("confirmed_a"):
                 stats[f"dropped_confirmed_{mp}"] += row["confirmed_a"]
             return
+        src = row.get("spp_source")
+        stats[f"spp_{'measured' if src == SPP_MEASURED else ('filled' if src == SPP_FILLED else 'empty')}_{mp}"] += 1
         out.append(row)
 
     for r in order_rows:
-        keep(order_data_row(r, order_commission(coef, r["date"]), comm_all, buyout_all, "Ozon", SHOP), "Ozon")
+        keep(order_data_row(r, order_commission(coef, r["date"]), comm_all, buyout_all, "Ozon", SHOP, fill=fill_for("Ozon", r["date"])), "Ozon")
     if wb_parts and not wb_parts.get("error"):
         wb_comm = 1 - wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
         wb_buyout = (wb_parts.get("buyout") or {}).get("итого")
@@ -874,7 +943,7 @@ def build_order_data_rows(order_rows, wb_parts, coef, days):
             if r["cogs_created"] is None:
                 stats["wb_rows_without_cost"] += 1
             ads_in_rows[r["date"]] += r["ads"] or Z
-            keep(order_data_row(r, wb_comm, wb_comm, wb_buyout, "WB", wbfin.SHOP), "WB")
+            keep(order_data_row(r, wb_comm, wb_comm, wb_buyout, "WB", wbfin.SHOP, fill=fill_for("WB", r["date"])), "WB")
         for d in days:
             # реклама дня сверх строк номенклатур (модуль разносит updSum дня по nmId долями fullstats; день без долей — целиком сюда)
             ads = (wb_parts.get("ads_by_day") or {}).get(d)
@@ -1216,9 +1285,9 @@ def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
     for label, key, fmt in (("Заказы, ₽", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Реклама, ₽", "ads", "money"), ("Заказы, руб c СПП", "with_spp", "money"),
                             ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Маржа, руб без НДС", "margin", "money"), ("Фин.рез", "fin", "money")):
         line(label, lambda c, col=L[key]: f"=SUMIFS({O_}!${col}:${col},{O_}!${L['article']}:${L['article']},$B$1,{O_}!${L['mp']}:${L['mp']},$B$2,{O_}!${L['month_num']}:${L['month_num']},{c}$3)", fmt)
-    line("Соинвест, % (по строкам с измеренной ценой покупателя)",
+    line("Соинвест, % (по строкам с «Заказы, руб c СПП»: измерено или по выкупам месяца)",
          lambda c: f'=IFERROR(1-SUMIFS({O_}!${L["with_spp"]}:${L["with_spp"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3)'
-                   f'/SUMIFS({O_}!${L["created_a"]}:${L["created_a"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3,{O_}!${L["with_spp"]}:${L["with_spp"]},"<>"),"")', "pct")
+                   f'/SUMIFS({O_}!${L["created_net"]}:${L["created_net"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3,{O_}!${L["with_spp"]}:${L["with_spp"]},"<>"),"")', "pct")
     ws.append([None]); row += 1
     ws.append(["Список артикулов — лист «Списки» (скрыт); при открытии Excel пересчитывает формулы по текущим листам «Данные»."])
 
@@ -1288,7 +1357,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
             g.set(3, 2 + blk * len(ORDER_COLS) + j, h, bold=True, fill=True, wrap=True)
     piv, order = orders_pivot
     extra_col = 2 + 2 * len(ORDER_COLS)
-    g.set(3, extra_col, "справочно: соинвест Ozon — доля созданного оборота с измеренной ценой покупателя", bold=True, fill=True, wrap=True)
+    g.set(3, extra_col, "справочно: соинвест Ozon — доля созданного оборота с ИЗМЕРЕННОЙ ценой покупателя (остальным строкам СПП подставлен по выкупам месяца)", bold=True, fill=True, wrap=True)
     g.heights[3] = 45
     wm_all = (wb_parts or {}).get("orders_pivot") or {}
     r = 4
@@ -1299,7 +1368,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
             g.outline[r] = 1
         for j, (_h, k, f) in enumerate(ORDER_COLS):
             g.set(r, 2 + j, (piv.get(lab) or {}).get(k), f)
-        g.set(r, extra_col, (piv.get(lab) or {}).get("coinvest_cover"), "pct")
+        g.set(r, extra_col, (piv.get(lab) or {}).get("coinvest_measured_cover"), "pct")
         wm = wm_all.get(lab) or {}
         for j, (_h, k, f) in enumerate(ORDER_COLS):
             g.set(r, 2 + len(ORDER_COLS) + j, wm.get(k), f)
@@ -1517,7 +1586,7 @@ def main(argv=None):
         "orders": ["Семантика источника сводной владельца (решение 25.09): Выручка = Σ Заказы без НДС × (1 − Комиссия) по ВСЕМ созданным заказам, без коэффициента выкупа; Себестоимость = Σ Себ-ть Реал "
                    "(СС × шт × индекс, все заказы); «Выкуплено» — рубли = Выручка × коэффициент выкупа площадки (Ozon измеренный, WB — модуль); коэффициент входит только в Гр.фин.рез.",
                    "Формулы его вычисляемых полей на суммах по метке: Маржа = Выручка − Себестоимость; М-ть = Маржа / Выручка; ДДР = Реклама без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС "
-                   "по измеренным строкам; Комиссия % = Σ Комиссия руб / Σ ₽ (Комиссия руб = Заказы ₽ × коэффициент); Гр.фин.рез = Выкуплено − Себестоимость × (Выкуплено / Выручка) − Реклама; "
+                   "по всем строкам (измеренным и подставленным по выкупам месяца — см. ниже); Комиссия % = Σ Комиссия руб / Σ ₽ (Комиссия руб = Заказы ₽ × коэффициент); Гр.фин.рез = Выкуплено − Себестоимость × (Выкуплено / Выручка) − Реклама; "
                    "Гр.фин.рез % = Гр.фин.рез / Выкуплено; Цена = ₽ / шт.",
                    "Оборот — созданные заказы (подтверждённые + отменённые) по цене продавца, с НДС; Заказы, шт — созданные штуки; Цена продавца = оборот / шт.",
                    "Комиссия % — наша фактическая за месяц дня (Σ комиссии / Σ оборота выкупов); % выкупа — наш измеренный (лист «Коэффициенты»). Построчно: "
@@ -1537,7 +1606,7 @@ def main(argv=None):
                        "(Ozon: 41 + 54 над Performance по SKU; WB: списания дня целиком — модуль даёт рекламу по дням).",
                        "Формулы строки = формулам «Свод»: Заказы без НДС = ₽ / НДС; Выручка = Заказы без НДС × Выкуплено × (1 − Комиссия); Комиссия, руб = Заказы без НДС × "
                        "Выкуплено × Комиссия; Маржа = Выручка − Себ-ть Реал × Выкуплено; Фин.рез = Маржа − Реклама без НДС; СПП = Соинвест % = 1 − цена покупателя / "
-                       "цена продавца, где измерено (иначе пусто); Комиссия — месяца площадки, Комиссия сред — за окно; Выкуплено — коэффициент площадки "
+                       "цена продавца, где измерено, иначе доля месяца по выкупам (колонка «СПП источник»); Комиссия — месяца площадки, Комиссия сред — за окно; Выкуплено — коэффициент площадки "
                        "(Ozon — измеренный, WB — итог зрелых месяцев модуля; см. «Коэффициенты»); Себ-ть Реал — СС × шт × индекс (WB — правило модуля, без индекса).",
                        f"Штук Ozon без СС: {ostats.get('qty_without_cost', 0)}." + (f" Дней без сырья рекламы: {ostats['days_without_raw_ads']}." if ostats.get("days_without_raw_ads") else "")],
     }
@@ -1575,10 +1644,31 @@ def main(argv=None):
                        "K … Z — тождества второго кабинета (R = (логистика + хранение) / НДС). Приёмка — его --check (мост к «WB - месяц»).",
                        "Блок WB листа «Заказы»: созданные из воронки wb_funnel_products_daily; формулы как у Ozon — выручка = Заказы без НДС × выкуп × 0,58, СС модуля × выкуп, "
                        "маржа, гр. фин. рез = маржа − реклама (списания дня wb_ad_spend_daily без НДС); выкуп — итог зрелых месяцев модуля (лист «Коэффициенты»); соинвест WB не измеряется."]
-    order_data_rows, dstats = build_order_data_rows(order_data, wb_parts, coef, days)       # нужны и для «Свода»: он считается на их суммах
+    # сорок первая §4: доля соинвеста месяца по реальным выкупам площадки — строкам без измеренной цены покупателя
+    shares = coinvest_share_by_month(pivots["all"][0]["Ozon"], None if wb_parts.get("error") else wb_parts["rows"])
+    print("доля соинвеста месяца по выкупам (Ozon — Σ (bonus + coinvestment) / Σ цены продавца строк выкупов; WB — Σ Соинвест / Σ Продажи строк модуля): "
+          + " | ".join(f"{mp}: " + ", ".join(f"{lab} {v * 100:.2f} %" for lab, v in sh.items()) for mp, sh in shares.items() if sh))
+    notes["orders"].append("Соинвест % (сорок первая §4, решение владельца 26.09): строкам без измеренной цены покупателя (Ozon до 09-01 и ключи, не добранные "
+                           "бэкфиллом; WB — все) СПП подставлен долей соинвеста месяца по реальным выкупам площадки: Ozon — Σ (баллы + зелёные цены) / Σ цены "
+                           "продавца выкупов месяца (= «Соинвест, % от оборота» листа «Выкупы Ozon»), WB — (Σ retailPriceWithDisc − Σ retailAmount) / Σ retailPriceWithDisc "
+                           "отчёта реализации за месяц (строки модуля). Справочная колонка справа — доля созданного ₽ с измеренной ценой. Доли: "
+                           + "; ".join(f"{mp} — " + ", ".join(f"{lab} {v * 100:.2f} %" for lab, v in sh.items()) for mp, sh in shares.items() if sh) + ".")
+    notes["order_data"].append("«СПП источник» (наша колонка справа): «измерено» — цена покупателя из отправлений / отчёта ЛК; «по выкупам месяца» — СПП % = доля "
+                               "соинвеста месяца по выкупам площадки, «Заказы, руб c СПП» = Заказы без НДС × (1 − доля); пусто — строка без оборота (реклама дня). "
+                               "Измеренные строки не тронуты; сводная владельца без подстановки считала бы неизмеренные строки как 100 % соинвеста.")
+    order_data_rows, dstats = build_order_data_rows(order_data, wb_parts, coef, days, shares=shares)       # нужны и для «Свода»: он считается на их суммах
+    print("  СПП по строкам «Данных заказы»: " + ", ".join(f"{mp} измерено {dstats.get(f'spp_measured_{mp}', 0)} / по выкупам месяца {dstats.get(f'spp_filled_{mp}', 0)} / "
+                                                          f"пусто {dstats.get(f'spp_empty_{mp}', 0)}" for mp in ("Ozon", "WB")))
     orders_pivot = svod_from_data(order_data_rows, days, "Ozon")
     if not wb_parts.get("error"):
         wb_parts["orders_pivot"] = svod_from_data(order_data_rows, days, "WB")[0]
+    fill_table = check_coinvest_fill(order_data_rows, days, {"Ozon": orders_pivot[0], "WB": (wb_parts.get("orders_pivot") or {})}, shares)
+    bad_fill = [t for t in fill_table if t[6]]
+    print(f"приёмка §4.3: Соинвест % «Свода» по месяцам и итогу против доли месяца / измеренного: строк {len(fill_table)}, расхождений {len(bad_fill)}")
+    print(f"   {'МП':5} {'метка':12} {'свод':>10} {'доля месяца':>12} {'по измеренным':>14} {'измерено ₽':>11} {'разница':>9}")
+    for mp_, lab, got, share, measured, cover, diff in fill_table:
+        f_ = lambda v: "" if v is None else f"{D(v) * 100:.2f} %"  # noqa: E731
+        print(f"   {mp_:5} {lab:12} {f_(got):>10} {f_(share):>12} {f_(measured):>14} {f_(cover):>11} {('' if diff is None else f'{D(diff) * 100:.2f}'):>9}")
     if order_data_rows is not None:
         total_before = len(order_data) + (len(wb_parts["orders"]) if not wb_parts.get("error") else 0)
         print(f"«Данные заказы»: строк {len(order_data_rows)} (Ozon {sum(1 for r in order_data_rows if r['mp'] == 'Ozon')}, WB {sum(1 for r in order_data_rows if r['mp'] == 'WB')}); "

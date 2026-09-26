@@ -339,6 +339,16 @@ class DictionaryViewAndFilteredFunnelTests(unittest.TestCase):
         self.assertEqual(([r["nm_id"] for r in rows_default], st["synthesized"], st["ads_total"]), ([1, 3, 9], 2, D("100.00")))
         self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1]); self.assertEqual(sb.calls[1][0], fr.FUNNEL_LATEST_VIEW)
 
+    def test_coinvest_share_by_month_uses_sale_day_msk_with_signed_returns(self):
+        rows = [{"rr_date": "2026-08-31", "sale_dt": "2026-08-31T20:59:00Z", "seller_oper_name": "Продажа", "retail_price_with_disc": "1000", "retail_amount": "700"},   # 23:59 МСК 31.08 → август
+                {"rr_date": "2026-09-01", "sale_dt": "2026-08-31T21:30:00Z", "seller_oper_name": "Продажа", "retail_price_with_disc": "2000", "retail_amount": "1200"},   # 00:30 МСК 01.09 → сентябрь
+                {"rr_date": "2026-09-02", "sale_dt": "2026-09-02T10:00:00Z", "seller_oper_name": "Возврат", "retail_price_with_disc": "500", "retail_amount": "300"},     # минус в обе суммы
+                {"rr_date": "2026-09-02", "sale_dt": "2026-09-02T11:00:00Z", "seller_oper_name": "Доставка", "retail_price_with_disc": None, "retail_amount": None},
+                {"rr_date": "2026-10-01", "sale_dt": "2026-10-01T10:00:00Z", "seller_oper_name": "Продажа", "retail_price_with_disc": "100", "retail_amount": "10"}]      # за окном
+        out = fr.coinvest_share_by_month("2026-08", "2026-09", sb=object(), rows=rows)
+        self.assertEqual(out, {"авг": D("0.3000"), "сен": D("0.4000"), "итого": D("0.3600")})   # авг 300/1000; сен (800 − 200)/(2000 − 500); итого 900/2500
+        self.assertEqual(fr.coinvest_share_by_month("2026-07", "2026-07", sb=object(), rows=rows), {})
+
     def test_buyout_rate_caption_names_mature_months_total_and_immature(self):
         rows = [{"seller_oper_name": "Продажа", "order_dt": "2026-08-10T10:00:00Z", "sale_dt": "2026-08-14T10:00:00Z", "retail_price_with_disc": "800", "quantity": 1},
                 {"seller_oper_name": "Продажа", "order_dt": "2026-09-03T10:00:00Z", "sale_dt": "2026-09-05T10:00:00Z", "retail_price_with_disc": "500", "quantity": 1}]

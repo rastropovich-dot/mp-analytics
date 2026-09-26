@@ -26,7 +26,7 @@ def expense(day, sku, kind="logistics", amount=50, mp="ozon"):
 class ArticleMapTests(unittest.TestCase):
     def build(self, orders, buyouts=(), expenses=()):
         with mock.patch.object(kpi, "load_orders", return_value=list(orders)), mock.patch.object(kpi, "load_buyouts", return_value=list(buyouts)), \
-             mock.patch.object(kpi, "load_expenses", return_value=list(expenses)), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), \
+             mock.patch.object(kpi, "load_expenses", return_value=list(expenses)), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), \
              mock.patch("builtins.print"):
             return {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi()}
 

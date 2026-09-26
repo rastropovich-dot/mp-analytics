@@ -502,7 +502,8 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 raise ExcelError(f"поля месяцев нет среди {fields}")
             items = ex(f'return name of every pivot item of pivot field {q(mf)} of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
             items = [str(i) for i in (items if isinstance(items, list) else [items])]
-            month = next((i for i in items if i and i[0] not in "<>"), None)            # имена элементов в AppleScript английские («Apr»), на листе — «апр»
+            with_data = {lab for lab in static_by_header(read_sheet(path, "Выкупы WB"), 2, WB_MONEY) if lab != "Общий итог"}
+            month = next((i for i in items if month_key(i) in with_data), None)          # элемент с данными («Apr»): имена в AppleScript английские, на листе «апр»; «Jan» пуст
             if month is None:
                 raise ExcelError(f"у поля «{mf}» нет элементов-месяцев: {items}")
             before = ex('return count of rows of table range2 of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)

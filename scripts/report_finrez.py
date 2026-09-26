@@ -1285,9 +1285,9 @@ def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
     for label, key, fmt in (("Заказы, ₽", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Реклама, ₽", "ads", "money"), ("Заказы, руб c СПП", "with_spp", "money"),
                             ("Выручка, руб без НДС с учетом комиссии", "revenue", "money"), ("Маржа, руб без НДС", "margin", "money"), ("Фин.рез", "fin", "money")):
         line(label, lambda c, col=L[key]: f"=SUMIFS({O_}!${col}:${col},{O_}!${L['article']}:${L['article']},$B$1,{O_}!${L['mp']}:${L['mp']},$B$2,{O_}!${L['month_num']}:${L['month_num']},{c}$3)", fmt)
-    line("Соинвест, % (по строкам с измеренной ценой покупателя)",
+    line("Соинвест, % (по строкам с «Заказы, руб c СПП»: измерено или по выкупам месяца)",
          lambda c: f'=IFERROR(1-SUMIFS({O_}!${L["with_spp"]}:${L["with_spp"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3)'
-                   f'/SUMIFS({O_}!${L["created_a"]}:${L["created_a"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3,{O_}!${L["with_spp"]}:${L["with_spp"]},"<>"),"")', "pct")
+                   f'/SUMIFS({O_}!${L["created_net"]}:${L["created_net"]},{O_}!${L["article"]}:${L["article"]},$B$1,{O_}!${L["mp"]}:${L["mp"]},$B$2,{O_}!${L["month_num"]}:${L["month_num"]},{c}$3,{O_}!${L["with_spp"]}:${L["with_spp"]},"<>"),"")', "pct")
     ws.append([None]); row += 1
     ws.append(["Список артикулов — лист «Списки» (скрыт); при открытии Excel пересчитывает формулы по текущим листам «Данные»."])
 

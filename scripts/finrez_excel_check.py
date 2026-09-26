@@ -442,8 +442,10 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 rec(f"{sheet}: область сводной", False, str(e))
         # срезы на «Сводная заказы», вычисляемые поля
         try:
-            sl = ex('set pt to pivot table 1 of sheet "Сводная заказы" of active workbook\nreturn {count of slicers of pt, name of every slicer of pt}', 60)
-            rec("Сводная заказы: срезы", sl[0] >= 2, f"срезов {sl[0]}: {sl[1]}")
+            # AppleScript-класс slicer у Excel for Mac без свойств и «slicers of pivot table» всегда 0 — срезы видны как фигуры листа (сорок первая §2)
+            sl = ex('return {count of shapes of sheet "Сводная заказы" of active workbook, name of every shape of sheet "Сводная заказы" of active workbook}', 60)
+            names = sl[1] if isinstance(sl[1], list) else [sl[1]]
+            rec("Сводная заказы: срезы", sl[0] >= 2 and any("День" in str(n) for n in names) and any("МП" in str(n) for n in names), f"фигур на листе {sl[0]}: {names}")
         except ExcelError as e:
             rec("Сводная заказы: срезы", False, str(e))
         try:
@@ -459,10 +461,15 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
             mf = next((str(f) for f in fields if "Месяц" in str(f)), None)
             if mf is None:
                 raise ExcelError(f"поля месяцев нет среди {fields}")
+            items = ex(f'return name of every pivot item of pivot field {q(mf)} of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
+            items = [str(i) for i in (items if isinstance(items, list) else [items])]
+            month = next((i for i in items if i and i[0] not in "<>"), None)            # имена элементов в AppleScript английские («Apr»), на листе — «апр»
+            if month is None:
+                raise ExcelError(f"у поля «{mf}» нет элементов-месяцев: {items}")
             before = ex('return count of rows of table range2 of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
             after = ex(f'set pt to pivot table 1 of sheet "Сводная WB выкупы" of active workbook\n'
-                       f'set show detail of pivot item "апр" of pivot field {q(mf)} of pt to true\nreturn count of rows of table range2 of pt', 120)
-            rec("Сводная WB выкупы: месяц → дни", after > before, f"поле «{mf}», строк {before} → {after} (+{after - before})")
+                       f'set show detail of pivot item {q(month)} of pivot field {q(mf)} of pt to true\nreturn count of rows of table range2 of pt', 120)
+            rec("Сводная WB выкупы: месяц → дни", after > before, f"поле «{mf}», элемент «{month}» (все: {items[:4]} …), строк {before} → {after} (+{after - before})")
         except ExcelError as e:
             rec("Сводная WB выкупы: месяц → дни", False, str(e))
         # числа сводных против статичных листов

@@ -1599,7 +1599,7 @@ def main(argv=None):
             counts_by_sheet = {"Данные Ozon выкупы": counts["long_rows"] + 1, "Данные WB выкупы": (len(wb_parts["rows"]) + 1) if not wb_parts.get("error") else None,
                                "Данные заказы": (counts["order_rows"] or 0) + 1}
             specs = [s for s in finrez_pivots.SPECS if counts_by_sheet.get(s["source_sheet"])]
-            rep_ = finrez_pivots.transplant(out, out, specs=specs, row_counts={k: v for k, v in counts_by_sheet.items() if v})
+            rep_ = finrez_pivots.transplant(out, out, specs=specs, row_counts={k: v for k, v in counts_by_sheet.items() if v}, date_range=(d1, d2))
             for r_ in rep_:
                 print(f"сводная «{r_['sheet']}» ← «{r_['source']}» {r_['ref']}: cacheId {r_['cache_id']}, sheetId {r_['sheet_id']}, полей {r_['fields']}, срезов {r_['slicers']}")
             errs, info_ = finrez_pivots.check(out)

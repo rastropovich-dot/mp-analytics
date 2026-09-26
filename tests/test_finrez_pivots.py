@@ -57,8 +57,13 @@ class Integration(unittest.TestCase):
                                      ("Данные заказы", fr.ORDER_DATA_COLS, [None] * len(fr.ORDER_DATA_COLS))):
                 ws = wb.create_sheet(title); ws.append([h for h, _k, _f in cols]); ws.append(row)
             wb.save(path)
-            rep = fp.transplant(path, path, row_counts={"Данные Ozon выкупы": 2, "Данные WB выкупы": 2, "Данные заказы": 2})
+            rep = fp.transplant(path, path, row_counts={"Данные Ozon выкупы": 2, "Данные WB выкупы": 2, "Данные заказы": 2}, date_range=("2026-04-01", "2026-09-25"))
             self.assertEqual([r["ref"] for r in rep], ["A1:M2", "A1:N2", "A1:U2"])           # колонки источника: 13 / 14 / 21
+            import zipfile, re
+            cd3 = zipfile.ZipFile(path).read("xl/pivotCache/pivotCacheDefinition3.xml").decode("utf-8")
+            self.assertEqual(re.findall(r'<rangePr[^/]*/>', cd3),                                  # сорок первая §2: даты окна, без autoStart / autoEnd
+                             ['<rangePr groupBy="days" startDate="2026-04-01T00:00:00" endDate="2026-09-25T00:00:00"/>',
+                              '<rangePr groupBy="months" startDate="2026-04-01T00:00:00" endDate="2026-09-25T00:00:00"/>'])
             self.assertEqual([r["group_fields"] for r in rep][:2], [["Дни (Дата начисления)", "Месяцы (Дата начисления)"], ["Месяцы"]])
             self.assertEqual(rep[2]["group_fields"], ["Месяцы", "Маржа, руб без НДС", "Маржинальность, %", "ДДР, %", "Соинвест, %", "Комиссия сред", "Фин.рез", "Цена", "Фин.рез %"])
             errors, info = fp.check(path)

@@ -7,7 +7,9 @@
 Из оригиналов владельца (data/owner_finrez_*_pivot.xlsx: лист со сводной, pivotTable, pivotCacheDefinition, для заказов — срезы) в нашу книгу
 добавляются три листа — «Сводная Ozon выкупы», «Сводная WB выкупы», «Сводная заказы». Источник кэша меняется с внешнего (Power Query) на
 worksheetSource: лист «Данные …», ref = ровно колонки ИСТОЧНИКА владельца (13 / 14 / 29 — поля кэша без fieldGroup; «Дни …» / «Месяцы» — группировка
-сводной по дате, Excel строит их сам; наши колонки справа в диапазон не входят — cacheFields не меняются, rangePr группировок — autoStart / autoEnd); refreshOnLoad="1", recordCount="0", pivotCacheRecords пустой: Excel пересчитывает сводную при
+сводной по дате, Excel строит их сам; наши колонки справа в диапазон не входят — cacheFields не меняются; rangePr группировок — startDate / endDate = окно
+книги (date_range): без дат, с autoStart / autoEnd, Excel кэш НЕ открывает — «Ошибка в части содержимого», все сводные, кэши и срезы выбрасываются (сорок первая §2,
+доказано на маленьких книгах; групповые элементы Excel перестраивает при refreshOnLoad сам); refreshOnLoad="1", recordCount="0", pivotCacheRecords пустой: Excel пересчитывает сводную при
 открытии по нашим данным и сохраняет все фильтры страниц и срезы. connections.xml / queryTables / customXml запроса не переносятся.
 
 Что правится в копируемых частях: ячейки листа сводной — стили сняты (индексы его styles.xml), строки из sharedStrings развёрнуты в inlineStr,
@@ -206,8 +208,9 @@ def count_rows(z, part):
     return n
 
 
-def transplant(book, out, specs=SPECS, row_counts=None):
-    """Собирает out из book + сводных владельца. row_counts {лист: строк} — если известно из сборки; иначе считается по XML."""
+def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
+    """Собирает out из book + сводных владельца. row_counts {лист: строк} — если известно из сборки; иначе считается по XML.
+    date_range (d1, d2) — окно книги ISO: границы группировок по дате в rangePr (startDate / endDate); None — даты владельца как есть."""
     zin = zipfile.ZipFile(book)
     names = zin.namelist()
     sheets, wrels = workbook_sheets(zin)
@@ -251,8 +254,11 @@ def transplant(book, out, specs=SPECS, row_counts=None):
         src_fields, grp_fields = source_fields(cd_xml)
         if len(src_fields) != spec["ncols"]:
             raise SystemExit(f"{spec['owner']}: полей источника в кэше {len(src_fields)}, в SPECS {spec['ncols']} — {src_fields}")
-        # группировка по дате: диапазон — из данных, а не из дат владельца (autoStart / autoEnd), иначе дни за его endDate не попадут в группы
-        cd_xml = re.sub(r'<rangePr groupBy="([^"]+)"[^/]*/>', r'<rangePr autoStart="1" autoEnd="1" groupBy="\1"/>', cd_xml)
+        # группировка по дате: Excel открывает кэш ТОЛЬКО с startDate / endDate в rangePr — вариант 39-й «autoStart / autoEnd без дат» давал «Ошибка в части
+        # содержимого» и потерю всех сводных (сорок первая §2). Границы — окно книги; groupItems владельца не трогаем, Excel перестраивает группы при refreshOnLoad
+        if date_range:
+            d1, d2 = date_range
+            cd_xml = re.sub(r'<rangePr groupBy="([^"]+)"[^/]*/>', lambda m: f'<rangePr groupBy="{m.group(1)}" startDate="{d1}T00:00:00" endDate="{d2}T00:00:00"/>', cd_xml)
         if 'refreshOnLoad="1"' not in cd_xml:
             cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="1" ', 1)
         cd_xml = re.sub(r'numFmtId="(\d+)"', lambda m: f'numFmtId="{numfmt_map.get(int(m.group(1)), int(m.group(1)))}"', cd_xml)
@@ -392,8 +398,9 @@ def check(book):
         inside = [h for h in headers[:len(fields)] if h in grp_fields]
         if inside:
             errors.append(f"{cdef[0]}: в ref сводной есть колонки с именами групповых / вычисляемых полей: {inside}")
-        if re.search(r'<rangePr [^>]*(startDate|endDate)=', cd):
-            errors.append(f"{cdef[0]}: rangePr со startDate / endDate владельца — дни за его границей не сгруппируются")
+        for rp in re.findall(r'<rangePr [^>]*/>', cd):
+            if re.search(r'auto(Start|End)=', rp) or not (re.search(r'startDate="[^"]+"', rp) and re.search(r'endDate="[^"]+"', rp)):
+                errors.append(f"{cdef[0]}: rangePr без startDate / endDate или с autoStart / autoEnd — Excel такой кэш не открывает (сорок первая §2): {rp}")
         if col_letter(len(fields)) != last_col:
             errors.append(f"{cdef[0]}: ref {ref} не по числу полей {len(fields)}")
         nrows = count_rows(z, src_part)

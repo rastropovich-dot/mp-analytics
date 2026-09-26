@@ -8,6 +8,8 @@ Excel скриптуется через osascript (AppleScript): книга от
 на «Артикуле» в B1 / B2 подставляются артикул и площадка, лист пересчитывается (`calculate`) и блоки читаются. В файл ничего не пишется:
 книга закрывается `close … saving no`; если Excel не ответил (модальное окно, «восстановить книгу?») — текст окна читается через System Events
 и печатается дословно, это и есть результат. Каждая проверка — отдельный AppleScript с таймаутом; ошибка Excel печатается как есть.
+Все обращения — к своей книге ПО ИМЕНИ (`workbook "<файл>"`), никогда к active workbook: 2026-09-26 проба с active workbook попала в открытую
+книгу советника и закрыла её без сохранения. Если книга с таким именем уже открыта — скрипт останавливается, чужие книги не трогает.
 
 Числа сводных сверяются со статичными листами книги (openpyxl, read_only): «Сводная Ozon выкупы» → «Выкупы Ozon» (Начисления по месяцу × статье),
 «Сводная WB выкупы» → «Выкупы WB» (семь денег по месяцам), «Сводная заказы» → «Заказы» (шесть денег по (МП, месяц), проценты до 0,01 п. п.);
@@ -37,6 +39,10 @@ Z = Decimal(0)
 
 class ExcelError(RuntimeError):
     pass
+
+
+class _Stop(Exception):
+    """Дальше проверять нечего (книга не открылась) — таблица результатов печатается всё равно."""
 
 
 def q(s):
@@ -351,8 +357,9 @@ def compare_article_sheet(grid, article, mp, buy, orders):
 
 # ---------- проверки ----------
 
-def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
-    """Все проверки; печатает таблицу; возвращает код (0 / 1 / 2)."""
+def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attach=False):
+    """Все проверки; печатает таблицу; возвращает код (0 / 1 / 2). attach — книга уже открыта в Excel (например, открывалась дольше таймаута):
+    не открывать, а работать с ней по имени; закрывается в конце всё равно (это наша книга)."""
     path = os.path.abspath(path)
     results = []           # (проверка, статус, детали)
     code = 0
@@ -371,18 +378,42 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
         return 2
     out(f"Excel {ver}; книга {path}")
     opened = False
+    book = os.path.basename(path)
+
+    def ex(script, timeout_=120):
+        """AppleScript к СВОЕЙ книге: «active workbook» в тексте заменяется ссылкой по имени."""
+        return excel(f"set WB to workbook {q(book)}\n" + script.replace("active workbook", "WB"), timeout=timeout_, run=run_)
+
     try:
         try:
-            info = excel(f'with timeout of {timeout} seconds\nopen (POSIX file {q(path)})\nset wb to active workbook\n'
-                         f'return {{name of wb, count of worksheets of wb, name of every sheet of wb}}\nend timeout', timeout=timeout + 10, run=run_)
+            before = excel("return name of every workbook", timeout=60, run=run_)
+            before = [] if before is None else (before if isinstance(before, list) else [before])
+            if book in before and not attach:
+                raise ExcelError(f"книга «{book}» уже открыта в Excel — закройте её сами или запустите с --attach; чужие книги скрипт не трогает")
+            if attach and book not in before:
+                raise ExcelError(f"--attach: книги «{book}» среди открытых нет: {before}")
+            if [b for b in before if b != book]:
+                out(f"в Excel уже открыты: {[b for b in before if b != book]} — не трогаю")
+            t = time.time()
+            if not attach:
+                excel(f"with timeout of {timeout} seconds\nopen (POSIX file {q(path)})\nend timeout", timeout=timeout + 10, run=run_)
+            for _ in range(max(1, timeout // 5)):
+                names = excel("return name of every workbook", timeout=60, run=run_)
+                names = [] if names is None else (names if isinstance(names, list) else [names])
+                if book in names:
+                    break
+                time.sleep(5)
+            else:
+                raise ExcelError(f"книга «{book}» не появилась среди открытых за {timeout} с: {names}")
             opened = True
-            rec("открытие книги", True, f"{info[0]}, листов {info[1]}: {info[2]}")
+            info = ex("return {count of worksheets of WB, name of every sheet of WB, name of active workbook}", 120)
+            rec("открытие книги", True, f"{time.time() - t:.1f} с, листов {info[0]}: {info[1]}; активная книга Excel — {info[2]}")
         except ExcelError as e:
             rec("открытие книги", False, f"{e}; окно Excel: {dialog_text(run_)}")
-            return 1
+            raise _Stop()
         try:
             t = time.time()
-            excel(f"with timeout of {timeout} seconds\nrefresh all active workbook\nend timeout", timeout=timeout + 10, run=run_)
+            ex(f"with timeout of {timeout} seconds\nrefresh all WB\nend timeout", timeout + 10)
             rec("refresh all", True, f"{time.time() - t:.1f} с")
         except ExcelError as e:
             rec("refresh all", False, f"{e}; окно Excel: {dialog_text(run_)}")
@@ -390,26 +421,33 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
         grids = {}
         for sheet, static_sheet in PIVOTS:
             try:
-                meta = excel(f'set pt to pivot table 1 of sheet {q(sheet)} of active workbook\n'
-                             f'return {{count of pivot tables of sheet {q(sheet)} of active workbook, name of pt, get address of table range2 of pt, '
-                             f'count of rows of table range2 of pt, name of every pivot field of pt}}', timeout=120, run=run_)
-                n_pt, name, addr, nrows, fields = meta
-                grid = excel(f'return value of table range2 of pivot table 1 of sheet {q(sheet)} of active workbook', timeout=300, run=run_)
+                try:
+                    n_pt = ex(f'return count of pivot tables of sheet {q(sheet)} of active workbook', 120)
+                except ExcelError as e:
+                    n_pt = f"ошибка: {e}"
+                if n_pt != 1:
+                    head = ex(f'return value of range "A1:F14" of sheet {q(sheet)} of active workbook', 120)
+                    rec(f"{sheet}: область сводной", False, f"сводных на листе {n_pt} — Excel не видит сводную; A1:F14 листа: {head}")
+                    continue
+                meta = ex(f'set pt to pivot table 1 of sheet {q(sheet)} of active workbook\n'
+                          f'return {{name of pt, get address of table range2 of pt, count of rows of table range2 of pt, name of every pivot field of pt}}', 120)
+                name, addr, nrows, fields = meta
+                grid = ex(f'return value of table range2 of pivot table 1 of sheet {q(sheet)} of active workbook', 300)
                 grid = grid if isinstance(grid, list) and grid and isinstance(grid[0], list) else [grid]
                 grids[sheet] = grid
                 lab_rows, hdr = find_labels(grid)
-                rec(f"{sheet}: область сводной", bool(lab_rows), f"сводных {n_pt}, «{name}», {addr}, строк {nrows}, месяцев в области {len([l for l in lab_rows if l != 'Общий итог'])}, "
+                rec(f"{sheet}: область сводной", bool(lab_rows), f"«{name}», {addr}, строк {nrows}, месяцев в области {len([l for l in lab_rows if l != 'Общий итог'])}, "
                                                              f"полей {len(fields)}: {fields}")
             except ExcelError as e:
                 rec(f"{sheet}: область сводной", False, str(e))
         # срезы на «Сводная заказы», вычисляемые поля
         try:
-            sl = excel('return {count of slicers of sheet "Сводная заказы" of active workbook, name of every slicer of sheet "Сводная заказы" of active workbook}', timeout=60, run=run_)
+            sl = ex('set pt to pivot table 1 of sheet "Сводная заказы" of active workbook\nreturn {count of slicers of pt, name of every slicer of pt}', 60)
             rec("Сводная заказы: срезы", sl[0] >= 2, f"срезов {sl[0]}: {sl[1]}")
         except ExcelError as e:
             rec("Сводная заказы: срезы", False, str(e))
         try:
-            fields = excel('return name of every pivot field of pivot table 1 of sheet "Сводная заказы" of active workbook', timeout=60, run=run_)
+            fields = ex('return name of every pivot field of pivot table 1 of sheet "Сводная заказы" of active workbook', 60)
             calc = [f for f in ("Маржа, руб без НДС", "Маржинальность, %", "ДДР, %", "Соинвест, %", "Комиссия сред", "Фин.рез", "Цена", "Фин.рез %")]
             present = [f for f in calc if any(str(x).strip() == f for x in fields)]
             rec("Сводная заказы: вычисляемые поля", len(present) == len(calc), f"есть {len(present)} из {len(calc)}: {present}; нет: {[f for f in calc if f not in present]}")
@@ -417,13 +455,13 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
             rec("Сводная заказы: вычисляемые поля", False, str(e))
         # раскрытие месяца на «Сводная WB выкупы»
         try:
-            fields = excel('return name of every pivot field of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', timeout=60, run=run_)
+            fields = ex('return name of every pivot field of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
             mf = next((str(f) for f in fields if "Месяц" in str(f)), None)
             if mf is None:
                 raise ExcelError(f"поля месяцев нет среди {fields}")
-            before = excel('return count of rows of table range2 of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', timeout=60, run=run_)
-            after = excel(f'set pt to pivot table 1 of sheet "Сводная WB выкупы" of active workbook\n'
-                          f'set show detail of pivot item "апр" of pivot field {q(mf)} of pt to true\nreturn count of rows of table range2 of pt', timeout=120, run=run_)
+            before = ex('return count of rows of table range2 of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)
+            after = ex(f'set pt to pivot table 1 of sheet "Сводная WB выкупы" of active workbook\n'
+                       f'set show detail of pivot item "апр" of pivot field {q(mf)} of pt to true\nreturn count of rows of table range2 of pt', 120)
             rec("Сводная WB выкупы: месяц → дни", after > before, f"поле «{mf}», строк {before} → {after} (+{after - before})")
         except ExcelError as e:
             rec("Сводная WB выкупы: месяц → дни", False, str(e))
@@ -469,8 +507,8 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
                 buy, orders = sums_for_articles(path, articles)
                 for art in articles:
                     t = time.time()
-                    grid = excel(f'set sh to sheet "Артикул" of active workbook\nset value of range "B1" of sh to {q(art)}\nset value of range "B2" of sh to {q(mp)}\n'
-                                 f'calculate\nreturn value of range "A1:H60" of sh', timeout=300, run=run_)
+                    grid = ex(f'set sh to sheet "Артикул" of active workbook\nset value of range "B1" of sh to {q(art)}\nset value of range "B2" of sh to {q(mp)}\n'
+                              f'calculate\nreturn value of range "A1:H60" of sh', 300)
                     dt = time.time() - t
                     table = compare_article_sheet(grid, art, mp, buy, orders)
                     bad = [x for x in table if x[5]]
@@ -480,20 +518,22 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print):
         # плюсики: summary row сверху, дни скрыты, show levels раскрывает
         for sheet in ("Выкупы Ozon", "Заказы"):
             try:
-                res = excel(f'set sh to sheet {q(sheet)} of active workbook\nset o to outline of sh\nset sr to summary row of o as text\n'
-                            f'set n to count of rows of used range of sh\nset h1 to 0\nrepeat with i from 4 to n\nif hidden of row i of sh then set h1 to h1 + 1\nend repeat\n'
-                            f'show levels o row levels 2\nset h2 to 0\nrepeat with i from 4 to n\nif hidden of row i of sh then set h2 to h2 + 1\nend repeat\n'
-                            f'show levels o row levels 1\nreturn {{sr, n, h1, h2}}', timeout=300, run=run_)
+                res = ex(f'set sh to sheet {q(sheet)} of active workbook\nset o to outline object of sh\nset sr to summary row of o\n'
+                         f'set n to count of rows of used range of sh\nset h1 to 0\nrepeat with i from 4 to n\nif hidden of row i of sh then set h1 to h1 + 1\nend repeat\n'
+                         f'show levels o row levels 2\nset h2 to 0\nrepeat with i from 4 to n\nif hidden of row i of sh then set h2 to h2 + 1\nend repeat\n'
+                         f'show levels o row levels 1\nreturn {{sr, n, h1, h2}}', 300)
                 sr, n, h1, h2 = res
-                rec(f"{sheet}: плюсики", ("above" in str(sr).lower() or "выше" in str(sr).lower()) and h1 > 0 and h2 < h1,
-                    f"summary row {sr}; строк {n}, скрыто при уровне 1: {h1}, при уровне 2: {h2}")
+                rec(f"{sheet}: плюсики", "above" in str(sr).lower() and h1 > 0 and h2 < h1,
+                    f"summary row «{sr}»; строк {n}, скрыто при уровне 1: {h1}, при уровне 2: {h2} (дни свёрнуты → раскрыты)")
             except ExcelError as e:
                 rec(f"{sheet}: плюсики", False, str(e))
+    except _Stop:
+        pass
     finally:
         if opened:
             try:
-                excel("close active workbook saving no", timeout=120, run=run_)
-                out("книга закрыта без сохранения")
+                excel(f"close workbook {q(book)} saving no", timeout=120, run=run_)
+                out(f"книга «{book}» закрыта без сохранения; другие книги Excel не тронуты")
             except ExcelError as e:
                 out(f"книга НЕ закрыта: {e}")
     out(f"\n{'проверка':44} {'итог':5} детали")
@@ -509,8 +549,9 @@ def main(argv=None):
     ap.add_argument("--articles", help="артикулы для листа «Артикул» через запятую")
     ap.add_argument("--mp", default="Ozon")
     ap.add_argument("--timeout", type=int, default=600)
+    ap.add_argument("--attach", action="store_true", help="книга уже открыта в Excel — не открывать, работать с ней по имени")
     args = ap.parse_args(argv)
-    return run(args.book, [a for a in (args.articles or "").split(",") if a], args.mp, args.timeout)
+    return run(args.book, [a for a in (args.articles or "").split(",") if a], args.mp, args.timeout, attach=args.attach)
 
 
 if __name__ == "__main__":

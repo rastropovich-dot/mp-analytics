@@ -147,6 +147,23 @@ merge-tree         `git merge-tree --write-tree main finrez-orders-form` — к�
 Не сделано / открыто: мерж — по слову; 9 SKU в каталог — по слову; рендер книги в Excel — теперь можно проверить на этой машине (Excel 16.110.3 есть), не делал —
 вне задачи; живой сторож за D−3 не снимал (Seller API — 0). Скрипт снятия лога Render постранично — в scratchpad сессии (`render_logs.py`), в репозиторий не клал.
 
+### По слову владельца (12:12 → 12:15 UTC): мерж `finrez-orders-form` и каталог 9 SKU — выполнены
+
+```
+main               перед мержем origin/main ушёл вперёд на 5 коммитов (WB-сессия слила wb-fixes — 4241881, 14:33 МСК: outbox_wb, wb_report_model, report_finrez_wb.py +6/−?,
+                   wb_buyout_cohort_step, sql/20260926_index_wb_funnel_products_nm_day.sql, test_wb_buyout_cohort; моих файлов не касается) — подтянут ff до 4241881
+fae127a            Merge finrez-orders-form --no-ff (73fd00e), конфликтов 0, 12:12:26 UTC; полный набор на main — Ran 1113 tests in 0.777s, OK (1 112 ветки + 1 тест когорты WB-10);
+                   push 12:14:19 UTC; Render live на fae127a: mp-analytics 12:14:58, mp-analytics-telegram-report 12:14:55 UTC; startCommand не менялась; книга не пересобиралась
+                   (на диске сборка 40-й 21:04 UTC 09-25, sha256 7d09d6f5…) — пересборка с §4 сорок первой
+каталог            ozon_product_catalog.py --collect --only-missing --tree-file data/ozon_products/category_tree.json --apply (12:12:28 → 12:14:05 UTC): SKU в базе 5 440 (заказы ∪
+                   выкупы 5 345, только реклама 95), в таблице 5 431, нет 9 (из них только реклама 0 — 1612196712 уже есть в заказах); обращений к Seller API 1, повторов 0, отказов 0;
+                   карточка у 9 из 9, по названию 0; категории: кольца 6 · серьги 1 · подвески 1 · цепочки 1 (прочее 0); карточка против названия 9 / 0, против 1С 8 / 0 / нет артикула
+                   в 1С 1; оборот выкупов за 09 у всех девяти 0,00; снимок catalog_20260926T121401Z.json, разбор catalog_missing_20260926T121402Z.json; upsert 9, db_writes = 9
+контроль чтением   SQL после записи: в ozon_products 5 440; строк с updated_at ≥ 12:00 UTC — 9: 1202253226 цепочки / Топаз · 1612196712, 2948247404, 3119094143, 3119095298, 3825055185,
+                   5282337277 кольца / KARATOV · 3542252299 серьги / KARATOV · 3800976865 подвески / KARATOV — все category_source = card; SKU в базе (заказы ∪ выкупы ∪ реклама
+                   с 03-28) 5 440 → нет в каталоге 0
+```
+
 
 ---
 

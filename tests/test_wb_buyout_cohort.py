@@ -64,6 +64,17 @@ class CohortTests(unittest.TestCase):
         self.assertEqual((months["2026-09"]["mature_days"], months["2026-09"]["rate_sum"], months["2026-09"]["all_rate_sum"]), (0, None, D("0.2500")))
 
 
+class StepPayloadTests(unittest.TestCase):
+    def test_payload_carries_this_write_time_and_strings_for_decimals(self):
+        import scripts.wb_buyout_cohort_step as step
+        rows, _s = cohort.build_sku_rows(FUNNEL, SALES, "2026-09-25")
+        daily, _f = cohort.build_daily_rows(rows, "2026-09-25")
+        sku, day = step.payloads(rows, daily, "2026-09-26T00:29:02+00:00")
+        self.assertTrue(all(r["observed_at"] == "2026-09-26T00:29:02+00:00" for r in sku + day))
+        self.assertEqual((sku[0]["created_sum"], sku[0]["rate_sum"], day[0]["rate_sum"]), ("2000", "0.4500", "0.5600"))
+        self.assertIsNone([r for r in day if r["day"] == "2026-09-10"][0]["rate_sum"])
+
+
 def ratio_(a, b):
     return cohort.ratio(a, b)
 

@@ -250,18 +250,18 @@ def load_product_dictionary(sb, d1=None, d2=None, use_view=True):
         return out
     started = datetime.now(timezone.utc)
     if use_view:
+        why = None
         try:
             rows = read_latest_cards(sb)
         except Exception as error:
-            print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} не прочитана — {str(error)[:160]}; читаю {wbm.FUNNEL_TABLE} окном", flush=True)
-            rows = None
+            rows, why = None, f"не прочитана — {str(error)[:160]}"
         if rows is not None:
             for r in rows:
                 out[int(r["nm_id"])] = {"title": r.get("title"), "brand": r.get("brand"), "subject": r.get("subject_name"), "vendor_code": r.get("vendor_code")}
             print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} — строк {len(rows)}, nmId {len(out)}, "
                   f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с, страниц по {DICT_PAGE}: {max(1, (len(rows) + DICT_PAGE - 1) // DICT_PAGE)}", flush=True)
             return out
-        print(f"словарь товаров: вьюхи {FUNNEL_LATEST_VIEW} нет (миграция по слову) — читаю {wbm.FUNNEL_TABLE} за {d1} … {d2} окном", flush=True)
+        print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} {why or 'отсутствует (миграция по слову)'} — читаю {wbm.FUNNEL_TABLE} за {d1} … {d2} окном", flush=True)
     try:
         rows = read_keyset(sb, wbm.FUNNEL_TABLE, "day,nm_id,vendor_code,title,brand,subject_name", d1, d2)
     except Exception as error:

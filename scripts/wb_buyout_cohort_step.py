@@ -12,7 +12,7 @@
 import argparse
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +26,16 @@ from loaders import wb_buyout_cohort as cohort  # noqa: E402
 import loaders.wb_sales_report_loader as report_loader  # noqa: E402
 
 Z = Decimal(0)
+
+
+def payloads(sku_rows, daily_rows, observed_at):
+    """Строки для upsert: Decimal → str, observed_at = время ЭТОЙ записи (иначе у перезаписанных ключей остаётся время первой
+    вставки — первая ночь 09-26 переписала 4 042 ключа, а observed_at ночи получили только 10 новых; WB-10 §1)."""
+    sku = [{**r, "created_sum": str(r["created_sum"]), "sold_sum": str(r["sold_sum"]), "rate_qty": None if r["rate_qty"] is None else str(r["rate_qty"]),
+            "rate_sum": None if r["rate_sum"] is None else str(r["rate_sum"]), "observed_at": observed_at} for r in sku_rows]
+    daily = [{**r, "created_sum": str(r["created_sum"]), "sold_sum": str(r["sold_sum"]), "observed_at": observed_at,
+              **{k: (None if r[k] is None else str(r[k])) for k in ("rate_qty", "rate_sum", "forecast_rate_qty", "forecast_rate_sum")}} for r in daily_rows]
+    return sku, daily
 
 
 def run(sb, day_from, day_to, today, apply=False, plan_from=None):
@@ -49,10 +59,7 @@ def run(sb, day_from, day_to, today, apply=False, plan_from=None):
     if not apply:
         print(f"  --dry-run: не пишу (строк по (день, nmId) {len(sku_rows)}, по дням {len(daily_rows)}); db_writes = 0", flush=True)
         return sku_rows, daily_rows
-    sku_payload = [{**r, "created_sum": str(r["created_sum"]), "sold_sum": str(r["sold_sum"]), "rate_qty": None if r["rate_qty"] is None else str(r["rate_qty"]),
-                    "rate_sum": None if r["rate_sum"] is None else str(r["rate_sum"])} for r in sku_rows]
-    daily_payload = [{**r, "created_sum": str(r["created_sum"]), "sold_sum": str(r["sold_sum"]),
-                      **{k: (None if r[k] is None else str(r[k])) for k in ("rate_qty", "rate_sum", "forecast_rate_qty", "forecast_rate_sum")}} for r in daily_rows]
+    sku_payload, daily_payload = payloads(sku_rows, daily_rows, datetime.now(timezone.utc).isoformat())
     try:
         for i in range(0, len(sku_payload), 500):
             sb.table(cohort.SKU_TABLE).upsert(sku_payload[i:i + 500], on_conflict="day,nm_id").execute()

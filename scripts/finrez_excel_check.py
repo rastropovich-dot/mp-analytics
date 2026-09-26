@@ -348,6 +348,52 @@ def sums_for_articles(path, articles):
 
 
 WB_BLOCK = {h: h for h in ("Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽", "Себес-ть, ₽", "Хранение, ₽", "Ост.расходы и компенсации МП, ₽")}
+OZON_FORMULA_COLS = {"P": "Оборот (с НДС)", "Q": "Комиссия (с НДС), руб.", "S": "Выручка, руб. (без НДС)", "T": "Себестоимость, руб.", "U": "Маржа, руб.", "AD": "Фин. рез., руб."}
+WB_FORMULA_COLS = {"K": "Оборот (с НДС)", "L": "Комиссия (с НДС), руб.", "N": "Выручка, руб. (без НДС)", "O": "Себестоимость, руб.", "P": "Маржа, руб.", "Y": "Фин. рез., руб."}
+FOREIGN = ("Pastel", "FLAMINGO", "DEXCLUSIVE", "Carbon", "CATRICE", "MAKEUP REVOLUTION")
+
+
+def col_index(letters):
+    n = 0
+    for ch in letters:
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def data_uniques(path):
+    """Уникальные бренды и артикулы листов «Данные …» — для сравнения с элементами полей сводных."""
+    import openpyxl
+    warnings.simplefilter("ignore")
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    out = {}
+    for sheet, key, brand_col, art_col in (("Данные Ozon выкупы", "ozon", "Бренд", "Артикул"), ("Данные WB выкупы", "wb", "Бренд", "Артикул поставщика"), ("Данные заказы", "orders", None, "Артикул поставщика")):
+        it = wb[sheet].iter_rows(values_only=True)
+        heads = [str(h) if h is not None else "" for h in next(it)]
+        ix = {h: i for i, h in enumerate(heads)}
+        brands, arts = set(), set()
+        for r in it:
+            if brand_col and r[ix[brand_col]] not in (None, ""):
+                brands.add(str(r[ix[brand_col]]))
+            if r[ix[art_col]] not in (None, ""):
+                arts.add(str(r[ix[art_col]]))
+        out[f"{key}_brand"], out[f"{key}_article"] = brands, arts
+    wb.close()
+    return out
+
+
+def foreign_strings(path):
+    """Число вхождений чужих брендов второго кабинета во всех XML-частях книги (должно быть 0)."""
+    import zipfile
+    z = zipfile.ZipFile(path)
+    counts = {w: 0 for w in FOREIGN}
+    for n in z.namelist():
+        if n.endswith(".xml"):
+            data = z.read(n)
+            for w in FOREIGN:
+                counts[w] += data.count(w.encode())
+    return counts
+
+
 ARTICLE_BLOCK = {"Товарооборот": "Товарооборот", "Комиссия": "Комиссия", "Логистика": "Логистика", "Реклама": "Реклама", "Эквайринг": "Эквайринг", "Прочее": "Прочее",
                  "Ст-ть продаж": "Ст-ть продаж в себ-ти", "Соинвест": "Соинвест", "Штуки": "Количество"}
 ORDER_BLOCK = {"Заказы, ₽": "Заказы, ₽", "Заказы, шт": "Заказы, шт", "Реклама, ₽": "Реклама, ₽", "Заказы, руб c СПП": "Заказы, руб c СПП",
@@ -494,6 +540,88 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
             rec("Сводная заказы: вычисляемые поля", len(present) == len(calc), f"есть {len(present)} из {len(calc)}: {present}; нет: {[f for f in calc if f not in present]}")
         except ExcelError as e:
             rec("Сводная заказы: вычисляемые поля", False, str(e))
+        # сорок вторая §2: фильтры страниц «(Все)», все статьи в столбцах, все поля данных; чужих элементов нет
+        for sheet, static_sheet, n_data, col_field in (("Сводная Ozon выкупы", "Выкупы Ozon", 2, "Статьи Озон.Вид затрат"), ("Сводная WB выкупы", "Выкупы WB", 7, None), ("Сводная заказы", "Заказы", 13, "МП")):
+            try:
+                r = ex(f'set pt to pivot table 1 of sheet {q(sheet)} of active workbook\n'
+                       f'return {{name of every page field of pt, current page of every page field of pt, count of data fields of pt}}', 120)
+                pages, cur, nd = r
+                cur = [str(c) for c in (cur if isinstance(cur, list) else [cur])]
+                ok = all(c in ("(All)", "(Все)") for c in cur) and nd == n_data
+                rec(f"{sheet}: фильтры «(Все)», полей данных {n_data}", ok, f"страницы {pages} → {cur}; полей данных {nd}")
+            except ExcelError as e:
+                rec(f"{sheet}: фильтры «(Все)», полей данных {n_data}", False, str(e))
+            if col_field:
+                try:
+                    r = ex(f'set f to pivot field {q(col_field)} of pivot table 1 of sheet {q(sheet)} of active workbook\n'
+                           f'return {{name of every pivot item of f, visible of every pivot item of f}}', 120)
+                    names = [str(n) for n in (r[0] if isinstance(r[0], list) else [r[0]])]
+                    vis = r[1] if isinstance(r[1], list) else [r[1]]
+                    shown = [n for n, v in zip(names, vis) if v]
+                    want = ARTICLES if col_field.startswith("Статьи") else ("Ozon", "WB")
+                    rec(f"{sheet}: элементы столбцов «{col_field}»", set(want) <= set(shown), f"видимых {len(shown)} из {len(names)}: {shown}")
+                except ExcelError as e:
+                    rec(f"{sheet}: элементы столбцов «{col_field}»", False, str(e))
+        try:
+            uniq = data_uniques(path)
+            for sheet, field, key in (("Сводная Ozon выкупы", "Бренд", "ozon_brand"), ("Сводная WB выкупы", "Бренд", "wb_brand"), ("Сводная Ozon выкупы", "Артикул", "ozon_article"),
+                                      ("Сводная WB выкупы", "Артикул поставщика", "wb_article"), ("Сводная заказы", "Артикул поставщика", "orders_article")):
+                items = ex(f'return name of every pivot item of pivot field {q(field)} of pivot table 1 of sheet {q(sheet)} of active workbook', 300)
+                items = {str(i) for i in (items if isinstance(items, list) else [items]) if i is not None}
+                ours = uniq[key]
+                extra = sorted(items - ours - {"(blank)", "(пусто)"})
+                ok = not extra and (len(items) <= len(ours) + 1)
+                rec(f"{sheet}: элементы «{field}» = наши", ok, f"в сводной {len(items)}, в «Данных» {len(ours)}; чужих {len(extra)}" + (f": {extra[:8]}" if extra else "") + (f"; примеры: {sorted(items)[:4]}" if field == 'Бренд' else ""))
+        except Exception as e:  # noqa: BLE001
+            rec("элементы полей = наши", False, f"{type(e).__name__}: {e}")
+        try:
+            foreign = foreign_strings(path)
+            rec("XML книги без чужих брендов", not any(foreign.values()), str(foreign))
+        except Exception as e:  # noqa: BLE001
+            rec("XML книги без чужих брендов", False, f"{type(e).__name__}: {e}")
+        # сорок вторая §3: форматы и ширины образца
+        try:
+            r = ex('return {number format of range "P12" of sheet "Сводная Ozon выкупы" of active workbook, number format of range "R12" of sheet "Сводная Ozon выкупы" of active workbook, '
+                   'column width of column 1 of sheet "Сводная Ozon выкупы" of active workbook, column width of column 16 of sheet "Сводная Ozon выкупы" of active workbook, '
+                   'bold of font object of range "P11" of sheet "Сводная Ozon выкупы" of active workbook, number format of range "K8" of sheet "Сводная WB выкупы" of active workbook}', 120)
+            fmt_p, fmt_r, w1, w16, bold, fmt_k = r
+            ok = str(fmt_p) != "General" and "%" in str(fmt_r) and bold is True
+            rec("форматы образца перенесены", ok, f"P12 «{fmt_p}», R12 «{fmt_r}», K8 WB «{fmt_k}»; ширины A {w1}, P {w16}; шапка P11 жирная: {bold}")
+        except ExcelError as e:
+            rec("форматы образца перенесены", False, str(e))
+        # сорок вторая §4: формулы владельца по месяцам = статичному листу, под таблицей пусто
+        for sheet, static_sheet, cols, below_cols in (("Сводная Ozon выкупы", "Выкупы Ozon", OZON_FORMULA_COLS, "P:AE"), ("Сводная WB выкупы", "Выкупы WB", WB_FORMULA_COLS, "K:Z")):
+            try:
+                grid = grids.get(sheet)
+                if not grid:
+                    raise ExcelError("области сводной нет")
+                lab_rows, hdr = find_labels(grid)
+                first_row = int(re.match(r"\$?[A-Z]+\$?(\d+)", ex(f'return get address of table range2 of pivot table 1 of sheet {q(sheet)} of active workbook', 60)).group(1))
+                a, b = below_cols.split(":")
+                st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()))
+                bad, n = [], 0
+                for lab, i in lab_rows.items():
+                    if lab not in st:
+                        continue
+                    row = first_row + i
+                    vals = ex(f'return value of range "{a}{row}:{b}{row}" of sheet {q(sheet)} of active workbook', 60)
+                    vals = vals[0] if isinstance(vals, list) and vals and isinstance(vals[0], list) else vals
+                    for col, static_name in cols.items():
+                        j = col_index(col) - col_index(a)
+                        got, exp = dec(vals[j]) if j < len(vals) else None, st[lab].get(static_name)
+                        if exp is None:
+                            continue
+                        n += 1
+                        diff = ((got or Z) - exp)
+                        diff = diff.quantize(Decimal("0.0001")) if static_name.endswith("%") else diff.quantize(Decimal("0.01"))
+                        if diff:
+                            bad.append((lab, col, static_name, got, exp, diff))
+                last = first_row + max(lab_rows.values())
+                below = ex(f'return value of range "{a}{last + 1}:{b}{last + 3}" of sheet {q(sheet)} of active workbook', 60)
+                nonempty = [v for row in (below if isinstance(below, list) else [below]) for v in (row if isinstance(row, list) else [row]) if v not in (None, "")]
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}")
+            except Exception as e:  # noqa: BLE001
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", False, f"{type(e).__name__}: {e}")
         # раскрытие месяца на «Сводная WB выкупы»
         try:
             fields = ex('return name of every pivot field of pivot table 1 of sheet "Сводная WB выкупы" of active workbook', 60)

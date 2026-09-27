@@ -465,9 +465,26 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
     opened = False
     book = os.path.basename(path)
 
+    def wait_ready(limit=420):
+        """После таймаута AppleEvent Excel ещё дорабатывает брошенное событие, и следующие вызовы висят (прогон 09-27: три проверки подряд
+        «не ответил»). Ждём, пока ответит на пустяковый вопрос."""
+        t0 = time.time()
+        while time.time() - t0 < limit:
+            try:
+                excel("return name of every workbook", timeout=20, run=run_)
+                return True
+            except ExcelError:
+                time.sleep(10)
+        return False
+
     def ex(script, timeout_=120):
-        """AppleScript к СВОЕЙ книге: «active workbook» в тексте заменяется ссылкой по имени."""
-        return excel(f"set WB to workbook {q(book)}\n" + script.replace("active workbook", "WB"), timeout=timeout_, run=run_)
+        """AppleScript к СВОЕЙ книге: «active workbook» в тексте заменяется ссылкой по имени. Таймаут — подождать Excel, потом бросить."""
+        try:
+            return excel(f"set WB to workbook {q(book)}\n" + script.replace("active workbook", "WB"), timeout=timeout_, run=run_)
+        except ExcelError as e:
+            if "истекло" in str(e) or "не ответил" in str(e):
+                wait_ready()
+            raise
 
     try:
         try:
@@ -569,12 +586,20 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
             uniq = data_uniques(path)
             for sheet, field, key in (("Сводная Ozon выкупы", "Бренд", "ozon_brand"), ("Сводная WB выкупы", "Бренд", "wb_brand"), ("Сводная Ozon выкупы", "Артикул", "ozon_article"),
                                       ("Сводная WB выкупы", "Артикул поставщика", "wb_article"), ("Сводная заказы", "Артикул поставщика", "orders_article")):
-                items = ex(f'return name of every pivot item of pivot field {q(field)} of pivot table 1 of sheet {q(sheet)} of active workbook', 300)
-                items = {str(i) for i in (items if isinstance(items, list) else [items]) if i is not None}
                 ours = uniq[key]
-                extra = sorted(items - ours - {"(blank)", "(пусто)"})
-                ok = not extra and (len(items) <= len(ours) + 1)
-                rec(f"{sheet}: элементы «{field}» = наши", ok, f"в сводной {len(items)}, в «Данных» {len(ours)}; чужих {len(extra)}" + (f": {extra[:8]}" if extra else "") + (f"; примеры: {sorted(items)[:4]}" if field == 'Бренд' else ""))
+                # тысячи артикулов: «name of every pivot item» не укладывается в 60 с AppleEvent (-1712, прогон 09-27), а брошенное событие
+                # вешает следующие проверки — число элементов под with timeout, имена перечисляются только у полей до 1 000 элементов
+                n_items = ex(f'with timeout of 600 seconds\nreturn count of pivot items of pivot field {q(field)} of pivot table 1 of sheet {q(sheet)} of active workbook\nend timeout', 660)
+                n_items = int(n_items) if n_items is not None else -1
+                if 0 <= n_items <= 1000:
+                    items = ex(f'with timeout of 600 seconds\nreturn name of every pivot item of pivot field {q(field)} of pivot table 1 of sheet {q(sheet)} of active workbook\nend timeout', 660)
+                    items = {str(i) for i in (items if isinstance(items, list) else [items]) if i is not None}
+                    extra = sorted(items - ours - {"(blank)", "(пусто)"})
+                    ok = not extra and (len(items) <= len(ours) + 1)
+                    rec(f"{sheet}: элементы «{field}» = наши", ok, f"в сводной {len(items)}, в «Данных» {len(ours)}; чужих {len(extra)}" + (f": {extra[:8]}" if extra else "") + f"; примеры: {sorted(items)[:4]}")
+                else:
+                    ok = len(ours) <= n_items <= len(ours) + 1
+                    rec(f"{sheet}: элементы «{field}» = наши (по числу)", ok, f"в сводной {n_items}, в «Данных» {len(ours)} (+ «(blank)» не больше одного); имена не перечислялись — поле крупнее 1 000 элементов")
         except Exception as e:  # noqa: BLE001
             rec("элементы полей = наши", False, f"{type(e).__name__}: {e}")
         try:
@@ -601,7 +626,10 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 lab_rows, hdr = find_labels(grid)
                 first_row = int(re.match(r"\$?[A-Z]+\$?(\d+)", ex(f'return get address of table range2 of pivot table 1 of sheet {q(sheet)} of active workbook', 60)).group(1))
                 a, b = below_cols.split(":")
-                st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()))
+                # у WB столбец V «Эквайринг, руб.» — ячейка ввода владельца (в образце пусто, формулы нет), в сводной пусто; Y = P − R − T − V − X,
+                # поэтому ожидаемый Y = «Фин. рез.» статичного листа + его «Эквайринг» (прогон 09-27: 7 расхождений ровно на эквайринг)
+                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else ()
+                st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()) + extra_cols)
                 bad, n = [], 0
                 for lab, i in lab_rows.items():
                     if lab not in st:
@@ -614,6 +642,8 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                         got, exp = dec(vals[j]) if j < len(vals) else None, st[lab].get(static_name)
                         if exp is None:
                             continue
+                        if static_sheet == "Выкупы WB" and col == "Y":
+                            exp = exp + (st[lab].get("Эквайринг, руб.") or Z)
                         n += 1
                         diff = ((got or Z) - exp)
                         diff = diff.quantize(Decimal("0.0001")) if static_name.endswith("%") else diff.quantize(Decimal("0.01"))
@@ -622,7 +652,7 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 last = first_row + max(lab_rows.values())
                 below = ex(f'return value of range "{a}{last + 1}:{b}{last + 3}" of sheet {q(sheet)} of active workbook', 60)
                 nonempty = [v for row in (below if isinstance(below, list) else [below]) for v in (row if isinstance(row, list) else [row]) if v not in (None, "")]
-                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}")
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else ""))
             except Exception as e:  # noqa: BLE001
                 rec(f"{sheet}: формулы владельца = «{static_sheet}»", False, f"{type(e).__name__}: {e}")
         # раскрытие месяца на «Сводная WB выкупы»

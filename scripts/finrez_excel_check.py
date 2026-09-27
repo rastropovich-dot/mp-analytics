@@ -630,7 +630,11 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 a, b = below_cols.split(":")
                 # у WB столбец V «Эквайринг, руб.» — ячейка ввода владельца (в образце пусто, формулы нет), в сводной пусто; Y = P − R − T − V − X,
                 # поэтому ожидаемый Y = «Фин. рез.» статичного листа + его «Эквайринг» (прогон 09-27: 7 расхождений ровно на эквайринг)
-                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else ()
+                # у Ozon формулы владельца W / Y / AA / AC = −D / −H / −L / −F — расходы С НДС под шапкой «без НДС» (образец «Вывод данных», строка 12),
+                # а статичный лист «Выкупы Ozon» делит их на 1,22: AD владельца = «Фин. рез.» статичного − 0,22 × (Л + Р + Э + П без НДС) (прогон 09-27:
+                # 7 расхождений из 42, все в AD, апрель −3 225 285,47). Оставлено как у владельца, вопрос об НДС — ему
+                OZON_VAT_COLS = ("Логистика, руб. (без НДС)", "Реклама, руб. (без НДС)", "Эквайринг, руб. (без НДС)", "Прочее, руб. (без НДС)")
+                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else OZON_VAT_COLS
                 st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()) + extra_cols)
                 bad, n = [], 0
                 for lab, i in lab_rows.items():
@@ -646,6 +650,8 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                             continue
                         if static_sheet == "Выкупы WB" and col == "Y":
                             exp = exp + (st[lab].get("Эквайринг, руб.") or Z)
+                        if static_sheet == "Выкупы Ozon" and col == "AD":
+                            exp = exp - Decimal("0.22") * sum((st[lab].get(k) or Z) for k in OZON_VAT_COLS)
                         n += 1
                         diff = ((got or Z) - exp)
                         diff = diff.quantize(Decimal("0.0001")) if static_name.endswith("%") else diff.quantize(Decimal("0.01"))
@@ -654,7 +660,7 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 last = first_row + max(lab_rows.values())
                 below = ex(f'return value of range "{a}{last + 1}:{b}{last + 3}" of sheet {q(sheet)} of active workbook', 60)
                 nonempty = [v for row in (below if isinstance(below, list) else [below]) for v in (row if isinstance(row, list) else [row]) if v not in (None, "")]
-                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else ""))
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else "; AD сверен с «Фин. рез.» − 0,22 × расходов — у владельца W / Y / AA / AC с НДС"))
             except Exception as e:  # noqa: BLE001
                 rec(f"{sheet}: формулы владельца = «{static_sheet}»", False, f"{type(e).__name__}: {e}")
         # раскрытие месяца на «Сводная WB выкупы»

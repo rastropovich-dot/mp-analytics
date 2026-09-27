@@ -41,10 +41,11 @@ class Transforms(unittest.TestCase):
               '<items count="2"><item x="0"/><item t="default"/></items></pivotField></pivotFields><rowFields count="1"><field x="0"/></rowFields>'
               '<rowItems count="2"><i><x/></i><i t="grand"><x/></i></rowItems><colItems count="1"><i/></colItems><pageFields count="1"><pageField fld="2" hier="-1" item="0"/></pageFields>'
               '<dataFields count="1"><dataField name="Σ" fld="1"/></dataFields></pivotTableDefinition>')
-        out = fp.reset_pivot_state(pt)
-        self.assertIn('<pivotTableDefinition missingItemsLimit="0" name="p"', out)
-        self.assertEqual(out.count('<items count="1"><item t="default"/></items>'), 2)
-        self.assertNotIn('h="1"', out); self.assertNotIn("<rowItems", out); self.assertNotIn("<colItems", out)
+        out = fp.reset_pivot_state('<pivotTableDefinition missingItemsLimit="0" name="p"' + pt[len('<pivotTableDefinition name="p"'):])
+        self.assertTrue(out.startswith('<pivotTableDefinition name="p" cacheId="1">'))                  # атрибут кэша со сводной снят
+        self.assertNotIn('h="1"', out); self.assertIn('<item x="1"/>', out)                                # скрытых нет, элементы владельца целы
+        self.assertIn('<items count="3"><item x="0"/><item x="1"/><item t="default"/></items>', out)     # items не сброшены: сброс валит Excel на refresh
+        self.assertIn('<rowItems count="2"><i><x/></i><i t="grand"><x/></i></rowItems><colItems count="1"><i/></colItems>', out)
         self.assertIn('<pageField fld="2" hier="-1"/>', out)
         self.assertIn('<dataFields count="1"><dataField name="Σ" fld="1"/></dataFields>', out)
 
@@ -131,6 +132,8 @@ class Integration(unittest.TestCase):
             self.assertEqual(rep[2]["group_fields"], ["Месяцы", "Маржа, руб без НДС", "Маржинальность, %", "ДДР, %", "Соинвест, %", "Комиссия сред", "Фин.рез", "Цена", "Фин.рез %"])
             errors, info = fp.check(path)
             self.assertEqual(errors, [], errors)
+            self.assertIn('<pivotCacheDefinition missingItemsLimit="0" refreshOnLoad="1"', cd3)                       # лимит — на кэше, не на сводной
+            self.assertNotIn("missingItemsLimit", zipfile.ZipFile(path).read("xl/pivotTables/pivotTable3.xml").decode("utf-8"))
             self.assertEqual(openpyxl.load_workbook(path, read_only=True).sheetnames[-3:], ["Сводная Ozon выкупы", "Сводная WB выкупы", "Сводная заказы"])
 
 

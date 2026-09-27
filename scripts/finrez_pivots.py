@@ -272,16 +272,14 @@ def _merge_numfmts_dxfs(our_styles, owner_styles):
 
 
 def reset_pivot_state(pt_xml):
-    """Сохранённое состояние сводной второго кабинета — снять (сорок вторая §2): pageField без выбранного item («(Все)»), у полей осей items →
-    <items count="1"><item t="default"/></items> (Excel перестроит при refresh), h="1" нигде, rowItems / colItems сняты, missingItemsLimit="0"
-    (элементы, которых нет в источнике, не хранить); поля данных не трогаются — видны все."""
+    """Сохранённое состояние сводной второго кабинета — снять (сорок вторая §2): pageField без выбранного item («(Все)»), h="1" нигде (скрытых
+    элементов нет). items полей осей, rowItems и colItems владельца ОСТАЮТСЯ: вариант «items → <item t="default"/>, rowItems / colItems сняты»
+    Excel открывает, но на refresh падает (EXC_BAD_INSTRUCTION в mbukernel, 2026-09-27, маленькие книги Q2 / S2); с элементами владельца refresh
+    проходит (S1 / S3). Ссылки items на чужие значения кэша снимает refresh с missingItemsLimit="0" на pivotCacheDefinition (см. transplant);
+    поля данных не трогаются — видны все."""
     pt_xml = re.sub(r'(<pageField\b[^>]*?)\s+item="\d+"', r"\1", pt_xml)
-    pt_xml = re.sub(r'(<pivotField\b[^>]*\baxis="[^"]+"[^>]*>)<items count="\d+">.*?</items>', r'\1<items count="1"><item t="default"/></items>', pt_xml, flags=re.S)
     pt_xml = re.sub(r'\s+h="1"', "", pt_xml)
-    pt_xml = re.sub(r'<rowItems count="\d+">.*?</rowItems>', "", pt_xml, flags=re.S)
-    pt_xml = re.sub(r'<colItems count="\d+">.*?</colItems>', "", pt_xml, flags=re.S)
-    if "missingItemsLimit=" not in pt_xml:
-        pt_xml = pt_xml.replace("<pivotTableDefinition ", '<pivotTableDefinition missingItemsLimit="0" ', 1)
+    pt_xml = re.sub(r'(<pivotTableDefinition\b[^>]*?)\s+missingItemsLimit="[^"]*"', r"\1", pt_xml, count=1)   # атрибут кэша, не сводной
     return pt_xml
 
 
@@ -440,6 +438,10 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
             cd_xml = re.sub(r'<rangePr groupBy="([^"]+)"[^/]*/>', lambda m: f'<rangePr groupBy="{m.group(1)}" startDate="{d1}T00:00:00" endDate="{d2}T00:00:00"/>', cd_xml)
         if 'refreshOnLoad="1"' not in cd_xml:
             cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="1" ', 1)
+        # элементы без записей (заглушки чужих значений) не хранить: атрибут pivotCacheDefinition по схеме OOXML; на pivotTableDefinition Excel его
+        # молча игнорирует — так было в первой сборке 42-й, и чужие бренды переживали два refresh (проверено AppleScript: missing items limit = missing value)
+        cd_xml = re.sub(r'\s+missingItemsLimit="[^"]*"', "", cd_xml, count=1)
+        cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition missingItemsLimit="0" ', 1)
         cd_xml = re.sub(r'numFmtId="(\d+)"', lambda m: f'numFmtId="{numfmt_map.get(int(m.group(1)), int(m.group(1)))}"', cd_xml)
         cd_xml = clear_shared_items(cd_xml)
         new_parts[f"xl/pivotCache/pivotCacheDefinition{k}.xml"] = cd_xml.encode("utf-8")
@@ -591,6 +593,8 @@ def check(book):
             errors.append(f"{cdef[0]}: ref {ref}, а строк на листе {nrows}")
         if 'refreshOnLoad="1"' not in cd:
             errors.append(f"{cdef[0]}: нет refreshOnLoad")
+        if not re.search(r'<pivotCacheDefinition\b[^>]*\smissingItemsLimit="0"', cd):
+            errors.append(f"{cdef[0]}: нет missingItemsLimit=\"0\" на pivotCacheDefinition — чужие элементы переживут refresh")
         info.append(f"{part}: cacheId {cid}, источник «{src_sheet}» {ref}, полей источника {len(fields)} (+ не из источника {len(grp_fields)}: {grp_fields}), строк {nrows}")
     for part in sorted(n for n in names if n.startswith("xl/slicerCaches/")):
         sc = z.read(part).decode("utf-8")

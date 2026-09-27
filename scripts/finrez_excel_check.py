@@ -543,12 +543,15 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
         # сорок вторая §2: фильтры страниц «(Все)», все статьи в столбцах, все поля данных; чужих элементов нет
         for sheet, static_sheet, n_data, col_field in (("Сводная Ozon выкупы", "Выкупы Ozon", 2, "Статьи Озон.Вид затрат"), ("Сводная WB выкупы", "Выкупы WB", 7, None), ("Сводная заказы", "Заказы", 13, "МП")):
             try:
+                # «current page» у Excel for Mac после сброса состояния — missing value у всех полей, а в сетке WB стояло «сен» (маленькая книга
+                # S7, 2026-09-27): верить ячейкам области страниц (page range), не свойству
                 r = ex(f'set pt to pivot table 1 of sheet {q(sheet)} of active workbook\n'
-                       f'return {{name of every page field of pt, current page of every page field of pt, count of data fields of pt}}', 120)
-                pages, cur, nd = r
-                cur = [str(c) for c in (cur if isinstance(cur, list) else [cur])]
-                ok = all(c in ("(All)", "(Все)") for c in cur) and nd == n_data
-                rec(f"{sheet}: фильтры «(Все)», полей данных {n_data}", ok, f"страницы {pages} → {cur}; полей данных {nd}")
+                       f'return {{name of every page field of pt, value of page range of pt, count of data fields of pt}}', 120)
+                pages, pr, nd = r
+                pr = pr if isinstance(pr, list) and pr and isinstance(pr[0], list) else [pr]
+                shown = {str(row[0]).strip(): str(row[1]).strip() for row in pr if isinstance(row, list) and len(row) >= 2 and str(row[0]).strip()}
+                ok = bool(shown) and all(v in ("(All)", "(Все)") for v in shown.values()) and nd == n_data
+                rec(f"{sheet}: фильтры «(Все)», полей данных {n_data}", ok, f"область страниц {shown}; полей {pages}; полей данных {nd}")
             except ExcelError as e:
                 rec(f"{sheet}: фильтры «(Все)», полей данных {n_data}", False, str(e))
             if col_field:

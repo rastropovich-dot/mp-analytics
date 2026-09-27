@@ -132,15 +132,14 @@ def owner_parts(z, sheet_name):
 
 
 def inline_strings(xml, strings):
-    """t="s" → inlineStr по таблице строк владельца; стили ячеек и колонок сняты (индексы чужого styles.xml)."""
+    """t="s" → inlineStr по таблице строк владельца; индексы стилей (s= у ячеек, style= у колонок и строк) остаются — их перенумеровывает restyle_sheet
+    после merge_styles (сорок вторая §3); примечания (legacyDrawing), настройки принтера и tabSelected сняты."""
     def repl(m):
         attrs, idx = m.group(1), int(m.group(2))
         attrs = re.sub(r'\s+t="s"', "", attrs)
         text = strings[idx] if idx < len(strings) else ""
         return f'<c{attrs} t="inlineStr"><is><t xml:space="preserve">{escape(text)}</t></is></c>'
     xml = re.sub(r'<c((?:\s+[a-zA-Z:]+="[^"]*")*?\s+t="s"(?:\s+[a-zA-Z:]+="[^"]*")*)><v>(\d+)</v></c>', repl, xml)
-    xml = re.sub(r'\s+s="\d+"', "", xml)
-    xml = re.sub(r'\s+style="\d+"', "", xml)
     xml = re.sub(r'<legacyDrawing [^>]*/>', "", xml)
     xml = re.sub(r'<pageSetup [^>]*/>', "", xml)
     xml = re.sub(r'\s+tabSelected="1"', "", xml)
@@ -153,7 +152,85 @@ def remap_formats(xml, dxf_offset, numfmt_map):
     return xml
 
 
+def _append_children(styles, tag, children):
+    """Дописывает дочерние элементы в <tag count="N">…</tag> нашего styles.xml, поднимая count; пустой <tag count="0"/> раскрывается."""
+    if not children:
+        return styles
+    m = re.search(rf'<{tag}\b([^>]*?)\s*/>', styles) or re.search(rf'<{tag}\b([^>]*)>(.*?)</{tag}>', styles, re.S)
+    if not m:
+        raise SystemExit(f"в нашем styles.xml нет <{tag}>")
+    attrs = m.group(1)
+    body = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
+    have = int(re.search(r'count="(\d+)"', attrs).group(1)) if re.search(r'count="(\d+)"', attrs) else len(re.findall(r"<(?:font|fill|border|xf|cellStyle|dxf)\b", body))
+    attrs = re.sub(r'count="\d+"', f'count="{have + len(children)}"', attrs) if 'count="' in attrs else attrs + f' count="{have + len(children)}"'
+    return styles.replace(m.group(0), f"<{tag}{attrs}>{body}{''.join(children)}</{tag}>", 1)
+
+
+def _children(styles, tag, child):
+    m = re.search(rf'<{tag}\b[^>]*>(.*?)</{tag}>', styles, re.S)
+    return re.findall(rf'<{child}\b[^>]*/>|<{child}\b[^>]*>.*?</{child}>', m.group(1), re.S) if m else []
+
+
 def merge_styles(our_styles, owner_styles):
+    """Сливает styles.xml владельца в наш с перенумерацией (сорок вторая §3): numFmt ≥ 164, fonts, fills, borders, cellStyleXfs, cellXfs, cellStyles
+    (кроме builtinId 0 и уже имеющихся имён), dxfs. Возвращает (styles, dxf_offset, numfmt_map, xf_map) — xf_map: индекс cellXfs владельца →
+    наш (0 → 0: «Обычный» есть у всех), им перенумеровываются s= ячеек и style= колонок листа (restyle_sheet) и dxfId / numFmtId сводной."""
+    our_styles, dxf_offset, numfmt_map = _merge_numfmts_dxfs(our_styles, owner_styles)
+    font_off, fill_off, border_off = (len(_children(our_styles, t, c)) for t, c in (("fonts", "font"), ("fills", "fill"), ("borders", "border")))
+    our_styles = _append_children(our_styles, "fonts", _children(owner_styles, "fonts", "font"))
+    our_styles = _append_children(our_styles, "fills", _children(owner_styles, "fills", "fill"))
+    our_styles = _append_children(our_styles, "borders", _children(owner_styles, "borders", "border"))
+
+    def remap_xf(xf, with_xfid):
+        xf = re.sub(r'numFmtId="(\d+)"', lambda m: f'numFmtId="{numfmt_map.get(int(m.group(1)), int(m.group(1)))}"', xf)
+        xf = re.sub(r'fontId="(\d+)"', lambda m: f'fontId="{int(m.group(1)) + font_off}"', xf)
+        xf = re.sub(r'fillId="(\d+)"', lambda m: f'fillId="{int(m.group(1)) + fill_off}"', xf)
+        xf = re.sub(r'borderId="(\d+)"', lambda m: f'borderId="{int(m.group(1)) + border_off}"', xf)
+        if with_xfid:
+            xf = re.sub(r'xfId="(\d+)"', lambda m: f'xfId="{csx_map.get(int(m.group(1)), 0)}"', xf)
+        return xf
+    # именованные стили: индекс 0 («Обычный») — наш 0; остальные дописываются
+    csx_owner = _children(owner_styles, "cellStyleXfs", "xf")
+    csx_have = len(_children(our_styles, "cellStyleXfs", "xf"))
+    csx_map = {0: 0}
+    new_csx = []
+    for i, xf in enumerate(csx_owner):
+        if i == 0:
+            continue
+        csx_map[i] = csx_have + len(new_csx)
+        new_csx.append(remap_xf(xf, False))
+    our_styles = _append_children(our_styles, "cellStyleXfs", new_csx)
+    our_names = set(re.findall(r'<cellStyle name="([^"]+)"', our_styles))
+    new_cs = []
+    for cs in _children(owner_styles, "cellStyles", "cellStyle"):
+        name = re.search(r'name="([^"]+)"', cs).group(1)
+        xfid = int(re.search(r'xfId="(\d+)"', cs).group(1))
+        if 'builtinId="0"' in cs or name in our_names or xfid not in csx_map or xfid == 0:
+            continue
+        new_cs.append(re.sub(r'xfId="\d+"', f'xfId="{csx_map[xfid]}"', cs))
+        our_names.add(name)
+    our_styles = _append_children(our_styles, "cellStyles", new_cs)
+    xfs_owner = _children(owner_styles, "cellXfs", "xf")
+    xf_have = len(_children(our_styles, "cellXfs", "xf"))
+    xf_map = {0: 0}
+    new_xfs = []
+    for i, xf in enumerate(xfs_owner):
+        if i == 0:
+            continue
+        xf_map[i] = xf_have + len(new_xfs)
+        new_xfs.append(remap_xf(xf, True))
+    our_styles = _append_children(our_styles, "cellXfs", new_xfs)
+    return our_styles, dxf_offset, numfmt_map, xf_map
+
+
+def restyle_sheet(xml, xf_map):
+    """s= у ячеек и style= у колонок / строк листа владельца → наши индексы cellXfs (merge_styles)."""
+    xml = re.sub(r'\ss="(\d+)"', lambda m: f' s="{xf_map.get(int(m.group(1)), 0)}"', xml)
+    xml = re.sub(r'\sstyle="(\d+)"', lambda m: f' style="{xf_map.get(int(m.group(1)), 0)}"', xml)
+    return xml
+
+
+def _merge_numfmts_dxfs(our_styles, owner_styles):
     """Добавляет в наш styles.xml numFmt ≥ 164 и dxfs владельца; возвращает (styles, dxf_offset, numfmt_map)."""
     own_ids = [int(x) for x in re.findall(r'<numFmt numFmtId="(\d+)"', our_styles)]
     next_id = max(own_ids + [163]) + 1
@@ -192,6 +269,110 @@ def merge_styles(our_styles, owner_styles):
         else:
             our_styles = our_styles.replace("</cellXfs>", "</cellXfs>" + block, 1)
     return our_styles, offset, numfmt_map
+
+
+def reset_pivot_state(pt_xml):
+    """Сохранённое состояние сводной второго кабинета — снять (сорок вторая §2): pageField без выбранного item («(Все)»), h="1" нигде (скрытых
+    элементов нет), поля столбцов — sortType="ascending" (порядок колонок под формулы владельца). items полей осей, rowItems и colItems владельца ОСТАЮТСЯ: вариант «items → <item t="default"/>, rowItems / colItems сняты»
+    Excel открывает, но на refresh падает (EXC_BAD_INSTRUCTION в mbukernel, 2026-09-27, маленькие книги Q2 / S2); с элементами владельца refresh
+    проходит (S1 / S3). Ссылки items на чужие значения кэша снимает refresh с missingItemsLimit="0" на pivotCacheDefinition (см. transplant);
+    поля данных не трогаются — видны все."""
+    pt_xml = re.sub(r'(<pageField\b[^>]*?)\s+item="\d+"', r"\1", pt_xml)
+    pt_xml = re.sub(r'\s+h="1"', "", pt_xml)
+    pt_xml = re.sub(r'(<pivotTableDefinition\b[^>]*?)\s+missingItemsLimit="[^"]*"', r"\1", pt_xml, count=1)   # атрибут кэша, не сводной
+    # поля столбцов — по алфавиту: без sortType Excel ставит статьи в порядке первого появления в источнике (большая книга 09-27: Эквайринг,
+    # Логистика, Прочее, Товарооборот, Комиссия, Реклама), а формулы владельца справа ссылаются на колонки по алфавитному порядку
+    # (P = J «Товарооборот / Начисления») — все 42 сравнения формул Ozon разошлись
+    pt_xml = re.sub(r'<pivotField\b(?![^>]*\bsortType=)([^>]*\baxis="axisCol"[^>]*?)(/?>)', r'<pivotField\1 sortType="ascending"\2', pt_xml)
+    return pt_xml
+
+
+def clear_shared_items(cd_xml):
+    """Чужие значения кэша второго кабинета (бренды, артикулы, SKU, наименования в sharedItems полей источника) — заменить заглушками «·1», «·2», …
+    (сорок вторая §2). Структура sharedItems (число элементов, атрибуты типов, <m/> пустых) сохраняется: пустой <sharedItems/> при живых ссылках
+    items сводной и при refreshOnLoad Excel считает повреждением (проверено на маленьких книгах: варианты Q3 / Q5 — диалог восстановления, сброс
+    состояния без правки кэша — открывается). После refreshOnLoad и с missingItemsLimit="0" заглушки исчезают — остаются только наши элементы.
+    Групповые и вычисляемые поля (databaseField="0") и groupItems не трогаются."""
+    def field(m):
+        f = m.group(0)
+        if 'databaseField="0"' in f[:200]:
+            return f
+        n = [0]
+
+        def s_item(mm):
+            n[0] += 1
+            return f'<s v="·{n[0]}"/>'
+
+        def shared(ms):                                   # только внутри <sharedItems>: groupItems (подписи дней / месяцев) — Excel-евы, не чужие
+            return re.sub(r'<s v="[^"]*"(?:\s+u="1")?/>', s_item, ms.group(0))
+        return re.sub(r'<sharedItems\b[^>]*>.*?</sharedItems>', shared, f, flags=re.S)
+    return re.sub(r'<cacheField\b[^>]*>.*?</cacheField>', field, cd_xml, flags=re.S)
+
+
+# формулы владельца справа от сводной — по колонкам области сводной (сорок вторая §4); ссылки прямые, раскладка после сброса состояния полная:
+# Ozon — A метки, B … M = 6 статей × (Начисления, Ст-ть) по алфавиту статей; WB — B … H = семь денег в порядке dataFields
+FORMULAS = {
+    "Сводная Ozon выкупы": {"first_row": 12, "columns": [
+        ("P", 'IF(J{r}="","",J{r})'), ("Q", 'IF(B{r}="","",-B{r})'), ("R", 'IFERROR(IF(P{r}="","",Q{r}/P{r}),"")'), ("S", 'IF(P{r}="","",(P{r}-Q{r})/1.22)'),
+        ("T", 'IF(K{r}="","",K{r})'), ("U", 'IF(S{r}="","",S{r}-T{r})'), ("V", 'IFERROR(IF(S{r}="","",U{r}/S{r}),"")'), ("W", 'IF(D{r}="","",-D{r})'),
+        ("X", 'IFERROR(IF(S{r}="","",W{r}/S{r}),"")'), ("Y", 'IF(H{r}="","",-H{r})'), ("Z", 'IFERROR(IF(S{r}="","",Y{r}/S{r}),"")'), ("AA", 'IF(L{r}="","",-L{r})'),
+        ("AB", 'IFERROR(IF(S{r}="","",AA{r}/S{r}),"")'), ("AC", 'IF(F{r}="","",-F{r})'), ("AD", 'IF(S{r}="","",U{r}-W{r}-Y{r}-AA{r}-AC{r})'),
+        ("AE", 'IFERROR(IF(S{r}="","",AD{r}/S{r}),"")')]},
+    "Сводная WB выкупы": {"first_row": 8, "columns": [
+        ("K", 'IF(B{r}="","",B{r})'), ("L", 'IF(C{r}="","",C{r})'), ("M", 'IFERROR(IF(K{r}="","",L{r}/K{r}),"")'), ("N", 'IF(K{r}="","",(K{r}-L{r})/1.22)'),
+        ("O", 'IF(D{r}="","",D{r})'), ("P", 'IF(N{r}="","",N{r}-O{r})'), ("Q", 'IFERROR(IF(N{r}="","",P{r}/N{r}),"")'), ("R", 'IF(N{r}="","",(F{r}+G{r})/1.22)'),
+        ("S", 'IFERROR(IF(N{r}="","",R{r}/N{r}),"")'), ("T", 'IF(N{r}="","",E{r}/1.22)'), ("U", 'IFERROR(IF(N{r}="","",T{r}/N{r}),"")'),
+        ("W", 'IFERROR(IF(N{r}="","",V{r}/N{r}),"")'), ("X", 'IF(N{r}="","",H{r}/1.22)'), ("Y", 'IF(N{r}="","",P{r}-R{r}-T{r}-V{r}-X{r})'),
+        ("Z", 'IFERROR(IF(N{r}="","",Y{r}/N{r}),"")')]},
+}
+FORMULA_ROWS = 320   # месяцы + все дни окна + итог: апрель … декабрь — 9 + 275 + 1 = 285, с запасом
+
+
+def col_index(letters):
+    n = 0
+    for ch in letters:
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def write_formulas(sheet_xml, spec, rows=FORMULA_ROWS):
+    """Формулы владельца в колонках spec на строках first_row … first_row + rows − 1 (сорок вторая §4): чужие формулы этих колонок сняты, каждая
+    формула — с защитой от пустой строки и деления (пусто → ""), стиль ячейки — как у первой формульной строки владельца в той же колонке.
+    Строки за пределами листа создаются; ячейки строки остаются в порядке колонок."""
+    cols = [c for c, _f in spec["columns"]]
+    r0, r1 = spec["first_row"], spec["first_row"] + rows - 1
+    style_of = {}
+    for c in cols:
+        m = re.search(rf'<c r="{c}\d+"([^>]*)>\s*<f\b', sheet_xml)
+        if m and re.search(r's="(\d+)"', m.group(1)):
+            style_of[c] = re.search(r's="(\d+)"', m.group(1)).group(1)
+    colset = set(cols)
+
+    def cell_col(tag):
+        return re.match(r'<c r="([A-Z]+)\d+"', tag).group(1)
+
+    def rebuild(r, row_xml):
+        head = re.match(r'<row [^>]*?(/?)>', row_xml).group(0)
+        body = row_xml[len(head):-len("</row>")] if not head.endswith("/>") else ""
+        head = head[:-2] + ">" if head.endswith("/>") else head
+        cells = re.findall(r'<c r="[A-Z]+\d+"[^>]*/>|<c r="[A-Z]+\d+"[^>]*>.*?</c>', body, re.S)
+        # чужие формулы этих колонок снимаются на ВСЕХ строках (у владельца они общие — t="shared": без мастера в строке 12 зависимые ячейки ниже
+        # r1 ломают книгу); текст и значения вне диапазона (шапка P11 … AE11) остаются
+        keep = [c for c in cells if cell_col(c) not in colset or (not (r0 <= r <= r1) and "<f" not in c)]
+        if r0 <= r <= r1:
+            new = [f'<c r="{c}{r}"' + (f' s="{style_of[c]}"' if c in style_of else "") + f"><f>{escape(f.format(r=r))}</f></c>" for c, f in spec["columns"]]
+            keep = sorted(keep + new, key=lambda c: col_index(cell_col(c)))
+        return head + "".join(keep) + "</row>"
+    # sheetData пересобирается целиком: существующие строки — по порядку, недостающие строки диапазона вставляются между ними
+    m_sd = re.search(r"<sheetData>(.*?)</sheetData>|<sheetData\s*/>", sheet_xml, re.S)
+    body = m_sd.group(1) or ""
+    existing = [(int(m.group(1)), m.group(0)) for m in re.finditer(r'<row r="(\d+)"[^>]*(?:/>|>.*?</row>)', body, re.S)]
+    have = {r for r, _x in existing}
+    merged = sorted(existing + [(r, f'<row r="{r}"/>') for r in range(r0, r1 + 1) if r not in have], key=lambda t: t[0])
+    sheet_xml = sheet_xml[:m_sd.start()] + "<sheetData>" + "".join(rebuild(r, x) for r, x in merged) + "</sheetData>" + sheet_xml[m_sd.end():]
+    # dimension листа
+    sheet_xml = re.sub(r'<dimension ref="([A-Z]+\d+):([A-Z]+)(\d+)"/>', lambda m: f'<dimension ref="{m.group(1)}:{m.group(2)}{max(int(m.group(3)), r1)}"/>', sheet_xml)
+    return sheet_xml
 
 
 def count_rows(z, part):
@@ -237,9 +418,9 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
         ref = f"A1:{col_letter(spec['ncols'])}{nrows}"
         sheet_id, sheet_no = next_sheet_id, next_sheet_no
         next_sheet_id += 1; next_sheet_no += 1
-        styles, dxf_offset, numfmt_map = merge_styles(styles, oz.read("xl/styles.xml").decode("utf-8"))
-        # pivotTable
-        pt_xml = remap_formats(oz.read(parts["pivot"]).decode("utf-8"), dxf_offset, numfmt_map)
+        styles, dxf_offset, numfmt_map, xf_map = merge_styles(styles, oz.read("xl/styles.xml").decode("utf-8"))
+        # pivotTable: форматы — в наши индексы; сохранённое состояние (фильтры, скрытые элементы, раскладка) — сброшено
+        pt_xml = reset_pivot_state(remap_formats(oz.read(parts["pivot"]).decode("utf-8"), dxf_offset, numfmt_map))
         cache_id = re.search(r'<pivotTableDefinition[^>]*\scacheId="(\d+)"', pt_xml).group(1)
         pt_part = f"xl/pivotTables/pivotTable{k}.xml"
         new_parts[pt_part] = pt_xml.encode("utf-8")
@@ -261,14 +442,21 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
             cd_xml = re.sub(r'<rangePr groupBy="([^"]+)"[^/]*/>', lambda m: f'<rangePr groupBy="{m.group(1)}" startDate="{d1}T00:00:00" endDate="{d2}T00:00:00"/>', cd_xml)
         if 'refreshOnLoad="1"' not in cd_xml:
             cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="1" ', 1)
+        # элементы без записей (заглушки чужих значений) не хранить: атрибут pivotCacheDefinition по схеме OOXML; на pivotTableDefinition Excel его
+        # молча игнорирует — так было в первой сборке 42-й, и чужие бренды переживали два refresh (проверено AppleScript: missing items limit = missing value)
+        cd_xml = re.sub(r'\s+missingItemsLimit="[^"]*"', "", cd_xml, count=1)
+        cd_xml = cd_xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition missingItemsLimit="0" ', 1)
         cd_xml = re.sub(r'numFmtId="(\d+)"', lambda m: f'numFmtId="{numfmt_map.get(int(m.group(1)), int(m.group(1)))}"', cd_xml)
+        cd_xml = clear_shared_items(cd_xml)
         new_parts[f"xl/pivotCache/pivotCacheDefinition{k}.xml"] = cd_xml.encode("utf-8")
         new_parts[f"xl/pivotCache/_rels/pivotCacheDefinition{k}.xml.rels"] = (
             f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="{NS_PKG}"><Relationship Id="rId1" '
             f'Type="{REL}pivotCacheRecords" Target="pivotCacheRecords{k}.xml"/></Relationships>').encode()
         new_parts[f"xl/pivotCache/pivotCacheRecords{k}.xml"] = EMPTY_RECORDS
         # sheet
-        sh_xml = inline_strings(oz.read(parts["sheet"]).decode("utf-8"), parts["strings"])
+        sh_xml = restyle_sheet(inline_strings(oz.read(parts["sheet"]).decode("utf-8"), parts["strings"]), xf_map)
+        if spec["new_sheet"] in FORMULAS:
+            sh_xml = write_formulas(sh_xml, FORMULAS[spec["new_sheet"]])
         sheet_part = f"xl/worksheets/sheet{sheet_no}.xml"
         rels = [f'<Relationship Id="rId1" Type="{REL}pivotTable" Target="../pivotTables/pivotTable{k}.xml"/>']
         orels = rels_of(oz, parts["sheet"])
@@ -312,7 +500,8 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
                    (f"/xl/pivotCache/pivotCacheDefinition{k}.xml", CT["pivotCacheDefinition"]), (f"/xl/pivotCache/pivotCacheRecords{k}.xml", CT["pivotCacheRecords"])]
         report.append({"sheet": spec["new_sheet"], "source": spec["source_sheet"], "ref": ref, "rows": nrows, "cache_id": cache_id, "sheet_id": sheet_id,
                        "fields": len(re.findall(r'<cacheField ', cd_xml)), "source_fields": len(src_fields), "group_fields": grp_fields, "slicers": len(parts["slicers"]),
-                       "dxf": len(re.findall(r'<dxf>', oz.read("xl/styles.xml").decode("utf-8")))})
+                       "dxf": len(re.findall(r'<dxf>', oz.read("xl/styles.xml").decode("utf-8"))), "xf": len(xf_map) - 1,
+                       "shared_items_left": len(re.findall(r'<sharedItems\b[^/>]', cd_xml)), "formula_rows": FORMULA_ROWS if spec["new_sheet"] in FORMULAS else 0})
     # workbook.xml
     wb_xml = wb_xml.replace("</sheets>", "".join(new_sheets) + "</sheets>", 1)
     if dnames:
@@ -408,6 +597,8 @@ def check(book):
             errors.append(f"{cdef[0]}: ref {ref}, а строк на листе {nrows}")
         if 'refreshOnLoad="1"' not in cd:
             errors.append(f"{cdef[0]}: нет refreshOnLoad")
+        if not re.search(r'<pivotCacheDefinition\b[^>]*\smissingItemsLimit="0"', cd):
+            errors.append(f"{cdef[0]}: нет missingItemsLimit=\"0\" на pivotCacheDefinition — чужие элементы переживут refresh")
         info.append(f"{part}: cacheId {cid}, источник «{src_sheet}» {ref}, полей источника {len(fields)} (+ не из источника {len(grp_fields)}: {grp_fields}), строк {nrows}")
     for part in sorted(n for n in names if n.startswith("xl/slicerCaches/")):
         sc = z.read(part).decode("utf-8")

@@ -273,13 +273,17 @@ def _merge_numfmts_dxfs(our_styles, owner_styles):
 
 def reset_pivot_state(pt_xml):
     """Сохранённое состояние сводной второго кабинета — снять (сорок вторая §2): pageField без выбранного item («(Все)»), h="1" нигде (скрытых
-    элементов нет). items полей осей, rowItems и colItems владельца ОСТАЮТСЯ: вариант «items → <item t="default"/>, rowItems / colItems сняты»
+    элементов нет), поля столбцов — sortType="ascending" (порядок колонок под формулы владельца). items полей осей, rowItems и colItems владельца ОСТАЮТСЯ: вариант «items → <item t="default"/>, rowItems / colItems сняты»
     Excel открывает, но на refresh падает (EXC_BAD_INSTRUCTION в mbukernel, 2026-09-27, маленькие книги Q2 / S2); с элементами владельца refresh
     проходит (S1 / S3). Ссылки items на чужие значения кэша снимает refresh с missingItemsLimit="0" на pivotCacheDefinition (см. transplant);
     поля данных не трогаются — видны все."""
     pt_xml = re.sub(r'(<pageField\b[^>]*?)\s+item="\d+"', r"\1", pt_xml)
     pt_xml = re.sub(r'\s+h="1"', "", pt_xml)
     pt_xml = re.sub(r'(<pivotTableDefinition\b[^>]*?)\s+missingItemsLimit="[^"]*"', r"\1", pt_xml, count=1)   # атрибут кэша, не сводной
+    # поля столбцов — по алфавиту: без sortType Excel ставит статьи в порядке первого появления в источнике (большая книга 09-27: Эквайринг,
+    # Логистика, Прочее, Товарооборот, Комиссия, Реклама), а формулы владельца справа ссылаются на колонки по алфавитному порядку
+    # (P = J «Товарооборот / Начисления») — все 42 сравнения формул Ozon разошлись
+    pt_xml = re.sub(r'<pivotField\b(?![^>]*\bsortType=)([^>]*\baxis="axisCol"[^>]*?)(/?>)', r'<pivotField\1 sortType="ascending"\2', pt_xml)
     return pt_xml
 
 

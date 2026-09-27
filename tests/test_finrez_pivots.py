@@ -47,6 +47,10 @@ class Transforms(unittest.TestCase):
         self.assertIn('<items count="3"><item x="0"/><item x="1"/><item t="default"/></items>', out)     # items не сброшены: сброс валит Excel на refresh
         self.assertIn('<rowItems count="2"><i><x/></i><i t="grand"><x/></i></rowItems><colItems count="1"><i/></colItems>', out)
         self.assertIn('<pageField fld="2" hier="-1"/>', out)
+        col = fp.reset_pivot_state('<pivotTableDefinition name="p"><pivotFields count="2"><pivotField axis="axisCol" showAll="0"><items count="1"><item t="default"/></items></pivotField>'
+                                   '<pivotField axis="axisCol" sortType="descending" showAll="0"/></pivotFields></pivotTableDefinition>')
+        self.assertIn('<pivotField axis="axisCol" showAll="0" sortType="ascending">', col)          # поле столбцов без сортировки — по алфавиту
+        self.assertIn('<pivotField axis="axisCol" sortType="descending" showAll="0"/>', col)         # явная сортировка владельца не трогается
         self.assertIn('<dataFields count="1"><dataField name="Σ" fld="1"/></dataFields>', out)
 
     def test_clear_shared_items_keeps_group_and_calculated_fields(self):

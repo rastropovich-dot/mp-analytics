@@ -361,7 +361,8 @@ def col_index(letters):
 
 
 def data_uniques(path):
-    """Уникальные бренды и артикулы листов «Данные …» — для сравнения с элементами полей сводных."""
+    """Уникальные бренды и артикулы листов «Данные …» — для сравнения с элементами полей сводных. Без регистра: элементы сводной Excel
+    сливает без учёта регистра (большая книга 09-27: 12 пар артикулов вида «F007773761-ИЗГТ» / «-ИЗгт» — в сводной 6 430 при 6 442 точных)."""
     import openpyxl
     warnings.simplefilter("ignore")
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
@@ -373,9 +374,9 @@ def data_uniques(path):
         brands, arts = set(), set()
         for r in it:
             if brand_col and r[ix[brand_col]] not in (None, ""):
-                brands.add(str(r[ix[brand_col]]))
+                brands.add(str(r[ix[brand_col]]).casefold())
             if r[ix[art_col]] not in (None, ""):
-                arts.add(str(r[ix[art_col]]))
+                arts.add(str(r[ix[art_col]]).casefold())
         out[f"{key}_brand"], out[f"{key}_article"] = brands, arts
     wb.close()
     return out
@@ -593,13 +594,14 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 n_items = int(n_items) if n_items is not None else -1
                 if 0 <= n_items <= 1000:
                     items = ex(f'with timeout of 600 seconds\nreturn name of every pivot item of pivot field {q(field)} of pivot table 1 of sheet {q(sheet)} of active workbook\nend timeout', 660)
-                    items = {str(i) for i in (items if isinstance(items, list) else [items]) if i is not None}
+                    raw = {str(i) for i in (items if isinstance(items, list) else [items]) if i is not None}
+                    items = {i.casefold() for i in raw}
                     extra = sorted(items - ours - {"(blank)", "(пусто)"})
                     ok = not extra and (len(items) <= len(ours) + 1)
-                    rec(f"{sheet}: элементы «{field}» = наши", ok, f"в сводной {len(items)}, в «Данных» {len(ours)}; чужих {len(extra)}" + (f": {extra[:8]}" if extra else "") + f"; примеры: {sorted(items)[:4]}")
+                    rec(f"{sheet}: элементы «{field}» = наши", ok, f"в сводной {len(items)}, в «Данных» {len(ours)}; чужих {len(extra)}" + (f": {extra[:8]}" if extra else "") + f"; примеры: {sorted(raw)[:4]}")
                 else:
                     ok = len(ours) <= n_items <= len(ours) + 1
-                    rec(f"{sheet}: элементы «{field}» = наши (по числу)", ok, f"в сводной {n_items}, в «Данных» {len(ours)} (+ «(blank)» не больше одного); имена не перечислялись — поле крупнее 1 000 элементов")
+                    rec(f"{sheet}: элементы «{field}» = наши (по числу)", ok, f"в сводной {n_items}, в «Данных» без регистра {len(ours)} (+ «(blank)» не больше одного); имена не перечислялись — поле крупнее 1 000 элементов")
         except Exception as e:  # noqa: BLE001
             rec("элементы полей = наши", False, f"{type(e).__name__}: {e}")
         try:

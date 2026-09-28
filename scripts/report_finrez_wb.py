@@ -213,6 +213,7 @@ def fetch_subjects_for(sb, nm_ids, batch=200):
     return out
 
 
+FUNNEL_CURRENT_TABLE = "wb_funnel_products_current"   # sql/20260928_create_wb_funnel_products_current.sql — по слову; пишет шаг воронки в конце окна (WB-12 §3)
 FUNNEL_LATEST_VIEW = "wb_funnel_products_latest"   # sql/20260926_create_wb_funnel_products_latest.sql — по слову; нет вьюхи → чтение таблицы окном
 
 
@@ -222,12 +223,12 @@ def _missing_relation(error):
     return "PGRST205" in text or "42P01" in text or "does not exist" in text
 
 
-def read_latest_cards(sb, page=None):
-    """Строки вьюхи «последняя карточка по nmId» страницами по ключу nm_id (одна строка на nmId). Нет вьюхи — None."""
+def _read_cards_by_nm(sb, relation, page=None):
+    """Строки relation (таблица или вьюха «последняя карточка по nmId») страницами по ключу nm_id. Нет отношения — None."""
     page = page or DICT_PAGE
     out, last = [], None
     while True:
-        qb = sb.table(FUNNEL_LATEST_VIEW).select("nm_id,day,vendor_code,title,brand,subject_name").order("nm_id").limit(page)
+        qb = sb.table(relation).select("nm_id,day,vendor_code,title,brand,subject_name").order("nm_id").limit(page)
         if last is not None:
             qb = qb.gt("nm_id", last)
         try:
@@ -242,6 +243,22 @@ def read_latest_cards(sb, page=None):
         last = int(data[-1]["nm_id"])
 
 
+def read_latest_cards(sb, page=None, source=None):
+    """Последняя карточка по nmId (одна строка на nmId): сначала таблица wb_funnel_products_current (WB-12 §3 — пишет шаг
+    воронки, чтение по первичному ключу, от кэша не зависит); таблицы нет или она пуста — вьюха wb_funnel_products_latest
+    (холодная упирается в statement_timeout 8 с — WB-12 §3); нет и вьюхи — None. source (dict) получает relation и why."""
+    rows = _read_cards_by_nm(sb, FUNNEL_CURRENT_TABLE, page)
+    if rows:
+        if source is not None:
+            source.update({"relation": FUNNEL_CURRENT_TABLE, "why": None})
+        return rows
+    why = f"{FUNNEL_CURRENT_TABLE}: " + ("таблицы нет (миграция по слову)" if rows is None else "таблица пуста")
+    rows = _read_cards_by_nm(sb, FUNNEL_LATEST_VIEW, page)
+    if source is not None:
+        source.update({"relation": FUNNEL_LATEST_VIEW if rows is not None else None, "why": why})
+    return rows
+
+
 def load_product_dictionary(sb, d1=None, d2=None, use_view=True):
     """nmId → {title, brand, subject, vendor_code}: сначала вьюха wb_funnel_products_latest (последняя карточка по nmId,
     ~6 страниц; WB-10 §3.1), нет вьюхи — воронка по товарам за окно книги d1 … d2 страницами по ключу (последний день
@@ -252,18 +269,19 @@ def load_product_dictionary(sb, d1=None, d2=None, use_view=True):
         return out
     started = datetime.now(timezone.utc)
     if use_view:
-        why = None
+        why, src = None, {}
         try:
-            rows = read_latest_cards(sb)
+            rows = read_latest_cards(sb, source=src)
         except Exception as error:
             rows, why = None, f"не прочитана — {str(error)[:160]}"
         if rows is not None:
             for r in rows:
                 out[int(r["nm_id"])] = {"title": r.get("title"), "brand": r.get("brand"), "subject": r.get("subject_name"), "vendor_code": r.get("vendor_code")}
-            print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} — строк {len(rows)}, nmId {len(out)}, "
-                  f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с, страниц по {DICT_PAGE}: {max(1, (len(rows) + DICT_PAGE - 1) // DICT_PAGE)}", flush=True)
+            print(f"словарь товаров: {src.get('relation')} — строк {len(rows)}, nmId {len(out)}, "
+                  f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с, страниц по {DICT_PAGE}: {max(1, (len(rows) + DICT_PAGE - 1) // DICT_PAGE)}"
+                  + (f" ({src['why']})" if src.get("why") else ""), flush=True)
             return out
-        print(f"словарь товаров: вьюха {FUNNEL_LATEST_VIEW} {why or 'отсутствует (миграция по слову)'} — читаю {wbm.FUNNEL_TABLE} за {d1} … {d2} окном", flush=True)
+        print(f"словарь товаров: {FUNNEL_CURRENT_TABLE} и {FUNNEL_LATEST_VIEW} {why or (src.get('why') or '') + '; вьюхи нет (миграция по слову)'} — читаю {wbm.FUNNEL_TABLE} за {d1} … {d2} окном", flush=True)
     try:
         rows = read_keyset(sb, wbm.FUNNEL_TABLE, "day,nm_id,vendor_code,title,brand,subject_name", d1, d2)
     except Exception as error:
@@ -291,6 +309,17 @@ def load_ads_nm_db(sb, d1, d2):
 
 # ---------- «Данные WB выкупы» ----------
 
+def costs_for_codes(sb, vendor_codes, what="строк"):
+    """Снимок 1С адресно по кодам строк (WB-12 §4: wbm.load_costs_for) с печатью объёма чтения."""
+    started = datetime.now(timezone.utc)
+    cstats = {}
+    exact, uniform = wbm.load_costs_for(sb, vendor_codes, stats=cstats)
+    how = "адресно" if cstats.get("mode") == "narrow" else f"целиком (баз больше {wbm.COST_NARROW_MAX_BASES} — так дешевле)"
+    print(f"себестоимость: снимок 1С {wbm.SNAP} {how} по кодам {what} — баз {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений, "
+          f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с; точных {len(exact)}, единых {len(uniform)}", flush=True)
+    return exact, uniform
+
+
 def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=None, ads_by_day=None, products=None, ads_nm_by_day=None, stats=None):
     """Строки «Данные WB выкупы» за месяцы month_from … month_to (до date_to включительно, если задано).
 
@@ -299,7 +328,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     sb = _sb(sb) if rows is None or costs is None or ads_by_day is None or products is None else sb
     d1, d2 = month_bounds(month_from, month_to, date_to)
     rows = load_report_rows(sb, d1, d2, select=BUILD_SELECT) if rows is None else rows
-    exact, uniform = wbm.load_costs(sb) if costs is None else costs
+    exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in rows), "строк отчёта") if costs is None else costs
     if ads_by_day is None:
         try:
             ads_by_day, _undated = wbm.load_ads_db(sb, d1, d2)
@@ -539,7 +568,6 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
     дали одни Σ orderSum по месяцам, выручку и СС, реклама +33,14. stats["synthesized"] — сколько собрано."""
     sb = _sb(sb) if funnel_rows is None or costs is None else sb
     funnel_rows = load_funnel_products(date_from, date_to, sb, only_with_orders=only_with_orders) if funnel_rows is None else funnel_rows
-    exact, uniform = wbm.load_costs(sb) if costs is None else costs
     if products is None and hasattr(sb, "table"):
         products = load_product_dictionary(sb, date_from, date_to)
     if ads_by_day is None and sb is not None and ads_nm_by_day is None:
@@ -560,6 +588,7 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
                               "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0})
         synthesized = len(extra)
         funnel_rows = sorted(list(funnel_rows) + extra, key=lambda r: (str(r["day"]), int(r["nm_id"])))
+    exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in funnel_rows), "строк воронки") if costs is None else costs
     out, before, after = [], defaultdict(Decimal), defaultdict(Decimal)
     n_before = 0
     for r in funnel_rows:
@@ -828,7 +857,7 @@ def main(argv=None):
     sb = report_loader._client()
     d1, d2 = month_bounds(args.month_from, args.month_to, args.date_to)
     report_rows = load_report_rows(sb, d1, d2)
-    costs = wbm.load_costs(sb)
+    costs = costs_for_codes(sb, (r.get("vendor_code") for r in report_rows), "строк отчёта")
     try:
         ads_by_day, _u = wbm.load_ads_db(sb, d1, d2)
     except RuntimeError as error:

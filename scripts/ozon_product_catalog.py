@@ -290,9 +290,11 @@ def table_exists(sb):
         raise
 
 
-def apply(sb, rows):
+def apply(sb, rows, allow_window=False):
+    """upsert карточек по sku; ручной запуск в окна ночного прогона и утреннего алерта не пишет, ночной шаг (ozon_catalog_topup_step.py)
+    работает внутри ночи — allow_window=True."""
     now = datetime.now(timezone.utc)
-    if in_nightly_run_window(now) or in_morning_alert_window(now):
+    if not allow_window and (in_nightly_run_window(now) or in_morning_alert_window(now)):
         raise SystemExit("окно ночного прогона или утреннего алерта — не пишу")
     if not table_exists(sb):
         raise SystemExit(f"таблицы {TABLE} нет — применить sql/20260924_create_ozon_products.sql (по слову владельца)")

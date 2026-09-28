@@ -25,6 +25,8 @@ import warnings
 from collections import defaultdict
 from decimal import Decimal
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # report_ozon_month — ставка НДС по дате
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 ARTICLES = ("Комиссия", "Логистика", "Прочее", "Реклама", "Товарооборот", "Эквайринг")
@@ -271,8 +273,10 @@ def pivot_columns(grid, header_idx, names, article_header=None):
     return cols
 
 
-def compare(static, pivot_grid, names, article_header=None, pct=(), tol_pct=Decimal("0.0001")):
-    """[(метка, колонка, статичный, сводная, разница)] по общим меткам; пустая область — одна строка с пояснением."""
+def compare(static, pivot_grid, names, article_header=None, pct=(), tol_pct=Decimal("0.0001"), net=None):
+    """[(метка, колонка, статичный, сводная, разница)] по общим меткам; пустая область — одна строка с пояснением.
+    net — {колонка: {метка: ставка НДС}}: статичное значение (с НДС) делится на ставку метки перед сравнением — сводная Ozon берёт
+    четыре статьи расходов из листа данных без НДС (сорок третья §2)."""
     rows, header_idx = find_labels(pivot_grid)
     if header_idx is None:
         return [("—", "—", None, None, "в области сводной не найдено строк-месяцев")]
@@ -285,6 +289,8 @@ def compare(static, pivot_grid, names, article_header=None, pct=(), tol_pct=Deci
         for name in names:
             j = cols.get(name)
             a = static[lab].get(name)
+            if net and name in net and a is not None:
+                a = a / net[name].get(lab, Decimal(1))
             b = dec(pivot_grid[i][j]) if (j is not None and j < len(pivot_grid[i])) else None
             if a is None and b is None:
                 continue
@@ -348,7 +354,23 @@ def sums_for_articles(path, articles):
 
 
 WB_BLOCK = {h: h for h in ("Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽", "Себес-ть, ₽", "Хранение, ₽", "Ост.расходы и компенсации МП, ₽")}
-OZON_FORMULA_COLS = {"P": "Оборот (с НДС)", "Q": "Комиссия (с НДС), руб.", "S": "Выручка, руб. (без НДС)", "T": "Себестоимость, руб.", "U": "Маржа, руб.", "AD": "Фин. рез., руб."}
+OZON_FORMULA_COLS = {"P": "Оборот (с НДС)", "Q": "Комиссия (с НДС), руб.", "S": "Выручка, руб. (без НДС)", "T": "Себестоимость, руб.", "U": "Маржа, руб.",
+                     "W": "Логистика, руб. (без НДС)", "Y": "Реклама, руб. (без НДС)", "AA": "Эквайринг, руб. (без НДС)", "AC": "Прочее, руб. (без НДС)", "AD": "Фин. рез., руб."}
+NET_ARTICLES = ("Логистика", "Реклама", "Прочее", "Эквайринг")     # на листе «Данные Ozon выкупы» без НДС (сорок третья §2) — в сводной тоже
+MONTH_NUM = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
+
+
+def vat_by_label(path):
+    """{метка месяца: ставка НДС по дате} для книги finrez_<YYYY-MM>_<YYYY-MM>.xlsx — год из имени файла (месяцы после month_to — год начала)."""
+    from report_ozon_month import vat_for
+    m = re.search(r"(\d{4})-(\d{2})_(\d{4})-(\d{2})", os.path.basename(path))
+    y1, m1, y2, m2 = (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))) if m else (time.gmtime().tm_year, 1, time.gmtime().tm_year, 12)
+    out = {}
+    for lab, n in MONTH_NUM.items():
+        year = y2 if n <= m2 else y1
+        out[lab] = vat_for(f"{year}-{n:02d}-01")
+    out["Общий итог"] = vat_for(f"{y2}-{m2:02d}-01")
+    return out
 WB_FORMULA_COLS = {"K": "Оборот (с НДС)", "L": "Комиссия (с НДС), руб.", "N": "Выручка, руб. (без НДС)", "O": "Себестоимость, руб.", "P": "Маржа, руб.", "Y": "Фин. рез., руб."}
 FOREIGN = ("Pastel", "FLAMINGO", "DEXCLUSIVE", "Carbon", "CATRICE", "MAKEUP REVOLUTION")
 
@@ -630,11 +652,9 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 a, b = below_cols.split(":")
                 # у WB столбец V «Эквайринг, руб.» — ячейка ввода владельца (в образце пусто, формулы нет), в сводной пусто; Y = P − R − T − V − X,
                 # поэтому ожидаемый Y = «Фин. рез.» статичного листа + его «Эквайринг» (прогон 09-27: 7 расхождений ровно на эквайринг)
-                # у Ozon формулы владельца W / Y / AA / AC = −D / −H / −L / −F — расходы С НДС под шапкой «без НДС» (образец «Вывод данных», строка 12),
-                # а статичный лист «Выкупы Ozon» делит их на 1,22: AD владельца = «Фин. рез.» статичного − 0,22 × (Л + Р + Э + П без НДС) (прогон 09-27:
-                # 7 расхождений из 42, все в AD, апрель −3 225 285,47). Оставлено как у владельца, вопрос об НДС — ему
-                OZON_VAT_COLS = ("Логистика, руб. (без НДС)", "Реклама, руб. (без НДС)", "Эквайринг, руб. (без НДС)", "Прочее, руб. (без НДС)")
-                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else OZON_VAT_COLS
+                # у Ozon формулы владельца W / Y / AA / AC = −D / −H / −L / −F верны на источнике без НДС у четырёх статей (сорок третья §2): лист
+                # «Данные Ozon выкупы» их делит по дате, поэтому W … AC и AD сводной = колонкам «без НДС» и «Фин. рез.» статичного листа
+                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else ()
                 st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()) + extra_cols)
                 bad, n = [], 0
                 for lab, i in lab_rows.items():
@@ -650,8 +670,6 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                             continue
                         if static_sheet == "Выкупы WB" and col == "Y":
                             exp = exp + (st[lab].get("Эквайринг, руб.") or Z)
-                        if static_sheet == "Выкупы Ozon" and col == "AD":
-                            exp = exp - Decimal("0.22") * sum((st[lab].get(k) or Z) for k in OZON_VAT_COLS)
                         n += 1
                         diff = ((got or Z) - exp)
                         diff = diff.quantize(Decimal("0.0001")) if static_name.endswith("%") else diff.quantize(Decimal("0.01"))
@@ -660,7 +678,7 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 last = first_row + max(lab_rows.values())
                 below = ex(f'return value of range "{a}{last + 1}:{b}{last + 3}" of sheet {q(sheet)} of active workbook', 60)
                 nonempty = [v for row in (below if isinstance(below, list) else [below]) for v in (row if isinstance(row, list) else [row]) if v not in (None, "")]
-                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else "; AD сверен с «Фин. рез.» − 0,22 × расходов — у владельца W / Y / AA / AC с НДС"))
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else "; W / Y / AA / AC и AD — против колонок «без НДС» и «Фин. рез.» статичного листа"))
             except Exception as e:  # noqa: BLE001
                 rec(f"{sheet}: формулы владельца = «{static_sheet}»", False, f"{type(e).__name__}: {e}")
         # раскрытие месяца на «Сводная WB выкупы»
@@ -684,7 +702,8 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
         # числа сводных против статичных листов
         try:
             st = static_ozon_buyouts(read_sheet(path, "Выкупы Ozon"))
-            table = compare(st, grids.get("Сводная Ozon выкупы", []), ARTICLES, article_header=True)
+            vat_lab = vat_by_label(path)
+            table = compare(st, grids.get("Сводная Ozon выкупы", []), ARTICLES, article_header=True, net={a: vat_lab for a in NET_ARTICLES})
             bad = [t for t in table if isinstance(t[4], str) or t[4]]
             rec("Сводная Ozon выкупы = Выкупы Ozon", not bad, f"сравнений {len(table)}, расхождений {len(bad)}" + (f": {bad[:6]}" if bad else ""))
         except Exception as e:  # noqa: BLE001

@@ -479,3 +479,39 @@ class CoinvestFill(unittest.TestCase):
         self.assertEqual([(t[0], t[1], t[6]) for t in table], [("Ozon", "апр", D("0.0000")), ("Ozon", "сен", D("0.0000")), ("Ozon", "Общий итог", None)])
         # приёмка (а) 40-й держится: «Свод» = формулы владельца на Σ строк, соинвест — по всем строкам с «c СПП»
         self.assertEqual([t for t in fr.check_orders_data(data, days, piv, None) if t[5]], [])
+
+
+class VatSourceTests(unittest.TestCase):
+    """Сорок третья §2: на листе «Данные Ozon выкупы» четыре статьи расходов без НДС по дате, оборот и комиссия с НДС; внутренние строки не трогаются."""
+
+    def rows(self):
+        desc = ("KARATOV", "Кольца", "F1", "Кольцо")
+        return [fr._long("a1", "2026-04-02", "turnover", D("1220"), "11", desc, qty=D(1), cogs=D("100")),
+                fr._long("a1", "2026-04-02", "commission", D("-610"), "11", desc),
+                fr._long("a2", "2026-04-02", "logistics", D("-122"), "11", desc),
+                fr._long("a3", "2026-05-03", "ads", D("-244"), "11", desc),
+                fr._long("a4", "2026-05-03", "acquiring", D("-12.20"), "11", desc),
+                fr._long("a5", "2026-05-03", "other", D("-61"), "", ("", "", "", "")),
+                fr._long("a6", "2025-12-30", "logistics", D("-120"), "11", desc)]
+
+    def test_long_rows_for_sheet_divides_four_articles_by_date_rate(self):
+        out = fr.long_rows_for_sheet(self.rows())
+        by = {(r.date, r.kind): r.amount for r in out}
+        self.assertEqual(by[("2026-04-02", "Товарооборот")], D("1220"))                     # оборот и комиссия — с НДС
+        self.assertEqual(by[("2026-04-02", "Комиссия")], D("-610"))
+        self.assertEqual(by[("2026-04-02", "Логистика")], D("-100"))                        # 2026 — 1,22
+        self.assertEqual(by[("2026-05-03", "Реклама")], D("-200"))
+        self.assertEqual(by[("2026-05-03", "Эквайринг")], D("-10"))
+        self.assertEqual(by[("2026-05-03", "Прочее")], D("-50"))
+        self.assertEqual(by[("2025-12-30", "Логистика")], D("-100"))                        # 2025 — 1,20: ставка по дате начисления
+        self.assertEqual([r.cogs for r in out if r.kind == "Товарооборот"], [D("100")])     # себестоимость не делится
+        self.assertEqual(fr.vat_split_check(self.rows(), out), [])
+        self.assertEqual([(m, k, g, n, nx, d) for m, k, g, n, nx, d in fr.vat_split_table(self.rows(), out) if k == "Логистика"],
+                         [("апр", "Логистика", D("-122.00"), D("-100.00"), D("-122.00"), D("0.00")), ("дек", "Логистика", D("-120.00"), D("-100.00"), D("-120.00"), D("0.00"))])
+
+    def test_vat_split_check_catches_double_division(self):
+        rows = self.rows()
+        twice = fr.long_rows_for_sheet(fr.long_rows_for_sheet(rows))
+        bad = fr.vat_split_check(rows, twice)
+        self.assertEqual([(m, k) for m, k, *_ in bad], [("апр", "Логистика"), ("май", "Прочее"), ("май", "Реклама"), ("май", "Эквайринг"), ("дек", "Логистика")])
+

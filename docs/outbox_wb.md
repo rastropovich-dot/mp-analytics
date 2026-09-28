@@ -8,7 +8,7 @@
 
 ---
 
-## 2026-09-28, двенадцатая задача WB — §1 утро 09-28: третья ночь когорты (3 677 + 60 строк окна со временем ночи), витрины — дозрел 09-03 (когорта 156 / прогноз 24 / календарное 59; SKU 30 907 / 829 / 6 897), прогноз 0,4083 = витрине на 24 днях, алерт 40,8 %; ночь чистая. §2 `origin/main` влит (`c890613`, 1 160 OK); §3 холодная вьюха — таймаут, таблица «последняя карточка» пишется шагом воронки (миграция по слову); §4 снимок 1С адресно — мосты 0,00, `--check` −40 %; §5 seller-info: ООО «ГОЛДСТАРТ» / KARATOV
+## 2026-09-28, двенадцатая задача WB — §1 утро 09-28: третья ночь когорты (3 677 + 60 строк окна со временем ночи), витрины — дозрел 09-03 (когорта 156 / прогноз 24 / календарное 59; SKU 30 907 / 829 / 6 897), прогноз 0,4083 = витрине на 24 днях, алерт 40,8 %; ночь чистая. §2 `origin/main` влит (`c890613`, 1 160 OK); §3 холодная вьюха — таймаут, таблица «последняя карточка» пишется шагом воронки (миграция по слову); §4 снимок 1С адресно — мосты 0,00, `--check` −40 %; §5 seller-info: ООО «ГОЛДСТАРТ» / KARATOV. **Слово выполнено:** миграция применена 12:55 UTC (5 202 = 5 202, расхождений 0), `main` = `66f5388` (push 13:07:30 UTC, 1 171 OK), Render live 13:08:12 UTC
 
 §1 по строке владельца (будильник 07:47 UTC снова не сработал). Только чтение: логи Render новым сборщиком
 `scripts/fetch_render_logs.py` (курсор — точное наносекундное время последней строки, повторы отсекаются по `id`, пауза 1,2 с,
@@ -164,13 +164,37 @@ Ozon `accrual/postings` 21 повтор (было 17); прогон законч
 
 ### Что не сделано и почему
 
-Миграция `wb_funnel_products_current` не применена, замер таблицы и первая ночь — после слова. Ozon-строка `report_finrez.py:726`
+Первая ночь на таблице `wb_funnel_products_current` — 09-29 (миграция и мерж по слову — блок ниже). Ozon-строка `report_finrez.py:726`
 (снимок целиком) — их файл. Будильник 07:47 UTC третий день подряд не срабатывает — §1 по строке владельца.
 
-### `git log origin/main..HEAD`
+### Слово выполнено (12:55 … 13:08 UTC): миграция применена, `main` = `66f5388`, Render live 13:08:12 UTC
+
+- **Миграция** `sql/20260928_create_wb_funnel_products_current.sql` через MCP (`apply_migration`) — **12:55 UTC**, с пятой попытки: четыре
+  предыдущих вызова (и все Bash рядом) отбивала проверка безопасности харнесса «classifier gave no verdict» — до базы они не дошли.
+  **Контроль чтением:** таблица **5 202 строки = 5 202 nmId = 5 202 строк вьюхи = 5 202 nmId в `wb_funnel_products_daily`**; `except`
+  таблица − вьюха по 7 полям — **0**; дни 04-01 … 09-27, карточек на вчера 1 786; `vendor_code` / `subject_name` без значения — 0; 1 080 КБ.
+- **Замер после** (`logs/finrez_wb_current_table_timing_20260928.out`): первая страница 3,35 с в первый раз (PostgREST поднимал кэш
+  схемы новой таблицы), дальше **0,37–0,38 с**; `read_latest_cards` целиком 4,00 → **2,06–2,10 с**, источник `wb_funnel_products_current`;
+  `load_product_dictionary` за 04-01 … 09-27 — 5 202 nmId за 2,1 с. Утром на вьюхе: холодная — 57014, откат 33,2 с.
+- **Мерж — со второго захода.** `origin/main` ушёл на `e1ac9f7` (43-я Ozon, документы) → влит в ветку `85cb7aa`, набор 1 160 OK; мерж-коммит
+  плюмбингом создан (`f0337a7`), **но push в `main` не прошёл**: zsh прочёл `$C:refs/heads/main` как модификатор `:r` и исказил refspec
+  («src refspec … does not match any»). `main` не изменился; ветка при этом была переведена на `f0337a7` и запушена — в истории ветки
+  остался лишний мерж-коммит (дерево = `85cb7aa`, вреда нет). Пока это выяснялось, Ozon-сессия продвинула `main` ещё на 5 коммитов до
+  `732c5af` (43-я: `finrez_pivots`, ночной запуск книги `ops/launchd/…finrez-nightly.plist`, **шаг каталога `ozon_catalog_topup_step.py` в
+  `run_daily_pipeline.py` и строки алерта в `alerts_telegram.py`** — файлы общие, конфликтов с нашими правками нет; на Render их `e1ac9f7` —
+  `build_failed`, `c3d4294` и `732c5af` — live). Влит `origin/main` = `732c5af` (17 файлов), полный набор **1 171 OK (2 skipped)**
+  (`logs/tests_wb12_merge2_20260928.out`), мерж-коммит `--no-ff` плюмбингом (`${C}` в скобках) **`66f5388`** — родители `732c5af` + голова
+  ветки, дерево = ветке — **push в `main` 13:07:30 UTC**; ветка переведена и запушена, `origin/main..HEAD` пуст.
+- **Render** (`logs/render_deploys_wb12_20260928.out`): 2 обращения к `/deploys` — **`mp-analytics` live 13:08:12 UTC, `mp-analytics-telegram-report` live 13:08:12 UTC**, оба на `66f5388` (42 с после push); запас до ночного прогона 00:15 UTC — **11 ч 07 мин**. Первый мерж-коммит `f0337a7` на Render не попадал — в `main` его не было.
+- **Первая ночь 09-29 — смотреть:** в шаге воронки строка «✅ wb_funnel_products_current: upsert ~1 800 строк — последняя карточка по nmId
+  за окно» и «последних карточек записано N (nmId в окне M)» в итоге шага; `count(*)` = 5 202 + новые nmId, `max(day)` = 09-28; в книге
+  «Фин рез» и `--check` — «словарь товаров: wb_funnel_products_current — строк …» за ~2 с без отката. Ozon-шаг каталога и их строки
+  алерта — их зона, но ночь общая: если «Шаг не выполнен» назовёт «каталог», это не наше.
+
+### `git log origin/main..HEAD` (до мержа по слову; после — пуст: ветка = `main` = `66f5388`)
 
 ```
-(этот коммит)  Twelfth WB task §2–§5: origin/main merged into the branch, current-cards table written by the funnel step (SQL by word), addressed cost read with a base-count threshold, seller-info answer
+a9fdfb0 Twelfth WB task §2–§5: origin/main merged into the branch, current-cards table written by the funnel step (SQL by word), addressed cost read with a base-count threshold, seller-info answer
 c890613 Merge origin/main into wb-fixes (twelfth WB task §2: Ozon forty-first … forty-third, WB files untouched)
 07dcb19 Twelfth WB task received; §1 (morning 09-28): third cohort night clean, 09-03 matured in the showcases, alert 40.8 %; Render log fetcher with a nanosecond cursor and id dedupe
 2181de6 Eleventh WB report §1 (morning 09-27): second cohort night clean, showcases on the cohort rate, alert line live

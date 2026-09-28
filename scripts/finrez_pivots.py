@@ -375,17 +375,21 @@ def write_formulas(sheet_xml, spec, rows=FORMULA_ROWS):
     return sheet_xml
 
 
-def count_rows(z, part):
-    """Число строк листа по XML (<row …>), потоково — лист может весить сотни МБ."""
+ROW_TAG = b"<row "
+
+
+def count_rows(z, part, chunk_size=8 << 20):
+    """Число строк листа по XML (<row …>), потоково — лист может весить сотни МБ. Хвост между кусками — len(<row ) − 1 байт: с хвостом в 5 байт
+    метка, попавшая ровно на границу куска, считалась дважды (книга 09-28: 533 564 при 533 563 строках, «проверка сводных: ошибок 1»)."""
     n, tail = 0, b""
     with z.open(part) as fh:
         while True:
-            chunk = fh.read(8 << 20)
+            chunk = fh.read(chunk_size)
             if not chunk:
                 break
             buf = tail + chunk
-            n += buf.count(b"<row ")
-            tail = buf[-5:]
+            n += buf.count(ROW_TAG)
+            tail = buf[-(len(ROW_TAG) - 1):]
     return n
 
 

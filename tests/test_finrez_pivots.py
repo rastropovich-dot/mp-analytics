@@ -143,3 +143,16 @@ class Integration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_count_rows_does_not_double_count_at_chunk_boundary(self):
+        import io, zipfile
+        xml = b'<sheetData>' + b''.join(b'<row r="%d"><c r="A%d"><v>1</v></c></row>' % (i, i) for i in range(1, 101)) + b'</sheetData>'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("s.xml", xml)
+        z = zipfile.ZipFile(buf)
+        for size in range(1, 60):                                    # любой размер куска, включая границы ровно по «<row »
+            self.assertEqual(fp.count_rows(z, "s.xml", chunk_size=size), 100, size)
+        idx = xml.index(b'<row r="7"') + len(b"<row ")
+        self.assertEqual(fp.count_rows(z, "s.xml", chunk_size=idx), 100)  # первый кусок кончается ровно на «<row »
+

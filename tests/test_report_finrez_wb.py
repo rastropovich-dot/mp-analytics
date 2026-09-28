@@ -5,7 +5,9 @@
 Y = P − R − T − V − X); Σ брендов = Σ категорий = общий; категория по списку владельца, остальное — «прочее»; договорные
 сигнатуры и колонки на месте; заказы для общего листа — выручка × 0,58 / НДС.
 """
+import io
 import unittest
+from contextlib import redirect_stdout
 from decimal import Decimal
 from unittest import mock
 
@@ -304,10 +306,10 @@ class DictionaryViewAndFilteredFunnelTests(unittest.TestCase):
         with mock.patch.object(fr, "DICT_PAGE", 1):
             d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02")
         self.assertEqual((d[2]["title"], d[1]["title"], sorted(d)), ("из вьюхи", "t1", [1, 2]))
-        self.assertEqual([c[0] for c in sb.calls], [fr.FUNNEL_LATEST_VIEW] * 3)          # 2 строки по 1 + пустая страница; таблица не читалась
+        self.assertEqual([c[0] for c in sb.calls], [fr.FUNNEL_CURRENT_TABLE] + [fr.FUNNEL_LATEST_VIEW] * 3)   # WB-12 §3: сначала таблица последних карточек (пуста → вьюха); 2 строки по 1 + пустая страница; таблица воронки не читалась
         sb = FakeSb({fr.wbm.FUNNEL_TABLE: table}, errors={fr.FUNNEL_LATEST_VIEW: "{'code': 'PGRST205', 'message': \"Could not find the table 'public.wb_funnel_products_latest'\"}"})
         d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02")
-        self.assertEqual((d[1]["title"], [c[0] for c in sb.calls][:2]), ("новое", [fr.FUNNEL_LATEST_VIEW, fr.wbm.FUNNEL_TABLE]))   # откат: последний день побеждает
+        self.assertEqual((d[1]["title"], [c[0] for c in sb.calls][:3]), ("новое", [fr.FUNNEL_CURRENT_TABLE, fr.FUNNEL_LATEST_VIEW, fr.wbm.FUNNEL_TABLE]))   # откат: таблица последних карточек пуста, вьюхи нет → окно таблицы; последний день побеждает
         self.assertEqual(fr.load_product_dictionary(sb, "2026-09-01", "2026-09-02", use_view=False)[1]["title"], "новое")
         with self.assertRaises(Exception):
             fr.read_latest_cards(FakeSb({}, errors={fr.FUNNEL_LATEST_VIEW: "statement timeout"}))   # не «нет вьюхи» — не глотаем
@@ -337,7 +339,7 @@ class DictionaryViewAndFilteredFunnelTests(unittest.TestCase):
         st = {}
         rows_default = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=sb, costs=COSTS, ads_by_day=ads, ads_nm_by_day=nm_ads, stats=st)
         self.assertEqual(([r["nm_id"] for r in rows_default], st["synthesized"], st["ads_total"]), ([1, 3, 9], 2, D("100.00")))
-        self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1]); self.assertEqual(sb.calls[1][0], fr.FUNNEL_LATEST_VIEW)
+        self.assertIn(("or_", fr.ACTIVE_FUNNEL_FILTER), sb.calls[0][1]); self.assertEqual([sb.calls[1][0], sb.calls[2][0]], [fr.FUNNEL_CURRENT_TABLE, fr.FUNNEL_LATEST_VIEW])
 
     def test_coinvest_share_by_month_uses_sale_day_msk_with_signed_returns(self):
         rows = [{"rr_date": "2026-08-31", "sale_dt": "2026-08-31T20:59:00Z", "seller_oper_name": "Продажа", "retail_price_with_disc": "1000", "retail_amount": "700"},   # 23:59 МСК 31.08 → август
@@ -379,7 +381,7 @@ class KeysetAndOrdersTests(unittest.TestCase):
         sb.calls.clear()
         with mock.patch.object(fr, "DICT_PAGE", 10):
             products = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-03")
-        self.assertEqual((len(products), products[1]["subject"], sb.calls[0][0]), (12, "Ювелирные серьги", fr.FUNNEL_LATEST_VIEW))   # вьюхи нет → таблица; поздний день побеждает
+        self.assertEqual((len(products), products[1]["subject"], sb.calls[0][0]), (12, "Ювелирные серьги", fr.FUNNEL_CURRENT_TABLE))   # WB-12 §3: сначала таблица последних карточек, потом вьюха; обеих нет → таблица окном; поздний день побеждает
         self.assertEqual(fr.load_product_dictionary(sb), {})                                       # без окна словарь не читается
 
     def test_orders_rows_drop_empty_cards_keep_sums_and_carry_nm_ads(self):
@@ -395,3 +397,59 @@ class KeysetAndOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["month_no"], 9)
         all_rows = fr.orders_rows_for_finrez("2026-09-01", "2026-09-01", sb=object(), funnel_rows=funnel, costs=COSTS, ads_by_day={}, ads_nm_by_day={}, keep_empty=True)
         self.assertEqual(len(all_rows), 3)
+
+
+class CurrentCardsReaderTests(unittest.TestCase):
+    """WB-12 §3: словарь карточек — таблица wb_funnel_products_current, потом вьюха, потом таблица воронки окном."""
+
+    CARD = {"nm_id": 5, "day": "2026-09-27", "vendor_code": "F000000005", "title": "Серьги", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}
+    VIEW = {"nm_id": 5, "day": "2026-09-20", "vendor_code": "F000000005", "title": "Серьги (вьюха)", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}
+
+    def test_table_is_read_first_and_the_view_is_not_touched(self):
+        sb = FakeSb({fr.FUNNEL_CURRENT_TABLE: [self.CARD], fr.FUNNEL_LATEST_VIEW: [self.VIEW]})
+        src = {}
+        rows = fr.read_latest_cards(sb, source=src)
+        self.assertEqual([r["title"] for r in rows], ["Серьги"])
+        self.assertEqual(src, {"relation": fr.FUNNEL_CURRENT_TABLE, "why": None})
+        self.assertEqual([t for t, _c in sb.calls], [fr.FUNNEL_CURRENT_TABLE])
+        with redirect_stdout(io.StringIO()) as out:
+            d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-27")
+        self.assertEqual(d[5]["title"], "Серьги")
+        self.assertIn(f"словарь товаров: {fr.FUNNEL_CURRENT_TABLE} — строк 1", out.getvalue())
+
+    def test_empty_table_falls_back_to_the_view(self):
+        sb = FakeSb({fr.FUNNEL_LATEST_VIEW: [self.VIEW]})
+        src = {}
+        rows = fr.read_latest_cards(sb, source=src)
+        self.assertEqual([r["title"] for r in rows], ["Серьги (вьюха)"])
+        self.assertEqual(src["relation"], fr.FUNNEL_LATEST_VIEW)
+        self.assertIn("таблица пуста", src["why"])
+        self.assertEqual([t for t, _c in sb.calls], [fr.FUNNEL_CURRENT_TABLE, fr.FUNNEL_LATEST_VIEW])
+
+    def test_missing_table_falls_back_to_the_view_and_says_so(self):
+        sb = FakeSb({fr.FUNNEL_LATEST_VIEW: [self.VIEW]}, errors={fr.FUNNEL_CURRENT_TABLE: "PGRST205: Could not find the table"})
+        src = {}
+        rows = fr.read_latest_cards(sb, source=src)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("таблицы нет (миграция по слову)", src["why"])
+        with redirect_stdout(io.StringIO()) as out:
+            fr.load_product_dictionary(sb, "2026-09-01", "2026-09-27")
+        self.assertIn(f"словарь товаров: {fr.FUNNEL_LATEST_VIEW} — строк 1", out.getvalue())
+        self.assertIn("таблицы нет", out.getvalue())
+
+    def test_neither_table_nor_view_reads_the_funnel_window(self):
+        funnel_row = {"day": "2026-09-27", "nm_id": 5, "vendor_code": "F000000005", "title": "Из воронки", "brand": "KARATOV", "subject_name": "Ювелирные серьги"}
+        sb = FakeSb({fr.wbm.FUNNEL_TABLE: [funnel_row]}, errors={fr.FUNNEL_CURRENT_TABLE: "PGRST205", fr.FUNNEL_LATEST_VIEW: "42P01 relation does not exist"})
+        self.assertIsNone(fr.read_latest_cards(sb))
+        with redirect_stdout(io.StringIO()) as out:
+            d = fr.load_product_dictionary(sb, "2026-09-01", "2026-09-27")
+        self.assertEqual(d[5]["title"], "Из воронки")
+        self.assertIn(fr.wbm.FUNNEL_TABLE, out.getvalue())
+
+    def test_table_read_error_other_than_missing_is_raised_to_the_dictionary(self):
+        sb = FakeSb({fr.FUNNEL_LATEST_VIEW: [self.VIEW], fr.wbm.FUNNEL_TABLE: []}, errors={fr.FUNNEL_CURRENT_TABLE: "57014 canceling statement due to statement timeout"})
+        with self.assertRaises(Exception):
+            fr.read_latest_cards(sb)
+        with redirect_stdout(io.StringIO()) as out:
+            fr.load_product_dictionary(sb, "2026-09-01", "2026-09-27")
+        self.assertIn("не прочитана — ", out.getvalue())

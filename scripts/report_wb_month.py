@@ -173,6 +173,59 @@ def load_costs(sb, snapshot=SNAP):
     return exact, uniform
 
 
+COST_BATCH = 80   # баз артикулов в одном запросе (два условия на базу: eq и like) — URL ≈ 4–5 КБ
+COST_NARROW_MAX_BASES = 2_000   # выше — снимок целиком дешевле: запрос пачки ≈ 0,9 с (65 пачек / 61 с на 5 126 базах против 28 с целиком, замер 2026-09-28)
+
+
+def cost_bases(vendor_codes):
+    """Базовые артикулы (до первого «-», строчными, как ключи снимка) из кодов строк; пустые — мимо."""
+    out = set()
+    for code in vendor_codes or ():
+        code = str(code or "").strip().lower()
+        if code:
+            out.add(code.split("-", 1)[0])
+    return out
+
+
+def load_costs_for(sb, vendor_codes, snapshot=SNAP, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES):
+    """Снимок 1С адресно (WB-12 §4): только строки баз артикулов из vendor_codes — offer_id_norm = база или база-* (все
+    варианты базы, чтобы exact и uniform были те же, что при чтении целиком), пачками по batch баз, внутри пачки страницы
+    по ключу offer_id_norm. Результат — (exact, uniform) как у load_costs: exact — точная строка, uniform — первая по
+    offer_id_norm строка базы с unit_cost_uniform (первая побеждает, как там). Баз больше max_bases — снимок целиком
+    (load_costs), так дешевле. stats (dict): bases, rows, requests, mode ("narrow" | "full")."""
+    bases = sorted(cost_bases(vendor_codes))
+    if len(bases) > max_bases:   # адресное чтение дороже целого: пачка ≈ 0,9 с, целиком ≈ 28 с (87 страниц)
+        exact, uniform = load_costs(sb, snapshot)
+        if stats is not None:
+            stats.update({"bases": len(bases), "rows": len(exact), "requests": (len(exact) + 999) // 1000 + 1, "mode": "full"})
+        return exact, uniform
+    exact, uniform = {}, {}
+    rows_n = requests = 0
+    for i in range(0, len(bases), batch):
+        chunk = bases[i:i + batch]
+        expr = ",".join(f'offer_id_norm.eq."{b}",offer_id_norm.like."{b}-*"' for b in chunk)
+        last = None
+        while True:
+            qb = (sb.table("article_unit_costs").select("offer_id_norm,unit_cost,unit_cost_uniform")
+                  .eq("snapshot_date", snapshot).or_(expr).order("offer_id_norm").limit(page))
+            if last is not None:
+                qb = qb.gt("offer_id_norm", last)
+            data = qb.execute().data or []
+            requests += 1
+            rows_n += len(data)
+            for r in data:
+                exact[r["offer_id_norm"]] = D(r["unit_cost"])
+                base = r["offer_id_norm"].split("-", 1)[0]
+                if r.get("unit_cost_uniform") is not None and base not in uniform:
+                    uniform[base] = D(r["unit_cost_uniform"])
+            if len(data) < page:
+                break
+            last = data[-1]["offer_id_norm"]
+    if stats is not None:
+        stats.update({"bases": len(bases), "rows": rows_n, "requests": requests, "mode": "narrow"})
+    return exact, uniform
+
+
 def unit_cost_for(exact, uniform, vendor_code, tech_size, mode="base"):
     """(себестоимость, источник): variant — точный вариант артикул-размер; plain — безразмерная точная строка;
     uniform — «единая» по базовому артикулу; none — в снимке нет."""
@@ -720,8 +773,11 @@ def main(argv=None):
     rows = load_rows_files(args.rows_from_files, d1, days[-1]) if args.rows_from_files else load_rows_db(sb, d1, days[-1])
     print(f"строк отчёта по rrDate за {d1} … {window_end(days[-1])} (запас {LAG_DAYS} дн. под дату продажи): {len(rows)} ("
           + ("файлы " + args.rows_from_files if args.rows_from_files else loader.TABLE) + ")")
-    exact, uniform = load_costs(sb, args.snapshot)
-    print(f"снимок 1С {args.snapshot}: точных строк {len(exact)}, базовых артикулов с единой СС {len(uniform)}; стыковка — {args.cogs_by}")
+    cstats = {}
+    exact, uniform = load_costs_for(sb, (r.get("vendor_code") for r in rows), args.snapshot, stats=cstats)
+    print(f"снимок 1С {args.snapshot} {'адресно' if cstats['mode'] == 'narrow' else 'целиком (баз больше ' + str(COST_NARROW_MAX_BASES) + ')'} (WB-12 §4): "
+          f"баз артикулов {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений; "
+          f"точных строк {len(exact)}, базовых артикулов с единой СС {len(uniform)}; стыковка — {args.cogs_by}")
     ads_by_day, ads_known, ads_note = {}, False, "реклама не запрашивалась (--ads none)"
     if args.ads != "none":
         try:

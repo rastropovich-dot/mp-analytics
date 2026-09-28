@@ -266,9 +266,11 @@ class OrdersData(unittest.TestCase):
         self.assertEqual((r["week"], r["day_num"], r["month_num"]), (36, 1, 9))
         self.assertEqual(r["drr_pct"], r["ads_net"] / r["buyout_rub"])
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][:4], ["Дата", "МП", "Магазин", "Артикул поставщика"])
-        self.assertEqual(len(fr.ORDER_DATA_COLS), 33)
+        self.assertEqual(len(fr.ORDER_DATA_COLS), 34)
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][28:31], ["Фин.рез %", "Месяцы", "SKU/nmId"])      # «Месяцы» — после 29 полей владельца
-        self.assertEqual(stats, {})
+        self.assertEqual(fr.ORDER_DATA_COLS[-1][:2], ("СПП источник", "spp_source"))                              # сорок первая §4 — последняя, наша
+        self.assertEqual(stats, {"spp_measured_Ozon": 1, "spp_empty_Ozon": 3})                                     # без долей месяца — подстановки нет
+        self.assertEqual(r["spp_source"], fr.SPP_MEASURED)
 
     def test_svod_equals_sum_of_data_rows_all_13_columns(self):
         rows, days, coef, dl, (piv, order) = self.parts()
@@ -430,3 +432,50 @@ class WbForm(unittest.TestCase):
         self.assertEqual((g.cells[(11, 2)][0], g.outline.get(11), g.outline.get(12)), (1000.0, None, 1))
         self.assertEqual(nxt, 9 + 1 + 1 + len(order))
         self.assertGreaterEqual(g.widths()[2], len("1,000.00") + 1)
+
+
+class CoinvestFill(unittest.TestCase):
+    """Сорок первая §4: строкам без измеренной цены покупателя СПП подставляется долей соинвеста месяца по реальным выкупам площадки."""
+
+    def test_row_fill_uses_month_share_and_marks_source(self):
+        base = {"date": "2026-04-03", "month": "апр", "brand": "KARATOV", "category": "кольца", "article": "F1", "sku": "11", "name": "К", "created_a": D(1220),
+                "created_q": D(1), "confirmed_a": D(1220), "ads": D(0), "cogs_created": D(100), "vat": D("1.22"), "platform_name": "Основная"}
+        unmeasured = fr.order_data_row(dict(base, buyer_a=None), D("0.4"), None, D("0.8"), "Ozon", "KARATOV", fill=D("0.51"))
+        self.assertEqual((unmeasured["spp"], unmeasured["coinvest_pct"], unmeasured["spp_source"]), (D("0.51"), D("0.51"), fr.SPP_FILLED))
+        self.assertEqual(rep.q(unmeasured["with_spp"]), rep.q(D(1000) * D("0.49")))                       # Заказы без НДС × (1 − доля)
+        measured = fr.order_data_row(dict(base, buyer_a=D(610)), D("0.4"), None, D("0.8"), "Ozon", "KARATOV", fill=D("0.51"))
+        self.assertEqual((measured["spp"], measured["with_spp"], measured["spp_source"]), (D("0.5"), D(610) / D("1.22"), fr.SPP_MEASURED))   # измеренное не тронуто
+        empty = fr.order_data_row(dict(base, buyer_a=None), D("0.4"), None, D("0.8"), "Ozon", "KARATOV", fill=None)
+        self.assertEqual((empty["spp"], empty["with_spp"], empty["spp_source"]), (None, None, None))
+        ads_only = fr.order_data_row(dict(base, buyer_a=None, created_a=D(0), created_q=D(0), ads=D(122)), D("0.4"), None, D("0.8"), "Ozon", "KARATOV", fill=D("0.51"))
+        self.assertEqual((ads_only["spp"], ads_only["with_spp"], ads_only["spp_source"]), (None, None, None))      # без оборота подставлять нечего
+        for k in ("revenue", "commission_rub", "buyout_rub", "margin", "fin", "drr_pct"):
+            self.assertEqual(unmeasured[k], measured[k])                                                     # подстановка не трогает деньги формы
+
+    def test_shares_by_month_from_buyout_pivot_and_wb_rows(self):
+        piv = {"апр": {"coinvest_pct": D("0.51")}, "01.апр": {"coinvest_pct": D("0.7")}, "май": {"coinvest_pct": None}, "Общий итог": {"coinvest_pct": D("0.5")}}
+        wb = [{"date": "2026-04-01", "sales": D(100), "coinvest": D(30)}, {"date": "2026-04-02", "sales": D(100), "coinvest": D(36)},
+              {"date": "2026-05-01", "sales": D(0), "coinvest": D(0)}]
+        shares = fr.coinvest_share_by_month(piv, wb)
+        self.assertEqual(shares["Ozon"], {"апр": D("0.51")})                       # только метки месяцев с долей
+        self.assertEqual(shares["WB"], {"апр": D("0.33")})                         # Σ соинвест / Σ продажи; май без продаж — доли нет
+        self.assertEqual(fr.coinvest_share_by_month({}, None), {"Ozon": {}, "WB": {}})
+
+    def test_svod_coinvest_equals_month_share_where_unmeasured_and_measured_where_measured(self):
+        orders = [order("2026-04-01", "11", "1000", buyer=None), order("2026-04-01", "22", "500", buyer=None, article="T2"),
+                  order("2026-09-01", "11", "1000", "500", canc_q=1, buyer="600", canc_buyer="300")]
+        days = ["2026-04-01", "2026-09-01"]
+        rows, _ = fr.build_order_rows(days, orders, [], [daily("2026-04-01", ads="0"), daily("2026-09-01", ads="0")], UNIT_COST, {"11": "F1", "22": "T2"}, CATALOG, {}, "2026-09-10")
+        coef = {"buyout": {"все": D("0.8")}, "buyout_base": {}, "commission": {"все": D("0.4")}}
+        shares = {"Ozon": {"апр": D("0.51")}}
+        data, stats = fr.build_order_data_rows(rows, None, coef, days, shares=shares)
+        self.assertEqual((stats["spp_filled_Ozon"], stats["spp_measured_Ozon"]), (2, 1))
+        piv, _ = fr.svod_from_data(data, days, "Ozon")
+        self.assertEqual(piv["апр"]["coinvest_pct"].quantize(D("0.0001")), D("0.5100"))        # неизмеренный месяц — доля месяца
+        self.assertEqual(piv["апр"]["coinvest_measured_cover"], D(0))
+        self.assertEqual(piv["сен"]["coinvest_pct"], D("0.4"))                                 # измеренный — как прежде (1500 − 900) / 1500
+        self.assertEqual(piv["сен"]["coinvest_measured_cover"], D(1))
+        table = fr.check_coinvest_fill(data, days, {"Ozon": piv, "WB": {}}, shares)
+        self.assertEqual([(t[0], t[1], t[6]) for t in table], [("Ozon", "апр", D("0.0000")), ("Ozon", "сен", D("0.0000")), ("Ozon", "Общий итог", None)])
+        # приёмка (а) 40-й держится: «Свод» = формулы владельца на Σ строк, соинвест — по всем строкам с «c СПП»
+        self.assertEqual([t for t in fr.check_orders_data(data, days, piv, None) if t[5]], [])

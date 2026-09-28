@@ -30,8 +30,9 @@ def page(products, status=200):
 
 
 class FakeSb:
-    def __init__(self, existing=None, fail_products=False):
+    def __init__(self, existing=None, fail_products=False, fail_current=None):
         self.upserts, self.deletes, self.existing, self.fail_products = [], [], existing or [], fail_products
+        self.fail_current = fail_current   # текст ошибки upsert в CURRENT_TABLE (нет таблицы / отказ)
 
     def table(self, name):
         sb = self
@@ -43,6 +44,8 @@ class FakeSb:
             def upsert(self, rows, on_conflict=None):
                 if name == funnel.TABLE and sb.fail_products:
                     raise RuntimeError("relation \"wb_funnel_products_daily\" does not exist")
+                if name == funnel.CURRENT_TABLE and sb.fail_current:
+                    raise RuntimeError(sb.fail_current)
                 sb.upserts.append((name, rows if isinstance(rows, dict) else list(rows), on_conflict)); return self
 
             def select(self, *_a):
@@ -150,3 +153,63 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CurrentCardsTests(unittest.TestCase):
+    """WB-12 §3: последняя карточка по nmId пишется одной пачкой в конце окна; нет таблицы — печать, шаг не падает."""
+
+    def test_latest_cards_keeps_the_later_day_and_only_dictionary_fields(self):
+        latest = {}
+        funnel.latest_cards(latest, "2026-09-23", [{"day": "2026-09-23", "nm_id": 1, "vendor_code": "A", "title": "t1", "brand": "b", "subject_id": 5,
+                                                    "subject_name": "s", "observed_at": "x", "order_count": 3, "order_sum": 300}])
+        funnel.latest_cards(latest, "2026-09-24", [{"day": "2026-09-24", "nm_id": 1, "vendor_code": "A2", "title": "t2", "brand": "b", "subject_id": 5,
+                                                    "subject_name": "s", "observed_at": "y", "order_count": 0, "order_sum": 0}])
+        funnel.latest_cards(latest, "2026-09-22", [{"day": "2026-09-22", "nm_id": 1, "vendor_code": "OLD", "title": "t0", "brand": "b", "subject_id": 5,
+                                                    "subject_name": "s", "observed_at": "z"}])
+        self.assertEqual(latest[1], {"nm_id": 1, "day": "2026-09-24", "vendor_code": "A2", "title": "t2", "brand": "b", "subject_id": 5, "subject_name": "s", "observed_at": "y"})
+        self.assertNotIn("order_count", latest[1])
+
+    def test_run_writes_one_current_row_per_nm_id_with_the_last_day(self):
+        answers = [page([card(1, vendor="F000000001")]), page([card(1, vendor="F000000001-16"), card(2, vendor="t000000002")])]
+        sb = FakeSb()
+        with mock.patch.object(funnel.requests, "post", side_effect=answers), redirect_stdout(io.StringIO()) as out:
+            result = funnel.run(days_back=2, today=date(2026, 9, 25), sb=sb, sleep_fn=lambda _s: None)
+        current = [(rows, c) for t, rows, c in sb.upserts if t == funnel.CURRENT_TABLE]
+        self.assertEqual(len(current), 1)
+        rows, on_conflict = current[0]
+        self.assertEqual(on_conflict, "nm_id")
+        self.assertEqual([(r["nm_id"], r["day"], r["vendor_code"]) for r in rows], [(1, "2026-09-24", "F000000001-16"), (2, "2026-09-24", "t000000002")])
+        self.assertEqual(set(rows[0]), set(funnel.CURRENT_FIELDS))
+        self.assertEqual(result["current"], 2)
+        self.assertEqual(sb.upserts[-1][0], funnel.CURRENT_TABLE)                    # после всех дней
+        self.assertIn("последних карточек записано 2 (nmId в окне 2)", out.getvalue())
+
+    def test_dry_run_counts_current_cards_but_writes_nothing(self):
+        sb = FakeSb()
+        with mock.patch.object(funnel.requests, "post", return_value=page([card(1)])), redirect_stdout(io.StringIO()) as out:
+            result = funnel.run(days_back=1, today=date(2026, 9, 25), sb=sb, sleep_fn=lambda _s: None, dry_run=True)
+        self.assertEqual((sb.upserts, result["current"]), ([], 0))
+        self.assertIn("последних карточек по nmId за окно 1, не пишу", out.getvalue())
+
+    def test_missing_current_table_is_reported_and_the_step_goes_on(self):
+        sb = FakeSb(fail_current='relation "wb_funnel_products_current" does not exist')
+        with mock.patch.object(funnel.requests, "post", return_value=page([card(1)])), redirect_stdout(io.StringIO()) as out:
+            result = funnel.run(days_back=1, today=date(2026, 9, 25), sb=sb, sleep_fn=lambda _s: None)
+        self.assertEqual(result["current"], 0)
+        self.assertEqual(result["written"], 1)
+        self.assertIn("таблицы нет (миграция sql/20260928_create_wb_funnel_products_current.sql — по слову)", out.getvalue())
+
+    def test_other_current_write_failure_is_a_warning_not_a_crash(self):
+        sb = FakeSb(fail_current="canceling statement due to statement timeout")
+        with mock.patch.object(funnel.requests, "post", return_value=page([card(1)])), redirect_stdout(io.StringIO()) as out:
+            result = funnel.run(days_back=1, today=date(2026, 9, 25), sb=sb, sleep_fn=lambda _s: None)
+        self.assertEqual(result["current"], 0)
+        self.assertIn("⚠️ wb_funnel_products_current: не записана", out.getvalue())
+
+    def test_days_whose_product_rows_failed_do_not_feed_the_current_table(self):
+        sb = FakeSb(fail_products=True)
+        with mock.patch.object(funnel.requests, "post", return_value=page([card(1)])), redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                funnel.run(days_back=1, today=date(2026, 9, 25), sb=sb, sleep_fn=lambda _s: None)
+        self.assertEqual([t for t, _r, _c in sb.upserts], [funnel.SUMMARY_TABLE])
+

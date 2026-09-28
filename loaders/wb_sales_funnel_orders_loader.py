@@ -63,6 +63,10 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products"
 TABLE = "wb_funnel_products_daily"
 SUMMARY_TABLE = "marketplace_orders_analytics"
+# WB-12 §3: последняя карточка по nmId — одна запись в конце окна (sql/20260928_create_wb_funnel_products_current.sql, по слову);
+# таблицы нет → печать, шаг не падает, словарь книги «Фин рез» читает вьюху wb_funnel_products_latest.
+CURRENT_TABLE = "wb_funnel_products_current"
+CURRENT_FIELDS = ("nm_id", "day", "vendor_code", "title", "brand", "subject_id", "subject_name", "observed_at")
 SOURCE = "wb_sales_funnel"
 PAGE_LIMIT = 1000
 
@@ -312,6 +316,44 @@ def save_products(sb, day, rows, complete, apply=True):
     return written, deleted
 
 
+def latest_cards(latest, day, rows):
+    """nm_id → последняя карточка: строки дня day перекрывают записанное, если день не раньше (дни идут по возрастанию,
+    внутри окна карточка последнего дня побеждает). Только поля словаря (CURRENT_FIELDS)."""
+    for r in rows:
+        cur = latest.get(r["nm_id"])
+        if cur is None or str(r["day"]) >= str(cur["day"]):
+            latest[r["nm_id"]] = {k: r.get(k) for k in CURRENT_FIELDS}
+    return latest
+
+
+def _missing_relation(error):
+    text = str(error)
+    return "PGRST205" in text or "42P01" in text or "does not exist" in text
+
+
+def save_current(sb, latest, batch=500):
+    """Upsert последних карточек в CURRENT_TABLE по nm_id. Нет таблицы / отказ — печать, ничего не поднимаем (шаг воронки
+    фатальный, а словарь книги без этой таблицы читает вьюху). Возвращает число записанных строк."""
+    rows = sorted(latest.values(), key=lambda r: r["nm_id"])
+    if not rows:
+        return 0
+    written = 0
+    try:
+        for i in range(0, len(rows), batch):
+            sb.table(CURRENT_TABLE).upsert(rows[i:i + batch], on_conflict="nm_id").execute()
+            written += len(rows[i:i + batch])
+    except Exception as error:
+        if _missing_relation(error):
+            print(f"{CURRENT_TABLE}: таблицы нет (миграция sql/20260928_create_wb_funnel_products_current.sql — по слову) — "
+                  f"не пишу, словарь книги читает вьюху; записано {written} из {len(rows)}")
+        else:
+            print(f"⚠️ {CURRENT_TABLE}: не записана — {type(error).__name__}: {str(error)[:200]}; записано {written} из {len(rows)}, "
+                  f"словарь книги читает вьюху")
+        return written
+    print(f"✅ {CURRENT_TABLE}: upsert {written} строк — последняя карточка по nmId за окно (словарь книги «Фин рез»)")
+    return written
+
+
 def run(days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sb=None, sleep_fn=None):
     """Окно days_back дней до вчера: за каждый день — все страницы, сводка дня и строки по товарам."""
     sb = sb or supabase
@@ -324,6 +366,7 @@ def run(days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sb=None, sleep_f
           f"пауза {PAGE_SLEEP_SECONDS} с; {'dry-run, db_writes = 0' if dry_run else 'запись'}")
     totals = Counter()
     products_errors = []
+    latest = {}
     for n, day in enumerate(days):
         if n:
             sleep_fn(PAGE_SLEEP_SECONDS)
@@ -333,6 +376,7 @@ def run(days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sb=None, sleep_f
         totals["cards"] += len(rows)
         totals["pages"] += result["pages"]
         if dry_run:
+            latest_cards(latest, day, rows)
             print(f"dry-run {day}: сводка {result['orders_qty']:.0f} шт / {result['orders_amount']:.0f} руб, карточек {len(rows)}, "
                   f"страниц {result['pages']}, полный {result['complete']} — не пишу")
             continue
@@ -341,17 +385,23 @@ def run(days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sb=None, sleep_f
             written, deleted = save_products(sb, day, rows, result["complete"], apply=True)
             totals["written"] += written
             totals["deleted"] += deleted
+            latest_cards(latest, day, rows)   # в словарь — только дни, чьи строки записаны
         except Exception as error:  # таблицы нет / отказ PostgREST — сводка дня уже записана, скажем в конце и упадём
             products_errors.append((day, f"{type(error).__name__}: {str(error)[:160]}"))
             print(f"❌ {TABLE} {day}: строки по товарам не записаны — {type(error).__name__}: {str(error)[:200]}")
+    if dry_run:
+        print(f"dry-run: {CURRENT_TABLE} — последних карточек по nmId за окно {len(latest)}, не пишу")
+    else:
+        totals["current"] = save_current(sb, latest)
     print(f"WB Sales Funnel: дней {totals['days']}, страниц {totals['pages']}, карточек {totals['cards']}, "
-          f"строк по товарам записано {totals['written']}, застрявших удалено {totals['deleted']}; "
+          f"строк по товарам записано {totals['written']}, застрявших удалено {totals['deleted']}, "
+          f"последних карточек записано {totals['current']} (nmId в окне {len(latest)}); "
           f"обращений {counters['requests']}, 429 — {counters['429']}, сетевых отказов {counters['transient']}")
     if products_errors:
         raise RuntimeError(f"WB Sales Funnel: строки по товарам не записаны за {len(products_errors)} дн.: "
                            + "; ".join(f"{d} — {e}" for d, e in products_errors))
     return {"days": totals["days"], "cards": totals["cards"], "written": totals["written"], "deleted": totals["deleted"],
-            "requests": counters["requests"], "429": counters["429"], "transient": counters["transient"]}
+            "current": totals["current"], "requests": counters["requests"], "429": counters["429"], "transient": counters["transient"]}
 
 
 def main(days_back=None, argv=None):

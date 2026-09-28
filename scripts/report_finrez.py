@@ -897,6 +897,17 @@ def wb_orders_as_data_rows(orders):
 
 # ---------- «Данные заказы» — поля кэша владельца (§7.2) ----------
 
+def wb_data_cols():
+    """Колонки листа «Данные WB выкупы»: 14 колонок владельца (источник сводной), затем наша «Эквайринг, ₽» пятнадцатой (O) — восьмое поле значений
+    сводной WB, колонка V сводной читает его (сорок четвёртая §2); остальные наши колонки модуля — правее. Порядок модуля WB (DATA_COLS) не меняется —
+    переставляется только при записи листа."""
+    cols = list(wbfin.DATA_COLS)
+    acq = [c for c in cols[14:] if c[1] == "acquiring"]
+    if len(acq) != 1:
+        raise SystemExit(f"в DATA_COLS модуля WB нет одной колонки acquiring: {[c[0] for c in cols]}")
+    return cols[:14] + acq + [c for c in cols[14:] if c[1] != "acquiring"]
+
+
 LONG_COLS = [("ID начисления", "accrual_id", None), ("Дата начисления", "date", "date"), ("Артикул", "article", None), ("SKU", "sku", None),
              ("Количество", "qty", "int"), ("Статьи Озон.Вид затрат", "kind", None), ("Бренд (cc)", "brand_cc", None), ("Месяц", "month", None),
              ("Ст-ть продаж в себ-ти", "cogs", "money"), ("Бренд", "brand", None), ("Статус", "category", None), ("Начисления", "amount", "money"),
@@ -1386,7 +1397,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
             for name, (p_, o_) in sorted(wb_pivots_by_group(wb_parts["rows"], days, by).items(), key=lambda kv: (kv[0] == "—", kv[0])):
                 r_cols = write_wb_pivot_block(g, r_cols, name, p_, o_) + 1
             _grid_sheet(wb, title, g, freeze="B2")
-        write_data_sheet(wb, "Данные WB выкупы", wbfin.DATA_COLS, wb_parts["rows"], widths={7: 48})
+        write_data_sheet(wb, "Данные WB выкупы", wb_data_cols(), wb_parts["rows"], widths={7: 48})   # «Эквайринг, ₽» — колонка O (сорок четвёртая §2)
     else:
         g = Grid()
         g.set(1, 1, "Лист WB не собран: " + str((wb_parts or {}).get("error") or "модуля WB нет"))
@@ -1690,6 +1701,9 @@ def main(argv=None):
               + (f"; {wb_parts['buyout_note']}" if wb_parts.get("buyout_note") else ""))
         notes["wb"] = [f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "
                        "K … Z — тождества второго кабинета (R = (логистика + хранение) / НДС). Приёмка — его --check (мост к «WB - месяц»).",
+                       "Колонка O «Эквайринг, ₽» (acquiringFee, с НДС) — пятнадцатая колонка источника сводной WB и её восьмое поле значений (у второго кабинета "
+                       "эквайринга в источнике нет, V — ввод руками); на листе сводной V = I / 1,22 — без НДС, как «Эквайринг, руб.» листа «Выкупы WB», W = V / N, "
+                       "Y = P − R − T − V − X. R «Логистика, руб. (без НДС)» = (Хранение + Логистика) / 1,22 — шапка владельца, содержимое шире её.",
                        "Блок WB листа «Заказы»: созданные из воронки wb_funnel_products_daily; формулы как у Ozon — выручка = Заказы без НДС × выкуп × 0,58, СС модуля × выкуп, "
                        "маржа, гр. фин. рез = маржа − реклама (списания дня wb_ad_spend_daily без НДС); выкуп — итог зрелых месяцев модуля (лист «Коэффициенты»); соинвест WB не измеряется."]
     # сорок первая §4: доля соинвеста месяца по реальным выкупам площадки — строкам без измеренной цены покупателя

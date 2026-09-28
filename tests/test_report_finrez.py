@@ -515,3 +515,12 @@ class VatSourceTests(unittest.TestCase):
         bad = fr.vat_split_check(rows, twice)
         self.assertEqual([(m, k) for m, k, *_ in bad], [("апр", "Логистика"), ("май", "Прочее"), ("май", "Реклама"), ("май", "Эквайринг"), ("дек", "Логистика")])
 
+
+class WbDataColsTests(unittest.TestCase):
+    def test_acquiring_is_fifteenth_and_module_order_untouched(self):
+        cols = fr.wb_data_cols()
+        self.assertEqual([h for h, _k, _f in cols[:14]], [h for h, _k, _f in fr.wbfin.DATA_COLS[:14]])
+        self.assertEqual(cols[14], ("Эквайринг, ₽", "acquiring", "money"))
+        self.assertEqual([c[1] for c in cols[15:]], [c[1] for c in fr.wbfin.DATA_COLS[14:] if c[1] != "acquiring"])
+        self.assertEqual(sorted(c[1] for c in cols), sorted(c[1] for c in fr.wbfin.DATA_COLS))
+

@@ -1,7 +1,9 @@
 """Тридцать восьмая §4: пересадка сводных владельца — чистые преобразования XML; интеграция — только если оригиналы владельца лежат в data/ (вне git)."""
 import os
 import sys
+import re
 import unittest
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -121,13 +123,17 @@ class Integration(unittest.TestCase):
             path = os.path.join(tmp, "book.xlsx")
             wb = openpyxl.Workbook(write_only=True)
             for title, cols, row in (("Данные Ozon выкупы", fr.LONG_COLS, [1, "2026-09-01", "F1", "11", 1, "Товарооборот", "KARATOV", "сен", 0, "KARATOV", "кольца", 100, "Кольцо", 1, 9, 0, "Ozon"]),
-                                     ("Данные WB выкупы", [(h, k, None) for h, k, f in fr.wbfin.DATA_COLS], [None] * len(fr.wbfin.DATA_COLS)),
+                                     ("Данные WB выкупы", [(h, k, None) for h, k, f in fr.wb_data_cols()], [None] * len(fr.wb_data_cols())),
                                      ("Данные заказы", fr.ORDER_DATA_COLS, [None] * len(fr.ORDER_DATA_COLS))):
                 ws = wb.create_sheet(title); ws.append([h for h, _k, _f in cols]); ws.append(row)
             wb.save(path)
             rep = fp.transplant(path, path, row_counts={"Данные Ozon выкупы": 2, "Данные WB выкупы": 2, "Данные заказы": 2}, date_range=("2026-04-01", "2026-09-25"))
-            self.assertEqual([r["ref"] for r in rep], ["A1:M2", "A1:N2", "A1:U2"])           # колонки источника: 13 / 14 / 21
-            import zipfile, re
+            self.assertEqual([r["ref"] for r in rep], ["A1:M2", "A1:O2", "A1:U2"])           # колонки источника: 13 / 15 (+ «Эквайринг, ₽») / 21
+            pt2 = zipfile.ZipFile(path).read("xl/pivotTables/pivotTable2.xml").decode("utf-8"); cd2 = zipfile.ZipFile(path).read("xl/pivotCache/pivotCacheDefinition2.xml").decode("utf-8")
+            self.assertIn('<dataFields count="8">', pt2); self.assertIn('<dataField name=" Эквайринг, ₽" fld="14" baseField="0" baseItem="0"/></dataFields>', pt2)
+            self.assertIn('<colItems count="8">', pt2); self.assertIn('<i i="7"><x v="7"/></i></colItems>', pt2)
+            self.assertIn('<location ref="A7:I', pt2); self.assertIn('<rowFields count="2"><field x="15"/><field x="0"/></rowFields>', pt2)
+            self.assertEqual(re.findall(r'<cacheField name="([^"]+)"', cd2)[13:16], ["Статус", "Эквайринг, ₽", "Месяцы"]); self.assertIn('<fieldGroup par="15" base="0">', cd2)
             cd3 = zipfile.ZipFile(path).read("xl/pivotCache/pivotCacheDefinition3.xml").decode("utf-8")
             self.assertEqual(re.findall(r'<rangePr[^/]*/>', cd3),                                  # сорок первая §2: даты окна, без autoStart / autoEnd
                              ['<rangePr groupBy="days" startDate="2026-04-01T00:00:00" endDate="2026-09-25T00:00:00"/>',
@@ -139,6 +145,27 @@ class Integration(unittest.TestCase):
             self.assertIn('<pivotCacheDefinition missingItemsLimit="0" refreshOnLoad="1"', cd3)                       # лимит — на кэше, не на сводной
             self.assertNotIn("missingItemsLimit", zipfile.ZipFile(path).read("xl/pivotTables/pivotTable3.xml").decode("utf-8"))
             self.assertEqual(openpyxl.load_workbook(path, read_only=True).sheetnames[-3:], ["Сводная Ozon выкупы", "Сводная WB выкупы", "Сводная заказы"])
+
+    def test_add_data_field_renumbers_fields_and_widens_location(self):
+        pt = ('<pivotTableDefinition name="p"><location ref="A7:H96" firstHeaderRow="0"/><pivotFields count="4"><pivotField axis="axisRow"/><pivotField dataField="1"/>'
+              '<pivotField axis="axisPage"/><pivotField axis="axisRow"><items count="1"><item x="0"/></items></pivotField></pivotFields>'
+              '<rowFields count="2"><field x="3"/><field x="0"/></rowFields><colFields count="1"><field x="-2"/></colFields>'
+              '<rowItems count="1"><i><x v="3"/></i></rowItems><colItems count="1"><i><x/></i></colItems><pageFields count="1"><pageField fld="2" hier="-1"/></pageFields>'
+              '<dataFields count="1"><dataField name=" Продажи, ₽" fld="1" baseField="0" baseItem="0"/></dataFields></pivotTableDefinition>')
+        cd = ('<pivotCacheDefinition><cacheFields count="4"><cacheField name="Дата"><sharedItems containsDate="1"><d v="2026-04-01T00:00:00"/></sharedItems><fieldGroup par="3" base="0"/></cacheField>'
+              '<cacheField name="Продажи, ₽"><sharedItems containsNumber="1"/></cacheField><cacheField name="Статус"><sharedItems><s v="a"/></sharedItems></cacheField>'
+              '<cacheField name="Месяцы" databaseField="0"><fieldGroup base="0"><groupItems count="1"><s v="апр"/></groupItems></fieldGroup></cacheField></cacheFields></pivotCacheDefinition>')
+        pt2, cd2 = fp.add_data_field(pt, cd, "Эквайринг, ₽", 3)
+        self.assertIn('<cacheFields count="5">', cd2); self.assertEqual(re.findall(r'<cacheField name="([^"]+)"', cd2), ["Дата", "Продажи, ₽", "Статус", "Эквайринг, ₽", "Месяцы"])
+        self.assertIn('<fieldGroup par="4" base="0"/>', cd2)                                             # ссылка на группировку сдвинута
+        self.assertIn('<pivotFields count="5">', pt2); self.assertIn('<pivotField axis="axisPage"/><pivotField dataField="1" showAll="0"/><pivotField axis="axisRow">', pt2)
+        self.assertIn('<rowFields count="2"><field x="4"/><field x="0"/></rowFields>', pt2); self.assertIn('<field x="-2"/>', pt2)
+        self.assertIn('<rowItems count="1"><i><x v="3"/></i></rowItems>', pt2)                            # номера ЭЛЕМЕНТОВ не трогаются
+        self.assertIn('<pageField fld="2" hier="-1"/>', pt2)
+        self.assertIn('<dataFields count="2"><dataField name=" Продажи, ₽" fld="1" baseField="0" baseItem="0"/><dataField name=" Эквайринг, ₽" fld="3" baseField="0" baseItem="0"/></dataFields>', pt2)
+        self.assertIn('<colItems count="2"><i><x/></i><i i="1"><x v="1"/></i></colItems>', pt2); self.assertIn('<location ref="A7:I96"', pt2)
+        with self.assertRaises(SystemExit):
+            fp.add_data_field(pt2, cd2, "Эквайринг, ₽", 3)
 
     def test_count_rows_does_not_double_count_at_chunk_boundary(self):
         import io, zipfile

@@ -31,6 +31,8 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 import loaders.wb_ads_nm_loader as nm  # noqa: E402

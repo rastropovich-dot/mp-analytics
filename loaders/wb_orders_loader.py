@@ -12,6 +12,13 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
+try:
+    import cabinet
+except ImportError:  # запуск как python3 loaders/<файл>.py: корня проекта нет в sys.path
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    import cabinet
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 # ЧТО ПИШЕМ. Правило одно с Ozon и живёт в loaders/wb_orders_rows.py: orders_* —
 # заказы без отмены, cancelled_orders_* — с isCancel, observed_at — момент сбора.

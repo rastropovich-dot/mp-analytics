@@ -16,6 +16,7 @@ mkdir -p "$LOGDIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$LOGDIR/finrez_$STAMP.log"
 exec > >(tee -a "$LOG") 2>&1
+venv/bin/python3 -c 'import cabinet; print(cabinet.banner(cabinet.assert_env()))' || { echo "finrez_nightly: кабинет (MP_CABINET) и база (SUPABASE_URL) не совпали — стоп"; exit 3; }
 STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 T0=$(date +%s)
 YESTERDAY="$(date -v-1d +%Y-%m-%d)"

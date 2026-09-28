@@ -8,6 +8,90 @@
 
 ---
 
+## 2026-09-28 (ночь), первая задача RBH — §2 сделан в ветке `multi-cabinet`: `cabinet.py` + три профиля (`karatov`, `malimon`, `popova`), guard по хосту Supabase в 75 точках входа и в `finrez_nightly.sh`, первая строка пайплайна и алерта — «кабинет: …»; полный набор **1 189 OK (2 skipped)**; db_writes 0, обращений к API 0; §3 ждёт мержей соседей и слова «влить main?»
+
+Дополнение 09-28 учтено: профилей РБХ два — `malimon` и `popova` (пара Ozon + WB у каждого, своя база, свой сервис Render, одна группа
+Telegram — кабинет в первой строке сообщения); `.env.<кабинет>` догружается поверх `.env`; `DATA_DIR` / `LOGS_DIR` у karatov — `data` / `logs`,
+у РБХ — `data/<кабинет>` / `logs/<кабинет>`. Шаблон `.env` удалён; созданы `.env.malimon` и `.env.popova` (по 22 имени из `.env.example`, секреты
+пустые, комментарий к каждой переменной, права 600), оба открыты `open -e`; `.gitignore` дополнен `.env.*` (`.env.example` остаётся в git).
+Значения не читались и в чат не попадают.
+
+### Что в ветке
+
+```
+afedaf8 RBH inbox: addendum 09-28 — two RBH profiles (malimon, popova), .env.<cabinet> loaded over .env, per-cabinet data/logs dirs and Supabase ref; .gitignore: .env.* ignored, .env.example kept
+f55e9f1 First RBH task received in inbox (multi-cabinet profiles, guard, RBH cabinet); outbox: §1 inventory — env readers, 38 create_client sites and no shared factory, KARATOV hardcodes table, entry points; .env template for RBH created outside git; db_writes 0
+(коммит §2 — следующий, см. ниже)
+ 83 files changed, 722 insertions(+)
+```
+
+**`cabinet.py`** (корень): `cabinet_code()` — `MP_CABINET` → `karatov` по умолчанию, регистр не важен, неизвестный код — `SystemExit` со списком
+известных; `profile(code)` — модуль `cabinets/<код>.py`; `assert_env()` — (1) общий `<корень>/.env` без перезаписи (то же, что `load_dotenv()` в модулях;
+guard не зависит от того, успел ли модуль его вызвать — часть скриптов грузит `.env` только через импорт загрузчика), (2) `<корень>/.env.<код>`
+поверх окружения (значение файла кабинета главнее общего `.env` и оболочки; **пустая строка файла кабинета ничего не затирает** — общие Telegram-переменные
+можно держать в `.env`; у karatov файла нет — шаг пропускается; на Render файлов нет — переменные сервиса), (3) хост `SUPABASE_URL` против `SUPABASE_HOST`
+профиля: не совпал / не задан / у профиля хоста ещё нет — `SystemExit` с внятной строкой, код 1, **до чтения ключей и создания клиента**. Хост в зоне
+`.invalid` (RFC 2606, никогда не резолвится) guard пропускает — это заглушка `tests/test_000_no_network.py`, иначе 30 модулей с клиентом при импорте не
+импортировались бы в наборе без сети. Ещё: `banner()` → «кабинет: <имя>», `data_dir()` / `logs_dir()` / `data_path()` — пути кабинета для §3.
+
+**Профили** (`cabinets/`, 29 одинаковых имён в каждом — тест на равенство схем): `CODE`, `DISPLAY_NAME`, `GROUP`, `SHOP`, **`SUPABASE_HOST`**
+(karatov — `pkrsrwjrlurlfpdyixei.supabase.co`, взят только хост из `SUPABASE_URL` соседнего `.env`; у `malimon` / `popova` — `None`, впишется по §5.1 —
+до этого их запуск невозможен по построению), `DATA_DIR`, `LOGS_DIR`, `PROJECT_START`, правило бренда и площадки по букве (`BRAND_DEFAULT`,
+`BRAND_BY_LETTER`, `BRAND_NORMALIZE`, `DISCOUNTER_LETTER`, `OZON_PLATFORMS`), константы листов владельца (`OWNER_SHEET`, `OWNER_AFTER_COMMISSION`,
+`OWNER_ORDERS_AFTER_COMMISSION_WB`, `OWNER_COEF`, `OVERHEAD_PER_DAY`, `COST_INDEX`), файлы данных относительно `DATA_DIR` (`COST_SNAPSHOT_DATE`,
+`COST_SNAPSHOT_FILE`, `CATEGORY_TREE_FILE`, `CATALOG_FILE`, `OWNER_PIVOT_FILES`), `REPORT_PREFIX` (karatov — пусто: имена книг не меняются; РБХ —
+`malimon_` / `popova_`), `ALERT_TITLE`, `RENDER` (owner общий на организацию; сервисы РБХ — `None`), `LAUNCHD_LABEL`, `GOLDEN_SKU`. Значения karatov
+— ровно те, что зашиты в коде (таблица §1.2, файл и строка у каждого); **код на профиль ещё не переведён — это §3**. У РБХ всё «не задано» (`None` /
+пусто), `SHOP` = «Малимон» / «Попова» — предположение, владелец поправит; `DISPLAY_NAME` = «РБХ Малимон» / «РБХ Попова».
+
+**Guard в точках входа — 75 файлов**, вставлен скриптом по правилу (после module-level `load_dotenv(…)`; нет его — после `sys.path.insert(0, …)`; нет —
+перед первым `import loaders/scripts`; нет — после `ROOT = …` с добавлением `sys.path.insert`), список и причина у каждого — `/private/tmp/claude-501/-Users-mihaileliseev-mp-analytics-rbh/a3c1d0bd-f259-45ee-a473-226ceed3fcdb/scratchpad/guard_targets.txt`
+(75 строк): 38 файлов с `create_client` (в 16 загрузчиках — с запасным путём импорта, потому что пайплайн зовёт их `python3 loaders/<файл>.py` и корня в
+`sys.path` там нет), 9 берущих клиент импортом, все скрипты с `--apply` и `__main__`, все шаги `build_steps`, пайплайн, алерт, книги (`report_finrez`,
+`report_finrez_wb`, `report_ozon_month`, `report_wb_month`, `send_ozon_month_report`, `book_wb_sheet`). В `run_daily_pipeline.main` первая строка —
+`print(cabinet.banner(CABINET))`, в `alerts_telegram.build_message` первая строка сообщения — `cabinet.banner(CABINET)` (у KARATOV это единственное видимое
+изменение алерта: строка «кабинет: KARATOV» над «📊 MP Analytics Alerts»). `scripts/finrez_nightly.sh`: guard первой строкой лога, отказ — код 3 до сборки.
+`tests/test_000_no_network.py`: в фальшивое окружение добавлен `MP_CABINET=karatov` — набор считает числа KARATOV, что бы ни стояло в оболочке или `.env`.
+Файлы соседей задеты минимально (по 2 строки после `load_dotenv`): `report_finrez.py`, `report_finrez_wb.py`, `finrez_nightly.sh`, загрузчики WB — конфликт
+при мерже их веток разрешается тривиально.
+
+Цена: любая точка входа теперь требует правильного окружения даже для `--help` (guard стоит на импорте, до argparse) — так задумано: «SystemExit до создания
+любого клиента».
+
+### Проверено (команды с выводом; сеть не открывалась — guard выходит до клиента)
+
+| сценарий | вывод | код |
+|---|---|---|
+| `MP_CABINET=karatov SUPABASE_URL=https://wrong-host.supabase.co python3 loaders/wb_orders_loader.py` (и `ozon_fbo_orders_loader.py` — запасной путь импорта) | «кабинет KARATOV: SUPABASE_URL указывает на wrong-host.supabase.co, а кабинет ждёт pkrsrwjrlurlfpdyixei.supabase.co — не тот .env или не тот MP_CABINET; клиент Supabase не создан» | 1 |
+| `MP_CABINET=karatov SUPABASE_URL=https://pkrsrwjrlurlfpdyixei.supabase.co/` → `banner(assert_env())` | «кабинет: KARATOV» | 0 |
+| без `MP_CABINET` и без `SUPABASE_URL` | «кабинет KARATOV: SUPABASE_URL не задан — заполните …/.env.karatov (или общий .env), на Render — переменные сервиса» | 1 |
+| `MP_CABINET=malimon`, `.env.malimon` с пустыми значениями | «кабинет РБХ Малимон: SUPABASE_URL не задан — заполните …/.env.malimon …» | 1 |
+| `MP_CABINET=malimon SUPABASE_URL=<база KARATOV>` | «кабинет РБХ Малимон: в cabinets/malimon.py не задан SUPABASE_HOST — … (окружение указывает на pkrsrwjrlurlfpdyixei.supabase.co)» | 1 |
+| `MP_CABINET=rbh` | «MP_CABINET='rbh': неизвестный кабинет; известны: karatov, malimon, popova» | 1 |
+| `run_daily_pipeline.py --help`, `alerts_telegram.py --dry-run --no-send --skip-snapshot`, `merge_telegram_export.py --help` с чужим хостом | та же строка guard, дальше не идут | 1 |
+
+Тесты: `tests/test_cabinet.py` — 18 (профиль по умолчанию; выбор `malimon` / `popova` без учёта регистра; неизвестный код; равенство схем трёх
+профилей; `data/logs` karatov как раньше; хост из URL в четырёх формах; guard — совпал / чужой (в строке оба хоста) / не задан / профиль без хоста /
+профиль с хостом принимает только свою базу / `.invalid` для всех трёх; overlay — кабинет главнее `.env`, пустая строка не затирает, оболочка не
+перезаписывается, karatov не читает `.env.malimon`; **точки входа** — список строится тем же правилом, что скрипт вставки (`create_client` / импорт клиента /
+`--apply` + `__main__` / команды `build_steps` / названные), у каждого есть `cabinet.assert_env(` и он раньше `create_client(`; guard в `finrez_nightly.sh`
+раньше сборки, баннер раньше «🚀 Запуск», баннер первой строкой `lines` алерта). Полный набор `venv/bin/python3 -m unittest discover -s tests`:
+**Ran 1189, OK (skipped=2)**, попыток открыть сеть 0 (`logs/tests_rbh1_s2.out`). `py_compile` всех 76 изменённых и 5 новых файлов — чисто.
+
+### Не сделано и почему
+
+- **§3** (перенос значений в профили, тест «литералов KARATOV / Топаз вне `cabinets/` и `tests/` нет», проверка чисел против `main`) — по задаче ждёт
+  мержей сорок четвёртой (Ozon, `report_finrez.py`) и четырнадцатой (WB, `report_finrez_wb.py`); на 22:10 UTC обе не слиты (`origin/main` = `54168a4`).
+  Когда сольются — строка владельцу «влить main?».
+- §4 отчёт-приёмка и мерж — после §3. §5 — после мержа, дважды (Малимон, Попова), каждый шаг по слову.
+
+### Вопросы (задача не закончена) — к четырём из блока §1 добавились
+
+5. `SHOP` для книг РБХ: «Малимон» / «Попова» или иное имя магазина? `DISPLAY_NAME` «РБХ Малимон» / «РБХ Попова» устраивает?
+6. Общие переменные РБХ (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) можно положить один раз в общий `~/mp-analytics-rbh/.env` — пустые строки в
+   `.env.malimon` / `.env.popova` их не затрут (проверено тестом). Если владельцу так удобнее — создать общий `.env` из двух строк по слову.
+
+---
 ## 2026-09-28 (вечер), первая задача RBH — §1 инвентаризация сделана (только чтение: Supabase 0 запросов, Seller / Performance / WB / Telegram / Render — 0 обращений, db_writes 0); `.env` РБХ создан по просьбе владельца в окне; §2 в работе
 
 Сессия RBH 1, worktree `~/mp-analytics-rbh`, ветка `multi-cabinet` = `origin/main` (`54168a4`), `git log origin/main..HEAD` пуст.

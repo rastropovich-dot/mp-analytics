@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -1127,6 +1129,7 @@ def build_message(target_date=None, skip_snapshot=False):
     intraday_alerts = build_intraday_alerts(current_snapshots)
 
     lines = [
+        cabinet.banner(CABINET),   # первая строка алерта: какой кабинет
         "📊 <b>MP Analytics Alerts</b>",
         f"Дата: {today_local().isoformat()}",
         "",

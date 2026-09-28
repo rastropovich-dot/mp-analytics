@@ -37,6 +37,8 @@ from dotenv import load_dotenv
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 GENERATOR = os.path.join(ROOT, "scripts", "report_ozon_month.py")
 REPORTS_DIR = os.path.join(ROOT, "data", "reports")

@@ -229,6 +229,9 @@ def build_steps(args=None):
         # изменены, обращений к API столько же.
         ("Ozon: загрузка FBS заказов", "python3 scripts/ozon_fbs_orders_step.py"),
         ("Ozon: загрузка FBO заказов", "python3 scripts/ozon_fbo_orders_step.py"),
+        # Каталог карточек: SKU базы без строки в ozon_products (новые товары) — карточки только недостающих, ≤ 2 обращения
+        # (info/list по 1 000 SKU + дерево категорий), запись upsert; нефатален по правилу FATAL_STEPS; итог — строкой в алерте (сорок третья §4).
+        ("Ozon: каталог, добор недостающих", "python3 scripts/ozon_catalog_topup_step.py"),
         ("Ozon: лог статусов отправлений", "python3 scripts/ozon_posting_status_log.py --apply"),
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
         ("Ozon: штуки выкупов", "python3 scripts/ozon_buyout_units_step.py"),

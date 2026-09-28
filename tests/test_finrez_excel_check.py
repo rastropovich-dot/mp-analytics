@@ -121,3 +121,19 @@ class Run(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_compare_divides_static_by_vat_for_net_articles(self):
+        st = x.static_ozon_buyouts(OZON_STATIC)
+        net = {a: {"апр": D("1.22"), "май": D("1.22"), "Общий итог": D("1.22")} for a in x.NET_ARTICLES}
+        table = x.compare(st, OZON_PIVOT, x.ARTICLES, article_header=True, net=net)
+        bad = [t for t in table if t[4]]
+        self.assertEqual(len(bad), 8)                                                       # 2 метки × 4 статьи: сводная с НДС ≠ статичное ÷ 1,22
+        self.assertEqual(bad[0][1] in x.NET_ARTICLES, True)
+        self.assertEqual([t for t in table if t[1] in ("Комиссия", "Товарооборот") and t[4]], [])
+
+    def test_vat_by_label_from_file_name(self):
+        v = x.vat_by_label("/x/finrez_2026-04_2026-09.xlsx")
+        self.assertEqual((v["апр"], v["сен"], v["Общий итог"]), (D("1.22"), D("1.22"), D("1.22")))
+        v = x.vat_by_label("/x/finrez_2025-11_2026-02.xlsx")
+        self.assertEqual((v["ноя"], v["дек"], v["янв"], v["фев"]), (D("1.20"), D("1.20"), D("1.22"), D("1.22")))
+

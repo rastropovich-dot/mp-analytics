@@ -1034,6 +1034,64 @@ def get_last_pipeline_run(client=None):
     return rows[0].get("payload") if rows else None
 
 
+CATALOG_STATE_KEY = "ozon_catalog_topup:last"    # пишет scripts/ozon_catalog_topup_step.py (сорок третья §4)
+FINREZ_STATE_KEY = "finrez_nightly:last"          # пишет scripts/finrez_nightly_status.py с машины владельца (сорок третья §5)
+STATE_MAX_AGE_HOURS = 20
+
+
+def get_state_payload(state_key, client=None):
+    """payload строки pipeline_runtime_state по ключу или None (нет строки / чтение не удалось)."""
+    try:
+        rows = ((client or supabase).table("pipeline_runtime_state").select("payload,updated_at")
+                .eq("state_key", state_key).limit(1).execute().data or [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"Не удалось прочитать {state_key}: {exc}")
+        return None
+    return rows[0].get("payload") if rows else None
+
+
+def _fresh(payload, now):
+    try:
+        finished = datetime.fromisoformat(str(payload.get("finished_at")))
+    except (TypeError, ValueError):
+        return None
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    return finished if now - finished <= timedelta(hours=STATE_MAX_AGE_HOURS) else False
+
+
+def catalog_line(payload, now=None):
+    """«каталог: без карточки N SKU (добрано M)» по итогу ночного шага; строки нет — шаг ещё не в проде, молчим; итог старый — говорим."""
+    if not payload:
+        return ""
+    now = now or datetime.now(timezone.utc)
+    fresh = _fresh(payload, now)
+    if fresh is False:
+        return f"каталог: записи за эту ночь нет (последняя — {str(payload.get('finished_at'))[:16]} UTC)"
+    text = f"каталог: без карточки {payload.get('missing_after', '?')} SKU (добрано {payload.get('written', 0)})"
+    if payload.get("error"):
+        text = "⚠️ " + text + f"; ошибка шага: {payload['error']}"
+    return text
+
+
+def finrez_book_line(payload, now=None):
+    """«книга Фин рез: собрана hh:mm UTC …» по итогу ночной сборки на машине владельца; строки нет — launchd не установлен, молчим."""
+    if not payload:
+        return ""
+    now = now or datetime.now(timezone.utc)
+    fresh = _fresh(payload, now)
+    if fresh is False:
+        return f"книга Фин рез: сегодняшней сборки нет (последняя — {str(payload.get('finished_at'))[:16]} UTC)"
+    if fresh is None:
+        return "⚠️ книга Фин рез: итог сборки не читается"
+    if payload.get("rc") not in (0, "0", None) or payload.get("error"):
+        return f"⚠️ книга Фин рез: сборка не удалась ({payload.get('error') or 'код ' + str(payload.get('rc'))})"
+    size = f"{int(payload.get('bytes') or 0):,}".replace(",", " ")
+    sha = str(payload.get("sha256") or "")[:12]
+    copy = f"копия {payload['copied']}" if payload.get("copied") else "копия не делалась"
+    return f"книга Фин рез: собрана {fresh.strftime('%H:%M')} UTC за {int(payload.get('seconds') or 0) // 60} мин, {size} байт, sha256 {sha}…; {copy}"
+
+
 def pipeline_run_line(run, now=None):
     """Одна строка про ночь: какие шаги не выполнены — или что итога нет. Всё прошло — пусто.
 
@@ -1076,6 +1134,9 @@ def build_message(target_date=None, skip_snapshot=False):
     run_line = pipeline_run_line(get_last_pipeline_run())
     if run_line:
         lines.extend([run_line, ""])
+    extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), finrez_book_line(get_state_payload(FINREZ_STATE_KEY))) if line]
+    if extra:
+        lines.extend(extra + [""])
 
     lines.extend(build_executive_summary(kpi_rows, target_date=target_date))
 

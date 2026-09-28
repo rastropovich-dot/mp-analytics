@@ -7,7 +7,7 @@
 Образец — книги владельца data/owner_finrez_ozon_buyouts.xlsx («Вывод данных») и data/owner_finrez_orders.xlsx («Свод»,
 «Коэффициенты»): это другой кабинет, числа не наши; приёмка — форма один в один и тождества с нашими листами. Листы:
 
-  «Данные Ozon выкупы»   строка на (дата, SKU): начисления с НДС, знак как в сводной владельца (списания < 0, товарооборот > 0),
+  «Данные Ozon выкупы»   строка на начисление × SKU × статья: оборот и комиссия с НДС, логистика / реклама / прочее / эквайринг без НДС по дате (запрос Power Query владельца), знак как в сводной владельца (списания < 0, товарооборот > 0),
                          Ст-ть продаж в себестоимости (штуки × СС снимка 1С × индекс СС), Соинвест (bonus + coinvestment), Штуки.
                          Источники: marketplace_buyouts; marketplace_expenses по SKU; реклама — Performance по SKU (ad_spend витрины,
                          решение 5); леджер начислений без SKU — строкой «(без SKU)» на день: реклама 41 + 54 минус Performance по SKU,
@@ -236,6 +236,52 @@ Long = namedtuple("Long", "accrual_id date article sku qty kind brand_cc month c
 # key — ключ статьи для сводных (turnover / commission / logistics / ads / acquiring / other); в лист не пишется
 OWNER_ARTICLE = {"turnover": "Товарооборот", "commission": "Комиссия", "logistics": "Логистика", "ads": "Реклама", "acquiring": "Эквайринг", "other": "Прочее"}
 WIDE_KEYS = ("turnover", "commission", "logistics", "ads", "acquiring", "other")
+# Четыре статьи расходов на листе «Данные Ozon выкупы» — БЕЗ НДС по дате начисления, оборот и комиссия — с НДС: так в запросе Power Query
+# образца владельца («Фин начисления», customXml → DataMashup → Section1.m: Логистика / Реклама / Прочее / Эквайринг ÷ 1,22), и только на таком
+# источнике верны его формулы рядом со сводной (W = −D, Y = −H, AA = −L, AC = −F, S = (P − Q) / 1,22). Внутренние строки (статичные листы,
+# тождества, pivot_buyouts) остаются с НДС — иначе НДС снялся бы дважды (сорок третья §2).
+NET_KINDS = tuple(OWNER_ARTICLE[k] for k in ("logistics", "ads", "acquiring", "other"))
+
+
+def long_rows_for_sheet(long_rows):
+    """Строки для листа «Данные Ozon выкупы»: у статей NET_KINDS «Начисления» делятся на ставку НДС по дате начисления (vat_for), знак
+    прежний, без округления (Σ листа × ставка = Σ с НДС до копейки); остальные строки — как есть; себестоимость не трогается (снимок 1С без НДС)."""
+    out = []
+    for r in long_rows:
+        if r.kind in NET_KINDS and r.amount:
+            out.append(r._replace(amount=r.amount / vat_for(r.date)))
+        else:
+            out.append(r)
+    return out
+
+
+def vat_split_check(long_rows, sheet_rows):
+    """Контроль деления по (месяц, статья): Σ «Начисления» листа × ставка по дате = Σ внутренних строк с НДС.
+    Возвращает [(месяц, статья, Σ с НДС, Σ листа × НДС, разница)] с разницей ≠ 0,00."""
+    a, b = defaultdict(Decimal), defaultdict(Decimal)
+    for r in long_rows:
+        a[(r.month_num, r.month, r.kind)] += r.amount
+    for r in sheet_rows:
+        b[(r.month_num, r.month, r.kind)] += r.amount * (vat_for(r.date) if r.kind in NET_KINDS else Decimal(1))
+    out = []
+    for k in sorted(set(a) | set(b)):
+        d = (a[k] - b[k]).quantize(Decimal("0.01"))
+        if d:
+            out.append((k[1], k[2], q(a[k]), q(b[k]), d))
+    return out
+
+
+def vat_split_table(long_rows, sheet_rows):
+    """Для отчёта: по (месяц, статья из NET_KINDS) — Σ с НДС, Σ листа (без НДС), Σ листа × НДС."""
+    a, b, bx = defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal)
+    for r in long_rows:
+        if r.kind in NET_KINDS:
+            a[(r.month_num, r.month, r.kind)] += r.amount
+    for r in sheet_rows:
+        if r.kind in NET_KINDS:
+            b[(r.month_num, r.month, r.kind)] += r.amount
+            bx[(r.month_num, r.month, r.kind)] += r.amount * vat_for(r.date)
+    return [(k[1], k[2], q(a[k]), q(b[k]), q(bx[k]), (a[k] - bx[k]).quantize(Decimal("0.01"))) for k in sorted(set(a) | set(b))]
 SHOP = "KARATOV"
 
 
@@ -1322,7 +1368,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
             r_cols = write_pivot_block(g, r_cols, name or "(без признака)", piv[name], order) + 1
         _grid_sheet(wb, title, g, freeze="B2")
     lap("сводные выкупов")
-    n_long = write_data_sheet(wb, "Данные Ozon выкупы", LONG_COLS, long_rows, widths={13: 48})
+    n_long = write_data_sheet(wb, "Данные Ozon выкупы", LONG_COLS, long_rows_for_sheet(long_rows), widths={13: 48})   # четыре статьи без НДС (сорок третья §2)
     lap("Данные Ozon выкупы")
     if wb_parts and not wb_parts.get("error"):
         # форма владельца, как у Ozon (тридцать девятая §2): месяцы, дни последнего месяца, «Общий итог»; блоки по бренду / категории
@@ -1577,7 +1623,9 @@ def main(argv=None):
                     f"Категория — карточка Ozon ({catalog_source}); бренд — по первой букве артикула (T — Топаз, иначе KARATOV)."
                     + (f" Дней без сырья рекламы: {bstats['days_without_raw_ads']}." if bstats.get("days_without_raw_ads") else "")],
         "buyout_data": ["Длинный формат кэша сводной владельца: строка на начисление × SKU × статья; 15 его полей по порядку, справа наши «Соинвест» и «Площадка». "
-                        "Знак как в его сводной: списания отрицательные, товарооборот и себестоимость положительные; суммы с НДС.",
+                        "Знак как в его сводной: списания отрицательные, товарооборот и себестоимость положительные. НДС — как в запросе Power Query владельца «Фин начисления»: "
+                        "Логистика, Реклама, Прочее и Эквайринг — без НДС по дате начисления (ставка проекта по дате), Товарооборот и Комиссия — с НДС; "
+                        "себестоимость — снимок 1С, уже без НДС, не делится.",
                         "ID начисления — accrual_id ответа /v1/finance/accrual/by-day; пусто у строк рекламы Performance по SKU и у строк остатка дня «(без SKU)» "
                         "(леджер 41 + 54 минус Performance по SKU; для прочих статей — цель листа месяца минус Σ строк дня"
                         + (f": {residual_note}" if residual_note else ": по всем статьям, кроме рекламы, остаток 0,00 на всех днях") + ").",
@@ -1727,6 +1775,13 @@ def main(argv=None):
     print(f"тождество «Данные Ozon выкупы» → «Выкупы Ozon» (Σ Начисления по (метка, статья), Σ Ст-ть продаж = Себестоимость): "
           f"{'да' if not bad_identity else 'НЕТ ' + str(bad_identity[:6])}")
     code = 1 if bad_identity else code
+    sheet_rows = long_rows_for_sheet(long_rows)
+    vat_bad = vat_split_check(long_rows, sheet_rows)
+    print("НДС на листе «Данные Ozon выкупы» (Логистика / Реклама / Прочее / Эквайринг без НДС по дате, оборот и комиссия с НДС): "
+          f"Σ листа × ставка = Σ с НДС по (месяц, статья) — {'да, расхождений 0' if not vat_bad else 'НЕТ ' + str(vat_bad[:6])}")
+    for month, kind, gross, net, net_x, diff in vat_split_table(long_rows, sheet_rows):
+        print(f"  {month:>4} {kind:<12} с НДС {gross:>16,.2f}  лист {net:>16,.2f}  × НДС {net_x:>16,.2f}  разница {diff:>8,.2f}")
+    code = 1 if vat_bad else code
     if order_data_rows is not None:
         # §2.3 (в): Σ Выкуплено / Σ Выручка по площадке = коэффициенту площадки
         for mp_ in ("Ozon", "WB"):

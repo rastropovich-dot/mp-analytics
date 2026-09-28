@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Ночная сборка книги «Фин рез» на машине владельца (сорок третья §5). Не установлен: установка по слову владельца —
+         cp ops/launchd/com.mp-analytics.finrez-nightly.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mp-analytics.finrez-nightly.plist
+         Снять: launchctl bootout gui/$(id -u)/com.mp-analytics.finrez-nightly. Время — 06:00 по часам Mac (МСК), ночь Render кончается ~05:10 МСК. -->
+    <key>Label</key>
+    <string>com.mp-analytics.finrez-nightly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mihaileliseev/mp-analytics/scripts/finrez_nightly.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/mihaileliseev/mp-analytics</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- путь папки владельца для копии книги; пусто — копия пропускается с записью в лог -->
+        <key>FINREZ_COPY_DIR</key>
+        <string></string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>ru_RU.UTF-8</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/mihaileliseev/mp-analytics/logs/finrez_nightly/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mihaileliseev/mp-analytics/logs/finrez_nightly/launchd.err.log</string>
+</dict>
+</plist>

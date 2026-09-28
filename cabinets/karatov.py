@@ -5,6 +5,8 @@ from decimal import Decimal
 CODE = "karatov"
 DISPLAY_NAME = "KARATOV"
 GROUP = "KARATOV"                                   # чья группа Telegram / чей набор кабинетов
+OZON_LEGAL_NAME = None                              # юрлицо кабинета Ozon — не измерено
+WB_LEGAL_NAME = "ООО «ГОЛДСТАРТ»"                    # seller-info WB (двенадцатая WB, 2026-09-28)
 SHOP = "KARATOV"                                    # колонка «Магазин» книги «Фин рез» (report_finrez.py:285, report_finrez_wb.py:69)
 SUPABASE_HOST = "pkrsrwjrlurlfpdyixei.supabase.co"  # хост SUPABASE_URL (не секрет); cabinet.assert_env сверяет с окружением
 DATA_DIR = "data"                                   # как было: data/ и logs/ в корне

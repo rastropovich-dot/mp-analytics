@@ -1,8 +1,8 @@
 """Профиль кабинета и защита от перепутывания баз (первая задача RBH, §2; дополнение 09-28).
 
 Один код — несколько кабинетов. Кабинет выбирает переменная окружения MP_CABINET: «karatov» (по умолчанию, когда не задана, —
-KARATOV ничего не замечает), «malimon», «popova» (РБХ, по юрлицам; у каждого пара Ozon + WB, своя база Supabase, свой сервис
-Render, одна группа Telegram на двоих — кабинет пишется в заголовке). Профиль — модуль cabinets/<код>.py, в нём только
+KARATOV ничего не замечает), «rbh1», «rbh2» (РБХ-1: Ozon Попова + WB ИП Рафикова; РБХ-2: Ozon Малимон + WB ИП Плахов; у каждого своя база
+Supabase и свой сервис Render, одна группа Telegram на двоих — кабинет пишется в заголовке). Профиль — модуль cabinets/<код>.py, в нём только
 несекретное: имена, правила артикулов, константы листов владельца, каталоги данных и логов, ожидаемый хост Supabase. Секреты
 живут в .env / .env.<код> / переменных сервиса Render и в профиль не попадают.
 
@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ENV_VAR = "MP_CABINET"
 DEFAULT_CODE = "karatov"
-KNOWN_CODES = ("karatov", "malimon", "popova")
+KNOWN_CODES = ("karatov", "rbh1", "rbh2")
 TEST_HOST_SUFFIX = ".invalid"
 
 

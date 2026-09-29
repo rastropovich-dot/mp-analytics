@@ -28,6 +28,7 @@ _spec = importlib.util.spec_from_file_location("report_finrez_wb", os.path.join(
 fw = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(fw)
 wbm = fw.wbm
 from loaders import keyset  # noqa: E402
+from loaders import wb_money_rules as rules  # noqa: E402
 
 Z = Decimal(0)
 MONTH_SHEETS = {"04": "апрель", "05": "май", "06": "июнь", "07": "июль", "08": "август", "09": "сентябрь"}
@@ -139,6 +140,14 @@ def deduction_kind(bonus):
     return "other"
 
 
+def add_advance_net(acc, raw):
+    """WB-14: нетто аванса «Баллы за отзывы» — в день возврата (rules.review_advance_net по строкам окна сырья)."""
+    net, _open = rules.review_advance_net([r for r in raw if r.get("bonus_type_name")], wbm.row_day)
+    for day, v in net.items():
+        acc[day]["advance_net"] += v
+    return acc
+
+
 def raw_by_day(raw):
     """По дню продажи МСК (row_day): суммы полей, комиссия разными полями, удержания по видам; плюс оборот по rrDate и по UTC-дню."""
     acc = defaultdict(lambda: defaultdict(Decimal))
@@ -173,6 +182,8 @@ def raw_by_day(raw):
         if ded:
             a["ded_total"] += ded
             a["ded_" + deduction_kind(r.get("bonus_type_name"))] += ded
+            if rules.classify_deduction(r.get("bonus_type_name")) == rules.OTHER:
+                a["ded_rules_other"] += ded                          # WB-14: вид «прочее» (в «Прочее» входит)
     return acc
 
 
@@ -195,7 +206,9 @@ def candidates(day, o, w, vat):
                   "хранение/НДС + штрафы + удержания/НДС («WB - месяц»)": w["storage"] / vat + w["penalty"] + w["ded_total"] / vat,
                   "хранение/НДС + штрафы + (удержания − Продвижение − аванс)/НДС": w["storage"] / vat + w["penalty"] + ded_real / vat,
                   "хранение/НДС + штрафы + (удержания − Продвижение)/НДС": w["storage"] / vat + w["penalty"] + (w["ded_total"] - w["ded_promo"]) / vat,
-                  "хранение/НДС + штрафы/НДС + (удержания − Продвижение − аванс)/НДС": (w["storage"] + w["penalty"] + ded_real) / vat},
+                  "хранение/НДС + штрафы/НДС + (удержания − Продвижение − аванс)/НДС": (w["storage"] + w["penalty"] + ded_real) / vat,
+                  "«WB - месяц» WB-14: хранение/НДС + штрафы + (удержания «прочее» + нетто аванса)/НДС":
+                      w["storage"] / vat + w["penalty"] + (w["ded_rules_other"] + w["advance_net"]) / vat},
         "fin": {"форма Y": f["Y"]},
     }
 
@@ -255,7 +268,8 @@ def main(argv=None):
         rows = fw.build_rows(months[0], months[-1], None, sb)
     ours = ours_by_day(rows)
     d1, d2 = f"{months[0]}-01", wbm.window_end(fw.month_bounds(months[0], months[-1], None)[1])
-    raw = raw_by_day(load_raw(sb, "2026-03-25", d2, a.raw_json))
+    raw_rows = load_raw(sb, "2026-03-25", d2, a.raw_json)
+    raw = add_advance_net(raw_by_day(raw_rows), raw_rows)
     print(f"наши строки: {len(rows)}, дней {len(ours)}; сырьё по дням: {len(raw)}")
     table, per_day = compare(months, his, ours, raw)
     # по колонкам: помесячно для формы и лучшего кандидата

@@ -119,8 +119,33 @@ class Run(unittest.TestCase):
         self.assertTrue(lines[0].startswith("Excel недоступен"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class SideColumns(unittest.TestCase):
+    """Сорок четвёртая §3: все колонки сбоку обеих сводных сверяются со статичными листами — P … AE у Ozon, K … Z у WB, без дыр."""
+
+    def letters(self, a, b):
+        return [x.col_letters(i) for i in range(x.col_index(a), x.col_index(b) + 1)]
+
+    def test_ozon_and_wb_side_columns_are_contiguous(self):
+        self.assertEqual(list(x.OZON_FORMULA_COLS), self.letters("P", "AE"))
+        self.assertEqual(list(x.WB_FORMULA_COLS), self.letters("K", "Z"))
+        self.assertEqual(len(x.OZON_FORMULA_COLS), 16)
+        self.assertEqual(len(x.WB_FORMULA_COLS), 16)
+        self.assertEqual(len(set(x.OZON_FORMULA_COLS.values())), 16)                    # шапки статичного листа не повторяются
+        self.assertEqual(len(set(x.WB_FORMULA_COLS.values())), 16)
+
+    def test_pct_columns_are_six_per_pivot(self):
+        self.assertEqual([c for c, h in x.OZON_FORMULA_COLS.items() if x.is_pct(h)], ["R", "V", "X", "Z", "AB", "AE"])
+        self.assertEqual([c for c, h in x.WB_FORMULA_COLS.items() if x.is_pct(h)], ["M", "Q", "S", "U", "W", "Z"])
+        self.assertFalse(x.is_pct("Фин. рез., руб."))
+
+    def test_base_diff_only_ozon_drr(self):
+        self.assertEqual(list(x.BASE_DIFF), [("Сводная Ozon выкупы", "Z")])
+        self.assertEqual(x.OZON_FORMULA_COLS["Z"], "% ДРР")
+        self.assertIn("оборот", x.BASE_DIFF[("Сводная Ozon выкупы", "Z")])
+
+
+class Vat(unittest.TestCase):
+    """Сорок третья §2 (перенесены в класс сорок четвёртой: лежали после `if __name__` и не запускались)."""
 
     def test_compare_divides_static_by_vat_for_net_articles(self):
         st = x.static_ozon_buyouts(OZON_STATIC)
@@ -136,4 +161,8 @@ if __name__ == "__main__":
         self.assertEqual((v["апр"], v["сен"], v["Общий итог"]), (D("1.22"), D("1.22"), D("1.22")))
         v = x.vat_by_label("/x/finrez_2025-11_2026-02.xlsx")
         self.assertEqual((v["ноя"], v["дек"], v["янв"], v["фев"]), (D("1.20"), D("1.20"), D("1.22"), D("1.22")))
+
+
+if __name__ == "__main__":
+    unittest.main()
 

@@ -354,8 +354,12 @@ def sums_for_articles(path, articles):
 
 
 WB_BLOCK = {h: h for h in ("Продажи, ₽", "Реклама, ₽", "Комиссия, ₽", "Логистика, ₽", "Себес-ть, ₽", "Хранение, ₽", "Ост.расходы и компенсации МП, ₽")}
-OZON_FORMULA_COLS = {"P": "Оборот (с НДС)", "Q": "Комиссия (с НДС), руб.", "S": "Выручка, руб. (без НДС)", "T": "Себестоимость, руб.", "U": "Маржа, руб.",
-                     "W": "Логистика, руб. (без НДС)", "Y": "Реклама, руб. (без НДС)", "AA": "Эквайринг, руб. (без НДС)", "AC": "Прочее, руб. (без НДС)", "AD": "Фин. рез., руб."}
+# сорок четвёртая §3: все 16 колонок сбоку каждой сводной (деньги до 0,01, проценты до 0,01 п. п.) против одноимённых колонок статичного листа
+OZON_FORMULA_COLS = {"P": "Оборот (с НДС)", "Q": "Комиссия (с НДС), руб.", "R": "Комиссия, %", "S": "Выручка, руб. (без НДС)", "T": "Себестоимость, руб.", "U": "Маржа, руб.",
+                     "V": "Мар-ть, %", "W": "Логистика, руб. (без НДС)", "X": "% Логистики", "Y": "Реклама, руб. (без НДС)", "Z": "% ДРР", "AA": "Эквайринг, руб. (без НДС)",
+                     "AB": "% Эквайринга", "AC": "Прочее, руб. (без НДС)", "AD": "Фин. рез., руб.", "AE": "% Фин. рез."}
+# колонки, где формула владельца и статичный лист считают от РАЗНОЙ базы: расхождение ожидаемо, печатается с числами, в итог проверки не идёт
+BASE_DIFF = {("Сводная Ozon выкупы", "Z"): "Z = Y / S — реклама к выручке без НДС (P − Q) / 1,22; «% ДРР» листа «Выкупы Ozon» — реклама к обороту без НДС, как на «Ozon - месяц»"}
 NET_ARTICLES = ("Логистика", "Реклама", "Прочее", "Эквайринг")     # на листе «Данные Ozon выкупы» без НДС (сорок третья §2) — в сводной тоже
 MONTH_NUM = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
 
@@ -371,7 +375,16 @@ def vat_by_label(path):
         out[lab] = vat_for(f"{year}-{n:02d}-01")
     out["Общий итог"] = vat_for(f"{y2}-{m2:02d}-01")
     return out
-WB_FORMULA_COLS = {"K": "Оборот (с НДС)", "L": "Комиссия (с НДС), руб.", "N": "Выручка, руб. (без НДС)", "O": "Себестоимость, руб.", "P": "Маржа, руб.", "Y": "Фин. рез., руб."}
+WB_FORMULA_COLS = {"K": "Оборот (с НДС)", "L": "Комиссия (с НДС), руб.", "M": "Комиссия, %", "N": "Выручка, руб. (без НДС)", "O": "Себестоимость, руб.", "P": "Маржа, руб.",
+                   "Q": "Мар-ть, %", "R": "Логистика, руб. (без НДС)", "S": "% Логистики", "T": "Реклама, руб. (без НДС)", "U": "% ДРР", "V": "Эквайринг, руб.",
+                   "W": "% Эквайринга", "X": "Прочее, руб. (без НДС)", "Y": "Фин. рез., руб.", "Z": "% Фин. рез."}   # V — восьмое поле сводной (I) / 1,22 (сорок четвёртая §2)
+
+
+def is_pct(name):
+    """Процентная колонка формы («Комиссия, %», «% ДРР», «Мар-ть, %») — сравнивается до 0,01 п. п., деньги — до копейки."""
+    return "%" in str(name)
+
+
 FOREIGN = ("Pastel", "FLAMINGO", "DEXCLUSIVE", "Carbon", "CATRICE", "MAKEUP REVOLUTION")
 
 
@@ -380,6 +393,15 @@ def col_index(letters):
     for ch in letters:
         n = n * 26 + ord(ch) - 64
     return n
+
+
+def col_letters(n):
+    """Обратное к col_index: 1 → A, 27 → AA."""
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
 
 
 def data_uniques(path):
@@ -581,7 +603,7 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
         except ExcelError as e:
             rec("Сводная заказы: вычисляемые поля", False, str(e))
         # сорок вторая §2: фильтры страниц «(Все)», все статьи в столбцах, все поля данных; чужих элементов нет
-        for sheet, static_sheet, n_data, col_field in (("Сводная Ozon выкупы", "Выкупы Ozon", 2, "Статьи Озон.Вид затрат"), ("Сводная WB выкупы", "Выкупы WB", 7, None), ("Сводная заказы", "Заказы", 13, "МП")):
+        for sheet, static_sheet, n_data, col_field in (("Сводная Ozon выкупы", "Выкупы Ozon", 2, "Статьи Озон.Вид затрат"), ("Сводная WB выкупы", "Выкупы WB", 8, None), ("Сводная заказы", "Заказы", 13, "МП")):
             try:
                 # «current page» у Excel for Mac после сброса состояния — missing value у всех полей, а в сетке WB стояло «сен» (маленькая книга
                 # S7, 2026-09-27): верить ячейкам области страниц (page range), не свойству
@@ -650,13 +672,11 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                 lab_rows, hdr = find_labels(grid)
                 first_row = int(re.match(r"\$?[A-Z]+\$?(\d+)", ex(f'return get address of table range2 of pivot table 1 of sheet {q(sheet)} of active workbook', 60)).group(1))
                 a, b = below_cols.split(":")
-                # у WB столбец V «Эквайринг, руб.» — ячейка ввода владельца (в образце пусто, формулы нет), в сводной пусто; Y = P − R − T − V − X,
-                # поэтому ожидаемый Y = «Фин. рез.» статичного листа + его «Эквайринг» (прогон 09-27: 7 расхождений ровно на эквайринг)
                 # у Ozon формулы владельца W / Y / AA / AC = −D / −H / −L / −F верны на источнике без НДС у четырёх статей (сорок третья §2): лист
                 # «Данные Ozon выкупы» их делит по дате, поэтому W … AC и AD сводной = колонкам «без НДС» и «Фин. рез.» статичного листа
-                extra_cols = ("Эквайринг, руб.",) if static_sheet == "Выкупы WB" else ()
+                extra_cols = ()
                 st = static_by_header(read_sheet(path, static_sheet), 3 if static_sheet == "Выкупы Ozon" else 2, tuple(cols.values()) + extra_cols)
-                bad, n = [], 0
+                bad, base, n, april = [], [], 0, {}
                 for lab, i in lab_rows.items():
                     if lab not in st:
                         continue
@@ -668,17 +688,21 @@ def run(path, articles=None, mp="Ozon", timeout=600, run_=None, out=print, attac
                         got, exp = dec(vals[j]) if j < len(vals) else None, st[lab].get(static_name)
                         if exp is None:
                             continue
-                        if static_sheet == "Выкупы WB" and col == "Y":
-                            exp = exp + (st[lab].get("Эквайринг, руб.") or Z)
                         n += 1
-                        diff = ((got or Z) - exp)
-                        diff = diff.quantize(Decimal("0.0001")) if static_name.endswith("%") else diff.quantize(Decimal("0.01"))
-                        if diff:
+                        step = Decimal("0.0001") if is_pct(static_name) else Decimal("0.01")
+                        diff = ((got or Z) - exp).quantize(step)
+                        if lab == "апр":
+                            april[col] = (got.quantize(step) if got is not None else None, exp.quantize(step), diff)     # сводная | лист | разница — таблица §3
+                        if diff and (sheet, col) in BASE_DIFF:
+                            base.append((lab, col, static_name, got, exp, diff))
+                        elif diff:
                             bad.append((lab, col, static_name, got, exp, diff))
                 last = first_row + max(lab_rows.values())
                 below = ex(f'return value of range "{a}{last + 1}:{b}{last + 3}" of sheet {q(sheet)} of active workbook', 60)
                 nonempty = [v for row in (below if isinstance(below, list) else [below]) for v in (row if isinstance(row, list) else [row]) if v not in (None, "")]
-                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; Y сверен с «Фин. рез.» + «Эквайринг» — V у владельца ввод, в сводной пусто" if static_sheet == "Выкупы WB" else "; W / Y / AA / AC и AD — против колонок «без НДС» и «Фин. рез.» статичного листа"))
+                base_note = "".join(f"; разная база ({len([t for t in base if t[1] == c])} сравнений, в итог не идёт) {c}: {why}" for (sh, c), why in BASE_DIFF.items() if sh == sheet)
+                rec(f"{sheet}: формулы владельца = «{static_sheet}»", not bad and not nonempty, f"сравнений {n} (месяцы и итог × {len(cols)}), расхождений {len(bad)}" + (f": {bad[:5]}" if bad else "") + f"; под таблицей непустых {len(nonempty)}" + ("; V и Y — против «Эквайринг, руб.» и «Фин. рез.» статичного листа" if static_sheet == "Выкупы WB" else "; W / Y / AA / AC и AD — против колонок «без НДС» и «Фин. рез.» статичного листа")
+                    + base_note + f"; апрель (сводная | лист | разница): {{{', '.join(f'{k}: {v[0]} | {v[1]} | {v[2]}' for k, v in april.items())}}}")
             except Exception as e:  # noqa: BLE001
                 rec(f"{sheet}: формулы владельца = «{static_sheet}»", False, f"{type(e).__name__}: {e}")
         # раскрытие месяца на «Сводная WB выкупы»

@@ -23,9 +23,10 @@
     </dict>
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- путь папки владельца для копии книги; пусто — копия пропускается с записью в лог -->
+        <!-- путь папки владельца для копии книги (получен 2026-09-28, сорок четвёртая §4); пусто — копия пропускается с записью в лог;
+             папки нет — шаг копии даёт ошибку в итоге сборки, книга при этом собрана -->
         <key>FINREZ_COPY_DIR</key>
-        <string></string>
+        <string>/Users/mihaileliseev/Library/Mobile Documents/com~apple~CloudDocs/Фин рез</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>LANG</key>

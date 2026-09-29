@@ -46,11 +46,14 @@ CT = {
 }
 SPECS = [
     # ncols — колонки ИСТОЧНИКА владельца: поля кэша без fieldGroup («Дни …» / «Месяцы» — группировка сводной по дате, Excel строит их сам)
-    {"owner": "data/owner_finrez_ozon_buyouts_pivot.xlsx", "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 13},
-    {"owner": "data/owner_finrez_wb_buyouts_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 14},
+    {"owner": "data/owner_finrez_ozon_buyouts_pivot.xlsx", "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 13, "data_fields": 2},
+    # WB: 14 колонок владельца + наша «Эквайринг, ₽» пятнадцатой (O) — восьмое поле значений сводной, колонка V читает его (сорок четвёртая §2);
+    # «Месяцы» (группировка) в источник не попадают, наши остальные колонки — правее O
+    {"owner": "data/owner_finrez_wb_buyouts_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 15,
+     "extra_field": {"name": "Эквайринг, ₽", "index": 14}, "data_fields": 8},
     # заказы: 21 колонка источника (Дата … День); «Месяцы» — группировка, «Маржа …» … «Фин.рез %» (8) — ВЫЧИСЛЯЕМЫЕ поля сводной (formula в кэше),
     # Excel считает их сам из полей источника по именам; в нашем листе одноимённые колонки остаются справа от ref справочно
-    {"owner": "data/owner_finrez_orders_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 21},
+    {"owner": "data/owner_finrez_orders_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 21, "data_fields": 13},
 ]
 
 
@@ -271,6 +274,43 @@ def _merge_numfmts_dxfs(our_styles, owner_styles):
     return our_styles, offset, numfmt_map
 
 
+def add_data_field(pt_xml, cd_xml, name, index):
+    """Восьмое (и т. д.) поле значений сводной из колонки источника, которой у владельца не было (сорок четвёртая §2: «Эквайринг, ₽» у WB).
+    Кэш: cacheField name числовой (sharedItems с атрибутами типа, как у соседей) на позиции index среди полей — до полей группировки
+    (databaseField="0"), поэтому их номера и ссылки на них (fieldGroup par / base) сдвигаются на 1. Сводная: pivotField dataField на той же
+    позиции (номера полей в rowFields / colFields / pageFields / dataFields ≥ index сдвигаются; номера ЭЛЕМЕНТОВ в items / rowItems / colItems
+    не трогаются), dataField sum последним, colItems — элементом с номером нового поля, location — на колонку шире."""
+    fields = re.findall(r'<cacheField\b[^>]*?(?:/>|>.*?</cacheField>)', cd_xml, re.S)
+    if index > len(fields) or any(re.search(r'name="%s"' % re.escape(name), f) for f in fields):
+        raise SystemExit(f"add_data_field: поле «{name}» уже есть или index {index} вне полей ({len(fields)})")
+    def shift_cd(m):
+        n = int(m.group(2)); return f'{m.group(1)}="{n + 1 if n >= index else n}"'
+    fields = [re.sub(r'\b(par|base)="(\d+)"', shift_cd, f) for f in fields]
+    fields.insert(index, f'<cacheField name="{escape(name)}" numFmtId="0"><sharedItems containsString="0" containsBlank="1" containsNumber="1" minValue="0" maxValue="0"/></cacheField>')
+    cd_xml = re.sub(r'<cacheFields count="\d+">.*?</cacheFields>', lambda m: f'<cacheFields count="{len(fields)}">' + "".join(fields) + "</cacheFields>", cd_xml, count=1, flags=re.S)
+    pfs = re.findall(r'<pivotField\b[^>]*?(?:/>|>.*?</pivotField>)', pt_xml, re.S)
+    pfs.insert(index, '<pivotField dataField="1" showAll="0"/>')
+    pt_xml = re.sub(r'<pivotFields count="\d+">.*?</pivotFields>', lambda m: f'<pivotFields count="{len(pfs)}">' + "".join(pfs) + "</pivotFields>", pt_xml, count=1, flags=re.S)
+    def shift_field(m):
+        n = int(m.group(2)); return f'{m.group(1)}="{n + 1 if n >= index else n}"'
+    for tag in ("rowFields", "colFields"):
+        pt_xml = re.sub(rf'<{tag}\b.*?</{tag}>', lambda m: re.sub(r'\b(x)="(-?\d+)"', lambda mm: shift_field(mm) if int(mm.group(2)) >= 0 else mm.group(0), m.group(0)), pt_xml, count=1, flags=re.S)
+    pt_xml = re.sub(r'<pageFields\b.*?</pageFields>', lambda m: re.sub(r'\b(fld)="(\d+)"', shift_field, m.group(0)), pt_xml, count=1, flags=re.S)
+    pt_xml = re.sub(r'<dataFields\b.*?</dataFields>', lambda m: re.sub(r'\b(fld)="(\d+)"', shift_field, m.group(0)), pt_xml, count=1, flags=re.S)
+    n_df = int(re.search(r'<dataFields count="(\d+)"', pt_xml).group(1)) + 1
+    pt_xml = re.sub(r'<dataFields count="\d+">(.*?)</dataFields>',
+                    lambda m: f'<dataFields count="{n_df}">' + m.group(1) + f'<dataField name=" {escape(name)}" fld="{index}" baseField="0" baseItem="0"/></dataFields>',
+                    pt_xml, count=1, flags=re.S)
+    if "<colItems" in pt_xml:
+        pt_xml = re.sub(r'<colItems count="(\d+)">(.*?)</colItems>',
+                        lambda m: f'<colItems count="{int(m.group(1)) + 1}">' + m.group(2) + f'<i i="{n_df - 1}"><x v="{n_df - 1}"/></i></colItems>', pt_xml, count=1, flags=re.S)
+    def widen(m):
+        c1, r1, c2, r2 = m.group(1), m.group(2), m.group(3), m.group(4)
+        return f'<location ref="{c1}{r1}:{col_letter(col_index(c2) + 1)}{r2}"'
+    pt_xml = re.sub(r'<location ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"', widen, pt_xml, count=1)
+    return pt_xml, cd_xml
+
+
 def reset_pivot_state(pt_xml):
     """Сохранённое состояние сводной второго кабинета — снять (сорок вторая §2): pageField без выбранного item («(Все)»), h="1" нигде (скрытых
     элементов нет), поля столбцов — sortType="ascending" (порядок колонок под формулы владельца). items полей осей, rowItems и colItems владельца ОСТАЮТСЯ: вариант «items → <item t="default"/>, rowItems / colItems сняты»
@@ -322,6 +362,7 @@ FORMULAS = {
         ("K", 'IF(B{r}="","",B{r})'), ("L", 'IF(C{r}="","",C{r})'), ("M", 'IFERROR(IF(K{r}="","",L{r}/K{r}),"")'), ("N", 'IF(K{r}="","",(K{r}-L{r})/1.22)'),
         ("O", 'IF(D{r}="","",D{r})'), ("P", 'IF(N{r}="","",N{r}-O{r})'), ("Q", 'IFERROR(IF(N{r}="","",P{r}/N{r}),"")'), ("R", 'IF(N{r}="","",(F{r}+G{r})/1.22)'),
         ("S", 'IFERROR(IF(N{r}="","",R{r}/N{r}),"")'), ("T", 'IF(N{r}="","",E{r}/1.22)'), ("U", 'IFERROR(IF(N{r}="","",T{r}/N{r}),"")'),
+        ("V", 'IF(N{r}="","",I{r}/1.22)'),                      # эквайринг — восьмое поле сводной (I, с НДС) без НДС, как R / T / X владельца (сорок четвёртая §2)
         ("W", 'IFERROR(IF(N{r}="","",V{r}/N{r}),"")'), ("X", 'IF(N{r}="","",H{r}/1.22)'), ("Y", 'IF(N{r}="","",P{r}-R{r}-T{r}-V{r}-X{r})'),
         ("Z", 'IFERROR(IF(N{r}="","",Y{r}/N{r}),"")')]},
 }
@@ -343,7 +384,7 @@ def write_formulas(sheet_xml, spec, rows=FORMULA_ROWS):
     r0, r1 = spec["first_row"], spec["first_row"] + rows - 1
     style_of = {}
     for c in cols:
-        m = re.search(rf'<c r="{c}\d+"([^>]*)>\s*<f\b', sheet_xml)
+        m = re.search(rf'<c r="{c}\d+"([^>]*)>\s*<f\b', sheet_xml) or re.search(rf'<c r="{c}{r0}"([^>]*?)/?>', sheet_xml)   # без формулы (V у WB — ввод) — стиль ячейки first_row
         if m and re.search(r's="(\d+)"', m.group(1)):
             style_of[c] = re.search(r's="(\d+)"', m.group(1)).group(1)
     colset = set(cols)
@@ -427,7 +468,6 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
         pt_xml = reset_pivot_state(remap_formats(oz.read(parts["pivot"]).decode("utf-8"), dxf_offset, numfmt_map))
         cache_id = re.search(r'<pivotTableDefinition[^>]*\scacheId="(\d+)"', pt_xml).group(1)
         pt_part = f"xl/pivotTables/pivotTable{k}.xml"
-        new_parts[pt_part] = pt_xml.encode("utf-8")
         new_parts[f"xl/pivotTables/_rels/pivotTable{k}.xml.rels"] = (
             f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="{NS_PKG}"><Relationship Id="rId1" '
             f'Type="{REL}pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition{k}.xml"/></Relationships>').encode()
@@ -436,6 +476,9 @@ def transplant(book, out, specs=SPECS, row_counts=None, date_range=None):
         cd_xml = re.sub(r'<cacheSource[^>]*/>|<cacheSource[^>]*>.*?</cacheSource>',
                         f'<cacheSource type="worksheet"><worksheetSource ref="{ref}" sheet="{escape(spec["source_sheet"])}"/></cacheSource>', cd_xml, count=1, flags=re.S)
         cd_xml = re.sub(r'\s+recordCount="\d+"', ' recordCount="0"', cd_xml, count=1)
+        if spec.get("extra_field"):
+            pt_xml, cd_xml = add_data_field(pt_xml, cd_xml, spec["extra_field"]["name"], spec["extra_field"]["index"])
+        new_parts[pt_part] = pt_xml.encode("utf-8")
         src_fields, grp_fields = source_fields(cd_xml)
         if len(src_fields) != spec["ncols"]:
             raise SystemExit(f"{spec['owner']}: полей источника в кэше {len(src_fields)}, в SPECS {spec['ncols']} — {src_fields}")
@@ -601,6 +644,18 @@ def check(book):
             errors.append(f"{cdef[0]}: ref {ref}, а строк на листе {nrows}")
         if 'refreshOnLoad="1"' not in cd:
             errors.append(f"{cdef[0]}: нет refreshOnLoad")
+        spec_ = next((sp for sp in SPECS if sp["source_sheet"] == src_sheet), None)
+        if spec_ and spec_.get("data_fields"):
+            n_df = int((re.search(r'<dataFields count="(\d+)"', pt) or re.search(r"()(0)", "0")).group(1))
+            if n_df != spec_["data_fields"]:
+                errors.append(f"{part}: полей данных {n_df}, ожидалось {spec_['data_fields']}")
+            if spec_.get("extra_field"):
+                n_ci = int((re.search(r'<colItems count="(\d+)"', pt) or re.search(r"()(0)", "0")).group(1))
+                if n_ci != spec_["data_fields"]:
+                    errors.append(f"{part}: colItems {n_ci}, ожидалось {spec_['data_fields']}")
+                loc = re.search(r'<location ref="[A-Z]+\d+:([A-Z]+)\d+"', pt)
+                if not loc or col_index(loc.group(1)) != spec_["data_fields"] + 1:
+                    errors.append(f"{part}: location {loc.group(0) if loc else None} — ожидалась ширина {spec_['data_fields'] + 1} колонок")
         if not re.search(r'<pivotCacheDefinition\b[^>]*\smissingItemsLimit="0"', cd):
             errors.append(f"{cdef[0]}: нет missingItemsLimit=\"0\" на pivotCacheDefinition — чужие элементы переживут refresh")
         info.append(f"{part}: cacheId {cid}, источник «{src_sheet}» {ref}, полей источника {len(fields)} (+ не из источника {len(grp_fields)}: {grp_fields}), строк {nrows}")

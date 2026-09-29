@@ -7,6 +7,16 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-09-29 16:48 UTC, проверка доступа Ozon для `rbh1` (по слову владельца) — Seller HTTP 200, 2 склада FBS/rFBS, первый «ИП Попова (Beautyhome)»; Performance HTTP 200, токен получен, срок 1800 с; обращений 2, 429 — 0, db_writes 0
+
+Отдельный скрипт без импорта модулей проекта (`load_dotenv(".env.rbh1", override=True)`), ключи и токен не печатались, токен нигде не сохранён.
+Seller — `POST /v2/warehouse/list` (`limit 200`) вместо `/v1/warehouse/list`: по описанию метода в `spec/ozon-seller.json` v1 «устаревает и будет
+отключён 7 апреля 2026», замена — v2 с тем же смыслом (склады FBS и rFBS); ответ 200, складов 2, `has_next false`, первый — «ИП Попова (Beautyhome)»
+(совпадает с Ozon-стороной профиля `rbh1` — Попова). Performance — `POST /api/client/token` (`client_credentials`, как в `ozon_performance_ads_loader.py:3319`):
+200, `token_type Bearer`, `expires_in 1800`; отчётов не заказывалось, квота выгрузок не тронута. В `.env.rbh1` все четыре ключа Ozon заданы.
+WB `seller-info`, Telegram `getMe` и Supabase для `rbh1` не проверялись — не было в слове.
+
+---
 
 ## 2026-09-28 (ночь), поправка к дополнению учтена: профили РБХ — `rbh1` (Ozon Попова + WB ИП Рафикова) и `rbh2` (Ozon Малимон + WB ИП Плахов), «РБХ-1» / «РБХ-2», бренд Beautyhome.me; `.env.rbh1` / `.env.rbh2`; полный набор 1 189 OK (2 skipped)
 

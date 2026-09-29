@@ -17,6 +17,62 @@
 
 ---
 
+## 2026-09-29 (вечер), сорок четвёртая — СЛИТА по слову владельца: мерж `7786499` --no-ff (ветка `finrez-wb-acquiring` 0af793c), 1 178 тестов OK, push 16:44 UTC, Render live 16:45:09 UTC (mp-analytics) / 16:45:08 UTC (telegram-report); ночная сборка книги УСТАНОВЛЕНА (папка iCloud «Фин рез» создана, агент `com.mp-analytics.finrez-nightly` в launchd, первая сборка — 06:00 МСК 09-30); решение по «% ДРР» записано (база — выручка, как в формуле образца; сводная без изменений)
+
+Слово владельца в окне: «1) мерж finrez-wb-acquiring в main --no-ff, полный набор тестов, push, проверить список деплоев Render; 2) после мержа — строка 2 из
+отчёта целиком: mkdir папки iCloud „Фин рез“, cp plist в ~/Library/LaunchAgents, launchctl bootstrap и launchctl print; результат обоих — в outbox. База „% ДРР“ —
+выручка, как в формуле образца; на сводной ничего не менять.» Обращений: Render API — только список деплоев двух cron-сервисов; Seller API — 0; Performance — 0;
+Supabase — 0. **db_writes = 0** (итог сборки в `pipeline_runtime_state` агент будет писать сам начиная с первой ночи — его штатная запись, установлена этим словом).
+Другим сессиям не писал.
+
+### 1. Мерж, тесты, push, деплой
+
+```
+до мержа           git fetch: main = origin/main = 54168a4, чужих коммитов в main нет; ветка 0af793c = origin; merge-tree в main — конфликтов 0
+мерж               git merge --no-ff finrez-wb-acquiring → main 7786499 (коммиты ветки: 7466752, ca395de, 2ce616d, 0dbb49c, 6ce0d92, 0af793c)
+тесты на мерже     Ran 1178 tests — OK (0,90 с)
+push               16:44:22 UTC, origin/main = 7786499
+Render             mp-analytics (crn-d7n7…): dep-datulq7f3r2c73f6ie50 на 7786499 — создан 16:44:24, build → update → **live 16:45:09 UTC**; прежний 54168a4 — deactivated
+                   mp-analytics-telegram-report (crn-d7t5…): dep-datulq7f3r2c73f6ie2g на 7786499 — создан 16:44:24, **live 16:45:08 UTC**; прежний — deactivated
+```
+Что уезжает в прод: скрипты книги «Фин рез» (`finrez_pivots.py`, `finrez_excel_check.py`, `report_finrez.py` — порядок колонок «Данных WB выкупы» и сводная WB),
+plist и документы. Ночной конвейер Render книгу не собирает — ни шагов, ни команды это не меняет; ночь 09-30 в логе Render отличий от 09-29 не даст.
+
+### 2. Ночная сборка книги на Mac — установлена
+
+```
+строка             mkdir -p "…/com~apple~CloudDocs/Фин рез" && cp ops/launchd/com.mp-analytics.finrez-nightly.plist ~/Library/LaunchAgents/ &&
+                   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mp-analytics.finrez-nightly.plist &&
+                   launchctl print gui/$(id -u)/com.mp-analytics.finrez-nightly | head -5            — 16:44:45 UTC, код 0 (чекаут ~/mp-analytics на main 7786499)
+папка iCloud       создана, пуста («Фин рез», 19:44 МСК)
+plist              plutil -lint OK; установленный файл = ops/launchd/… из main 7786499 (cmp — равны); FINREZ_COPY_DIR = …/com~apple~CloudDocs/Фин рез
+launchctl print    gui/501/com.mp-analytics.finrez-nightly = { path ~/Library/LaunchAgents/com.mp-analytics.finrez-nightly.plist, type LaunchAgent,
+                   state not running, runs 0, last exit code (never exited), program /bin/zsh scripts/finrez_nightly.sh, working directory
+                   /Users/mihaileliseev/mp-analytics, event triggers com.apple.launchd.calendarinterval Hour 6 Minute 0, stdout / stderr →
+                   logs/finrez_nightly/launchd.out.log / launchd.err.log, FINREZ_COPY_DIR => …/Фин рез }
+```
+Первая сборка — **06:00 МСК 09-30 (03:00 UTC)**, после ночи Render (финиш ~02:15 UTC), ~25 мин: книга в `data/reports/finrez_2026-04_2026-09.xlsx` и копией в
+папку iCloud, итог — `finrez_nightly:last` → строка «книга Фин рез: собрана hh:mm UTC …» в алерте 07:30 UTC (вызов `--check` сборки — 2 обращения к Seller API
+за дни моложе двух суток, как в ручных прогонах). Три оговорки на первое утро:
+- **Доступ к iCloud Drive из launchd не проверен.** Агент запускает `/bin/zsh` без окна; если macOS не даст ему писать в `Mobile Documents`, шаг копии упадёт,
+  книга при этом соберётся, но в итоге будет `error` «копия в … не удалась», и алерт скажет «⚠️ книга Фин рез: сборка не удалась (копия … не удалась)» — про
+  копию, не про книгу. Лечение — разрешить доступ к файлам для `/bin/zsh` в Настройках → Конфиденциальность; это владелец. Вручную запуск агента
+  (`launchctl kickstart`) не делал — он соберёт книгу и запишет итог в базу, слова на это не было.
+- **Mac в 06:00 может спать** — launchd запустит пропущенный календарный запуск один раз при пробуждении.
+- **Сборка берёт код из текущего чекаута `~/mp-analytics`** — сейчас там `main`. Если сессия переключит этот каталог на ветку, ночная сборка пойдёт её кодом;
+  работу в ветках вести в worktree.
+
+Утром 09-30 смотреть: `logs/finrez_nightly/launchd.err.log` пуст; в `logs/finrez_nightly/finrez_<stamp>.log` строки «книга: … байт, sha256 …» и
+«копия → …/Фин рез/finrez_2026-04_2026-09.xlsx»; в базе `finrez_nightly:last` с `rc 0`, `error null`; в алерте 07:30 — строка «книга Фин рез: собрана …».
+
+### 3. «% ДРР» — решение владельца
+
+Сводная Ozon выкупы не менялась: Z = Y / S (реклама к выручке без НДС) — это и есть принятая база. Статичный лист «Выкупы Ozon» и лист «Ozon - месяц» по-прежнему
+считают «% ДРР» к обороту без НДС (`report_finrez.metrics`: `ads_net / turnover_net`) — слово их не касалось, не трогал; Excel-проверка продолжает печатать эту пару
+как известную разную базу (апрель 0,1678 против 0,0978) и в итог её не берёт. Выровнять статичные листы на выручку — одна строка в `metrics` (и то же в
+`report_ozon_month`), отдельной задачей.
+
+---
 ## 2026-09-29 (утро), сорок четвёртая §1 — первая ночь со слитой 43-й в деле (шаг каталога после FBO): прошла чисто — шагов не выполнено 0, застрявших ключей Ozon 0, 429 — 14 (все accrual/postings; ряд 12 → 17 → 21 → 14), каталог добрал 7 из 7 за 2 обращения и строка в алерте есть; строки «книга Фин рез» в алерте нет и не будет, пока нет ни одной записи сборки (launchd не установлен, 44-я не слита); Selected CPO за 09-28 записан (23 539,30); арбитр за 09-27 сошёлся до копейки; **находка: отчёт ЛК FBO не успел за 180 с → цена покупателя FBO обнулена на всём 30-дневном окне (2 709 строк из 3 892, 76,1 % созданного ₽); само вылечится следующей ночью, если отчёт придёт; предложение — при отказе не переписывать измеренное**
 
 Только чтение, снято 07:46 … 07:58 UTC по будильнику сессии (сработал). Обращений: Render API — 18 (лог ночи 17 страниц / 1 625 строк, лог утренней задачи 1 / 91);

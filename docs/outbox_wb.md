@@ -134,6 +134,11 @@ Ozon-скрипт книги «Фин рез» для блока заказов 
 её доставки и эквайринга). Оборот до копейки: 139 → **148 дней из 174** (май 26 → 31/31, апрель 11 → 14/30, июль 22 → 23/31 — ушли дни «+246»).
 Полный набор — **1 183 OK (2 skipped)** (`logs/tests_wb14_b.out`). Книгу «Фин рез» не собирал — её пересоберёт Ozon-сессия после мержа.
 
+**`origin/main` влит в ветку** (сорок четвёртая Ozon, `b846c04`, 10 коммитов, конфликтов 0), полный набор на голове — **1 190 OK (3 skipped)**
+(`logs/tests_wb14_merge_20260929.out`). Их запись листа «Данные WB выкупы» (`report_finrez.wb_data_cols`) берёт 14 колонок владельца, затем
+нашу «Эквайринг, ₽», затем остальные наши — новая колонка встаёт правее; источник их сводной WB — 15 колонок (`finrez_pivots`, `ncols`
+15), его она не задевает.
+
 **Для Ozon-сессии (договор модуля):** `DATA_COLS` — 24-я колонка «справочно: реклама за кэшбэк WB, ₽» справа; `wbm.load_ads_db` отдаёт только
 «Баланс»; `build_rows` без упаковки и с новым H (строк 71 703); `classify_deduction` в договоре; в `wbm.SELECT` добавлены `bonus_type_name`,
 `subject_name`. Остальные сигнатуры прежние.
@@ -141,7 +146,9 @@ Ozon-скрипт книги «Фин рез» для блока заказов 
 ### `git log origin/main..HEAD`
 
 ```
-(этот коммит)  Fourteenth WB task §2–§5: one money-rules module for WB — deductions by kind, balance-only ads, packaging excluded; bridges 0,00
+(этот коммит)  Fourteenth WB report: origin/main (forty-fourth) merged into the branch, 1 190 tests
+(мерж)         Merge origin/main into wb-fixes (Ozon forty-fourth: WB acquiring in the finrez pivot; WB files untouched)
+39e480c Fourteenth WB task §2–§5: one money-rules module for WB — deductions by kind, balance-only ads, packaging excluded; bridges 0,00
 9883b0b Fourteenth WB task received; §1 (morning 09-29): first night on wb_funnel_products_current clean …
 ed0cae7 Thirteenth WB task §2: day-by-day reconciliation with the analyst's WB sheets — script, verdicts, plan
 0bf1a6a Twelfth WB report: the word executed — wb_funnel_products_current migrated …

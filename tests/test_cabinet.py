@@ -33,7 +33,11 @@ class ProfileSelectionTests(unittest.TestCase):
         self.assertEqual((cabinet.profile("rbh1").DATA_DIR, cabinet.profile("rbh2").LOGS_DIR), ("data/rbh1", "logs/rbh2"))
         self.assertEqual((cabinet.profile("rbh1").OZON_LEGAL_NAME, cabinet.profile("rbh1").WB_LEGAL_NAME), ("Попова", "ИП Рафикова"))
         self.assertEqual((cabinet.profile("rbh2").OZON_LEGAL_NAME, cabinet.profile("rbh2").WB_LEGAL_NAME), ("Малимон", "ИП Плахов"))
-        self.assertEqual((cabinet.profile("rbh1").BRAND_DEFAULT, cabinet.profile("rbh2").SHOP), ("Beautyhome.me", "Beautyhome.me"))
+        self.assertEqual((cabinet.profile("rbh1").BRAND_DEFAULT, cabinet.profile("rbh2").SHOP), ("Beautyhome.me", "РБХ-2"))
+        for code in ("rbh1", "rbh2"):   # косметика: ювелирных словарей и констант листов KARATOV в профилях РБХ нет (ответ владельца 09-30)
+            p = cabinet.profile(code)
+            self.assertEqual((p.BRAND_BY_LETTER, p.OZON_PLATFORMS, p.DISCOUNTER_LETTER, p.OWNER_AFTER_COMMISSION, p.COST_INDEX, p.OVERHEAD_PER_DAY), ({}, (), None, (), (), {}))
+            self.assertIsNone(p.COST_SNAPSHOT_FILE)
 
     def test_unknown_cabinet_exits_with_known_list(self):
         with self.assertRaises(SystemExit) as cm:

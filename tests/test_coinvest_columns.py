@@ -209,8 +209,8 @@ class PostingsReport(unittest.TestCase):
                                       clock=itertools.count(0, 5).__next__)
         self.assertEqual(bodies[0][1]["with"], {"additional_data": True})
 
-    def test_not_ready_in_three_minutes_is_a_named_refusal(self):
-        self.assertEqual(report.MAX_WAIT_SECONDS, 180)
+    def test_not_ready_in_seven_minutes_is_a_named_refusal(self):
+        self.assertEqual(report.MAX_WAIT_SECONDS, 420)                     # сорок пятая §3: было 180, ночь 09-29 не дождалась
         with self.assertRaises(RuntimeError) as ctx:
             report.fetch_buyer_prices("fbo", datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 9, 2, tzinfo=timezone.utc), sleep_fn=lambda s: None,
                                       post=self.fake_post(["waiting"] * 100, []), get=lambda url: Resp(200), save_dir=tempfile.gettempdir(),

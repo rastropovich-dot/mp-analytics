@@ -13,6 +13,8 @@
     orders_rows_for_finrez(date_from, date_to, sb=None)       -> строки заказов WB по (день, nmId) для общего листа «Заказы»
     buyout_rate_for_finrez(month_from, month_to, sb=None)     -> {ярлык месяца: Decimal, "итого": Decimal} — коэффициент выкупа WB (₽, когорта
                                                                  месяца заказа, только зрелые месяцы) для листа «Коэффициенты» (WB-9 §3)
+    classify_deduction(bonus_type_name)                       -> "ads_withheld" | "review_points_advance" | "review_points_refund" | "other" (WB-14 §2;
+                                                                 правила денег — loaders/wb_money_rules: «Прочее», реклама «Баланс», упаковка)
     coinvest_share_by_month(month_from, month_to, sb=None)    -> {ярлык месяца: Decimal, "итого": Decimal} — доля соинвеста WB по месяцу продажи
                                                                  (P владельца: (Σ price − Σ amount) / Σ price по продажам и возвратам со знаком; WB-11 §2)
     Ярлыки бренда и категории — одни с Ozon (WB-9 §2): KARATOV / Топаз / «(без товара)»; кольца · серьги · подвески · цепочки · браслеты ·
@@ -31,7 +33,8 @@ G Логистика · H Ост. расходы и компенсации МП 
     Продажи = Σ retailPriceWithDisc (Продажа +, Возврат −); Комиссия = Σ цена × commissionPercent / 100 (знак тот же);
     Логистика = deliveryService (rebillLogisticCost — «возмещение издержек по перевозке — не берём», инструкция владельца;
     справочной колонкой в «Данных», в форме не участвует); Себес-ть = СС снимка 1С (базовый артикул, как на «WB - месяц») × штуки;
-    Хранение = paidStorage; Ост. расходы и компенсации = penalty + deduction − additionalPayment; Эквайринг = acquiringFee
+    Хранение = paidStorage; Ост. расходы и компенсации = penalty + удержания вида «прочее» − additionalPayment (WB-14: без удержаний
+    «WB Продвижение» и без аванса «Баллы за отзывы», нетто аванса — в день возврата); Эквайринг = acquiringFee
     (возврат минус); Соинвест = Σ retailPriceWithDisc − Σ retailAmount; Штуки со знаком; Реклама — списания дня из
     wb_ad_spend_daily (updSum — истина по деньгам, биллинг), разнесённые по артикулам ДОЛЯМИ из статистики по номенклатурам
     (wb_ad_spend_nm_daily, fullstats: Σ nms.sum по дню выше updSum на ~1,7 % — доли нормируются к updSum дня, Σ по дню =
@@ -60,6 +63,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 
 from loaders import keyset, stale_keys  # noqa: E402
+from loaders import wb_money_rules as rules  # noqa: E402  — удержания по виду, реклама «Баланс», упаковка (WB-14)
 import loaders.wb_sales_report_loader as report_loader  # noqa: E402
 import report_wb_month as wbm  # noqa: E402  — те же строки отчёта, СС, реклама и НДС, что у «WB - месяц»
 
@@ -88,10 +92,10 @@ CATEGORY_OTHER = "прочее"
 CATEGORY_UNKNOWN = "прочее (нет предмета)"
 BRAND_LABELS = frozenset({BRAND_DEFAULT, BRAND_TOPAZ, NO_PRODUCT})
 CATEGORY_LABELS = frozenset(OWNER_CATEGORIES) | {CATEGORY_OTHER, CATEGORY_UNKNOWN, NO_PRODUCT}
-SELECT = wbm.SELECT + ",additional_payment,subject_name,brand_name"   # поля «WB - месяц» (мост зовёт его build_daily) + доплаты, предмет, бренд
+SELECT = wbm.SELECT + ",additional_payment,brand_name"   # в wbm.SELECT с WB-14 уже subject_name и bonus_type_name   # поля «WB - месяц» (мост зовёт его build_daily) + доплаты, предмет, бренд
 # build_rows читает только то, что использует: без doc_type, for_pay, cashback_discount (они нужны мосту через build_daily — main читает SELECT). WB-9 §4.
 BUILD_SELECT = ("rrd_id,rr_date,sale_dt,seller_oper_name,vendor_code,tech_size,nm_id,quantity,retail_price_with_disc,retail_amount,commission_percent,"
-                "ppvz_reward,rebill_logistic_cost,delivery_service,acquiring_fee,paid_storage,penalty,deduction,additional_payment,subject_name,brand_name")
+                "ppvz_reward,rebill_logistic_cost,delivery_service,acquiring_fee,paid_storage,penalty,deduction,additional_payment,bonus_type_name,subject_name,brand_name")
 ADS_NM_TABLE = "wb_ad_spend_nm_daily"
 FUNNEL_SELECT = "day,nm_id,vendor_code,title,brand,subject_name,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
 
@@ -107,6 +111,7 @@ DATA_COLS = [
     ("nmId", "nm_id", "int"), ("Эквайринг, ₽", "acquiring", "money"), ("Соинвест, ₽", "coinvest", "money"), ("Штуки", "qty", "int"),
     ("справочно: Возмещение ПВЗ, ₽ (в форму не входит)", "ppvz_reward", "money"), ("справочно: возмещение издержек по перевозке (rebillLogisticCost), ₽ — не берём", "rebill", "money"),
     ("реклама разнесена по", "ads_allocated", None), ("без СС, шт", "no_cost_qty", "int"),
+    ("справочно: реклама за кэшбэк WB, ₽ (в форму не входит)", "ads_cashback", "money"),   # WB-14 §3: реклама за кэшбэк — не расход
 ]
 assert tuple(h for h, _k, _f in DATA_COLS[:15]) == OWNER_DATA_FIELDS
 SHEET_COLS = [
@@ -121,7 +126,8 @@ SHEET_COLS = [
     ("Фин. рез., руб.", "y_fin", "money"), ("% Фин. рез.", "z_fin_pct", "pct"),
 ]
 SPLIT_COLS = [("Группа", "group", None)] + SHEET_COLS
-MONEY_KEYS = ("sales", "ads", "commission", "logistics", "cogs", "storage", "other", "acquiring", "coinvest", "ppvz_reward", "rebill")
+MONEY_KEYS = ("sales", "ads", "commission", "logistics", "cogs", "storage", "other", "acquiring", "coinvest", "ppvz_reward", "rebill", "ads_cashback")
+classify_deduction = rules.classify_deduction   # договор модуля (WB-14 §2): вид удержания по bonus_type_name
 
 
 def D(v):
@@ -294,17 +300,42 @@ def load_product_dictionary(sb, d1=None, d2=None, use_view=True):
     return out
 
 
-def load_ads_nm_db(sb, d1, d2):
-    """{день: {nmId: Σ sum}} из wb_ad_spend_nm_daily (fullstats, с НДС) — доли для разнесения списаний дня. Таблицы нет — {} вслух."""
-    try:   # sum > 0: строки с нулём в доли не входят (weights берут только v > 0), отрицательных в таблице нет (min 0, WB-9 §4) — треть страниц долой
-        rows = stale_keys.read_window_rows(sb, ADS_NM_TABLE, "day,nm_id,sum", [("gte", "day", d1), ("lte", "day", d2), ("gt", "sum", 0)], ["day", "advert_id", "app_type", "nm_id"])
+def load_ads_nm_rows(sb, d1, d2):
+    """Строки wb_ad_spend_nm_daily (fullstats, с НДС, sum > 0) за окно: день, кампания, nmId, сумма. Таблицы нет — [] вслух."""
+    try:   # sum > 0: строки с нулём в доли не входят, отрицательных в таблице нет (min 0, WB-9 §4)
+        return stale_keys.read_window_rows(sb, ADS_NM_TABLE, "day,advert_id,nm_id,sum", [("gte", "day", d1), ("lte", "day", d2), ("gt", "sum", 0)],
+                                           ["day", "advert_id", "app_type", "nm_id"])
     except Exception as error:
         print(f"статистика по номенклатурам не прочитана ({ADS_NM_TABLE}): {str(error)[:120]} — реклама разносится по продажам дня", flush=True)
-        return {}
+        return []
+
+
+def nm_weights(nm_rows, advert_day=None, which="balance"):
+    """{день: {nmId: вес}} — Σ sum fullstats по кампаниям × доля вида оплаты кампании в этот день (advert_day
+    {(день, advert_id): (Баланс, всего)} из report_wb_month.load_ads_split). which: balance | other | all. Кампания без строки
+    списаний в день считается «Балансом» (как было до WB-14); advert_day нет — веса без долей (all)."""
     out = defaultdict(lambda: defaultdict(Decimal))
-    for r in rows:
-        out[str(r["day"])][int(r["nm_id"])] += D(r.get("sum"))
+    for r in nm_rows or ():
+        value = D(r.get("sum"))
+        if value <= 0:
+            continue
+        day = str(r["day"])
+        if which != "all" and advert_day is not None:
+            adv = int(r["advert_id"]) if r.get("advert_id") not in (None, "") else None
+            balance, total = advert_day.get((day, adv), (None, None))
+            if total:
+                frac = (balance / total) if which == "balance" else ((total - balance) / total)
+            else:
+                frac = Decimal(1) if which == "balance" else Z
+            value = value * frac
+        if value > 0:
+            out[day][int(r["nm_id"])] += value
     return {d: dict(v) for d, v in out.items()}
+
+
+def load_ads_nm_db(sb, d1, d2, advert_day=None, which="balance"):
+    """{день: {nmId: Σ sum}} из wb_ad_spend_nm_daily — доли для разнесения списаний дня; с advert_day — по виду оплаты (WB-14)."""
+    return nm_weights(load_ads_nm_rows(sb, d1, d2), advert_day, which if advert_day is not None else "all")
 
 
 # ---------- «Данные WB выкупы» ----------
@@ -320,33 +351,112 @@ def costs_for_codes(sb, vendor_codes, what="строк"):
     return exact, uniform
 
 
-def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=None, ads_by_day=None, products=None, ads_nm_by_day=None, stats=None):
+def packaging_nm_ids(rows, products=None):
+    """nmId упаковки (WB-14 §4): предмет «Упаковки для украшений» в строках отчёта или в словаре карточек."""
+    out = set()
+    for r in rows or ():
+        nm = r.get("nm_id")
+        if nm not in (None, "", 0, "0") and rules.is_packaging(r.get("subject_name")):
+            out.add(int(nm))
+    for nm, p in (products or {}).items():
+        if rules.is_packaging((p or {}).get("subject")):
+            out.add(int(nm))
+    return out
+
+
+def _is_packaging_row(r, packaging_nm):
+    nm = r.get("nm_id")
+    return rules.is_packaging(r.get("subject_name")) or (nm not in (None, "", 0, "0") and int(nm) in packaging_nm)
+
+
+def _new_acc():
+    a = {k: Z for k in MONEY_KEYS}
+    a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
+    return a
+
+
+def _add_report_row(a, r, exact, uniform):
+    """Деньги строки отчёта в накопитель (день × nmId): продажи / возвраты со знаком, логистика, хранение, «прочее» по
+    правилам WB-14 (rules.other_amount), возмещение ПВЗ и rebill справочно."""
+    op = r["seller_oper_name"]
+    sign = 1 if op == "Продажа" else (-1 if op == "Возврат" else 0)
+    if sign:
+        price, amount, qty = D(r["retail_price_with_disc"]), D(r["retail_amount"]), int(r.get("quantity") or 1)
+        a["sales"] += sign * price
+        a["commission"] += sign * price * D(r.get("commission_percent")) / 100
+        a["coinvest"] += sign * (price - amount)
+        a["acquiring"] += sign * D(r.get("acquiring_fee"))
+        a["qty"] += sign * qty
+        cost, _source = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), r.get("tech_size"), "base")
+        if cost is None:
+            a["no_cost_qty"] += qty
+        else:
+            a["cogs"] += sign * cost * qty
+    a["logistics"] += D(r.get("delivery_service"))            # rebillLogisticCost — не берём (инструкция владельца), справочно ниже
+    a["rebill"] += D(r.get("rebill_logistic_cost"))
+    a["storage"] += D(r.get("paid_storage"))
+    a["other"] += rules.other_amount(r)                        # WB-14: штрафы + удержания вида «прочее» − доплаты
+    a["ppvz_reward"] += D(r.get("ppvz_reward"))
+
+
+def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=None, ads_by_day=None, products=None, ads_nm_by_day=None, stats=None,
+               ads_cashback_by_day=None, cashback_nm_by_day=None, advance_rows=None):
     """Строки «Данные WB выкупы» за месяцы month_from … month_to (до date_to включительно, если задано).
 
     rows / costs / ads_by_day / products — для тестов и повторных сборок; по умолчанию читаются из базы.
-    stats (dict) получает счётчики ярлыков (categories, brands, rows_unknown_category) и строки «Неопознанный товар» (unidentified)."""
+    stats (dict) получает счётчики ярлыков (categories, brands, rows_unknown_category), строки «Неопознанный товар» (unidentified)
+    и stats["excluded"] — что исключено правилами WB-14 и сколько (для моста к отчёту реализации).
+
+    WB-14 (loaders/wb_money_rules, решения владельца 28.09): «Ост. расходы» H = штрафы + удержания вида «прочее» − доплаты —
+    удержания «Оказание услуг «WB Продвижение»» (реклама с баланса, её деньги уже в «Рекламе» из upd) не входят; аванс «Баллы
+    за отзывы» и его возврат — только нетто в день возврата, строкой «(без товара)»; «Реклама» — только оплата «Баланс», реклама
+    за кэшбэк WB — справочно в ads_cashback (доли номенклатур — fullstats × доля оплаты кампании в день); строки упаковки
+    (предмет «Упаковки для украшений») в «Данные» не входят. ads_cashback_by_day / cashback_nm_by_day / advance_rows — для тестов."""
     sb = _sb(sb) if rows is None or costs is None or ads_by_day is None or products is None else sb
     d1, d2 = month_bounds(month_from, month_to, date_to)
     rows = load_report_rows(sb, d1, d2, select=BUILD_SELECT) if rows is None else rows
-    exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in rows), "строк отчёта") if costs is None else costs
+    products = load_product_dictionary(sb, d1, d2) if products is None else products
+    packaging_nm = packaging_nm_ids(rows, products)
+    if costs is None:
+        exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in rows if not _is_packaging_row(r, packaging_nm)), "строк отчёта")
+    else:
+        exact, uniform = costs
+    advert_day = None
     if ads_by_day is None:
         try:
-            ads_by_day, _undated = wbm.load_ads_db(sb, d1, d2)
+            split = wbm.load_ads_split(sb, d1, d2)
+            ads_by_day, advert_day = split["balance"], split["advert_day"]
+            ads_cashback_by_day = split["other"] if ads_cashback_by_day is None else ads_cashback_by_day
         except RuntimeError as error:
             print(f"реклама не прочитана: {error}; колонка «Реклама» пуста", flush=True)
             ads_by_day = None
-    products = load_product_dictionary(sb, d1, d2) if products is None else products
-    ads_nm_by_day = load_ads_nm_db(sb, d1, d2) if (ads_nm_by_day is None and ads_by_day is not None) else (ads_nm_by_day or {})
+    ads_cashback_by_day = ads_cashback_by_day or {}
+    if ads_nm_by_day is None and ads_by_day is not None:
+        nm_rows = load_ads_nm_rows(sb, d1, d2)
+        ads_nm_by_day = nm_weights(nm_rows, advert_day, "balance")
+        if cashback_nm_by_day is None and ads_cashback_by_day:
+            cashback_nm_by_day = nm_weights(nm_rows, advert_day, "other")
+    ads_nm_by_day = ads_nm_by_day or {}
+    cashback_nm_by_day = cashback_nm_by_day if cashback_nm_by_day is not None else ads_nm_by_day
     nm_subject = {}                                       # nmId → (предмет, бренд) из ЛЮБОЙ загруженной строки отчёта (окно + запас)
     for r in rows:
         nm = r.get("nm_id")
         if nm not in (None, "", 0, "0") and r.get("subject_name") and int(nm) not in nm_subject:
             nm_subject[int(nm)] = (r["subject_name"], r.get("brand_name"))
     unidentified = {"rows": 0, "days": set(), "sales": Z, "logistics": Z, "rebill": Z, "storage": Z, "other": Z}   # «Неопознанный товар» → «(без товара)»
+    tally = rules.DeductionTally()
+    pack = _new_acc(); pack.update({"rows": 0, "nm_ids": set()})
     acc = {}
     for r in rows:
         day = wbm.row_day(r)
         if not (d1 <= day <= d2):
+            continue
+        tally.add(r)
+        if _is_packaging_row(r, packaging_nm):               # WB-14 §4: упаковка — не товар, в «Данные» не входит
+            _add_report_row(pack, r, exact, uniform)
+            pack["rows"] += 1
+            if r.get("nm_id") not in (None, "", 0, "0"):
+                pack["nm_ids"].add(int(r["nm_id"]))
             continue
         nm = r.get("nm_id")
         nm = int(nm) if nm not in (None, "", 0, "0") else None
@@ -355,78 +465,84 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
             u["rows"] += 1; u["days"].add(day)
             u["sales"] += (1 if r["seller_oper_name"] == "Продажа" else -1) * D(r.get("retail_price_with_disc")) if r["seller_oper_name"] in ("Продажа", "Возврат") else Z
             u["logistics"] += D(r.get("delivery_service")); u["rebill"] += D(r.get("rebill_logistic_cost")); u["storage"] += D(r.get("paid_storage"))
-            u["other"] += D(r.get("penalty")) + D(r.get("deduction")) - D(r.get("additional_payment"))
+            u["other"] += rules.other_amount(r)
             nm = None
         key = (day, nm)
         a = acc.get(key)
         if a is None:
-            a = acc[key] = {k: Z for k in MONEY_KEYS}
-            a.update({"qty": 0, "no_cost_qty": 0, "vendor": str(r.get("vendor_code") or ""), "subject": None, "brand": None})
+            a = acc[key] = _new_acc()
+            a["vendor"] = str(r.get("vendor_code") or "")
         if not a["subject"] and r.get("subject_name"):
             a["subject"] = r["subject_name"]
         if not a["brand"] and r.get("brand_name"):
             a["brand"] = r["brand_name"]
-        op = r["seller_oper_name"]
-        sign = 1 if op == "Продажа" else (-1 if op == "Возврат" else 0)
-        if sign:
-            price, amount, qty = D(r["retail_price_with_disc"]), D(r["retail_amount"]), int(r.get("quantity") or 1)
-            a["sales"] += sign * price
-            a["commission"] += sign * price * D(r.get("commission_percent")) / 100
-            a["coinvest"] += sign * (price - amount)
-            a["acquiring"] += sign * D(r.get("acquiring_fee"))
-            a["qty"] += sign * qty
-            cost, _source = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), r.get("tech_size"), "base")
-            if cost is None:
-                a["no_cost_qty"] += qty
-            else:
-                a["cogs"] += sign * cost * qty
-        a["logistics"] += D(r.get("delivery_service"))            # rebillLogisticCost — не берём (инструкция владельца), справочно ниже
-        a["rebill"] += D(r.get("rebill_logistic_cost"))
-        a["storage"] += D(r.get("paid_storage"))
-        a["other"] += D(r.get("penalty")) + D(r.get("deduction")) - D(r.get("additional_payment"))
-        a["ppvz_reward"] += D(r.get("ppvz_reward"))
-    # реклама дня — по артикулам пропорционально положительным продажам; без продаж — на строку «(без товара)»
+        _add_report_row(a, r, exact, uniform)
+    # аванс «Баллы за отзывы»: нетто — в день возврата, строкой «(без товара)» (аванс и возврат сами в «прочее» не идут)
+    if advance_rows is None and hasattr(sb, "table"):
+        try:
+            advance_rows = wbm.load_review_advance_rows(sb)
+        except Exception as error:  # noqa: BLE001 — без нетто «Прочее» дня возврата занижено; сказано вслух
+            print(f"аванс «Баллы за отзывы» не прочитан: {str(error)[:160]} — нетто аванса в «Прочее» не добавлено", flush=True)
+            advance_rows = []
+    advance_net, advance_open = rules.review_advance_net(advance_rows or [], wbm.row_day)
+    advance_in_window = {d: v for d, v in advance_net.items() if d1 <= d <= d2}
+    for day, v in advance_in_window.items():
+        a = acc.get((day, None))
+        if a is None:
+            a = acc[(day, None)] = _new_acc()
+        a["other"] += v
+    # реклама дня — доли номенклатур из fullstats (нормированы к списаниям дня), без статистики — по продажам, без продаж — «(без товара)»
     by_day = defaultdict(list)
     for key in acc:
         by_day[key[0]].append(key)
-    if ads_by_day is not None:                       # день со списаниями без единой строки отчёта — тоже день: реклама не теряется
-        for day in ads_by_day:
-            if d1 <= day <= d2 and day not in by_day and ads_by_day[day]:
+    for totals in (ads_by_day or {}, ads_cashback_by_day):   # день со списаниями без единой строки отчёта — тоже день: реклама не теряется
+        for day, value in totals.items():
+            if d1 <= day <= d2 and day not in by_day and value:
                 by_day[day] = []
     ads_source = {}
-    for day, keys in sorted(by_day.items()):
-        ads = (ads_by_day or {}).get(day, Z) if ads_by_day is not None else None
-        if ads is None:
-            continue
-        nm_shares = {nm_id: v for nm_id, v in (ads_nm_by_day.get(day) or {}).items() if v > 0}
-        if ads and nm_shares:                                 # доли из fullstats, нормированные к списаниям дня (истина по деньгам — updSum)
-            weights, source = {(day, nm_id): v for nm_id, v in nm_shares.items()}, "fullstats"
-        else:
-            weights, source = {k: acc[k]["sales"] for k in keys if k[1] is not None and acc[k]["sales"] > 0}, "по продажам"
-        total = sum(weights.values(), Z)
-        if ads and total:
-            spent = Z
-            ordered = sorted(weights, key=lambda k: k[1])
-            for k in ordered:
-                if k not in acc:                              # реклама у товара без продаж в этот день — своя строка
-                    a = acc[k] = {kk: Z for kk in MONEY_KEYS}
-                    a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
-            for k in ordered[:-1]:
-                share = q(ads * weights[k] / total)
-                acc[k]["ads"] += share; spent += share
-            acc[ordered[-1]]["ads"] += ads - spent            # остаток копеек — последнему, Σ по дню = списания дня
-            ads_source[day] = source
-        elif ads:
-            a = acc.get((day, None))
-            if a is None:
-                a = acc[(day, None)] = {k: Z for k in MONEY_KEYS}
-                a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
-            a["ads"] += ads
-            ads_source[day] = "(без товара)"
+
+    def allocate(field, totals, nm_by_day):
+        for day, keys in sorted(by_day.items()):
+            amount = totals.get(day, Z)
+            if not amount:
+                continue
+            nm_shares = {nm_id: v for nm_id, v in (nm_by_day.get(day) or {}).items() if v > 0 and nm_id not in packaging_nm}
+            if nm_shares:                                     # доли из fullstats, нормированные к списаниям дня (истина по деньгам — updSum)
+                weights, source = {(day, nm_id): v for nm_id, v in nm_shares.items()}, "fullstats"
+            else:
+                weights, source = {k: acc[k]["sales"] for k in keys if k[1] is not None and acc[k]["sales"] > 0}, "по продажам"
+            total = sum(weights.values(), Z)
+            if total:
+                spent = Z
+                ordered = sorted(weights, key=lambda k: k[1])
+                for k in ordered:
+                    if k not in acc:                          # реклама у товара без продаж в этот день — своя строка
+                        acc[k] = _new_acc()
+                for k in ordered[:-1]:
+                    share = q(amount * weights[k] / total)
+                    acc[k][field] += share; spent += share
+                acc[ordered[-1]][field] += amount - spent     # остаток копеек — последнему, Σ по дню = списания дня
+            else:
+                a = acc.get((day, None))
+                if a is None:
+                    a = acc[(day, None)] = _new_acc()
+                a[field] += amount
+                source = "(без товара)"
+            if field == "ads":
+                ads_source[day] = source
+
+    if ads_by_day is not None:
+        allocate("ads", ads_by_day, ads_nm_by_day)
+    allocate("ads_cashback", ads_cashback_by_day, cashback_nm_by_day)
     if unidentified["rows"]:
         print(f"«{UNIDENTIFIED}» в строках отчёта: {unidentified['rows']} строк за {len(unidentified['days'])} дн., продажи {unidentified['sales']:,.2f}, "
               f"логистика {unidentified['logistics']:,.2f}, rebill {unidentified['rebill']:,.2f}, хранение {unidentified['storage']:,.2f}, прочее {unidentified['other']:,.2f} "
               f"— учтены в строках «{NO_PRODUCT}»", flush=True)
+    cashback_total = sum((v for d, v in ads_cashback_by_day.items() if d1 <= d <= d2), Z)
+    print(f"правила WB-14: {tally.text()}; нетто аванса «Баллы за отзывы» в окне {', '.join(f'{d} {v:,.2f}' for d, v in sorted(advance_in_window.items())) or 'нет'}"
+          + (f", открытый аванс без возврата {advance_open:,.2f}" if advance_open else "")
+          + f"; реклама за кэшбэк WB (справочно, не в форме) {cashback_total:,.2f}; упаковка исключена: строк {pack['rows']}, продажи {pack['sales']:,.2f}, "
+          f"штук {pack['qty']}, nmId {sorted(pack['nm_ids']) or '—'}", flush=True)
     missing = sorted({nm for (_d, nm), a in acc.items() if nm is not None and not (a["subject"] or nm_subject.get(nm) or products.get(nm, {}).get("subject"))})
     fetched = fetch_subjects_for(sb, missing) if (missing and hasattr(sb, "table")) else {}
     if missing:
@@ -453,7 +569,11 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
         for r in out:
             cats[r["category"]] += 1; brands[r["brand"]] += 1
         stats.update({"categories": dict(cats), "brands": dict(brands), "rows_unknown_category": cats.get(CATEGORY_UNKNOWN, 0),
-                      "unidentified": {k: (sorted(v) if isinstance(v, set) else v) for k, v in unidentified.items()}})
+                      "unidentified": {k: (sorted(v) if isinstance(v, set) else v) for k, v in unidentified.items()},
+                      "excluded": {"packaging": {k: (sorted(v) if isinstance(v, set) else v) for k, v in pack.items()},
+                                   "deductions": dict(tally.by_kind), "deduction_rows": dict(tally.rows), "unknown_deductions": dict(tally.unknown),
+                                   "advance_net": advance_in_window, "advance_open": advance_open, "ads_cashback": cashback_total,
+                                   "tally_text": tally.text()}})
     return out
 
 
@@ -570,10 +690,15 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
     funnel_rows = load_funnel_products(date_from, date_to, sb, only_with_orders=only_with_orders) if funnel_rows is None else funnel_rows
     if products is None and hasattr(sb, "table"):
         products = load_product_dictionary(sb, date_from, date_to)
+    packaging_nm = packaging_nm_ids(funnel_rows, products)   # WB-14 §4: упаковка — не товар, в заказы не входит
+    pack_rows = [r for r in funnel_rows if rules.is_packaging(r.get("subject_name")) or int(r["nm_id"]) in packaging_nm]
+    if pack_rows:
+        funnel_rows = [r for r in funnel_rows if not (rules.is_packaging(r.get("subject_name")) or int(r["nm_id"]) in packaging_nm)]
     if ads_by_day is None and sb is not None and ads_nm_by_day is None:
         try:
-            ads_by_day, _u = wbm.load_ads_db(sb, date_from, date_to)
-            ads_nm_by_day = load_ads_nm_db(sb, date_from, date_to)
+            split = wbm.load_ads_split(sb, date_from, date_to)   # WB-14 §3: только «Баланс»; доли номенклатур — с долей оплаты кампании
+            ads_by_day = split["balance"]
+            ads_nm_by_day = load_ads_nm_db(sb, date_from, date_to, split["advert_day"], "balance")
         except RuntimeError as error:
             print(f"реклама для заказов не прочитана: {error}", flush=True); ads_by_day, ads_nm_by_day = {}, {}
     nm_ads = nm_ads_by_day_and_nm(ads_by_day or {}, ads_nm_by_day or {})
@@ -582,7 +707,7 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         seen = {(str(r["day"]), int(r["nm_id"])) for r in funnel_rows}
         extra = []
         for (day, nm), ads in sorted(nm_ads.items()):
-            if ads and (day, nm) not in seen and nm in products and date_from <= day <= date_to:
+            if ads and (day, nm) not in seen and nm in products and nm not in packaging_nm and date_from <= day <= date_to:
                 p = products[nm]
                 extra.append({"day": day, "nm_id": nm, "vendor_code": p.get("vendor_code"), "title": p.get("title"), "brand": p.get("brand"), "subject_name": p.get("subject"),
                               "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0})
@@ -610,7 +735,9 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
                     "funnel_cancel_qty": int(r.get("cancel_count") or 0), "funnel_cancel_sum": D(r.get("cancel_sum"))})
     if stats is not None:
         stats.update({"rows_before": n_before, "rows_after": len(out), "sum_before": dict(before), "sum_after": dict(after), "equal": dict(before) == dict(after),
-                      "synthesized": synthesized, "ads_total": sum((r["ads"] for r in out), Z)})
+                      "synthesized": synthesized, "ads_total": sum((r["ads"] for r in out), Z),
+                      "packaging_excluded": {"rows": len(pack_rows), "orders_qty": sum(int(r.get("order_count") or 0) for r in pack_rows),
+                                             "orders_sum": sum((D(r.get("order_sum")) for r in pack_rows), Z), "nm_ids": sorted({int(r["nm_id"]) for r in pack_rows})}})
     return out
 
 
@@ -747,7 +874,7 @@ def buyout_rate_caption(month_from, month_to, sb=None, rows=None, orders_by_mont
 
 # ---------- приёмка против «WB - месяц» ----------
 
-def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day):
+def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day, advance_net=None):
     """Мост между итогами формы и итогом «WB - месяц» (report_wb_month.build_daily по тем же строкам отчёта) за d1 … d2."""
     days = []
     d = date.fromisoformat(d1)
@@ -755,7 +882,7 @@ def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day):
         days.append(d.isoformat()); d += timedelta(days=1)
     exact, uniform = costs
     cost_fn = lambda code, size: wbm.unit_cost_for(exact, uniform, code, size, "base")  # noqa: E731
-    daily = wbm.build_daily(report_rows, days, cost_fn, ads_by_day or {}, date.today() + timedelta(days=3), ads_by_day is not None)
+    daily = wbm.build_daily(report_rows, days, cost_fn, ads_by_day or {}, date.today() + timedelta(days=3), ads_by_day is not None, advance_net=advance_net)
     m = wbm.total_row(daily)
     form = build_month_sheet(rows)[-1]
     vat = form["vat"]
@@ -781,6 +908,94 @@ def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day):
         out.append({"title": title, "form": q(ours), "month": q(theirs), "diff": q(ours - theirs), "terms": [(n, q(t)) for n, t in terms],
                     "rest": q(ours - theirs - explained)})
     return out, m, (ppvz, rebill)
+
+
+def bridge_to_report(rows, report_rows, d1, d2, excluded, ads_split=None):
+    """Мост Σ строк «Данных» ↔ сырьё отчёта реализации за d1 … d2 (день строки — row_day) с явными строками правил WB-14:
+    упаковка (исключена), удержания за рекламу (исключены), аванс / возврат аванса (исключены) и его нетто, реклама за
+    кэшбэк (справочно). Остаток каждой строки обязан быть 0,00."""
+    raw = defaultdict(Decimal)
+    for r in report_rows:
+        if not (d1 <= wbm.row_day(r) <= d2):
+            continue
+        op = r["seller_oper_name"]
+        sign = 1 if op == "Продажа" else (-1 if op == "Возврат" else 0)
+        if sign:
+            price = D(r["retail_price_with_disc"])
+            raw["sales"] += sign * price
+            raw["commission"] += sign * price * D(r.get("commission_percent")) / 100
+            raw["acquiring"] += sign * D(r.get("acquiring_fee"))
+        raw["logistics"] += D(r.get("delivery_service")); raw["storage"] += D(r.get("paid_storage")); raw["rebill"] += D(r.get("rebill_logistic_cost"))
+        raw["other"] += D(r.get("penalty")) + D(r.get("deduction")) - D(r.get("additional_payment"))
+    ours = defaultdict(Decimal)
+    for r in rows:
+        for k in ("sales", "commission", "acquiring", "logistics", "storage", "rebill", "other", "ads", "ads_cashback"):
+            ours[k] += D(r.get(k))
+    pack, ded = excluded.get("packaging") or {}, excluded.get("deductions") or {}
+    net = sum((v for v in (excluded.get("advance_net") or {}).values()), Z)
+    balance = sum((v for d, v in ((ads_split or {}).get("balance") or {}).items() if d1 <= d <= d2), Z)
+    other_pay = sum((v for d, v in ((ads_split or {}).get("other") or {}).items() if d1 <= d <= d2), Z)
+    pk = lambda k: -D(pack.get(k))  # noqa: E731
+    lines = [
+        ("Продажи (оборот)", ours["sales"], raw["sales"], [("упаковка (исключена)", pk("sales"))]),
+        ("Комиссия (Σ цена × кВВ)", ours["commission"], raw["commission"], [("упаковка (исключена)", pk("commission"))]),
+        ("Эквайринг", ours["acquiring"], raw["acquiring"], [("упаковка (исключена)", pk("acquiring"))]),
+        ("Логистика (доставка)", ours["logistics"], raw["logistics"], [("упаковка (исключена)", pk("logistics"))]),
+        ("Хранение", ours["storage"], raw["storage"], [("упаковка (исключена)", pk("storage"))]),
+        ("справочно: rebill", ours["rebill"], raw["rebill"], [("упаковка (исключена)", pk("rebill"))]),
+        ("Ост. расходы и компенсации (H)", ours["other"], raw["other"],
+         [("удержания за рекламу «WB Продвижение» (исключены)", -D(ded.get(rules.ADS_WITHHELD))),
+          ("аванс / возврат аванса «Баллы за отзывы» (исключены)", -(D(ded.get(rules.REVIEW_ADVANCE)) + D(ded.get(rules.REVIEW_REFUND)))),
+          ("нетто аванса в день возврата", net), ("упаковка (исключена)", pk("other"))]),
+        ("Реклама (только «Баланс»)", ours["ads"], balance + other_pay, [("кэшбэк-реклама (справочно, вне формы)", -other_pay)]),
+        ("справочно: реклама за кэшбэк WB", ours["ads_cashback"], other_pay, []),
+    ]
+    out = []
+    for title, o, t, terms in lines:
+        explained = sum((v for _n, v in terms), Z)
+        out.append({"title": title, "form": q(o), "month": q(t), "diff": q(o - t), "terms": [(n, q(v)) for n, v in terms], "rest": q(o - t - explained)})
+    return out
+
+
+def ads_withheld_identity(report_rows, ads_split, d1, d2):
+    """Тождество WB-14 §2: удержания «WB Продвижение» (по rrDate документа) = списания upd с оплатой «Баланс». Документ дня D
+    покрывает дни списаний [дата предыдущего документа, D) — так сумма за 02.04 … 31.08 равна списаниям 01.04 … 31.08 до рубля.
+    Возвращает (по месяцам, по документам)."""
+    docs = defaultdict(Decimal)
+    for r in report_rows:
+        if rules.classify_deduction(r.get("bonus_type_name")) == rules.ADS_WITHHELD and D(r.get("deduction")):
+            docs[str(r["rr_date"])[:10]] += D(r["deduction"])
+    balance = {d: v for d, v in ((ads_split or {}).get("balance") or {}).items()}
+    by_month = defaultdict(lambda: [Z, Z])
+    for d, v in docs.items():
+        if d1 <= d <= d2:
+            by_month[d[:7]][0] += v
+    for d, v in balance.items():
+        if d1 <= d <= d2:
+            by_month[d[:7]][1] += v
+    per_doc, prev = [], None
+    for d in sorted(docs):
+        lo = prev or min(balance, default=d)
+        spend = sum((v for day, v in balance.items() if lo <= day < d), Z)
+        if d1 <= d <= d2:
+            per_doc.append((d, docs[d], spend, lo))
+        prev = d
+    return {m: tuple(v) for m, v in sorted(by_month.items())}, per_doc
+
+
+def print_bridge_report(table, d1, d2):
+    print(f"\nМост «Данные WB выкупы» ↔ отчёт реализации (сырьё) за {d1} … {d2} — правила WB-14")
+    print(f"{'строка':52}{'«Данные»':>16}{'отчёт':>16}{'разница':>14}{'остаток':>12}")
+    failures = 0
+    for t in table:
+        print(f"{t['title'][:51]:52}{t['form']:>16,.2f}{t['month']:>16,.2f}{t['diff']:>14,.2f}{t['rest']:>12,.2f}" + ("   ОСТАТОК ≠ 0" if t["rest"] != 0 else ""))
+        for name, value in t["terms"]:
+            if value:
+                print(f"      {value:>+14,.2f}  {name}")
+        if t["rest"] != 0:
+            failures += 1
+    print(f"остаток моста к отчёту ≠ 0 в строках: {failures}")
+    return failures
 
 
 def print_bridge(table, d1, d2):
@@ -857,15 +1072,22 @@ def main(argv=None):
     sb = report_loader._client()
     d1, d2 = month_bounds(args.month_from, args.month_to, args.date_to)
     report_rows = load_report_rows(sb, d1, d2)
-    costs = costs_for_codes(sb, (r.get("vendor_code") for r in report_rows), "строк отчёта")
-    try:
-        ads_by_day, _u = wbm.load_ads_db(sb, d1, d2)
-    except RuntimeError as error:
-        print(f"реклама не прочитана: {error}; колонка «Реклама» пуста"); ads_by_day = None
     products = load_product_dictionary(sb, d1, d2)
-    ads_nm_by_day = load_ads_nm_db(sb, d1, d2) if ads_by_day is not None else {}
+    packaging_nm = packaging_nm_ids(report_rows, products)
+    costs = costs_for_codes(sb, (r.get("vendor_code") for r in report_rows if not _is_packaging_row(r, packaging_nm)), "строк отчёта")
+    try:
+        split = wbm.load_ads_split(sb, d1, d2)   # WB-14 §3: «Реклама» — только оплата «Баланс», кэшбэк — справочно
+        ads_by_day = split["balance"]
+        print("реклама по видам оплаты (с НДС): " + ", ".join(f"{k} {v:,.2f}" for k, v in sorted(split["by_type"].items())), flush=True)
+    except RuntimeError as error:
+        print(f"реклама не прочитана: {error}; колонка «Реклама» пуста"); ads_by_day, split = None, None
+    nm_rows = load_ads_nm_rows(sb, d1, d2) if ads_by_day is not None else []
+    ads_nm_by_day = nm_weights(nm_rows, split["advert_day"], "balance") if split else {}
+    cashback_nm = nm_weights(nm_rows, split["advert_day"], "other") if split else {}
+    advance_rows = wbm.load_review_advance_rows(sb)
     bstats = {}
-    rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day, stats=bstats)
+    rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day, stats=bstats,
+                      ads_cashback_by_day=(split or {}).get("other", {}), cashback_nm_by_day=cashback_nm, advance_rows=advance_rows)
     from_row = sum(1 for r in report_rows if r.get("subject_name"))
     print(f"предмет в строках отчёта: {from_row} из {len(report_rows)}; дней со статистикой по номенклатурам: {len(ads_nm_by_day)}; "
           f"реклама разнесена (строк «Данных»): " + (", ".join(f"{k} — {v}" for k, v in sorted(__import__('collections').Counter(r['ads_allocated'] for r in rows if r['ads_allocated']).items())) or "нет списаний"))
@@ -913,8 +1135,19 @@ def main(argv=None):
                 print(f"  {m}: {d['numerator']:,.2f} / {d['denominator']:,.2f} = {d['rate']}" + ("" if d["mature"] else f" — незрелый, зрел с {d['mature_from']}"))
         print(f"строк отчёта для коэффициента {len(rate_rows)} (rr_date {args.month_from}-01 … {today}), месяцев заказов {len(obm)}")
     if args.check:
-        table, _m, (ppvz, rebill) = bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day)
+        advance_net, _open = rules.review_advance_net(advance_rows, wbm.row_day)
+        table, _m, (ppvz, rebill) = bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day, advance_net=advance_net)
         failures = print_bridge(table, d1, d2)
+        failures += print_bridge_report(bridge_to_report(rows, report_rows, d1, d2, bstats["excluded"], split), d1, d2)
+        by_month, per_doc = ads_withheld_identity(report_rows, split, d1, d2)
+        print("\nТождество WB-14 §2: удержания «WB Продвижение» (по rrDate документа) против списаний upd с оплатой «Баланс» (по дню списания):")
+        for m, (docs, spend) in by_month.items():
+            print(f"  {m}: удержания {docs:>14,.2f}  списания «Баланс» {spend:>14,.2f}  разница {docs - spend:>+14,.2f}")
+        tot_docs, tot_spend = sum(v[0] for v in by_month.values()), sum(v[1] for v in by_month.values())
+        print(f"  итого окна: удержания {tot_docs:,.2f}, списания «Баланс» {tot_spend:,.2f}, разница {tot_docs - tot_spend:+,.2f}")
+        exact = sum(1 for _d, v, sp, _lo in per_doc if v == sp)
+        print(f"  по документам (документ дня D = списания [предыдущий документ, D)): совпало {exact} из {len(per_doc)}; "
+              + "; ".join(f"{d} {v:,.2f} против {sp:,.2f} ({v - sp:+,.2f})" for d, v, sp, _lo in per_doc if v != sp))
         print(f"справочно: возмещение ПВЗ (ppvzReward) {ppvz:,.2f} и возмещение издержек по перевозке (rebillLogisticCost) {rebill:,.2f} с НДС за период — в форму не входят")
         code = 1 if failures else 0
     if args.xlsx:
@@ -924,6 +1157,10 @@ def main(argv=None):
                  "Реклама — списания дня (wb_ad_spend_daily, биллинг, с НДС), разнесённые по артикулам долями из статистики по номенклатурам (fullstats, нормировка к списаниям дня; Σ по дню = списаниям), где статистики нет — пропорционально продажам дня.",
                  f"Себестоимость — снимок 1С {wbm.SNAP} по базовому артикулу. Ярлыки одни с Ozon: категория — предмет строки отчёта / карточки по словарю владельца "
                  "(строчными), прочее — вслух; бренд — по первой букве артикула (t → Топаз, иначе KARATOV); «Неопознанный товар» — как строки без товара.",
+                 "Правила WB-14 (loaders/wb_money_rules, решения владельца 28.09): «Ост. расходы» = штрафы + удержания вида «прочее» − доплаты; удержания "
+                 "«Оказание услуг «WB Продвижение»» — реклама с баланса, её деньги уже в «Рекламе» (из upd), сюда не входят; аванс «Баллы за отзывы» и его "
+                 "возврат — только нетто в день возврата, строкой «(без товара)»; «Реклама» — только оплата «Баланс», реклама за кэшбэк WB — справочной "
+                 "колонкой справа, в форму не входит; упаковка (предмет «Упаковки для украшений») в «Данные» не входит. " + bstats["excluded"]["tally_text"] + ".",
                  buyout_rate_caption(args.month_from, args.month_to, sb)]
         print(notes[-1])
         write_xlsx(args.xlsx, rows, month_rows, split_brand, split_category, notes)

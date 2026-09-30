@@ -17,7 +17,8 @@
     Реклама           типы 41 + 54 / НДС — «на круг», решение владельца 5 от 2026-09-19
     Компенсации       типы 25 + 10, ДОХОД: «+» — деньги нам; в расходы и в «Прочее» не входят (решение 8 от 2026-09-21)
     Фин. рез. с компенсациями   справочно; сопоставим с «Фин. рез.» владельца, у которого компенсации внутри «Прочего»
-    ДРР %             Реклама / (Оборот / НДС) — формула ручного листа, «от ТО»
+    ДРР %             Реклама / Выручка (обе без НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез» (до 09-29 было
+                      «от ТО»: Реклама / (Оборот / НДС)); справочно рядом «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС
     Прочее            (статьи other + external_promo − тип 1) / НДС; незнакомая статья — сюда же И называется вслух
     Фин. рез.         Маржа − Логистика − Эквайринг − Подписка − Реклама − Прочее
     Ebitda            Фин. рез. − накладные в день (OVERHEAD_PER_DAY: параметр с датой действия, как НДС; Ozon с 2026-09-01 —
@@ -135,6 +136,18 @@ def month_days(month, date_to=None):
 
 def ratio(a, b):
     return (a / b) if b else None
+
+
+def drr(ads_net, revenue_net):
+    """«% ДРР» Ozon — реклама без НДС / выручка без НДС ((оборот − комиссия) / НДС). База владельца (решение 2026-09-29), та же, что
+    Z сводной «Сводная Ozon выкупы» (Y / S). Одна функция на все листы Ozon (книга месяца и «Фин рез»); нет рекламы или выручки — None."""
+    return None if ads_net is None else ratio(ads_net, revenue_net)
+
+
+def drr_ozon_method(ads_net, turnover_gross):
+    """«ДРР по методике Ozon» — реклама без НДС / оборот с НДС до комиссии: так Ozon считает долю рекламы для порога соинвеста.
+    Справочно рядом с «% ДРР»; в сводную владельца не входит."""
+    return None if ads_net is None else ratio(ads_net, turnover_gross)
 
 
 def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
@@ -268,7 +281,8 @@ def add_ratios(row):
     row["margin_pct"] = ratio(row["margin"], rev)
     row["logistics_pct"] = ratio(row["logistics"], rev)
     row["acquiring_pct"] = None if row.get("acquiring") is None else ratio(row["acquiring"], rev)
-    row["drr_pct"] = None if row.get("ads") is None else ratio(row["ads"], row["turnover"] / row["vat"]) if row["turnover"] else None
+    row["drr_pct"] = drr(row.get("ads"), rev)
+    row["drr_ozon_pct"] = drr_ozon_method(row.get("ads"), row["turnover"])
     row["fin_result_pct"] = None if row.get("fin_result") is None else ratio(row["fin_result"], rev)
     row["fin_result_with_comp_pct"] = None if row.get("fin_result_with_comp") is None else ratio(row["fin_result_with_comp"], rev)
     row["ebitda_pct"] = None if row.get("ebitda") is None else ratio(row["ebitda"], rev)
@@ -285,10 +299,8 @@ def total_row(rows):
     for k in MONEY:
         vals = [r.get(k) for r in rows]
         t[k] = None if any(v is None for v in vals) else sum(vals, Z)
-    # ДРР в итоге — по формуле листа от сумм; при смене НДС внутри месяца оборот без НДС считается по дням
-    t["_turnover_net"] = sum((r["turnover"] / r["vat"] for r in rows), Z)
+    # ДРР в итоге — от сумм: выручка без НДС уже сложена по дням (НДС по дате), поэтому смена ставки внутри месяца учтена
     add_ratios(t)
-    t["drr_pct"] = None if t["ads"] is None else ratio(t["ads"], t["_turnover_net"])
     return t
 
 
@@ -371,7 +383,7 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, 
             row["margin"] = row["revenue"] - row["cogs"]
             row["fin_result"] = row["margin"] - row["logistics"] - row["subscription"] - row["other_with_acq"] - row["ads_perf"]
             row["margin_pct"] = ratio(row["margin"], row["revenue"])
-            row["drr_pct"] = ratio(row["ads_perf"], row["turnover"] / vat) if row["turnover"] else None
+            row["drr_pct"] = drr(row["ads_perf"], row["revenue"])
             row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
             rows.append(row)
         out[name] = rows
@@ -385,9 +397,8 @@ def platform_total(rows):
     t = {"date": "Итого"}
     for k in PLATFORM_MONEY:
         t[k] = sum((r[k] for r in rows), Z)
-    net = sum((r["turnover"] / r["vat"] for r in rows), Z)
     t["margin_pct"], t["fin_result_pct"] = ratio(t["margin"], t["revenue"]), ratio(t["fin_result"], t["revenue"])
-    t["drr_pct"] = ratio(t["ads_perf"], net)
+    t["drr_pct"] = drr(t["ads_perf"], t["revenue"])
     return t
 
 
@@ -429,7 +440,7 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
                "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat}
         row["margin"] = None if row["cogs"] is None else row["revenue"] - row["cogs"]
         row["margin_pct"] = None if row["margin"] is None else ratio(row["margin"], row["revenue"])
-        row["drr_pct"] = ratio(row["ads"], row["turnover"] / vat) if row["turnover"] else None
+        row["drr_pct"] = drr(row["ads"], row["revenue"])
         out.append(row)
     out.sort(key=lambda r: (-r["turnover"], r["sku"]))
     return out
@@ -557,7 +568,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     cols = [("Дата реализации", "date", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС), руб.", "commission", money), ("Комиссия, %", "commission_pct", pct),
             ("Выручка, руб.", "revenue", money), ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
             ("Логистика, руб.", "logistics", money), ("% Логистики", "logistics_pct", pct), ("Эквайринг, руб.", "acquiring", money), ("% Эквайринга", "acquiring_pct", pct),
-            ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от ТО)", "drr_pct", pct), ("Прочее, руб.", "other", money),
+            ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct),
+            ("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", pct), ("Прочее, руб.", "other", money),
             ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct),
             ("Накладные в день, руб.", "overhead", money), ("Ebitda, руб.", "ebitda", money), ("% Ebitda", "ebitda_pct", pct), (None, None, None),
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
@@ -615,7 +627,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         wsp["A1"] = f"Выкупы Ozon — {name}"; wsp["A1"].font = bold
         pcols = [("Дата реализации", "date", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС), руб.", "commission", money), ("Выручка, руб.", "revenue", money),
                  ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct), ("Логистика, руб.", "logistics", money),
-                 ("Подписка, руб.", "subscription", money), ("Реклама (Performance), руб.", "ads_perf", money), ("% ДРР (от ТО)", "drr_pct", pct),
+                 ("Подписка, руб.", "subscription", money), ("Реклама (Performance), руб.", "ads_perf", money), ("% ДРР (от выручки)", "drr_pct", pct),
                  ("Прочее с эквайрингом, руб.", "other_with_acq", money), ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), ("Позиций", "positions", "#,##0")]
         for j, (head, _k, _f) in enumerate(pcols, 1):
             c = wsp.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
@@ -654,7 +666,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
              ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money), ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-             ("Реклама (Performance)", "ads", money), ("% ДРР (от ТО)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money)]
+             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money)]
     for j, (head, _k, _f) in enumerate(cols2, 1):
         c = ws2.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
         c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
@@ -665,7 +677,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     tot["margin"] = tot["revenue"] - tot["cogs"]
     tot["margin_pct"] = ratio(tot["margin"], tot["revenue"])
     vat = rows[0]["vat"] if rows else vat_for(month + "-01")
-    tot["drr_pct"] = ratio(tot["ads"], tot["turnover"] / vat) if tot["turnover"] else None
+    tot["drr_pct"] = drr(tot["ads"], tot["revenue"])
     for i, r in enumerate(sku_rows + [tot], 2):
         for j, (_head, k, fmt) in enumerate(cols2, 1):
             v = r.get(k)
@@ -1556,6 +1568,7 @@ def main():
              "Компенсации Ozon (типы 25 и 10) — отдельной строкой дохода, в расходы не входят; «Фин. рез. с компенсациями» сопоставим с «Фин. рез.» ручного листа.",
              "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 96 + вся статья подписки: 51, 52, 74) / НДС — так считает ручной лист. "
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
+             "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
              overhead_note(days),
              cost_index_note(days, args.snapshot),
              "Граница свёртки типов начислений — 24.08.2026: с 25.08 расходы лежат по справочнику владельца (типы 16, 17, 45, 62, 78, 82 — прочее; "

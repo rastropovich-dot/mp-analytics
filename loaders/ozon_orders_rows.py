@@ -152,6 +152,21 @@ def _empty_row(order_date, sku, product, schema, observed_at):
     }
 
 
+def foreign_currency(code):
+    """Валюта задана и она не рубль (KZT, BYN, UZS …). Пустая — считаем рублём: так приходят старые ответы без валюты."""
+    return bool(code) and str(code).upper() != "RUB"
+
+
+def customer_currency(posting, product):
+    """Валюта customer_price товара в financial_data FBS /v4 — или '' (поля нет, FBO, строка вместо объекта)."""
+    sku = str(product.get("sku") or "")
+    for item in (posting.get("financial_data") or {}).get("products") or []:
+        if str(item.get("product_id") or "") == sku:
+            raw = item.get("customer_price")
+            return str(raw.get("currency") or "") if isinstance(raw, dict) else ""
+    return ""
+
+
 def buyer_unit_price(posting, product, buyer_prices=None):
     """Оплачено покупателем за единицу — или None (не измерено).
 
@@ -167,6 +182,8 @@ def buyer_unit_price(posting, product, buyer_prices=None):
         if str(item.get("product_id") or "") == sku:
             raw = item.get("customer_price")
             if isinstance(raw, dict):
+                if foreign_currency(raw.get("currency")):
+                    return None     # сорок пятая §5: рублёвого эквивалента в ответе Ozon нет — тенге как рубли не складываем
                 raw = raw.get("amount")
             if raw not in (None, ""):
                 return Decimal(str(raw))
@@ -223,6 +240,8 @@ def build_order_rows(postings, schema, observed_at=None, buyer_prices=None):
             if unit is None:
                 row[f"_{prefix}_buyer_unknown"] = True
                 counters["buyer_price_unknown_products"] += 1
+                if foreign_currency(customer_currency(posting, product)):
+                    counters["buyer_price_foreign_currency"] += 1
             else:
                 row[f"{prefix}_amount_buyer"] += qty * unit
                 counters["buyer_price_known_products"] += 1
@@ -281,7 +300,9 @@ def print_counters(schema, counters):
           f"без даты {counters.get('no_date', 0)}, без sku {counters.get('no_sku', 0)}, "
           f"нулевых количеств {counters.get('zero_qty', 0)}; строк к записи {counters.get('rows', 0)}; "
           f"цена покупателя известна у {counters.get('buyer_price_known_products', 0)} товаров, неизвестна у "
-          f"{counters.get('buyer_price_unknown_products', 0)} (их ключи — amount_buyer null)")
+          f"{counters.get('buyer_price_unknown_products', 0)} (их ключи — amount_buyer null)"
+          + (f"; из них в чужой валюте {counters['buyer_price_foreign_currency']} — не складываем как рубли, рублёвого эквивалента у Ozon нет"
+             if counters.get("buyer_price_foreign_currency") else ""))
     unknown = counters.get("unknown_statuses") or {}
     if unknown:
         print(f"ВНИМАНИЕ: незнакомые статусы, посчитаны как подтверждённые: {unknown}")

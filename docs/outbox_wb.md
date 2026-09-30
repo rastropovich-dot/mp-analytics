@@ -8,6 +8,33 @@
 
 ---
 
+## 2026-09-30, четырнадцатая задача WB — СЛИТА в `main` по слову владельца (окно WB 4): мерж-коммит `ee8a8ea` (push 20:00:35 UTC), через 19 с перекрыт мержем сорок пятой Ozon `d071f35` поверх него; Render live на `d071f35` 20:02 UTC (оба cron-сервиса), наш код внутри; ветка `wb-fixes` = свежий `origin/main` + мерж (`6b4b0e2`), 1 201 тест OK
+
+Слово владельца в окне 09-30 ~19:55 UTC: «четырнадцатую влить в main». Порядок — как у двенадцатой: `git fetch` → `origin/main` в
+ветку → полный набор → мерж-коммит `--no-ff` плюмбингом (`main` выписан в `~/mp-analytics`) → push `${C}:refs/heads/main` → список
+деплоев Render. **db_writes = 0, к WB API — 0 (в этом блоке), Render не менялся** (деплой — `autoDeploy` по push).
+
+| шаг | что | результат |
+|---|---|---|
+| параллельные сессии | `list_sessions` | в `~/mp-analytics-wb` живых нет (WB 3 — последняя активность 09-29 20:11 UTC); РБХ-сессия в своём worktree, `main` не трогала |
+| `git fetch` | `origin/main` | `9eae801` — «сорок пятая получена в inbox» (только `docs/how-we-work.md` +7, `docs/inbox.md`); ветка впереди на 8 коммитов, merge-base `b846c04` |
+| inbox | пятнадцатая задача лежала в рабочей копии незакоммиченной (советник файл кладёт, git — сессии) | `db6d4c7` |
+| `origin/main` → ветка | `9eae801` | `71280b2`, 2 файла, конфликтов 0 (WB-файлы советник не трогал) |
+| набор на слитой голове | `PYTHONPATH=. venv/bin/python3 -m unittest discover -s tests` | **1 190 OK (3 skipped)** — `logs/tests_wb14_merge2_20260930.out` |
+| мерж-коммит | `git commit-tree` дерево `b88a75a` = голове ветки, родители `9eae801` + `71280b2` | **`ee8a8ea`** |
+| push в `main` | `git push origin "${C}:refs/heads/main"` | **20:00:35 UTC**, `9eae801..ee8a8ea`; ветка переведена fast-forward и запушена |
+| **через 19 с** | Ozon-сессия (сорок пятая, worktree `~/mp-analytics-45`) запушила `main` = **`d071f35`** (20:00:54 UTC): мерж `finrez-drr-revenue`, у которого `297bcd9` — мерж нашего `ee8a8ea` в их ветку | `git merge-base --is-ancestor ee8a8ea d071f35` — да; `git diff ee8a8ea d071f35` по 10 WB-путям (`loaders/wb_*`, `scripts/report_finrez_wb.py`, `report_wb_month.py`, `book_wb_sheet.py`, `tests/test_wb_money_rules.py`, `test_report_finrez_wb.py`, `docs/*_wb.md`) — **пусто** |
+| Render (`logs/render_deploys_wb14_20260930.out`) | `GET /deploys` обоих сервисов, 2 опроса | деплой `ee8a8ea`: `mp-analytics` — `deactivated`, `mp-analytics-telegram-report` — `canceled` (перекрыт до окончания сборки); **оба live на `d071f35`: `mp-analytics` 20:02:19 UTC, `mp-analytics-telegram-report` 20:02:16 UTC** (78 с после их push); запас до ночного прогона 00:15 UTC — 4 ч 13 мин |
+| свежий `origin/main` → ветка | `d071f35` (15 файлов: `report_ozon_month.py`, `report_finrez.py`, `ozon_orders_fbo_loader.py`, `ozon_balance_groups_check.py`, тесты — Ozon) | `6b4b0e2`, конфликтов 0; набор на голове **1 201 OK (3 skipped)** — `logs/tests_wb15_merge45_20260930.out`; ветка запушена, `origin/main..HEAD` = только этот мерж |
+
+Что ушло в прод четырнадцатой (первая ночь — 10-01): `loaders/wb_money_rules.py` («Прочее» без удержаний «WB Продвижение» и аванса,
+реклама только «Баланс», упаковка исключена), читатели `report_finrez_wb` / `report_wb_month` / `book_wb_sheet`, 24-я справочная
+колонка «Данных WB выкупы». Ночной пайплайн WB-шаги не менял; витрины WB рекламы и прочего не несут — ночь пересчитывать нечего.
+Утром 10-01: лист «WB - месяц» утренней книги — август «Прочее» 116 634,61; книга «Фин рез» launchd 06:00 МСК (первая сборка на
+слитом коде) — «Выкупы WB» август X 54 032,79, Y 4 964 631,55, апрель T 1 434 796,72 (числа из §2–§3 четырнадцатой).
+
+---
+
 ## 2026-09-29, вопрос владельца: отчёт реализации № 63466988, «отрицательная корректировка 7 119 571,15 ₽ (апрель 2026)» — в наших данных сумма есть одной строкой, но 20.02.2026 и со знаком «+» (доплата продавцу); в окно модуля не попадает; возврата нет
 
 Только чтение: `execute_sql` по `wb_sales_report_rows` (вся история 01.02 … 28.09, 330 468 строк) и файлы сырья `data/wb_sales_report_raw/daily_*.json`

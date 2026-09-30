@@ -138,10 +138,10 @@ class SideColumns(unittest.TestCase):
         self.assertEqual([c for c, h in x.WB_FORMULA_COLS.items() if x.is_pct(h)], ["M", "Q", "S", "U", "W", "Z"])
         self.assertFalse(x.is_pct("Фин. рез., руб."))
 
-    def test_base_diff_only_ozon_drr(self):
-        self.assertEqual(list(x.BASE_DIFF), [("Сводная Ozon выкупы", "Z")])
+    def test_no_known_base_differences_left(self):
+        """Сорок пятая §2: «% ДРР» листов переведён на выручку — Z сводной сверяется со статичным листом и идёт в итог."""
+        self.assertEqual(x.BASE_DIFF, {})
         self.assertEqual(x.OZON_FORMULA_COLS["Z"], "% ДРР")
-        self.assertIn("оборот", x.BASE_DIFF[("Сводная Ozon выкупы", "Z")])
 
 
 class Vat(unittest.TestCase):

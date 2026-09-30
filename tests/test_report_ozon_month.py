@@ -1,7 +1,7 @@
 """Генератор листа «Ozon - <месяц>»: формулы ручного листа на наших источниках.
 
 Формулы сняты с ячеек листа владельца (data/manual_report_september.xlsx, 2026-09-19):
-выручка = (оборот − комиссия) / НДС, ДРР = реклама / (оборот / НДС),
+выручка = (оборот − комиссия) / НДС, ДРР = реклама / выручка (обе без НДС; решение владельца 2026-09-29, до — «от ТО»),
 фин. рез. = маржа − логистика − реклама − эквайринг − прочее (у нас ещё − подписка).
 Живая приёмка против листа — режим --check самого скрипта; здесь — арифметика и правила.
 """
@@ -61,7 +61,8 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertEqual(r["fin_result"], D("700") - 100 - 10 - 20 - 100 - 20)
         self.assertEqual(r["compensations"], D("50"))              # типы 25 + 10: доход, «+» — деньги нам
         self.assertEqual(r["fin_result_with_comp"], r["fin_result"] + 50)
-        self.assertEqual(r["drr_pct"], D("0.1"))                   # реклама / (оборот / НДС)
+        self.assertEqual(r["drr_pct"], D("0.1"))                   # реклама / выручка (комиссия 0 — совпадает со старым «от ТО»)
+        self.assertEqual(r["drr_ozon_pct"], D("100") / D("1220"))  # методика Ozon: реклама без НДС / оборот с НДС
         self.assertEqual(r["margin_pct"], D("0.7"))
 
     def test_reference_columns_reproduce_the_manual_grouping(self):
@@ -182,6 +183,23 @@ class TotalsTests(unittest.TestCase):
         total = rep.total_row([rep.add_ratios(r) for r in rows])
         self.assertEqual((total["turnover"], total["ads"]), (D("3660"), D("200")))
         self.assertEqual(total["drr_pct"], D("200") / D("3000"))
+
+    def test_drr_is_on_revenue_not_on_turnover(self):
+        """Сорок пятая §2: с комиссией база различима — ДРР = реклама / ((оборот − комиссия) / НДС), методика Ozon — к обороту с НДС."""
+        days = ["2026-09-10", "2026-09-11"]
+        rows, _ = rep.build_daily(days, [buyout("1220", "488", day=days[0]), buyout("2440", "976", day=days[1])], [],
+                                  {d: {41: D("122")} for d in days}, lambda sku: D("0"), "2026-09-19")
+        rows = [rep.add_ratios(r) for r in rows]
+        self.assertEqual(rows[0]["revenue"], D("600"))                            # (1220 − 488) / 1,22
+        self.assertEqual(rows[0]["drr_pct"], D("100") / D("600"))
+        self.assertEqual(rows[0]["drr_ozon_pct"], D("100") / D("1220"))
+        total = rep.total_row(rows)
+        self.assertEqual(total["revenue"], D("1800"))
+        self.assertEqual(total["drr_pct"], D("200") / D("1800"))
+        self.assertEqual(total["drr_ozon_pct"], D("200") / D("3660"))
+        self.assertIsNone(rep.drr(None, D("1")))
+        self.assertIsNone(rep.drr(D("1"), D("0")))
+        self.assertIsNone(rep.drr_ozon_method(D("1"), None))
 
     def test_month_days_respects_date_to(self):
         self.assertEqual(len(rep.month_days("2026-09")), 30)

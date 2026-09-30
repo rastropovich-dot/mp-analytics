@@ -22,7 +22,9 @@ from . import http_retry
 
 BASE = "https://api-seller.ozon.ru"
 POLL_SECONDS = 5
-MAX_WAIT_SECONDS = 180
+# 180 → 420 с (сорок пятая §3): удачные ночи 09-25 … 09-28 — 59,4 / 36,7 / 31,6 / 42,0 с (info 10 / 6 / 5 / 7), ночь 09-29 — «не готов
+# за 180 с (status=waiting)». 420 = 7 × самой долгой удачной; ночь кончается ~02:15 UTC при окне до 04:30 — лишние 4 мин её не сдвигают
+MAX_WAIT_SECONDS = 420
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "ozon_report_postings")
 
 
@@ -39,10 +41,18 @@ def money(value):
         return None
 
 
-def parse_report(text):
-    """CSV отчёта → {(posting_number, sku): цена покупателя за единицу}. Строка без цены — пропускается и считается."""
+def parse_report(text, stats=None):
+    """CSV отчёта → {(posting_number, sku): цена покупателя за единицу}. Строка без цены — пропускается и считается.
+    Цена покупателя не в рублях («Код валюты покупателя» ≠ RUB) — тоже пропуск (сорок пятая §5: рублёвого эквивалента в отчёте нет,
+    тенге как рубли не складываем); счёт таких строк — в stats["foreign_currency"], если stats передан."""
     prices, skipped = {}, 0
     for r in csv.DictReader(io.StringIO(text.lstrip("\ufeff")), delimiter=";"):
+        currency = str(r.get("Код валюты покупателя") or "").strip()
+        if currency and currency.upper() != "RUB":
+            skipped += 1
+            if stats is not None:
+                stats["foreign_currency"] = stats.get("foreign_currency", 0) + 1
+            continue
         paid = money(r.get("Оплачено покупателем"))
         posting, sku = str(r.get("Номер отправления") or "").strip(), str(r.get("SKU") or "").strip()
         if paid is None or not posting or not sku:
@@ -56,7 +66,7 @@ def fetch_buyer_prices(scheme, since_utc, to_utc, sleep_fn=time.sleep, post=None
     """Отчёт ЛК за окно → (цены, статистика). Отказ — RuntimeError с причиной; вызывающий решает, что делать без цен."""
     post = post or (lambda path, body: http_retry.post(f"{BASE}{path}", label=f"report{path}", headers=headers(), json=body, timeout=120))
     get = get or (lambda url: requests.get(url, timeout=300))
-    stats = {"create": 0, "info": 0, "download": 0, "rows": 0, "skipped": 0, "seconds": 0.0}
+    stats = {"create": 0, "info": 0, "download": 0, "rows": 0, "skipped": 0, "seconds": 0.0, "foreign_currency": 0}
     body = {"filter": {"delivery_schema": [scheme], "processed_at_from": since_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                        "processed_at_to": to_utc.strftime("%Y-%m-%dT%H:%M:%SZ")}, "language": "RU"}
     body["with"] = {"additional_data": True} if scheme == "fbs" else {}   # у fbo additional_data → 400 (проба 2026-09-23)
@@ -97,6 +107,6 @@ def fetch_buyer_prices(scheme, since_utc, to_utc, sleep_fn=time.sleep, post=None
             fh.write(text)
     except OSError:
         pass
-    prices, skipped = parse_report(text)
+    prices, skipped = parse_report(text, stats)
     stats.update({"rows": len(prices) + skipped, "skipped": skipped, "seconds": round(clock() - started, 1)})
     return prices, stats

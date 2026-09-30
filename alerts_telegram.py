@@ -1035,6 +1035,7 @@ def get_last_pipeline_run(client=None):
 
 
 CATALOG_STATE_KEY = "ozon_catalog_topup:last"    # пишет scripts/ozon_catalog_topup_step.py (сорок третья §4)
+FBO_BUYER_STATE_KEY = "ozon_fbo_buyer_prices:last"  # пишет scripts/ozon_fbo_orders_step.py (сорок пятая §3)
 FINREZ_STATE_KEY = "finrez_nightly:last"          # пишет scripts/finrez_nightly_status.py с машины владельца (сорок третья §5)
 STATE_MAX_AGE_HOURS = 20
 
@@ -1092,6 +1093,21 @@ def finrez_book_line(payload, now=None):
     return f"книга Фин рез: собрана {fresh.strftime('%H:%M')} UTC за {int(payload.get('seconds') or 0) // 60} мин, {size} байт, sha256 {sha}…; {copy}"
 
 
+def fbo_buyer_line(payload, now=None):
+    """Строка только при отказе отчёта ЛК этой ночью: цена покупателя FBO не переписывалась (прежнее измерение осталось).
+    Отчёт пришёл, записи нет или она старше STATE_MAX_AGE_HOURS — пусто (отказ самого шага FBO ловит блокер ozon_fbo_orders_missing)."""
+    if not payload or payload.get("ok"):
+        return ""
+    now = now or datetime.now(timezone.utc)
+    if not _fresh(payload, now):
+        return ""
+    text = f"⚠️ цена покупателя FBO: отчёт ЛК не получен ({payload.get('error') or 'причина не записана'})"
+    if payload.get("rows_kept_measured") is not None:
+        text += (f"; строк окна {payload.get('rows', '?')} — у {payload['rows_kept_measured']} осталось прежнее измерение, "
+                 f"{payload.get('rows_without_price', '?')} без цены (новых ключей {payload.get('rows_new_keys', '?')})")
+    return text
+
+
 def pipeline_run_line(run, now=None):
     """Одна строка про ночь: какие шаги не выполнены — или что итога нет. Всё прошло — пусто.
 
@@ -1134,7 +1150,8 @@ def build_message(target_date=None, skip_snapshot=False):
     run_line = pipeline_run_line(get_last_pipeline_run())
     if run_line:
         lines.extend([run_line, ""])
-    extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), finrez_book_line(get_state_payload(FINREZ_STATE_KEY))) if line]
+    extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), fbo_buyer_line(get_state_payload(FBO_BUYER_STATE_KEY)),
+                               finrez_book_line(get_state_payload(FINREZ_STATE_KEY))) if line]
     if extra:
         lines.extend(extra + [""])
 

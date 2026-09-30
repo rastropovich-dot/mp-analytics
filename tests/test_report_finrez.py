@@ -20,7 +20,8 @@ D = Decimal
 DAYS = ["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]
 CATALOG = {"11": {"category": "кольца", "brand": "KARATOV", "name": "Кольцо", "offer_id": "F1"},
            "22": {"category": "серьги", "brand": "Топаз", "name": "Серьги", "offer_id": "T2"}}
-UNIT_COST = {"11": D(100), "22": None}.get
+def UNIT_COST(sku, day=None, qty=None):                     # сорок шестая §3: читатели зовут unit_cost(sku, день[, штуки])
+    return {"11": D(100), "22": None}.get(sku)
 
 
 def buyout(day, sku, seller, commission, units=1, bonus="10", coinv="1"):

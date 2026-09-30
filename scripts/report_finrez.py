@@ -162,7 +162,7 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         a["turnover"] += D(r["buyouts_amount_seller"]); a["commission"] -= D(r["commission_amount"])
         units = D(r["buyouts_units"]) if r.get("buyouts_units") is not None else D(r["buyouts_qty"])
         a["units"] += units
-        uc = unit_cost(sku)
+        uc = unit_cost(sku, d, units)                       # снимок по дате продажи (сорок шестая §3)
         if uc is None:
             stats["positions_without_cost"] += int(D(r["buyouts_qty"]))
         else:
@@ -354,7 +354,7 @@ def long_rows_from_raw(day, accruals, units_by_key, unit_cost, describe_fn, stat
             first = next((i for i in ids if rows[i].qty > 0), ids[0])
             rows[first] = rows[first]._replace(qty=rows[first].qty + delta)
             stats["units_reallocated_keys"] += 1
-        uc = unit_cost(sku)
+        uc = unit_cost(sku, day)
         for i in ids:
             r = rows[i]
             if uc is None:
@@ -595,7 +595,7 @@ def build_order_rows(days, order_rows, kpi_rows, daily_rows, unit_cost, sku2art,
             if D(bc) + D(bcc) == conf_a + canc_a and conf_a + canc_a:
                 a["dup_rows"] += 1
             a["buyer_rows"] += 1
-        uc = unit_cost(sku)
+        uc = unit_cost(sku, d)
         if uc is None:
             stats["qty_without_cost"] += int(conf_q + canc_q)
         else:
@@ -1628,7 +1628,9 @@ def main(argv=None):
     notes = {
         "buyouts": [f"Источники: сырьё начислений by-day (data/accrual_history, дней {bstats.get('days_from_raw', 0)}; без файла — таблицы, дней {bstats.get('days_from_tables', 0)}), "
                     f"реклама — Performance по SKU (ad_spend витрины) плюс остаток до начислений 41 + 54 (леджер). НДС по дате ({vat_for(d2)} на {d2}).",
-                    f"Себестоимость = количество × СС снимка 1С {args.snapshot} × индекс СС ({idx_note}; до — без индекса); позиций без СС: {bstats.get('positions_without_cost', 0)}.",
+                    f"Себестоимость = количество × СС снимка 1С по дате продажи (снимок с наибольшей датой ≤ дате; ключа нет — ближайший более поздний; "
+                    f"после последнего снимка — последний) × индекс СС ({idx_note}; до — без индекса); позиций без СС: {bstats.get('positions_without_cost', 0)}. "
+                    + (unit_cost.history.note() if getattr(unit_cost, "history", None) is not None else f"Снимок {args.snapshot}."),
                     "«Прочее» включает подписку (у владельца отдельной статьи нет); эквайринг — тип 1 по строке товара; компенсации 25 / 10 — не статья формы, в лист не входят. "
                     "«Ст-ть продаж в себ-ти» — только под Товарооборотом, как в образце.",
                     "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",

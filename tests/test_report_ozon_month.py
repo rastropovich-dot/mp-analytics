@@ -34,7 +34,7 @@ EXPENSES = [expense("logistics", "122"), expense("other", "36.6"), expense("subs
             expense("advertising_clicks", "999"), expense("commission", "777")]
 
 
-def one_day(buyouts=None, expenses=None, types=TYPES, cost=lambda sku: D("300"), today="2026-09-19"):
+def one_day(buyouts=None, expenses=None, types=TYPES, cost=lambda sku, day=None, qty=None: D("300"), today="2026-09-19"):
     rows, unknown = rep.build_daily([DAY], buyouts or [buyout()], EXPENSES if expenses is None else expenses,
                                     {} if types is None else {DAY: types}, cost, today)
     return rep.add_ratios(rows[0]), unknown
@@ -103,7 +103,7 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertIsNone(rep.total_row([r])["fin_result"])        # итог неполон, и это видно
 
     def test_position_without_cost_is_counted_not_priced_at_zero(self):
-        r, _ = one_day(buyouts=[buyout(qty=2, sku="no-cost")], cost=lambda sku: None)
+        r, _ = one_day(buyouts=[buyout(qty=2, sku="no-cost")], cost=lambda sku, day=None, qty=None: None)
         self.assertEqual((r["cogs"], r["no_cost_positions"]), (D("0"), 2))
 
     def test_young_dates_are_flagged(self):
@@ -130,13 +130,13 @@ class DailyFormulaTests(unittest.TestCase):
 class UnitsCogsTests(unittest.TestCase):
     def test_cogs_uses_units_where_measured_and_positions_where_not(self):
         rows, _ = rep.build_daily([DAY], [dict(buyout(qty=1, sku="a"), buyouts_units=3), dict(buyout(qty=2, sku="b"), buyouts_units=None), buyout(qty=1, sku="c")],
-                                  [], {DAY: TYPES}, lambda sku: D("100"), "2026-09-19")
+                                  [], {DAY: TYPES}, lambda sku, day=None, qty=None: D("100"), "2026-09-19")
         r = rows[0]
         self.assertEqual(r["cogs"], D("600"))                       # 3 штуки + 2 позиции + 1 позиция
         self.assertEqual((r["rows_by_units"], r["rows_by_positions"], r["positions"], r["units"]), (1, 2, D("4"), D("6")))
 
     def test_zero_units_is_a_measured_zero_not_a_fallback_to_positions(self):
-        rows, _ = rep.build_daily([DAY], [dict(buyout(qty=1), buyouts_units=0)], [], {DAY: TYPES}, lambda sku: D("100"), "2026-09-19")
+        rows, _ = rep.build_daily([DAY], [dict(buyout(qty=1), buyouts_units=0)], [], {DAY: TYPES}, lambda sku, day=None, qty=None: D("100"), "2026-09-19")
         self.assertEqual((rows[0]["cogs"], rows[0]["rows_by_units"]), (D("0"), 1))
 
 
@@ -148,7 +148,7 @@ class PlatformTests(unittest.TestCase):
                          dict(expense("other", "12.2"), marketplace_sku=""), dict(expense("subscription", "24.4"), marketplace_sku=""),
                          dict(expense("advertising_clicks", "999"), marketplace_sku="1"), dict(expense("commission", "777"), marketplace_sku="1")]
         self.kpi = [{"kpi_date": DAY, "marketplace_sku": "1", "ad_spend": "122"}, {"kpi_date": DAY, "marketplace_sku": "9", "ad_spend": "12.2"}]
-        self.platforms = rep.build_platform_daily([DAY], self.buyouts, self.expenses, self.kpi, self.sku2art, lambda sku: D("100"))
+        self.platforms = rep.build_platform_daily([DAY], self.buyouts, self.expenses, self.kpi, self.sku2art, lambda sku, day=None, qty=None: D("100"))
 
     def test_platform_is_the_first_letter_of_the_article(self):
         self.assertEqual([rep.platform_of(a) for a in ("F000283615", "s-1", "T9", "X1", "", None)],
@@ -163,7 +163,7 @@ class PlatformTests(unittest.TestCase):
 
     def test_platform_sheets_add_up_to_the_general_sheet(self):
         types = {32: D("122"), 38: D("61"), 96: D("12.2"), 51: D("24.4"), 41: D("200")}
-        rows, _ = rep.build_daily([DAY], self.buyouts, self.expenses, {DAY: types}, lambda sku: D("100"), "2026-09-19")
+        rows, _ = rep.build_daily([DAY], self.buyouts, self.expenses, {DAY: types}, lambda sku, day=None, qty=None: D("100"), "2026-09-19")
         total = rep.total_row([rep.add_ratios(r) for r in rows])
         add = {title: (diff, why) for title, _a, _b, diff, why in rep.platform_addition(total, {n: rep.platform_total(r) for n, r in self.platforms.items()})}
         for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка", "Прочее + Эквайринг"):
@@ -175,11 +175,33 @@ def q_(v):
     return v.quantize(D("0.01"))
 
 
+class CostByDateTests(unittest.TestCase):
+    def test_build_daily_asks_cost_for_the_sale_day_and_units(self):
+        """Сорок шестая §3: читатель зовёт unit_cost(sku, день продажи, штуки) — снимок выбирается по дате."""
+        calls = []
+
+        def cost(sku, day=None, qty=None):
+            calls.append((sku, day, qty)); return D("300")
+        rows, _ = rep.build_daily([DAY], [dict(buyout(qty=2, sku="11"), buyouts_units=3)], [], {DAY: TYPES}, cost, "2026-09-19")
+        self.assertEqual(calls, [("11", DAY, D(3))])                      # штуки измерены — в счётчик ₽ идут они
+        self.assertEqual(rows[0]["cogs"], D("900"))
+
+    def test_platform_and_sku_sheets_pass_the_day(self):
+        calls = []
+
+        def cost(sku, day=None, qty=None):
+            calls.append(day); return D("10")
+        rep.build_platform_daily([DAY], [buyout(qty=1, sku="11")], [], [], {"11": "F11"}, cost)
+        rep.build_sku([{"kpi_date": DAY, "marketplace_sku": "11", "buyouts_qty": "2", "buyouts_amount_seller": "1220", "commission_amount": "0",
+                        "ad_spend": "0", "logistics_amount": "0", "other_expenses_amount": "0", "article": "F11"}], {"11": "F11"}, cost, D("1.22"))
+        self.assertEqual(calls, [DAY, DAY])
+
+
 class TotalsTests(unittest.TestCase):
     def test_total_percentages_are_computed_from_sums(self):
         days = ["2026-09-10", "2026-09-11"]
         rows, _ = rep.build_daily(days, [buyout("1220", day=days[0]), buyout("2440", day=days[1])], [],
-                                  {d: {41: D("122")} for d in days}, lambda sku: D("0"), "2026-09-19")
+                                  {d: {41: D("122")} for d in days}, lambda sku, day=None, qty=None: D("0"), "2026-09-19")
         total = rep.total_row([rep.add_ratios(r) for r in rows])
         self.assertEqual((total["turnover"], total["ads"]), (D("3660"), D("200")))
         self.assertEqual(total["drr_pct"], D("200") / D("3000"))
@@ -188,7 +210,7 @@ class TotalsTests(unittest.TestCase):
         """Сорок пятая §2: с комиссией база различима — ДРР = реклама / ((оборот − комиссия) / НДС), методика Ozon — к обороту с НДС."""
         days = ["2026-09-10", "2026-09-11"]
         rows, _ = rep.build_daily(days, [buyout("1220", "488", day=days[0]), buyout("2440", "976", day=days[1])], [],
-                                  {d: {41: D("122")} for d in days}, lambda sku: D("0"), "2026-09-19")
+                                  {d: {41: D("122")} for d in days}, lambda sku, day=None, qty=None: D("0"), "2026-09-19")
         rows = [rep.add_ratios(r) for r in rows]
         self.assertEqual(rows[0]["revenue"], D("600"))                            # (1220 − 488) / 1,22
         self.assertEqual(rows[0]["drr_pct"], D("100") / D("600"))
@@ -238,7 +260,7 @@ class WorkbookTests(unittest.TestCase):
         total = rep.total_row([row])
         sku_rows = rep.build_sku([{"marketplace_sku": "11", "article": "F11", "product_name": "товар", "buyouts_qty": 1, "buyouts_amount_seller": "1220",
                                    "commission_amount": "0", "ad_spend": "122", "logistics_amount": "122", "other_expenses_amount": "61"}],
-                                 {"11": "F11"}, lambda sku: D("300"), D("1.22"))
+                                 {"11": "F11"}, lambda sku, day=None, qty=None: D("300"), D("1.22"))
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "reports", "ozon_2026-09.xlsx")
             rep.write_xlsx(path, "2026-09", [row], total, sku_rows, ["источники"], ["про рекламу"])
@@ -264,7 +286,7 @@ class ManualSheetSeptember22(unittest.TestCase):
     """Свежий ручной лист 1–21 сентября (2026-09-22): в «Рекламе» вся статья подписки, Ebitda = Фин. рез. − накладные."""
 
     def build(self, types, day="2026-09-10"):
-        rows, _ = rep.build_daily([day], [buyout(day=day)], [], {day: types}, lambda sku: None, "2026-09-25")
+        rows, _ = rep.build_daily([day], [buyout(day=day)], [], {day: types}, lambda sku, day=None, qty=None: None, "2026-09-25")
         return rep.add_ratios(rows[0])
 
     def test_reference_ads_include_every_subscription_type_not_only_premium(self):

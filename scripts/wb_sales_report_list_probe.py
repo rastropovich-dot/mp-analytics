@@ -20,9 +20,12 @@ from decimal import Decimal
 import requests
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(".env")
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 URL = "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list"
-RAW_DIR = os.path.join("data", "wb_sales_report_raw")
+RAW_DIR = cabinet.data_path("wb_sales_report_raw", prof=_PROFILE)
 REPORT_OF_INTEREST = 63466988
 AMOUNT_OF_INTEREST = Decimal("7119571.15")
 SUM_FIELDS = ("retailAmountSum", "forPaySum", "deliveryServiceSum", "paidStorageSum", "paidAcceptanceSum", "deductionSum",

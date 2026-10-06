@@ -30,11 +30,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(".env")
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 
-RAW_DIR = os.path.join("data", "wb_sales_report_raw")
+RAW_DIR = cabinet.data_path("wb_sales_report_raw", prof=_PROFILE)
 CALLS_PATH = os.path.join(RAW_DIR, "calls.json")
 WEEK_START = "2026-03-30"      # понедельник недели, в которую входит 01.04
 WEEK_END = "2026-09-27"        # воскресенье последней закрытой недели на 2026-09-30
@@ -291,7 +293,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--compare", action="store_true")
-    ap.add_argument("--daily-cache", default=os.path.join("logs", f"wb15_daily_db_{WEEK_START}_{WEEK_END}.json"),
+    ap.add_argument("--daily-cache", default=cabinet.logs_path(f"wb15_daily_db_{WEEK_START}_{WEEK_END}.json", prof=_PROFILE),
                     help="кэш чтения daily из базы (json); пусто — без кэша")
     args = ap.parse_args(argv)
     if args.fetch:

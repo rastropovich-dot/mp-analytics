@@ -162,6 +162,15 @@ python3 run_daily_pipeline.py --skip-recovery --skip-organic --skip-telegram --s
 
 `mp-analytics-telegram-report` (crn-d7t5ed1j2pic73aiqmog, `30 7 * * *`): `python3 alerts_telegram.py`.
 
+**Один код — несколько кабинетов (слито 2026-10-06, поток RBH):** `cabinet.py` читает `MP_CABINET`
+(не задан → `karatov`, команды Render KARATOV не меняются; `rbh1` / `rbh2` — кабинеты РБХ, §5 первой
+задачи RBH), профиль — `cabinets/<код>.py` (только несекретное: имена, правила артикулов, словари товара,
+константы листов владельца, снимок СС, каталоги `data/` и `logs/`, ожидаемый хост Supabase). Guard
+`cabinet.assert_env()` стоит в каждой точке входа до создания клиента: хост `SUPABASE_URL` ≠ хосту профиля —
+`SystemExit` с внятной строкой; `.env.<код>` грузится поверх `.env`. Первая строка лога пайплайна и алерта —
+«кабинет: KARATOV». Зашитых значений KARATOV в коде нет (тест), пути `data/…` / `logs/…` — только через
+`cabinet.data_path` / `logs_path` (тест). Задачи и отчёты потока — `docs/inbox_rbh.md` / `docs/outbox_rbh.md`.
+
 > **Сверять команду с Render, а не с этим файлом.** Файл отставал дважды: не
 > заметил `--skip-recovery` (09-03) и `--skip-organic` (снят через API 2026-09-14).
 > Живое значение — панель или `GET /v1/services/{id}` →
@@ -954,6 +963,7 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 
 ```
 run_daily_pipeline.py    alerts_telegram.py    loaders/http_retry.py
+cabinet.py  cabinets/{karatov,rbh1,rbh2}.py   профиль кабинета (MP_CABINET), guard по хосту Supabase, data_path / logs_path; `cabinet.py --shell` — export-строки для finrez_nightly.sh
 loaders/ozon_performance_ads_loader.py    scripts/ozon_performance_recovery_worker.py
 scripts/ozon_cpc_data_gap_report.py    export_management_excel.py ← OOM risk
 sql/20260914_create_article_unit_costs.sql ← применён 2026-09-14 через MCP, таблица пуста; 20260518_* удалён (другая модель)

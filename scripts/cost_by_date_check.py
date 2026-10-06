@@ -19,6 +19,8 @@ from decimal import Decimal
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
 import load_article_unit_costs as L  # noqa: E402
 import report_finrez as fr  # noqa: E402
@@ -81,8 +83,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
     ap.add_argument("--snapshots", required=True, help="имя=дата через запятую")
-    ap.add_argument("--book", default=os.path.join(ROOT, "data", "reports", "finrez_2026-04_2026-09.xlsx"))
-    ap.add_argument("--manual", default=os.path.join(ROOT, "data", "manual_report_september_20260922_v2.xlsx"))
+    ap.add_argument("--book", default=cabinet.data_path("reports", "finrez_2026-04_2026-09.xlsx", prof=_PROFILE))
+    ap.add_argument("--manual", default=cabinet.data_path("manual_report_september_20260922_v2.xlsx", prof=_PROFILE))
     ap.add_argument("--date-from", default="2026-04-01")
     ap.add_argument("--date-to", default="2026-09-29")
     args = ap.parse_args(argv)
@@ -94,6 +96,7 @@ def main(argv=None):
     from dotenv import load_dotenv
     from supabase import create_client
     load_dotenv(os.path.join(ROOT, ".env"))
+    cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
     sku2art, _uc, _f, _n, _orders = rep.load_costs(sb, rep.SNAP)
     buyouts = rep.fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_units",

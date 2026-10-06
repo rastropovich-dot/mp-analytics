@@ -7,6 +7,40 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-06 (вечер), §3 принят; пути `data/…` и `logs/…` переведены на профиль кабинета — отдельный коммит `51a85c7` (41 файл), набор 1 230 OK; мерж — после сорок шестой Ozon, по слову
+
+Слово владельца: §3 принят, мерж `multi-cabinet` — после мержа сорок шестой Ozon (она правит `report_finrez.py` и `report_ozon_month.py`),
+слово будет отдельно; пока — перевод путей отдельным коммитом. Сделано; db_writes 0, обращений к API 0, сырьё и база KARATOV не трогались
+(модули только импортировались под тестовым хостом `.invalid`).
+
+**Что переведено (`51a85c7`, `git log main..HEAD` — 13 коммитов).** В `cabinet.py` добавлен `logs_path(*parts, prof, root)` — пара к `data_path`.
+37 скриптов и 2 загрузчика строят каталоги через профиль: сырьё (`accrual_history`, `accrual_postings`, `postings_raw`, `ozon_report_postings`,
+`ozon_cpo_raw`, `ozon_realization_by_day`, `wb_ads_raw`, `wb_ads_nm_raw`, `wb_funnel_raw`, `wb_sales_report_raw`), снимки (`snapshots`), отчёты
+(`reports`) и логи (`wb_funnel_recheck_20260923`, `wb_orders_history_restore_progress.json`, `wb_api_probe_20260922`, `wb_manual_reconcile`).
+Где guard уже стоял — `prof=CABINET`; где скрипт без guard (только чтение сырья или клиент приходит импортом загрузчика) — `_PROFILE =
+cabinet.profile()` после `load_dotenv`; у двух загрузчиков (`ozon_postings_report`, `ozon_posting_status_log`) — `import cabinet` с запасным путём,
+как у остальных `loaders/`. Относительные `os.path.join("data", …)` (от cwd) стали абсолютными от корня — для KARATOV это тот же каталог при
+запуске из корня, как и было. Попутно `wb_orders_history_restore.py` получил корень проекта в `sys.path` (был только `"."`).
+
+| профиль | импорт 38 модулей | каталоги, которые они строят |
+|---|---|---|
+| `karatov` (`MP_CABINET` не задан) | 38 из 38 | `data/accrual_history`, `data/accrual_postings`, `data/ozon_cpo_raw`, `data/ozon_realization_by_day`, `data/ozon_report_postings`, `data/postings_raw`, `data/snapshots`, `data/wb_ads_nm_raw`, `data/wb_ads_raw`, `data/wb_funnel_raw`, `data/wb_sales_report_raw`, `logs/…` — как до правки |
+| `rbh1` | 38 из 38 | всё под `data/rbh1/…` и `logs/rbh1/…` |
+
+**Тесты.** `NoDataOrLogsPathLiteralsTests`: в `*.py` / `*.sh` вне `cabinets/`, `tests/`, `docs/`, `sql/`, `ops/` нет `"data"` / `"logs"` среди
+аргументов `os.path.join` и нет исполняемых строк, начинающихся с `data/` / `logs/` (docstring-и с примерами путей — можно; `.sh` — строки без
+`MP_DATA_DIR` / `MP_LOGS_DIR`); `test_logs_path`. Тесты, подменяющие `RAW_DIR` / `SNAP_DIR` / `RECHECK_DIR` через `mock.patch.object`
+(`test_wb_ads_nm`, `test_wb_funnel_products_backfill`, `test_rebuild_orders_history`), прошли без правок — имена констант те же. Набор
+**1 230 OK** (skipped 3).
+
+**Не переведено (сознательно).** Примеры путей в docstring-ах и `help=` («`--postings data/accrual_postings/…`») — документация формы KARATOV,
+у РБХ те же файлы лежат в `data/<кабинет>/…`; `run_daily.sh` (старый локальный запуск, `cd ~/mp-analytics`) и plist launchd KARATOV; `.gitignore`
+(правила `data/*` накрывают и `data/rbh1/`). Заголовки «data/<кабинет>» в `.env.rbh1` / `.env.rbh2` не трогал.
+
+**Ждёт.** Мерж сорок шестой Ozon → слово на мерж `multi-cabinet` (перед ним — `origin/main` в ветку ещё раз и повтор набора; `report_finrez.py` /
+`report_ozon_month.py` правятся обеими ветками, конфликты разберу по месту: мои правки там — только константы профиля). Дальше §5.
+
+---
 ## 2026-10-06, §3 сделан: `origin/main` влит (`df3237b`), зашитые значения KARATOV переехали в `cabinets/karatov.py` (`c0fb211`), хост Render KARATOV подтверждён по API (п. 1), контрольные книги кодом `main` и ветки — числа те же (16 302 595 ячеек «Фин рез» — 0 различий между ветками без/с `MP_CABINET`, против `main` — 31 ячейка одной строки WB, объяснённой до рубля таймаутом чтения аванса; книги месяца Ozon / WB — только метка времени и текст примечания); набор 1 228 OK; §4 — мерж по слову
 
 Условие §3 выполнено: четырнадцатая WB слита в `main` (`ee8a8ea`), сорок пятая Ozon — `d071f35`. «Влить main» сделал без отдельного слова: мерж в

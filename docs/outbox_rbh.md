@@ -7,6 +7,117 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-06, §3 сделан: `origin/main` влит (`df3237b`), зашитые значения KARATOV переехали в `cabinets/karatov.py` (`c0fb211`), хост Render KARATOV подтверждён по API (п. 1), контрольные книги кодом `main` и ветки — числа те же (16 302 595 ячеек «Фин рез» — 0 различий между ветками без/с `MP_CABINET`, против `main` — 31 ячейка одной строки WB, объяснённой до рубля таймаутом чтения аванса; книги месяца Ozon / WB — только метка времени и текст примечания); набор 1 228 OK; §4 — мерж по слову
+
+Условие §3 выполнено: четырнадцатая WB слита в `main` (`ee8a8ea`), сорок пятая Ozon — `d071f35`. «Влить main» сделал без отдельного слова: мерж в
+ветку обратим, путь согласован (п. 7), `merge-tree` без конфликтов — `df3237b`. Слитый `main` принёс `scripts/ozon_balance_groups_check.py` с
+`create_client` без guard — тест §2 это поймал, guard вставлен в том же коммите §3. Соседние сессии: «ВБ» (`~/mp-analytics-wb`) и «Озон»
+(`~/mp-analytics-46`) живы, в этом worktree никого; им не писал. db_writes 0; обращений: Render API 5 (п. 1), Seller / Performance / WB /
+Telegram — 0; база KARATOV — только чтение в контроле (п. 4), значения `.env` в чат и отчёт не попадали.
+
+### §3 — что переехало (коммит `c0fb211`, `git log main..HEAD` — 11 коммитов ветки + мерж)
+
+Новые имена профиля (одинаковые у трёх кабинетов, тест `test_profiles_share_one_schema`): `METALS`, `OWNER_CATEGORIES`, `TYPE_TO_CATEGORY`,
+`KIND_TO_CATEGORY`, `NAME_RULES`, `CATEGORY_BY_SUBJECT`, `BOOK_MONTH_FROM`; `GOLDEN_SKU` дополнен кампаниями (`campaigns`) и `partial_dates`.
+У `rbh1` / `rbh2` всё это пусто / `None` — «не задано» (п. 2, п. 3).
+
+| файл | было зашито | теперь |
+|---|---|---|
+| `scripts/ozon_product_catalog.py` | `OUT_DIR = data/ozon_products`, `OWNER_CATEGORIES`, `TYPE_TO_CATEGORY`, `KIND_TO_CATEGORY`, `NAME_RULES`, `brand_of`: «Топаз если T, иначе KARATOV» | каталог — `cabinet.data_path`, словари — профиль, `brand_of` — `BRAND_BY_LETTER` / `BRAND_DEFAULT` профиля (без регистра), `brand_rule_text()` для примечаний |
+| `scripts/ozon_catalog_topup_step.py` | `TREE_FILE` от `cat.OUT_DIR` | `CATEGORY_TREE_FILE` профиля в каталоге данных кабинета |
+| `scripts/report_finrez_wb.py` | `SHOP`, `DISCOUNTER_LETTER "t"`, `BRAND_*`, `OWNER_CATEGORIES`, `CATEGORY_BY_SUBJECT`, примечание «t → Топаз, иначе KARATOV» | профиль; `BRAND_LABELS` = `{BRAND_DEFAULT, (без товара)} ∪ значения BRAND_BY_LETTER`; примечание — `brand_rule_text()` |
+| `scripts/report_finrez.py` | `OWNER_COEF`, `CATALOG_FILE`, `OUT_DIR`, `RAW_DIR`, `SHOP`, примечание «T — Топаз, иначе KARATOV», имя `finrez_…`, `rep.PLATFORMS[0]` | профиль; «образец владельца» на листе «Коэффициенты» пуст, если `OWNER_COEF` пуст; имя `{REPORT_PREFIX}finrez_…`; `PLATFORMS` пустой — соинвест Standard не выделяется |
+| `scripts/report_ozon_month.py` | `SNAP`, `OUT_DIR`, `RAW_DIR`, `OVERHEAD_PER_DAY`, `COST_INDEX`, `PLATFORMS`, `METALS`, имя `ozon_…` | профиль; без площадок — всё «Без площадки», без металлов — «Без признака металла», без индекса / накладных — колонки пусты (как «до даты действия»); `owner_multiplier_note` без множителей — одна строка «не заданы» |
+| `scripts/report_wb_month.py` | `SNAP`, `OUT_DIR`, `OVERHEAD_PER_DAY`, `OWNER_ORDERS_AFTER_COMMISSION 0,58`, `DISCOUNTER_LETTER "t"`, примечание «(КОЮЗ Топаз)», имя `wb_…` | профиль; без множителя «Выручка» и «Маржа» (и их итоги, `margin_pct`) — `None`, не ноль; без буквы — `platform_of` всегда `standard`, лист «Заказы WB Дискаунтер» не пишется |
+| `scripts/ozon_orders_forecast.py` | `OWNER` (0,65 / 0,59 / 0,024), `OWNER_AFTER_COMMISSION` | `cabinet.profile()` (чистый модуль, guard не нужен); `owner_after_commission` → `None` без таблицы; `owner_revenue / margin / fin_result / drr` → `None` |
+| `scripts/reconcile_manual_report_ozon.py`, `cogs_by_units_from_accrual.py`, `load_article_unit_costs.py` | `SNAP = 2026-05-20`, `--snapshot` / `--file data/cost_20260520.xlsx` | `COST_SNAPSHOT_DATE` / `COST_SNAPSHOT_FILE` профиля (нет файла — `--file` обязателен) |
+| `reports_ozon_ad_diagnostic_rule.py` | `KNOWN_CAMPAIGN_HINTS` (2 кампании F000283615), `KNOWN_PARTIAL_DATES`, `KNOWN_SKU_COGS` | `GOLDEN_SKU` профиля; у кабинета без золотого SKU словари пусты |
+| `scripts/finrez_pivots.py` | `data/owner_finrez_*_pivot.xlsx` | `OWNER_PIVOT_FILES` профиля в каталоге данных кабинета |
+| `alerts_telegram.py` | «📊 MP Analytics Alerts» | `ALERT_TITLE` профиля (у РБХ «MP Analytics Alerts · РБХ-1 / -2») |
+| `export_management_excel.py` | `management_report.xlsx` | `{REPORT_PREFIX}management_report.xlsx` |
+| `scripts/send_ozon_month_report.py`, `fetch_ozon_month_report.py` | `data/reports`, `ozon_<месяц>_to_<дата>.xlsx`, `RENDER_OWNER`, `RENDER_ALERT_SERVICE` | каталог и префикс профиля; `RENDER["owner"]` / `RENDER["alert"]` профиля (у РБХ `None`, пока сервисов нет) |
+| `scripts/fetch_render_logs.py` | `OWNER`, запасное чтение `~/mp-analytics/.env` | `RENDER["owner"]` профиля; ключ — только окружение или `.env` СВОЕГО каталога (чужой файл не читается, §6) |
+| `scripts/finrez_nightly.sh` | `logs/finrez_nightly`, `data/reports/finrez_…`, `FINREZ_MONTH_FROM` по умолчанию `2026-04` | `eval "$(venv/bin/python3 cabinet.py --shell)"` → `MP_DATA_DIR`, `MP_LOGS_DIR`, `MP_REPORT_PREFIX`, `MP_BOOK_MONTH_FROM`; нет месяца ни в env, ни в профиле — код 4 и внятная строка |
+| `cabinet.py` | — | `shell_exports()`, режим `--shell` (guard + export-строки; код 1 при несовпадении базы) |
+
+Осталось как было (сознательно): docstring-и и комментарии с историей KARATOV (в т. ч. «Серебро» / T83 / 0,41 в текстах примечаний — это
+прозa о KARATOV, не литералы кабинета); заголовки листов «Ozon - <месяц>» / «WB - <месяц>»; `run_daily.sh`, plist launchd (у РБХ будет свой);
+комментарии в `sql/20260924_*`; `docs/owner_manual_report_instruction.md` в `accrual_types_owner_check.py`.
+
+**Тесты (1 228 OK, было 1 219 + 1 падение на слитом `main` из-за guard):** `NoCabinetLiteralsOutsideProfilesTests` — в `*.py` / `*.sh` вне
+`cabinets/`, `tests/`, `docs/`, `sql/`, `ops/` нет `KARATOV` / `Топаз` / `ГОЛДСТАРТ` в исполняемых строках и именах (docstring-и и комментарии —
+можно; проверка по `ast`, не grep-ом); `RbhProfilesGiveNotSetTests` — шесть модулей книг под `MP_CABINET=rbh1` импортируются и дают «не задано»
+(`owner_after_commission` → `None`, `brand_of("T1")` → «Beautyhome.me», `PLATFORMS` / `METALS` пусты, итог WB без выручки — `None`, образцы сводных
+в `data/rbh1/`); `ShellExportsTests`; тест `test_report_finrez_wb.test_owner_categories_equal_the_ozon_dictionary` переписан: раньше сверял
+литерал в `ozon_product_catalog.py` через `ast.literal_eval`, теперь оба модуля — из профиля. Старые тесты KARATOV (`brand_of`, `KNOWN_SKU_COGS`,
+`rep.PLATFORMS`) прошли без правок — поведение по умолчанию не изменилось.
+
+### п. 1 — хост Supabase на Render KARATOV (Render API, 5 обращений, только хосты)
+
+| сервис | переменных | `SUPABASE_URL` | `MP_CABINET` |
+|---|---:|---|---|
+| `mp-analytics` (`crn-d7n7nan7f7vs73fk70kg`) | 13 | хост `pkrsrwjrlurlfpdyixei.supabase.co` | нет (→ karatov) |
+| `mp-analytics-telegram-report` (`crn-d7t5ed1j2pic73aiqmog`) | 11 | хост `pkrsrwjrlurlfpdyixei.supabase.co` | нет |
+
+Групп окружения у организации — 0 (`GET /v1/env-groups`), переменные лежат в самих сервисах. Профиль `karatov` ждёт тот же хост — после мержа
+guard первую ночь не остановит.
+
+### п. 4 — контроль за KARATOV: книги кодом `main` и кодом ветки, одно окно
+
+Метод. Код `main` (`3167232`) — detached worktree в scratchpad с `data` → симлинк на `~/mp-analytics/data` (чтение); ветка — этот worktree с
+симлинками на подкаталоги `data/` KARATOV (`accrual_history`, `ozon_products`, `owner_finrez_*_pivot.xlsx`, `cost_20260520.xlsx` …), книги — в
+scratchpad через `--out`. Окружение — `~/mp-analytics/.env` через обёртку (значения в окружение дочернего процесса, нигде не печатаются), из
+него вычищены `OZON_*`, `WB_API_KEY`, `TELEGRAM_BOT_TOKEN`, `RENDER_API_KEY` — Seller API физически недоступен; `report_ozon_month --no-fetch`;
+`report_finrez.py` в API не ходит (сырьё — файлы `accrual_history`, остальное — таблицы). Одно окно: `--month-from 2026-04 --month-to 2026-10
+--date-to 2026-10-05 --check --check-month 2026-10 --check-days 5`. Сравнение — по значениям всех ячеек всех листов, кроме пересаженных сводных
+(`compare_books.py`, scratchpad). Сборки шли последовательно (тяжёлые чтения базы — по одной), между ними база могла измениться только записями
+соседних сессий — разницы, если есть, объяснены построчно ниже.
+
+| книга | A (код `main`) | B (ветка) | ячеек | различий | что это |
+|---|---|---|---:|---:|---|
+| `finrez_2026-04_2026-10.xlsx` | 11:15 → 1 396 с, 89 525 670 байт | 11:38 → 1 394 с, 89 525 661 байт, `MP_CABINET` не задан | 16 302 595 (14 листов) | **31** | все 31 — одна строка «Данные WB выкупы» 22.07 «(без товара)» «Ост.расходы»: A 42 655,00, B 2 395,00, разница **40 260,00** = нетто аванса «Баллы за отзывы» за 22.07 (строка лога A: «нетто аванса … в окне 2026-07-22 40,260.00»; лог B: «аванс … не прочитан: `57014 canceling statement due to statement timeout` — нетто аванса в «Прочее» не добавлено»); остальные 30 ячеек — те же 40 260,00 в итогах дня / июля / «Общий итог» трёх WB-листов (H, V, W, X). Ozon-листы, «Заказы», «Данные заказы» (181 130 строк), «Коэффициенты», «Артикул» — 0 |
+| то же | B (ветка, не задан) | C (ветка, `MP_CABINET=karatov`, 12:05 → 1 450 с) | 16 302 595 | **0** | профиль по умолчанию = профиль `karatov` |
+| то же | A | C | 16 302 595 | 31 | те же 31 (тот же таймаут в логе C) |
+| то же | B | D (ветка, повтор 12:30 → 1 437 с, **код 1**) | 16 302 595 | **0** | книга D = B ячейка в ячейку; таймаут 57014 повторился и в сборке (лог D), а код 1 — от дочерней WB-приёмки (`report_finrez_wb.py --check` за 2026-10 и 2026-09), где то же чтение аванса фатально: `APIError 57014` дважды, «WB-приёмка вернула код 1». В A, B, C приёмка прошла (код 0) |
+| `ozon_2026-10.xlsx` (`--no-fetch`) | 12:01, 77 с | 12:03, 66 с; и C 12:04 | 19 585 (18 листов) | 1 / 1 | A21 — «Собрано 2026-10-06 12:03 UTC» против 12:04 / 12:05 (метка сборки) |
+| `wb_2026-10.xlsx` | 12:05, 18 с | 12:05, 10 с; и C 12:05 | 577 (4 листа) | 3 / 3 | A11 трёх листов заказов — примечание: было «`t` — Дискаунтер (КОЮЗ Топаз), остальное — Standard», стало «`t` — Дискаунтер, остальное — Standard» (литерал кабинета ушёл из примечания); числа те же |
+
+**Почему 40 260 — не код.** Функция `report_wb_month.load_review_advance_rows` в ветке не менялась (`git diff origin/main` по файлу —
+только константы профиля); запрос один и тот же — полный проход `wb_sales_report_rows` с `like` по `bonus_type_name`, у PostgREST
+`statement_timeout` 8 с. Прямые пробы той же функции (значения не печатались): код `main` — отказ 57014 за 9,3 с, затем 4 строки за 3,4 с;
+код ветки — 4 строки за 5,0 с и 0,7 с; ещё три раунда попеременно — 6 из 6 успешно, 1,2 … 2,5 с. То есть запрос флапает на границе таймаута
+независимо от кода; внутри полной сборки (после ~10 мин тяжёлых чтений WB-модуля) он отказал в четырёх сборках ветки из четырёх (в D — и в дочерней приёмке) и прошёл в одной
+сборке `main` из одной — повторить `main` ещё раз не стал (23 мин и ещё одно чтение базы KARATOV сверх п. 4). **Для WB-потока (не моя задача,
+не чинил):** отказ этого чтения нефатален и меняет книгу на 40 260 с одной строкой в логе, в книгу примечание не попадает — класс
+«молчаливый ноль»; лечится индексом по `(seller_oper_name, bonus_type_name)` или повтором запроса. Утренняя launchd-книга 10-06 03:00 UTC
+(код `main`) аванс прочитала: 22.07 = 45 421,44, как у A.
+
+### Не сделано / замечания
+
+- **45 файлов по-прежнему строят `data/…` литералами** (loaders: `ozon_posting_status_log`, `ozon_postings_report`, `ozon_product_identity_loader`,
+  `ozon_sku_total_analytics_loader`, `wb_sales_funnel_orders_loader`, `wb_sales_report_loader`, `wb_stocks_loader`; backfill / seed / rebuild /
+  probe-скрипты) и 9 строк — `logs/…`. В §1.2 их не было (там — что зашито про кабинет), но дополнение 09-28 требует `data/<кабинет>`: у `rbh1` и
+  `rbh2` в одном worktree сырьё этих шагов ляжет в общий `data/`. На Render сырьё не живёт (диска нет), ночь это не ломает; закрыть до §5.3 (сухие
+  прогоны) отдельным коммитом — перевод на `cabinet.data_path` механический, ~84 строки.
+- `cabinet.py --shell` в этом worktree сейчас выходит с кодом 1: в `.env` / `.env.rbh*` есть `SUPABASE_URL` только у РБХ, а `SUPABASE_HOST` в их
+  профилях ещё `None` (§5.1). Это guard, не поломка.
+- У РБХ без снимка СС (`COST_SNAPSHOT_DATE = None`) `load_costs` обеих книг месяца пойдёт в `article_unit_costs` с `snapshot_date = null` —
+  вернёт пусто (СС «не задано»), падения нет; сорок шестая Ozon переводит СС на историю по дате — после её мержа место одно.
+- Книги РБХ на живых данных не собирались (базы нет) — «не задано» проверено только импортом модулей и юнит-тестами.
+
+### Ждёт
+
+Мерж `multi-cabinet` в `main` — по слову владельца (§4): `git log main..HEAD` — ниже. Первая ночь KARATOV на слитом коде — обычный чек-лист
+Ozon/WB-сессий, для них ничего не меняется (`MP_CABINET` не задан, хост Render сверен). Дальше §5 по плану 09-30 (сначала 5.2а — слово на
+снимок схемы KARATOV).
+
+```
+git log main..HEAD — 11 коммитов: c0fb211 (§3), df3237b (мерж origin/main), 4993862, e0e8dca, 21e1490, baa4a0b, 28c1e19, 50ba5ef, 0005e80 (§2),
+afedaf8, f55e9f1 (§1); блок отчёта — следующим коммитом.
+```
+
+---
+
 ## 2026-09-30, план §5 принят с тремя поправками советника — вписаны в inbox; как они ложатся в план (код — после §4, по слову)
 
 1. **Guard версий не раньше засева.** `cabinet.assert_schema()` молчит, если в базе кабинета нет таблицы `schema_migrations`: печатает «версии схемы

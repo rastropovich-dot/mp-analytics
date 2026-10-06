@@ -40,8 +40,8 @@ TABLE = "marketplace_buyouts"
 KEY = ("buyout_date", "marketplace_code", "marketplace_sku")
 COLS = ("buyouts_amount_buyer", "bonus_amount", "coinvestment_amount")
 GUARD = ("buyouts_amount_seller", "commission_amount")
-RAW_DIR = os.path.join(ROOT, "data", "accrual_history")
-SNAP_DIR = os.path.join(ROOT, "data", "snapshots")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 C = Decimal("0.01")
 Z = Decimal(0)
 

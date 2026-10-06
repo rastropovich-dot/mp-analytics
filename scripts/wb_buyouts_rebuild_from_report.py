@@ -114,9 +114,9 @@ def print_plan(cls, d1, d2, days_with_sales, db_rows):
 # ---------- запись ----------
 
 def snapshot(db_rows, label):
-    os.makedirs(os.path.join(ROOT, "data", "snapshots"), exist_ok=True)
+    os.makedirs(cabinet.data_path("snapshots", prof=CABINET), exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(ROOT, "data", "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
+    path = cabinet.data_path("snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz", prof=CABINET)
     cols = ["id", "buyout_date", "marketplace_sku", "article", "product_name", "buyouts_qty", "buyouts_amount_buyer", "buyouts_amount_seller", "buyouts_units"]
     with gzip.open(path, "wt", encoding="utf-8", newline="") as f:
         w = csv.writer(f); w.writerow(cols)

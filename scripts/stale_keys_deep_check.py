@@ -44,8 +44,8 @@ from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders import stale_keys  # noqa: E402
 from loaders.pipeline_window import in_morning_alert_window, in_nightly_run_window  # noqa: E402
 
-RAW_DIR = os.path.join(ROOT, "data", "accrual_history")
-SNAP_DIR = os.path.join(ROOT, "data", "snapshots")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 TYPES_JSON = os.path.join(ROOT, "knowledge", "ozon", "accrual_types_2026-09-23.json")
 YOUNG_DAYS = 2
 NIGHT_WINDOW_DAYS = 31

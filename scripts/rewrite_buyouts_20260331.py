@@ -41,7 +41,7 @@ from loaders import ozon_finance_accrual as accrual  # noqa: E402
 
 DAY = "2026-03-31"
 MP = "ozon"
-SNAP_DIR = os.path.join("data", "snapshots")
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 # Ожидание — по штатному сборщику (план 2026-09-14): 60 SKU, 65 позиций нетто
 # (69 продаж − 4 возврата), сумма 1 892 788,00. В источнике 121 товарная строка,
 # 48 из них с нулевой суммой и комиссией сборщик пропускает — так задумано.

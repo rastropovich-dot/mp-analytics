@@ -24,6 +24,8 @@ from decimal import Decimal
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 _spec = importlib.util.spec_from_file_location("report_finrez_wb", os.path.join(ROOT, "scripts", "report_finrez_wb.py"))
 fw = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(fw)
 wbm = fw.wbm
@@ -256,7 +258,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--xlsx", required=True); ap.add_argument("--months", nargs=2, default=["2026-04", "2026-09"])
     ap.add_argument("--rows-json", help="строки build_rows (кэш); нет — собрать живьём"); ap.add_argument("--raw-json", help="кэш сырья")
-    ap.add_argument("--out", default="logs/wb_manual_reconcile", help="префикс: <out>_days.csv")
+    ap.add_argument("--out", default=cabinet.logs_path("wb_manual_reconcile", prof=_PROFILE), help="префикс: <out>_days.csv")
     a = ap.parse_args(argv)
     months = month_range(*a.months)
     his, notes = read_manual(os.path.expanduser(a.xlsx), months)

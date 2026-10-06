@@ -25,7 +25,13 @@ POLL_SECONDS = 5
 # 180 → 420 с (сорок пятая §3): удачные ночи 09-25 … 09-28 — 59,4 / 36,7 / 31,6 / 42,0 с (info 10 / 6 / 5 / 7), ночь 09-29 — «не готов
 # за 180 с (status=waiting)». 420 = 7 × самой долгой удачной; ночь кончается ~02:15 UTC при окне до 04:30 — лишние 4 мин её не сдвигают
 MAX_WAIT_SECONDS = 420
-OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "ozon_report_postings")
+try:
+    import cabinet
+except ImportError:  # модуль импортируется пакетом, но на всякий случай — корень проекта в sys.path
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import cabinet
+OUT_DIR = cabinet.data_path("ozon_report_postings", prof=cabinet.profile())   # отчёты ЛК — в каталоге данных кабинета
 
 
 def headers():

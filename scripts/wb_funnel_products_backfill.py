@@ -42,9 +42,9 @@ from loaders import stale_keys  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 import loaders.wb_sales_funnel_orders_loader as funnel  # noqa: E402
 
-RAW_DIR = os.path.join(ROOT, "data", "wb_funnel_raw")
+RAW_DIR = cabinet.data_path("wb_funnel_raw", prof=CABINET)
 CALLS_PATH = os.path.join(RAW_DIR, "calls.json")
-RECHECK_DIR = os.path.join(ROOT, "logs", "wb_funnel_recheck_20260923")
+RECHECK_DIR = cabinet.logs_path("wb_funnel_recheck_20260923", prof=CABINET)
 DISCOUNTER_LETTER = "t"
 Z = Decimal(0)
 

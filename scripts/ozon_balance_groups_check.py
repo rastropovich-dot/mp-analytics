@@ -90,8 +90,8 @@ def book_turnover(path):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--balance", default=os.path.join(ROOT, "data", "snapshots", "finance_balance_2026-04_2026-08.json"))
-    ap.add_argument("--book", default=os.path.join(ROOT, "data", "reports", "finrez_2026-04_2026-09.xlsx"))
+    ap.add_argument("--balance", default=cabinet.data_path("snapshots", "finance_balance_2026-04_2026-08.json", prof=cabinet.profile()))
+    ap.add_argument("--book", default=cabinet.data_path("reports", "finrez_2026-04_2026-09.xlsx", prof=cabinet.profile()))
     args = ap.parse_args(argv)
     from dotenv import load_dotenv
     from supabase import create_client

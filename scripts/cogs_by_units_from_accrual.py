@@ -89,7 +89,7 @@ def main():
     d, d_to = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)
     while d <= d_to:
         day = d.isoformat()
-        path = os.path.join("data", "accrual_history", f"{day}.json")
+        path = cabinet.data_path("accrual_history", f"{day}.json")
         if not os.path.exists(path):
             missing_days.append(day)
             d += timedelta(days=1)

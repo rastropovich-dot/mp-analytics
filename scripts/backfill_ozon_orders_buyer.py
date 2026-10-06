@@ -47,9 +47,9 @@ TABLE = "marketplace_orders"
 KEY = ("order_date", "marketplace_code", "marketplace_sku", "order_schema")
 BUYER = ("orders_amount_buyer", "cancelled_orders_amount_buyer")
 GUARD = ("orders_qty", "orders_amount_seller", "cancelled_orders_qty", "cancelled_orders_amount_seller")
-RAW_DIR = os.path.join(ROOT, "data", "postings_raw")
-REPORTS_DIR = os.path.join(ROOT, "data", "ozon_report_postings")
-SNAP_DIR = os.path.join(ROOT, "data", "snapshots")
+RAW_DIR = cabinet.data_path("postings_raw", prof=CABINET)
+REPORTS_DIR = cabinet.data_path("ozon_report_postings", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 C = Decimal("0.01")
 Z = Decimal(0)
 

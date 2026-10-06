@@ -32,12 +32,14 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 import requests  # noqa: E402
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
-BYDAY_DIR = os.path.join("data", "accrual_history")
-POSTINGS_DIR = os.path.join("data", "accrual_postings")
+BYDAY_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
+POSTINGS_DIR = cabinet.data_path("accrual_postings", prof=_PROFILE)
 PAUSE_SECONDS = 1.5
 ANTISPAM_PAUSE_SECONDS = 60
 ANTISPAM_MAX_ATTEMPTS = 3

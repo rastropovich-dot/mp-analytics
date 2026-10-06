@@ -37,7 +37,7 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 import loaders.wb_ads_nm_loader as nm  # noqa: E402
 
-RAW_DIR = os.path.join(ROOT, "data", "wb_ads_nm_raw")
+RAW_DIR = cabinet.data_path("wb_ads_nm_raw", prof=CABINET)
 CALLS_PATH = os.path.join(RAW_DIR, "calls.json")
 Z = Decimal(0)
 

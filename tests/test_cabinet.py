@@ -253,6 +253,42 @@ class NoCabinetLiteralsOutsideProfilesTests(unittest.TestCase):
         self.assertEqual(hits, [], "литералы кабинета вне профиля:\n" + "\n".join(hits))
 
 
+class NoDataOrLogsPathLiteralsTests(unittest.TestCase):
+    """Каталоги данных и логов — только через cabinet.data_path / logs_path (дополнение 09-28: у rbh1 / rbh2 — data/<кабинет>, logs/<кабинет>):
+    в коде вне cabinets/ и tests/ нет строк «data» / «logs» в os.path.join и нет строк, начинающихся с «data/» / «logs/» (docstring-и — можно)."""
+
+    SKIP = NoCabinetLiteralsOutsideProfilesTests.SKIP
+
+    def test_no_path_literals(self):
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d not in self.SKIP and not d.startswith(".")]
+            for fn in filenames:
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, ROOT)
+                if fn.endswith(".sh"):
+                    for i, line in enumerate(open(path, encoding="utf-8"), 1):
+                        if re.search(r'(^|[\s="])(data|logs)/', line) and not line.lstrip().startswith("#") and "MP_DATA_DIR" not in line and "MP_LOGS_DIR" not in line:
+                            hits.append(f"{rel}:{i}")
+                    continue
+                if not fn.endswith(".py") or fn == "cabinet.py":
+                    continue
+                tree = ast.parse(open(path, encoding="utf-8").read())
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "join":
+                        for a in node.args:
+                            if isinstance(a, ast.Constant) and a.value in ("data", "logs"):
+                                hits.append(f"{rel}:{a.lineno} join({a.value!r})")
+                for ln, text in executable_strings(path):
+                    if isinstance(text, str) and re.match(r"(data|logs)/", text):
+                        hits.append(f"{rel}:{ln} {text[:40]!r}")
+        self.assertEqual(hits, [], "пути data/ и logs/ мимо профиля:\n" + "\n".join(hits))
+
+    def test_logs_path(self):
+        self.assertEqual(cabinet.logs_path("x", "y.json", prof=cabinet.profile("rbh2"), root="/r"), "/r/logs/rbh2/x/y.json")
+        self.assertEqual(cabinet.logs_path("x", prof=cabinet.profile("karatov"), root="/r"), "/r/logs/x")
+
+
 class RbhProfilesGiveNotSetTests(unittest.TestCase):
     """Модули книг на профиле без ювелирных словарей и констант листов: «не задано» → None / пусто, не ноль и не падение."""
 

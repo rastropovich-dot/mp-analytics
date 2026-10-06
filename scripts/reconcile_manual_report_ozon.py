@@ -177,7 +177,7 @@ def main():
     # by-day raw: суммы по type_id
     raw_days = set()
     for dd in days:
-        path = os.path.join("data", "accrual_history", f"{dd}.json")
+        path = cabinet.data_path("accrual_history", f"{dd}.json")
         if not os.path.exists(path):
             continue
         raw_days.add(dd)

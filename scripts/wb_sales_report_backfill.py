@@ -37,7 +37,7 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 
-RAW_DIR = os.path.join("data", "wb_sales_report_raw")
+RAW_DIR = cabinet.data_path("wb_sales_report_raw", prof=CABINET)
 CHUNK_DAYS = 14
 CALLS_PATH = os.path.join(RAW_DIR, "calls.json")
 COLLECTION_START = "2026-03-26"  # с этой даты marketplace_buyouts по WB полна (docs/wb_data_integrity.md)

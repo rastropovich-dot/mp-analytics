@@ -26,7 +26,7 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 from loaders import ozon_performance_ads_loader as ads  # noqa: E402
 
 TABLE = ads.STATISTICS_JSON_USAGE_TABLE
-SNAP_DIR = os.path.join(ROOT, "data", "snapshots")
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 
 
 def ledger_rows(sb, t_from, t_to):

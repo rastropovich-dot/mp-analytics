@@ -144,6 +144,11 @@ def logs_dir(prof=None, root=ROOT):
     return os.path.join(root, (prof or profile()).LOGS_DIR)
 
 
+def logs_path(*parts, prof=None, root=ROOT):
+    """Путь внутри каталога логов кабинета: logs_path('x') → <root>/<LOGS_DIR>/x."""
+    return os.path.join(logs_dir(prof, root), *parts)
+
+
 def data_path(*parts, prof=None, root=ROOT):
     """Путь внутри каталога данных кабинета: data_path('reports', 'x.xlsx') → <root>/<DATA_DIR>/reports/x.xlsx."""
     return os.path.join(data_dir(prof, root), *parts)

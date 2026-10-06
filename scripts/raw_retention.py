@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
-RAW_DIR = os.path.join(ROOT, "data", "postings_raw")
+RAW_DIR = cabinet.data_path("postings_raw", prof=CABINET)
 OUTBOX = os.path.join(ROOT, "docs", "outbox.md")
 KEEP_HISTORY_WINDOWS = 3
 SNAPSHOT_MAX_AGE_DAYS = 30

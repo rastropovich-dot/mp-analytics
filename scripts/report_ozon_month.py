@@ -65,6 +65,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders import unit_cost_history  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet, type_sums  # noqa: E402
 import ozon_orders_forecast as forecast  # noqa: E402
 
@@ -182,7 +183,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         base = qty if units is None else D(units)
         acc[d]["rows_by_units" if units is not None else "rows_by_positions"] += 1
         acc[d]["units"] += base
-        uc = unit_cost(r["marketplace_sku"])
+        uc = unit_cost(r["marketplace_sku"], d, base)          # снимок по дате продажи (сорок шестая §3)
         if uc is None:
             no_cost[d] += int(qty)
         else:
@@ -358,7 +359,7 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, 
         qty, units = D(r["buyouts_qty"]), r.get("buyouts_units")
         a["positions"] += qty
         a["turnover"] += D(r["buyouts_amount_seller"]); a["commission"] += D(r["commission_amount"])
-        uc = unit_cost(r["marketplace_sku"])
+        uc = unit_cost(r["marketplace_sku"], d)
         if uc is not None:
             a["cogs"] += (qty if units is None else D(units)) * uc
     for r in expenses:
@@ -420,10 +421,18 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
     """Лист «По SKU»: daily_sku_kpi за месяц, реклама — Performance API (ad_spend)."""
     by = defaultdict(lambda: defaultdict(Decimal))
     names = {}
+    sources = defaultdict(set)                      # sku → источники себестоимости по дням (дата снимка / «после последнего снимка …»)
     for r in kpi_rows:
         sku = str(r.get("marketplace_sku") or "")
         a = by[sku]
         a["positions"] += D(r.get("buyouts_qty")); a["turnover"] += D(r.get("buyouts_amount_seller"))
+        uc_day, src = unit_cost_history.with_source(unit_cost, sku, r.get("kpi_date")) if sku else (None, "")   # снимок по дате продажи (сорок шестая §3)
+        if src and D(r.get("buyouts_qty")):
+            sources[sku].add(src)
+        if uc_day is None:
+            a["no_cost_positions"] += D(r.get("buyouts_qty"))
+        else:
+            a["cogs_by_day"] += D(r.get("buyouts_qty")) * uc_day
         a["commission"] += D(r.get("commission_amount")); a["ads_gross"] += D(r.get("ad_spend"))
         a["logistics_gross"] += D(r.get("logistics_amount")); a["other_gross"] += D(r.get("other_expenses_amount"))
         if sku not in names and (r.get("article") or r.get("product_name")):
@@ -432,12 +441,13 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
     for sku, a in by.items():
         if not any(a.values()):
             continue
-        uc = unit_cost(sku) if sku else None
         row = {"sku": sku or "(без SKU)", "article": sku2art.get(sku) or names.get(sku, ("", ""))[0], "name": names.get(sku, ("", ""))[1],
                "positions": a["positions"], "turnover": a["turnover"], "commission": a["commission"],
                "revenue": (a["turnover"] - a["commission"]) / vat,
-               "cogs": None if (uc is None and a["positions"]) else a["positions"] * (uc or Z),
-               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat}
+               # СС нет ни у одной позиции — None (счётчик), иначе Σ по дням; позиции без СС внутри строки в сумму не входят
+               "cogs": None if (a["positions"] and a["no_cost_positions"] == a["positions"]) else a["cogs_by_day"],
+               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat,
+               "cost_source": "; ".join(sorted(sources.get(sku, ()))) or None}
         row["margin"] = None if row["cogs"] is None else row["revenue"] - row["cogs"]
         row["margin_pct"] = None if row["margin"] is None else ratio(row["margin"], row["revenue"])
         row["drr_pct"] = drr(row["ads"], row["revenue"])
@@ -523,25 +533,25 @@ def load_costs(sb, snapshot):
         sku_art[str(r["marketplace_sku"])][str(r["article"] or "")] += D(r["orders_qty"]) + D(r.get("cancelled_orders_qty"))
     sku2art = {s: max(sorted(a.items()), key=lambda kv: kv[1])[0] for s, a in sku_art.items()}
     norms = sorted({a.lower() for a in sku2art.values() if a})
-    cost = {}
-    for i in range(0, len(norms), 500):
-        res = sb.table("article_unit_costs").select("offer_id_norm,unit_cost").eq("snapshot_date", snapshot).in_("offer_id_norm", norms[i:i + 500]).order("offer_id_norm").execute()
-        for r in res.data:
-            cost[r["offer_id_norm"]] = D(r["unit_cost"])
-
-    def unit_cost(sku):
-        art = sku2art.get(str(sku))
-        return cost.get(art.lower()) if art else None
-    return sku2art, unit_cost, len(cost), len(norms), orders
+    # все снимки таблицы по этим ключам: себестоимость продажи дня — снимок ≤ дате (сорок шестая §3, loaders/unit_cost_history);
+    # snapshot оставлен в подписи как «последний известный» — на выбор снимка он больше не влияет
+    history = unit_cost_history.load_history(sb, norms)
+    unit_cost = unit_cost_history.unit_cost_fn(history, sku2art)
+    found = {n for n in norms if history.lookup(n)[0] is not None}
+    return sku2art, unit_cost, len(found), len(norms), orders
 
 
-def cost_index_note(days, snapshot):
+def cost_index_note(days, snapshot, history=None):
+    """Примечание о себестоимости: снимки по дате продажи (сорок шестая §3) и индекс СС; history — CostHistory читателя (счётчики подбора)."""
     rates = sorted({cost_index_for(d) for d in days if cost_index_for(d) is not None})
+    src = (history.note() if history is not None and history.dates else f"Себестоимость — снимок 1С {snapshot}.")
     if not rates:
-        return f"Себестоимость — снимок 1С {snapshot}; индекса СС на эти даты нет, колонки «по индексу» пусты."
-    return (f"Себестоимость — снимок 1С {snapshot}. Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
+        return src + " Индекса СС на эти даты нет, колонки «по индексу» пусты."
+    return (src + " Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
             + " (справочно, пока нет новой выгрузки 1С; источник — лист владельца 22.09, 1–21 сентября: 27 401 217,62 / 23 824 962,63; "
-              "у него по дням 1,175 → 1,116). Колонки «по индексу» = снимок × индекс; основные — на снимке.")
+              "у него по дням 1,175 → 1,116) — применяется к цене того снимка, который выбран по дате; сейчас последний снимок 20.05 старше "
+              "01.09, двойного учёта нет; появится снимок новее 01.09 — индекс к его датам применять нельзя (решение владельца). "
+              "Колонки «по индексу» = снимок × индекс; основные — на снимке по дате.")
 
 
 def overhead_note(days):
@@ -666,7 +676,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
              ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money), ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money)]
+             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money),
+             ("СС источник", "cost_source", None)]
     for j, (head, _k, _f) in enumerate(cols2, 1):
         c = ws2.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
         c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
@@ -1570,7 +1581,7 @@ def main():
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
              "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
              overhead_note(days),
-             cost_index_note(days, args.snapshot),
+             cost_index_note(days, args.snapshot, getattr(unit_cost, "history", None)),
              "Граница свёртки типов начислений — 24.08.2026: с 25.08 расходы лежат по справочнику владельца (типы 16, 17, 45, 62, 78, 82 — прочее; "
              "46, 63 — логистика), до неё — старой свёрткой; до пересборки истории логистика / прочее по обе стороны границы не сопоставимы.",
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",

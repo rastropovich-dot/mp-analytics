@@ -46,8 +46,13 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
     except Exception as error:  # реклама не обязана останавливать лист; пусто — не ноль (как у report_wb_month)
         ads_note = f"реклама не получена: {error}"
     cost_fn = lambda code, size: wb_report.unit_cost_for(exact, uniform, code, size, "base")  # noqa: E731
-    outside = {}
-    daily = wb_report.build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside)
+    outside, excluded = {}, {}
+    try:   # WB-14: нетто аванса «Баллы за отзывы» в день возврата — одна строка чтения; нет — лист без нетто, сказано в заметках
+        advance_net, _open = wb_report.advance_net_by_day(sb)
+        advance_note = ""
+    except Exception as error:  # noqa: BLE001
+        advance_net, advance_note = {}, f"аванс «Баллы за отзывы» не прочитан: {str(error)[:120]}"
+    daily = wb_report.build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside, advance_net=advance_net, excluded=excluded)
     total = wb_report.total_row(daily)
     young = [r["date"] for r in daily if r.get("young")]
     notes = [f"Источник: отчёт реализации WB (finance-api sales-reports/detailed, period=daily) из таблицы {wb_loader.TABLE}; строк {len(rows)}; "
@@ -55,6 +60,10 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
              f"Комиссия = Σ цена × кВВ строки (commissionPercent), как у владельца; справочно «удержано из выплаты всего» = Оборот − forPay. НДС {total['vat']}.",
              f"Себестоимость: снимок 1С {snapshot or wb_report.SNAP}, стыковка base; без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}.",
              ads_note,
+             "Правила WB-14 (loaders/wb_money_rules): «Прочее» без удержаний «WB Продвижение» (реклама с баланса) и без аванса «Баллы за отзывы» "
+             "(нетто — в день возврата); реклама — только оплата «Баланс»; упаковка исключена"
+             + (f" (строк {excluded['packaging']['rows']}, оборот {excluded['packaging']['turnover']:,.2f})" if excluded.get("packaging", {}).get("rows") else "")
+             + (f"; {advance_note}" if advance_note else "") + ".",
              f"Жёлтым — дни моложе {wb_report.YOUNG_DAYS} суток: строки доезжают." + (f" Таких дней: {', '.join(young)}." if young else "")]
     return daily, total, notes, {"rows": len(rows), "days": len(days), "young": young}
 

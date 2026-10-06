@@ -89,6 +89,9 @@ class BuyoutRows(unittest.TestCase):
         self.assertEqual(t["revenue_net"], (D(1500) - D(600)) / D("1.22"))
         self.assertEqual(t["ads_net"], D("148.84") / D("1.22"))
         self.assertEqual(t["commission_pct"], D(600) / D(1500))
+        self.assertEqual(t["drr_pct"], t["ads_net"] / t["revenue_net"])            # сорок пятая §2: от выручки = S сводной
+        self.assertEqual(t["drr_ozon_pct"], t["ads_net"] / t["turnover"])          # методика Ozon: к обороту с НДС
+        self.assertNotEqual(t["drr_pct"], t["ads_net"] / t["turnover_net"])        # прежняя база «от ТО» — не она
         fin = t["revenue_net"] - t["cogs"] - t["logistics_net"] - t["ads_net"] - t["acquiring_net"] - t["other_net"]
         self.assertEqual(t["fin_result"], fin)
         by_brand, _ = fr.pivot_buyouts(rows, ["2026-09-01"], lambda r: r["brand"])
@@ -514,4 +517,13 @@ class VatSourceTests(unittest.TestCase):
         twice = fr.long_rows_for_sheet(fr.long_rows_for_sheet(rows))
         bad = fr.vat_split_check(rows, twice)
         self.assertEqual([(m, k) for m, k, *_ in bad], [("апр", "Логистика"), ("май", "Прочее"), ("май", "Реклама"), ("май", "Эквайринг"), ("дек", "Логистика")])
+
+
+class WbDataColsTests(unittest.TestCase):
+    def test_acquiring_is_fifteenth_and_module_order_untouched(self):
+        cols = fr.wb_data_cols()
+        self.assertEqual([h for h, _k, _f in cols[:14]], [h for h, _k, _f in fr.wbfin.DATA_COLS[:14]])
+        self.assertEqual(cols[14], ("Эквайринг, ₽", "acquiring", "money"))
+        self.assertEqual([c[1] for c in cols[15:]], [c[1] for c in fr.wbfin.DATA_COLS[14:] if c[1] != "acquiring"])
+        self.assertEqual(sorted(c[1] for c in cols), sorted(c[1] for c in fr.wbfin.DATA_COLS))
 

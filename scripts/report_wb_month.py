@@ -25,11 +25,13 @@ saleDt в московском времени (у строки без saleDt —
     Себестоимость       снимок 1С (article_unit_costs) по базовому артикулу (unit_cost_uniform), для
                         безразмерных — точная строка; --cogs-by variant — по варианту артикул-размер
     Логистика           Σ deliveryService / НДС — его I до копейки при дате saleDt МСК
-    Реклама             Σ updSum за день (updTime по МСК) / НДС — у владельца реклама без НДС (июль 1 694 178 =
+    Реклама             Σ updSum за день (updTime по МСК) / НДС, только payment_type «Баланс» (WB-14: реклама за кэшбэк WB — не расход) — у владельца реклама без НДС (июль 1 694 178 =
                         Σ updSum / 1,22 до рубля); источник по умолчанию — таблица wb_ad_spend_daily,
                         --ads api — живой adv/v1/upd (1 обращение, ручной путь), --ads none — пусто, не ноль
     Эквайринг           Σ acquiringFee (продажа +, возврат −) / НДС — его M; 09-17 он возвраты не вычел
-    Прочее              Σ paidStorage / НДС + Σ penalty (штрафы без НДС) + Σ deduction / НДС — его O
+    Прочее              Σ paidStorage / НДС + Σ penalty (штрафы без НДС) + Σ удержаний вида «прочее» / НДС — его O
+                        (WB-14: удержания «WB Продвижение» — это реклама с баланса, в «Прочее» не входят; аванс
+                        «Баллы за отзывы» и его возврат — только нетто в день возврата; правила — loaders/wb_money_rules)
     Фин. рез.           Маржа − Логистика − Реклама − Эквайринг − Прочее
     Накладные в день    OVERHEAD_PER_DAY["wb"] с датой действия (T81 листа владельца: 74 002,00 с 09-01)
     Ebitda              Фин. рез. − Накладные
@@ -57,6 +59,7 @@ import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import stale_keys  # noqa: E402
+from loaders import wb_money_rules as rules  # noqa: E402  — удержания по виду, реклама «Баланс», упаковка (WB-14)
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 import loaders.wb_ads_loader as ads_loader  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet  # noqa: E402
@@ -78,7 +81,8 @@ OVERHEAD_PER_DAY = {"wb": (("2026-09-01", Decimal("74002.00")),)}
 KNOWN_MANUAL_DIFFS = {("acquiring", "2026-09-17")}
 MONEY_FIELDS = ("retail_price_with_disc", "retail_amount", "for_pay", "commission_percent", "ppvz_reward", "rebill_logistic_cost",
                 "delivery_service", "acquiring_fee", "paid_storage", "penalty", "deduction", "cashback_discount")
-SELECT = ("rrd_id,rr_date,sale_dt,seller_oper_name,doc_type,vendor_code,tech_size,nm_id,quantity," + ",".join(MONEY_FIELDS))
+SELECT = ("rrd_id,rr_date,sale_dt,seller_oper_name,doc_type,vendor_code,tech_size,nm_id,quantity," + ",".join(MONEY_FIELDS)
+          + ",bonus_type_name,subject_name")   # вид удержания и предмет — правила WB-14 (loaders/wb_money_rules)
 
 
 def D(v):
@@ -250,6 +254,8 @@ def fetch_ads(d1, d2):
     """Ручной путь: живой advert-api /adv/v1/upd (интервал ≤ 31 день), одно обращение; день — updTime по МСК."""
     by, undated = defaultdict(Decimal), Z
     for x in ads_loader.request_upd(d1, d2):
+        if not rules.is_balance_payment(x.get("paymentType")):   # WB-14 §3: реклама за кэшбэк WB — не расход
+            continue
         when = x.get("updTime")
         if when:
             by[ads_loader.upd_day(when)] += D(x.get("updSum"))
@@ -258,31 +264,75 @@ def fetch_ads(d1, d2):
     return dict(by), undated
 
 
-def load_ads_db(sb, d1, d2):
-    """Списания из wb_ad_spend_daily по upd_day (updSum с НДС). Таблицы нет — RuntimeError, реклама остаётся неизвестной."""
+def ads_split_of(rows):
+    """Списания по видам оплаты из строк wb_ad_spend_daily: balance / other ({день: Σ updSum}), by_type {вид: Σ},
+    advert_day {(день, advert_id): [Баланс, всего]} — доля «Баланса» кампании в день для разнесения по номенклатурам."""
+    balance, other, by_type = defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal)
+    advert_day = defaultdict(lambda: [Z, Z])
+    for r in rows:
+        day, amount = str(r["upd_day"]), D(r["upd_sum"])
+        pt = str(r.get("payment_type") or "").strip() or "(пусто)"
+        by_type[pt] += amount
+        key = (day, int(r["advert_id"]) if r.get("advert_id") not in (None, "") else None)
+        advert_day[key][1] += amount
+        if rules.is_balance_payment(pt):
+            balance[day] += amount; advert_day[key][0] += amount
+        else:
+            other[day] += amount
+    return {"balance": dict(balance), "other": dict(other), "by_type": dict(by_type), "advert_day": {k: tuple(v) for k, v in advert_day.items()}}
+
+
+def load_ads_split(sb, d1, d2):
+    """Списания wb_ad_spend_daily за d1 … d2 по видам оплаты (ads_split_of). Таблицы нет — RuntimeError."""
     try:
-        rows = stale_keys.read_window_rows(sb, ads_loader.TABLE, "advert_id,upd_time,upd_day,upd_sum",
+        rows = stale_keys.read_window_rows(sb, ads_loader.TABLE, "advert_id,upd_time,upd_day,upd_sum,payment_type",
                                            [("gte", "upd_day", d1), ("lte", "upd_day", d2)], ["upd_day", "advert_id", "upd_time"])
     except Exception as error:
         raise RuntimeError(f"не прочитать {ads_loader.TABLE}: {str(error)[:160]}")
-    by = defaultdict(Decimal)
-    for r in rows:
-        by[str(r["upd_day"])] += D(r["upd_sum"])
-    return dict(by), Z
+    return ads_split_of(rows)
+
+
+def load_ads_db(sb, d1, d2):
+    """Списания из wb_ad_spend_daily по upd_day (updSum с НДС) — ТОЛЬКО payment_type «Баланс» (WB-14 §3: реклама за кэшбэк
+    WB — не наш расход; её сумму даёт load_ads_split). Таблицы нет — RuntimeError, реклама остаётся неизвестной."""
+    return load_ads_split(sb, d1, d2)["balance"], Z
+
+
+def load_review_advance_rows(sb):
+    """Строки аванса «Баллы за отзывы» и его возврата за всю историю (их единицы: аванс июня нужен окну июля)."""
+    return stale_keys.read_window_rows(sb, loader.TABLE, "rrd_id,rr_date,sale_dt,bonus_type_name,deduction",
+                                       [("eq", "seller_oper_name", "Удержание"), ("like", "bonus_type_name", rules.REVIEW_POINTS_LIKE)], ["rr_date", "rrd_id"])
+
+
+def advance_net_by_day(sb=None, rows=None):
+    """{день: нетто аванса} по дню строки листа (row_day) и открытый остаток; rows — готовые строки (тесты)."""
+    rows = load_review_advance_rows(sb) if rows is None else rows
+    return rules.review_advance_net(rows, row_day)
 
 
 # ---------- расчёт ----------
 
-def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=None):
+def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=None, advance_net=None, excluded=None):
     """Строки листа по дням. cost_fn(vendor_code, tech_size) → (себестоимость, источник).
-    outside (если передан словарь) получает продажи/возвраты с датой продажи вне листа: {"before"|"after": [строк, Σ оборот]}."""
+    outside (если передан словарь) получает продажи/возвраты с датой продажи вне листа: {"before"|"after": [строк, Σ оборот]}.
+    WB-14 (loaders/wb_money_rules): строки упаковки (предмет «Упаковки для украшений») не входят — сумма в excluded["packaging"];
+    удержания по виду: «прочее» — в Прочее, «WB Продвижение» и аванс/возврат аванса — нет; advance_net {день: нетто аванса}
+    добавляется к удержаниям дня возврата."""
     by = {d: defaultdict(Decimal) for d in days}
     cnt = {d: defaultdict(int) for d in days}
     if outside is not None:
         outside.setdefault("before", [0, Z]); outside.setdefault("after", [0, Z])
+    pack = excluded.setdefault("packaging", {"rows": 0, "turnover": Z, "positions": 0, "delivery": Z, "nm_ids": set()}) if excluded is not None else None
     for r in rows:
         d = row_day(r)
         op = r["seller_oper_name"]
+        if rules.is_packaging(r.get("subject_name")):
+            if pack is not None and d in by:
+                pack["rows"] += 1; pack["delivery"] += D(r.get("delivery_service")); pack["nm_ids"].add(r.get("nm_id"))
+                if op in ("Продажа", "Возврат"):
+                    sign = 1 if op == "Продажа" else -1
+                    pack["turnover"] += sign * D(r["retail_price_with_disc"]); pack["positions"] += sign * int(r.get("quantity") or 1)
+            continue
         if d not in by:
             if outside is not None and op in ("Продажа", "Возврат") and days:
                 side = outside["before" if d < days[0] else "after"]
@@ -312,11 +362,22 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
             s["acquiring_other"] += D(r["acquiring_fee"])   # эквайринг вне продаж/возвратов — в лист не входит, печатается, если не ноль
         s["reward"] += D(r["ppvz_reward"]); s["rebill"] += D(r["rebill_logistic_cost"])
         s["delivery"] += D(r["delivery_service"])
-        s["storage"] += D(r["paid_storage"]); s["penalty"] += D(r["penalty"]); s["deduction"] += D(r.get("deduction"))
+        s["storage"] += D(r["paid_storage"]); s["penalty"] += D(r["penalty"])
+        ded = D(r.get("deduction"))
+        if ded:
+            kind = rules.classify_deduction(r.get("bonus_type_name"))
+            if kind == rules.OTHER:
+                s["deduction"] += ded
+            elif kind == rules.ADS_WITHHELD:
+                s["deduction_ads"] += ded                   # реклама с баланса — уже в «Рекламе» из upd
+            else:
+                s["deduction_advance"] += ded               # аванс / возврат аванса — в «Прочее» только нетто в день возврата
         cnt[d]["rows"] += 1
     out = []
     for d in days:
         s, c, vat = by[d], cnt[d], vat_for(d)
+        s["advance_net"] = D((advance_net or {}).get(d))
+        s["deduction"] += s["advance_net"]
         vat_refund = (s["reward"] + s["rebill"]) * (vat - 1) / vat
         commission = s["commission"]                    # как у владельца: кВВ строк (решение советника 2026-09-23)
         withheld = s["turnover"] - s["for_pay"]         # справочно: удержано из выплаты всего
@@ -324,7 +385,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
         cogs = s["cogs"]
         ads = (ads_by_day.get(d, Z) / vat) if ads_known else None   # updSum с НДС → без, как на листе владельца
         logistics, acquiring = s["delivery"] / vat, s["acquiring_raw"] / vat
-        other = s["storage"] / vat + s["penalty"] + s["deduction"] / vat   # штрафы у владельца без НДС — 21 из 21 только так
+        other = s["storage"] / vat + s["penalty"] + s["deduction"] / vat   # штрафы у владельца без НДС — 21 из 21 только так; deduction — вида «прочее» + нетто аванса
         margin = revenue - cogs
         fin = margin - logistics - (ads or Z) - acquiring - other
         overhead = overhead_for(d)
@@ -338,6 +399,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
                "other": other, "fin_result": fin, "fin_result_pct": ratio(fin, revenue), "overhead": overhead,
                "ebitda": (fin - overhead) if overhead is not None else None, "young": young,
                "reward": s["reward"], "rebill": s["rebill"], "storage": s["storage"], "penalty": s["penalty"], "deduction": s["deduction"],
+               "deduction_ads": s["deduction_ads"], "deduction_advance": s["deduction_advance"], "advance_net": s["advance_net"],
                "acquiring_other": s["acquiring_other"], "no_cost_turnover": s["no_cost_turnover"]}
         row["ebitda_pct"] = ratio(row["ebitda"], revenue) if row["ebitda"] is not None else None
         out.append(row)
@@ -348,7 +410,7 @@ def total_row(rows):
     t = {"date": "Итого", "young": False, "vat": rows[-1]["vat"] if rows else vat_for("2026-01-01")}
     for k in ("rows", "positions", "no_cost_positions", "no_pct_rows"):
         t[k] = sum(r[k] for r in rows)
-    for k in ("turnover", "commission", "withheld", "vat_refund", "revenue", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "acquiring_other", "no_cost_turnover"):
+    for k in ("turnover", "commission", "withheld", "vat_refund", "revenue", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "deduction_ads", "deduction_advance", "advance_net", "acquiring_other", "no_cost_turnover"):
         t[k] = sum((r[k] for r in rows), Z)
     t["ads"] = sum((r["ads"] for r in rows if r["ads"] is not None), Z) if any(r["ads"] is not None for r in rows) else None
     t["overhead"] = sum((r["overhead"] for r in rows if r["overhead"] is not None), Z) if any(r["overhead"] is not None for r in rows) else None
@@ -372,7 +434,7 @@ OWNER_ORDERS_AFTER_COMMISSION = Decimal("0.58")   # K владельца = order
 DISCOUNTER_LETTER = "t"                            # «WB Дискаунтер» = артикулы `t…` (бренд «КОЮЗ Топаз», подтверждено владельцем 09-24)
 PLATFORMS = (("all", "Заказы WB"), ("standard", "Заказы WB Standard"), ("discounter", "Заказы WB Дискаунтер"))
 FUNNEL_TABLE = "wb_funnel_products_daily"
-FUNNEL_SELECT = "day,nm_id,vendor_code,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
+FUNNEL_SELECT = "day,nm_id,vendor_code,subject_name,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
 COINVEST_TOLERANCE = Decimal("0.005")               # ожидание задачи: P в пределах 0,005 — 15 из 22
 
 
@@ -428,6 +490,8 @@ def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, 
     for r in funnel_rows:
         d = str(r["day"])
         if d not in by:
+            continue
+        if rules.is_packaging(r.get("subject_name")):   # WB-14 §4: упаковка — не товар
             continue
         pf = platform_of(r.get("vendor_code"))
         if platform != "all" and pf != platform:
@@ -545,7 +609,9 @@ COLS = [("Дата реализации", "date", None), ("Оборот (с НД
         ("Накладные в день, руб.", "overhead", "money"), ("Ebitda, руб.", "ebitda", "money"), ("% Ebitda", "ebitda_pct", "pct"),
         (None, None, None), ("НДС за возмещение (вычет), руб.", "vat_refund", "money"), ("Возмещение ПВЗ (с НДС)", "reward", "money"),
         ("Возмещение перемещения (с НДС)", "rebill", "money"), ("Хранение (с НДС)", "storage", "money"), ("Штрафы (без НДС, как в отчёте)", "penalty", "money"),
-        ("Удержания (с НДС)", "deduction", "money"),
+        ("Удержания в «Прочем» (с НДС; вид «прочее» + нетто аванса)", "deduction", "money"),
+        ("справочно: удержания за рекламу WB Продвижение (с НДС, не в «Прочем» — реклама из upd)", "deduction_ads", "money"),
+        ("справочно: аванс / возврат аванса «Баллы за отзывы» (с НДС, не в «Прочем»)", "deduction_advance", "money"),
         ("Позиций (продажи − возвраты)", "positions", "int"), ("позиций без себестоимости", "no_cost_positions", "int"),
         ("строк отчёта", "rows", "int"), ("Примечание", "note", None)]
 
@@ -791,10 +857,21 @@ def main(argv=None):
             ads_note = f"реклама не получена: {error}"
     print(ads_note)
     cost_fn = lambda code, size: unit_cost_for(exact, uniform, code, size, args.cogs_by)  # noqa: E731
-    outside = {}
-    daily = build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside)
+    outside, excluded = {}, {}
+    advance_net, advance_open = ({}, Z) if args.rows_from_files else advance_net_by_day(sb)
+    daily = build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside, advance_net=advance_net, excluded=excluded)
     total = total_row(daily)
     young = [r["date"] for r in daily if r["young"]]
+    tally = rules.DeductionTally()
+    for r in rows:
+        if d1 <= row_day(r) <= days[-1]:
+            tally.add(r)
+    pack = excluded.get("packaging") or {}
+    rules_text = (f"{tally.text()}; в «Прочем» — вид «прочее» {total['deduction'] - total['advance_net']:,.2f} + нетто аванса {total['advance_net']:,.2f}"
+                  + (f" (открытый аванс без возврата {advance_open:,.2f} — не расход до возврата)" if advance_open else "")
+                  + f"; упаковка исключена: строк {pack.get('rows', 0)}, оборот {pack.get('turnover', Z):,.2f}, позиций {pack.get('positions', 0)}, "
+                  f"доставка {pack.get('delivery', Z):,.2f}, nmId {sorted(n for n in pack.get('nm_ids', ()) if n) or '—'}")
+    print("правила WB-14: " + rules_text)
     outside_text = (f"продаж/возвратов с датой продажи раньше листа {outside['before'][0]} (оборот {outside['before'][1]:,.2f}), "
                     f"позже {outside['after'][0]} (оборот {outside['after'][1]:,.2f})")
     print(outside_text)
@@ -804,6 +881,10 @@ def main(argv=None):
         print(f"ВНИМАНИЕ: строк продаж/возвратов без commissionPercent — {total['no_pct_rows']}, в комиссии по образцу они как 0 %")
     notes = [f"Источник: отчёт реализации WB (finance-api sales-reports/detailed, period=daily); день строки — saleDt в московском времени, без saleDt — rrDate. "
              f"Строк {len(rows)}; {outside_text}.",
+             "Правила WB-14 (loaders/wb_money_rules): «Прочее» = хранение / НДС + штрафы + удержания вида «прочее» / НДС; удержания "
+             "«Оказание услуг «WB Продвижение»» — реклама с баланса, уже в «Рекламе» (из upd), сюда не входят; аванс «Баллы за отзывы» и его "
+             "возврат — только нетто в день возврата; реклама — только оплата «Баланс» (кэшбэк WB — не расход); упаковка (предмет «Упаковки для "
+             f"украшений») из листа исключена. {rules_text}.",
              f"Комиссия = Σ цена × кВВ строки (commissionPercent), как у владельца; справочно «удержано из выплаты всего» = Оборот − forPay "
              f"(комиссия + согласованная скидка + доплаты). НДС {total['vat']}.",
              f"Себестоимость: снимок 1С {args.snapshot}, стыковка {args.cogs_by}; позиций по источникам: " + ", ".join(f"{k} {v}" for k, v in sorted(total["cost_sources"].items()))

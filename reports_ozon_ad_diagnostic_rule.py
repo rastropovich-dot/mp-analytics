@@ -23,37 +23,15 @@ APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-KNOWN_CAMPAIGN_HINTS = {
-    "24375352": {
-        "title": "F000283615",
-        "state": "CAMPAIGN_STATE_RUNNING",
-        "adv_object_type": "SKU",
-        "payment_type": "CPC",
-        "placement": "PLACEMENT_TOP_PROMOTION",
-        "product_campaign_mode": "PRODUCT_CAMPAIGN_MODE_AUTO",
-        "product_autopilot_strategy": "TARGET_BIDS",
-        "role": "primary",
-    },
-    "24375331": {
-        "title": "F000283615",
-        "state": "CAMPAIGN_STATE_RUNNING",
-        "adv_object_type": "SKU",
-        "payment_type": "CPC",
-        "placement": "PLACEMENT_SEARCH_AND_CATEGORY",
-        "product_campaign_mode": "PRODUCT_CAMPAIGN_MODE_AUTO",
-        "product_autopilot_strategy": "TARGET_BIDS",
-        "role": "secondary",
-    },
-}
+# Золотой SKU кабинета — из профиля (cabinets/<код>.py, GOLDEN_SKU): две его кампании с ролями, даты частичной рекламы и COGS
+# по снимку 1С (у KARATOV — 05-20, решение владельца 2026-09-14: прежние 32 963 — сумма составляющих первой строки файла,
+# другого товара, docs/cost_of_goods.md). У кабинета без золотого SKU словари пусты — правило работает без подсказок.
+_GOLDEN = CABINET.GOLDEN_SKU or {}
+KNOWN_CAMPAIGN_HINTS = {k: dict(v) for k, v in _GOLDEN.get("campaigns", {}).items()}
 
-KNOWN_PARTIAL_DATES = {"2026-05-12"}
+KNOWN_PARTIAL_DATES = set(_GOLDEN.get("partial_dates", ()))
 LOOKBACK_WINDOWS = (3, 5, 7, 14)
-# Файл себестоимости 1С на 2026-05-20, колонка «Себестоимость» (решение владельца
-# 2026-09-14). Прежние 32 963 в файле отсутствуют — это сумма составляющих первой
-# строки файла, другого товара. См. docs/cost_of_goods.md.
-KNOWN_SKU_COGS = {
-    "1300079194": 29390.06,
-}
+KNOWN_SKU_COGS = {str(_GOLDEN["sku"]): float(_GOLDEN["cogs"])} if _GOLDEN.get("sku") and _GOLDEN.get("cogs") is not None else {}
 
 
 def parse_args():

@@ -228,14 +228,12 @@ class LabelsAndBuyoutRateTests(unittest.TestCase):
     """WB-9 §2 — ярлыки одни с Ozon; §3 — коэффициент выкупа по когорте месяца заказа; §4 — отчёт читается по ключу."""
 
     def test_owner_categories_equal_the_ozon_dictionary(self):
-        import ast
-        import os
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(fr.__file__))), "scripts", "ozon_product_catalog.py")
-        found = None
-        for node in ast.parse(open(path, encoding="utf-8").read()).body:
-            if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "OWNER_CATEGORIES" for t in node.targets):
-                found = tuple(ast.literal_eval(node.value))
-        self.assertEqual(found, fr.OWNER_CATEGORIES)                                     # кортеж продублирован, не импортирован (§5: Ozon-файлы не трогаем)
+        import ozon_product_catalog as cat
+        import cabinet
+        prof = cabinet.profile("karatov")
+        self.assertEqual(cat.OWNER_CATEGORIES, fr.OWNER_CATEGORIES)                      # оба — из профиля кабинета (RBH §3), не дубли
+        self.assertEqual(fr.OWNER_CATEGORIES, tuple(prof.OWNER_CATEGORIES))
+        self.assertEqual(fr.CATEGORY_BY_SUBJECT, dict(prof.CATEGORY_BY_SUBJECT))
         self.assertEqual(set(fr.CATEGORY_BY_SUBJECT.values()), set(fr.OWNER_CATEGORIES))
         self.assertEqual((fr.category_of("Ювелирные иконы"), fr.category_of(None), fr.category_of("Ювелирные кольца")), ("прочее", "прочее (нет предмета)", "кольца"))
 

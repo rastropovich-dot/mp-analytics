@@ -36,12 +36,13 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from check_accrual_postings_quantity import D, load_byday, match_day, sale_index  # noqa: E402
 
 VAT = Decimal("1.22")
 C = Decimal("0.01")
-SNAP = "2026-05-20"
+SNAP = cabinet.profile().COST_SNAPSHOT_DATE   # снимок 1С — из профиля кабинета; только чтение, guard здесь не нужен
 LOG_TYPES = {t for t, a in accrual.TYPE_TO_EXPENSE.items() if a == "logistics"}
 ACQUIRING_TYPE = 1
 

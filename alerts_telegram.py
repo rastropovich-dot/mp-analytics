@@ -1146,7 +1146,7 @@ def build_message(target_date=None, skip_snapshot=False):
 
     lines = [
         cabinet.banner(CABINET),   # первая строка алерта: какой кабинет
-        "📊 <b>MP Analytics Alerts</b>",
+        f"📊 <b>{CABINET.ALERT_TITLE}</b>",   # заголовок — из профиля кабинета
         f"Дата: {today_local().isoformat()}",
         "",
     ]

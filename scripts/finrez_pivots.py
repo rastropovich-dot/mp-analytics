@@ -30,6 +30,10 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402  — только профиль: где лежат образцы сводных владельца (OWNER_PIVOT_FILES в каталоге данных кабинета)
+_PROFILE = cabinet.profile()
+_OWNER_FILES = {k: cabinet.data_path(v, prof=_PROFILE) for k, v in _PROFILE.OWNER_PIVOT_FILES.items()}
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS_PKG = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -46,14 +50,14 @@ CT = {
 }
 SPECS = [
     # ncols — колонки ИСТОЧНИКА владельца: поля кэша без fieldGroup («Дни …» / «Месяцы» — группировка сводной по дате, Excel строит их сам)
-    {"owner": "data/owner_finrez_ozon_buyouts_pivot.xlsx", "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 13, "data_fields": 2},
+    {"owner": _OWNER_FILES["ozon_buyouts"], "owner_sheet": "Вывод данных", "new_sheet": "Сводная Ozon выкупы", "source_sheet": "Данные Ozon выкупы", "ncols": 13, "data_fields": 2},
     # WB: 14 колонок владельца + наша «Эквайринг, ₽» пятнадцатой (O) — восьмое поле значений сводной, колонка V читает его (сорок четвёртая §2);
     # «Месяцы» (группировка) в источник не попадают, наши остальные колонки — правее O
-    {"owner": "data/owner_finrez_wb_buyouts_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 15,
+    {"owner": _OWNER_FILES["wb_buyouts"], "owner_sheet": "Свод", "new_sheet": "Сводная WB выкупы", "source_sheet": "Данные WB выкупы", "ncols": 15,
      "extra_field": {"name": "Эквайринг, ₽", "index": 14}, "data_fields": 8},
     # заказы: 21 колонка источника (Дата … День); «Месяцы» — группировка, «Маржа …» … «Фин.рез %» (8) — ВЫЧИСЛЯЕМЫЕ поля сводной (formula в кэше),
     # Excel считает их сам из полей источника по именам; в нашем листе одноимённые колонки остаются справа от ref справочно
-    {"owner": "data/owner_finrez_orders_pivot.xlsx", "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 21, "data_fields": 13},
+    {"owner": _OWNER_FILES["orders"], "owner_sheet": "Свод", "new_sheet": "Сводная заказы", "source_sheet": "Данные заказы", "ncols": 21, "data_fields": 13},
 ]
 
 

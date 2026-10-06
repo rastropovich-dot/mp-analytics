@@ -41,7 +41,7 @@ import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 GENERATOR = os.path.join(ROOT, "scripts", "report_ozon_month.py")
-REPORTS_DIR = os.path.join(ROOT, "data", "reports")
+REPORTS_DIR = cabinet.data_path("reports", prof=CABINET)
 GENERATOR_TIMEOUT = 900            # сентябрь собирается ~60 с; запас — на медленную базу, а не на зависание
 ORDERS_SHEET_FAILED = 2            # код генератора: книга записана, но лист «Заказы» не собран
 MONTHS_GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -111,7 +111,7 @@ def build_caption(month, date_to, summary, orders_failed, wb_line=None):
 
 def generate(month, date_to, out_dir):
     """Зовёт генератор отдельным процессом. Возвращает (путь | None, сводка | None, код генератора, хвост вывода)."""
-    out = os.path.join(out_dir, f"ozon_{month}_to_{date_to}.xlsx")
+    out = os.path.join(out_dir, f"{CABINET.REPORT_PREFIX}ozon_{month}_to_{date_to}.xlsx")
     summary_path = out + ".json"
     cmd = [sys.executable, GENERATOR, "--month", month, "--date-to", date_to, "--fetch", "young", "--out", out, "--summary-json", summary_path]
     res = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=GENERATOR_TIMEOUT)

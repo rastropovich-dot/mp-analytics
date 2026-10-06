@@ -1,7 +1,7 @@
 """Профиль кабинета и защита от перепутывания баз (первая задача RBH, §2; дополнение 09-28).
 
 Один код — несколько кабинетов. Кабинет выбирает переменная окружения MP_CABINET: «karatov» (по умолчанию, когда не задана, —
-KARATOV ничего не замечает), «rbh1», «rbh2» (РБХ-1: Ozon Попова + WB ИП Рафикова; РБХ-2: Ozon Малимон + WB ИП Плахов; у каждого своя база
+кабинет по умолчанию ничего не замечает), «rbh1», «rbh2» (РБХ-1: Ozon Попова + WB ИП Рафикова; РБХ-2: Ozon Малимон + WB ИП Плахов; у каждого своя база
 Supabase и свой сервис Render, одна группа Telegram на двоих — кабинет пишется в заголовке). Профиль — модуль cabinets/<код>.py, в нём только
 несекретное: имена, правила артикулов, константы листов владельца, каталоги данных и логов, ожидаемый хост Supabase. Секреты
 живут в .env / .env.<код> / переменных сервиса Render и в профиль не попадают.
@@ -18,6 +18,9 @@ assert_env() зовётся в каждой точке входа сразу п�
 
 Загрузчики зовутся пайплайном как `python3 loaders/<файл>.py` (корня проекта нет в sys.path), поэтому там `import cabinet`
 стоит с запасным путём — см. блок после load_dotenv() в любом из них.
+
+Шелл-скрипты (finrez_nightly.sh) берут профиль так: `eval "$(venv/bin/python3 cabinet.py --shell)"` — печатает export-строки
+MP_CABINET_NAME, MP_DATA_DIR, MP_LOGS_DIR, MP_REPORT_PREFIX, MP_BOOK_MONTH_FROM; guard там же (окружение не сошлось — код 1).
 """
 import importlib
 import os
@@ -144,3 +147,25 @@ def logs_dir(prof=None, root=ROOT):
 def data_path(*parts, prof=None, root=ROOT):
     """Путь внутри каталога данных кабинета: data_path('reports', 'x.xlsx') → <root>/<DATA_DIR>/reports/x.xlsx."""
     return os.path.join(data_dir(prof, root), *parts)
+
+
+def shell_exports(prof, root=ROOT):
+    """Строки `export …` для шелл-скриптов: имя кабинета, каталоги данных и логов (абсолютные), префикс имён книг, первый
+    месяц книги «Фин рез» (пусто — не задан)."""
+    import shlex
+    values = (("MP_CABINET_NAME", prof.DISPLAY_NAME), ("MP_DATA_DIR", data_dir(prof, root)), ("MP_LOGS_DIR", logs_dir(prof, root)),
+              ("MP_REPORT_PREFIX", prof.REPORT_PREFIX or ""), ("MP_BOOK_MONTH_FROM", prof.BOOK_MONTH_FROM or ""))
+    return "\n".join(f"export {k}={shlex.quote(str(v))}" for k, v in values)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--shell"]:
+        ok, message, prof = check_env()
+        if not ok:
+            print(message, file=sys.stderr)
+            sys.exit(1)
+        print(shell_exports(prof))
+    else:
+        ok, message, _prof = check_env()
+        print(message)
+        sys.exit(0 if ok else 1)

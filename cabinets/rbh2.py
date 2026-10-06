@@ -14,12 +14,20 @@ SUPABASE_HOST = None                                # хост проекта Su
 DATA_DIR = "data/rbh2"
 LOGS_DIR = "logs/rbh2"
 PROJECT_START = None                                # первая запись — окно 60 дней назад по умолчанию (§5.4)
+BOOK_MONTH_FROM = None                              # первый месяц книги «Фин рез» — после первой записи (finrez_nightly.sh без него не идёт)
 
 BRAND_DEFAULT = "Beautyhome.me"
 BRAND_BY_LETTER = {}
 BRAND_NORMALIZE = {}
 DISCOUNTER_LETTER = None
 OZON_PLATFORMS = ()
+METALS = ()
+# словари товара — косметика, свои категории позже (справочник владельца ~/Downloads/Косметика_—_коды_брендов_и_предметов_WB_1.xlsx)
+OWNER_CATEGORIES = ()
+TYPE_TO_CATEGORY = {}
+KIND_TO_CATEGORY = {}
+NAME_RULES = ()
+CATEGORY_BY_SUBJECT = {}
 
 OWNER_SHEET = {}
 OWNER_AFTER_COMMISSION = ()

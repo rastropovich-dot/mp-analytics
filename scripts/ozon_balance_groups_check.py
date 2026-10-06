@@ -96,6 +96,8 @@ def main(argv=None):
     from dotenv import load_dotenv
     from supabase import create_client
     load_dotenv(os.path.join(ROOT, ".env"))
+    import cabinet
+    cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
     bal, led = balance_by_month(args.balance), ledger_by_month(sb)
     book = book_turnover(args.book) if os.path.exists(args.book) else {}

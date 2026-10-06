@@ -1,5 +1,6 @@
 """cabinet.py и cabinets/: профиль по умолчанию, выбор по MP_CABINET, overlay .env.<кабинет>, guard по хосту Supabase и его
 присутствие во всех точках входа (первая задача RBH, §2). Сети нет: guard выходит до создания клиента."""
+import ast
 import os
 import re
 import sys
@@ -199,13 +200,147 @@ class EntryPointsHaveGuardTests(unittest.TestCase):
 
     def test_nightly_script_and_first_lines(self):
         sh = open(os.path.join(ROOT, "scripts", "finrez_nightly.sh"), encoding="utf-8").read()
-        self.assertIn("cabinet.assert_env()", sh)
-        self.assertLess(sh.find("cabinet.assert_env()"), sh.find("scripts/report_finrez.py"))
+        self.assertIn("cabinet.py --shell", sh)                      # guard + профиль одним вызовом (§3): каталоги, префикс, первый месяц
+        self.assertLess(sh.find("cabinet.py --shell"), sh.find("scripts/report_finrez.py"))
+        for var in ("MP_DATA_DIR", "MP_LOGS_DIR", "MP_REPORT_PREFIX", "MP_BOOK_MONTH_FROM"):
+            self.assertIn(var, sh)
+        self.assertNotIn("data/reports/", sh)                        # пути — только из профиля
         pipeline = open(os.path.join(ROOT, "run_daily_pipeline.py"), encoding="utf-8").read()
         self.assertLess(pipeline.find("print(cabinet.banner(CABINET))"), pipeline.find("🚀 Запуск ежедневного пайплайна"))
         alert = open(os.path.join(ROOT, "alerts_telegram.py"), encoding="utf-8").read()
         self.assertRegex(alert, r"lines = \[\n\s*cabinet\.banner\(CABINET\),")
         self.assertLess(alert.find("cabinet.assert_env("), alert.find("create_client("))
+
+
+CABINET_LITERALS = re.compile(r"KARATOV|Топаз|ТОПАЗ|ГОЛДСТАРТ")
+
+
+def executable_strings(path):
+    """Строковые константы файла, кроме docstring-ов (первая строка модуля / класса / функции); комментарии ast не видит."""
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                docs.add(id(first.value))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
+            yield node.lineno, node.value
+        elif isinstance(node, ast.Name):
+            yield node.lineno, node.id
+
+
+class NoCabinetLiteralsOutsideProfilesTests(unittest.TestCase):
+    """§3 первой задачи RBH: кабинет KARATOV живёт только в cabinets/karatov.py — в коде вне cabinets/ и tests/ его имён нет
+    в исполняемых строках и идентификаторах (docstring-и и комментарии — история, им можно)."""
+
+    SKIP = {"venv", ".git", "tests", "cabinets", "data", "logs", "knowledge", "spec", "docs", "sql", "ops", "snapshots"}
+
+    def test_no_karatov_or_topaz_literals_in_code(self):
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d not in self.SKIP and not d.startswith(".")]
+            for fn in filenames:
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, ROOT)
+                if fn.endswith(".sh"):
+                    for i, line in enumerate(open(path, encoding="utf-8"), 1):
+                        if CABINET_LITERALS.search(line) and not line.lstrip().startswith("#"):
+                            hits.append(f"{rel}:{i}")
+                elif fn.endswith(".py"):
+                    hits.extend(f"{rel}:{ln}" for ln, text in executable_strings(path) if CABINET_LITERALS.search(text))
+        self.assertEqual(hits, [], "литералы кабинета вне профиля:\n" + "\n".join(hits))
+
+
+class RbhProfilesGiveNotSetTests(unittest.TestCase):
+    """Модули книг на профиле без ювелирных словарей и констант листов: «не задано» → None / пусто, не ноль и не падение."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib
+        cls.saved = dict(os.environ)
+        os.environ["MP_CABINET"] = "rbh1"
+        os.environ["SUPABASE_URL"] = "http://supabase.tests.invalid"
+        os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        names = ["ozon_orders_forecast", "ozon_product_catalog", "report_ozon_month", "report_wb_month", "report_finrez_wb", "finrez_pivots"]
+        cls.before = {n: sys.modules.pop(n, None) for n in names}
+        cls.mods = {n: importlib.import_module(n) for n in names}
+
+    @classmethod
+    def tearDownClass(cls):
+        for n, m in cls.before.items():
+            if m is not None:
+                sys.modules[n] = m
+            else:
+                sys.modules.pop(n, None)
+        os.environ.clear()
+        os.environ.update(cls.saved)
+
+    def test_forecast_owner_constants_not_set(self):
+        fc = self.mods["ozon_orders_forecast"]
+        self.assertEqual((fc.OWNER, fc.OWNER_AFTER_COMMISSION), ({}, ()))
+        self.assertIsNone(fc.owner_after_commission("2026-09-05", "Основная"))
+
+    def test_catalog_brand_and_categories_default(self):
+        cat = self.mods["ozon_product_catalog"]
+        self.assertEqual((cat.brand_of("T1"), cat.brand_of("F1"), cat.brand_of("")), ("Beautyhome.me", "Beautyhome.me", None))
+        self.assertEqual((cat.OWNER_CATEGORIES, cat.TYPE_TO_CATEGORY, cat.category_by_name("Серьги")), ((), {}, "прочее"))
+        self.assertIn("не заданы", cat.brand_rule_text())
+        self.assertTrue(cat.OUT_DIR.endswith(os.path.join("data", "rbh1", "ozon_products")))
+
+    def test_ozon_month_platforms_metals_costs_not_set(self):
+        rom = self.mods["report_ozon_month"]
+        self.assertEqual((rom.SNAP, rom.PLATFORMS, rom.METALS, rom.COST_INDEX, rom.OVERHEAD_PER_DAY), (None, (), (), (), {}))
+        self.assertEqual((rom.platform_of("F1"), rom.metal_of("серьги 925")), (rom.NO_PLATFORM, rom.NO_METAL))
+        self.assertIsNone(rom.cost_index_for("2026-09-09")); self.assertIsNone(rom.overhead_for("2026-09-09"))
+        self.assertTrue(rom.OUT_DIR.endswith(os.path.join("data", "rbh1", "reports")))
+
+    def test_wb_month_no_discounter_and_no_multiplier(self):
+        rwm = self.mods["report_wb_month"]
+        self.assertIsNone(rwm.DISCOUNTER_LETTER); self.assertIsNone(rwm.OWNER_ORDERS_AFTER_COMMISSION)
+        self.assertEqual([p for p, _t in rwm.PLATFORMS], ["all", "standard"])
+        self.assertEqual(rwm.platform_of("t1"), "standard")
+        total = rwm.orders_total_row([{"date": "2026-09-01", "vat": rwm.vat_for("2026-09-01"), "cards": 1, "orders_qty": 1, "funnel_buyouts_qty": 0,
+                                       "funnel_cancel_qty": 0, "no_cost_qty": 0, "orders_sum": rwm.Decimal("100"), "revenue": None, "cogs": rwm.Z,
+                                       "margin": None, "funnel_buyouts_sum": rwm.Z, "funnel_cancel_sum": rwm.Z, "no_cost_sum": rwm.Z, "ads": None,
+                                       "cost_sources": {}}])
+        self.assertEqual((total["orders_sum"], total["revenue"], total["margin"], total["margin_pct"]), (rwm.Decimal("100"), None, None, None))
+
+    def test_wb_finrez_labels_from_profile(self):
+        fw = self.mods["report_finrez_wb"]
+        self.assertEqual((fw.SHOP, fw.brand_of("t1"), fw.brand_of("", "КОЮЗ Топаз")), ("РБХ-1", "Beautyhome.me", "Beautyhome.me"))
+        self.assertEqual(fw.BRAND_LABELS, {"Beautyhome.me", "(без товара)"})
+        self.assertEqual((fw.OWNER_CATEGORIES, fw.category_of("Ювелирные кольца")), ((), "прочее"))
+
+    def test_pivot_samples_in_cabinet_data_dir(self):
+        fp = self.mods["finrez_pivots"]
+        for spec in fp.SPECS:
+            self.assertIn(os.path.join("data", "rbh1", "owner_finrez_"), spec["owner"])
+
+
+class ShellExportsTests(unittest.TestCase):
+    def test_exports_for_karatov_and_rbh(self):
+        text = cabinet.shell_exports(cabinet.profile("karatov"), root="/r")
+        self.assertIn("export MP_CABINET_NAME=KARATOV", text)
+        self.assertIn("export MP_DATA_DIR=/r/data\n", text + "\n")
+        self.assertIn("export MP_REPORT_PREFIX=''", text)
+        self.assertIn("export MP_BOOK_MONTH_FROM=2026-04", text)
+        text = cabinet.shell_exports(cabinet.profile("rbh2"), root="/r")
+        self.assertIn("export MP_DATA_DIR=/r/data/rbh2", text)
+        self.assertIn("export MP_LOGS_DIR=/r/logs/rbh2", text)
+        self.assertIn("export MP_REPORT_PREFIX=rbh2_", text)
+        self.assertIn("export MP_BOOK_MONTH_FROM=''", text)
+
+    def test_new_profile_names_shared_and_empty_for_rbh(self):
+        for code in ("rbh1", "rbh2"):
+            p = cabinet.profile(code)
+            self.assertEqual((p.METALS, p.OWNER_CATEGORIES, p.TYPE_TO_CATEGORY, p.KIND_TO_CATEGORY, p.NAME_RULES, p.CATEGORY_BY_SUBJECT, p.BOOK_MONTH_FROM),
+                             ((), (), {}, {}, (), {}, None))
+        k = cabinet.profile("karatov")
+        self.assertEqual(set(k.TYPE_TO_CATEGORY.values()) | set(k.CATEGORY_BY_SUBJECT.values()), set(k.OWNER_CATEGORIES))
+        self.assertEqual(sorted(k.GOLDEN_SKU["campaigns"]), ["24375331", "24375352"])
 
 
 if __name__ == "__main__":

@@ -67,13 +67,13 @@ from report_ozon_month import MONTHS, VAT_RATES, vat_for  # noqa: E402,F401  —
 
 Z = Decimal(0)
 C = Decimal("0.01")
-SNAP = "2026-05-20"
-OUT_DIR = os.path.join("data", "reports")
+SNAP = CABINET.COST_SNAPSHOT_DATE              # снимок 1С себестоимости — из профиля; None — не задан, СС не считается
+OUT_DIR = cabinet.data_path("reports", prof=CABINET)
 YOUNG_DAYS = 2
 MSK = timezone(timedelta(hours=3))
 LAG_DAYS = 7   # rrDate позже даты продажи: 60 строк из 32 009 на 1…3 дня, 5 — на 16…115 (те на лист своего месяца не попадут, печатаются)
-# Накладные в день по площадке с датой действия — ячейка T81 листа «WB - сентябрь» владельца (22.09).
-OVERHEAD_PER_DAY = {"wb": (("2026-09-01", Decimal("74002.00")),)}
+# Накладные в день по площадке с датой действия — из профиля (у KARATOV: ячейка T81 листа «WB - сентябрь» владельца, 22.09).
+OVERHEAD_PER_DAY = dict(CABINET.OVERHEAD_PER_DAY)
 # Расхождения с листом на стороне владельца (WB-5 §3): печатаем, не чиним, в отказ не считаем.
 # 09-17: эквайринг двух возвратов (441,25 + 936,24 с НДС) он не вычел, на 09-03 / 09-07 / 09-14 — вычел.
 # Прежние три «известных дня» (эквайринг 09-03 и 09-07, прочее 09-02) сняты 2026-09-23: это были наши
@@ -430,9 +430,13 @@ def total_row(rows):
 
 # ---------- лист «Заказы WB» (блок J–P листа «Заказы» владельца; WB-7 §4) ----------
 
-OWNER_ORDERS_AFTER_COMMISSION = Decimal("0.58")   # K владельца = orderSum воронки × 0,58 / НДС (WB-6 §2: 16 из 21 до копейки)
-DISCOUNTER_LETTER = "t"                            # «WB Дискаунтер» = артикулы `t…` (бренд «КОЮЗ Топаз», подтверждено владельцем 09-24)
-PLATFORMS = (("all", "Заказы WB"), ("standard", "Заказы WB Standard"), ("discounter", "Заказы WB Дискаунтер"))
+# Множитель владельца и буква «Дискаунтера» — из профиля кабинета. У KARATOV: K владельца = orderSum воронки × 0,58 / НДС
+# (WB-6 §2: 16 из 21 до копейки); «WB Дискаунтер» = артикулы `t…` (подтверждено владельцем 09-24). Нет множителя — «Выручка»
+# и «Маржа» листа пусты; нет буквы — площадки не делятся, лист «Дискаунтер» не пишется.
+OWNER_ORDERS_AFTER_COMMISSION = CABINET.OWNER_ORDERS_AFTER_COMMISSION_WB
+DISCOUNTER_LETTER = (CABINET.DISCOUNTER_LETTER or "").lower() or None
+PLATFORMS = tuple(p for p in (("all", "Заказы WB"), ("standard", "Заказы WB Standard"), ("discounter", "Заказы WB Дискаунтер"))
+                  if p[0] != "discounter" or DISCOUNTER_LETTER)
 FUNNEL_TABLE = "wb_funnel_products_daily"
 FUNNEL_SELECT = "day,nm_id,vendor_code,subject_name,order_count,order_sum,buyout_count,buyout_sum,cancel_count,cancel_sum"
 COINVEST_TOLERANCE = Decimal("0.005")               # ожидание задачи: P в пределах 0,005 — 15 из 22
@@ -440,7 +444,7 @@ COINVEST_TOLERANCE = Decimal("0.005")               # ожидание зада�
 
 def platform_of(vendor_code):
     """Площадка по первой букве артикула: `t` — Дискаунтер, остальное — Standard ('Заказы Standard'!K + 'WB Дискаунтер'!B = K)."""
-    return "discounter" if str(vendor_code or "").strip()[:1].lower() == DISCOUNTER_LETTER else "standard"
+    return "discounter" if DISCOUNTER_LETTER and str(vendor_code or "").strip()[:1].lower() == DISCOUNTER_LETTER else "standard"
 
 
 def load_funnel_db(sb, d1, d2):
@@ -512,8 +516,8 @@ def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, 
     out = []
     for d in days:
         s, c, vat = by[d], cnt[d], vat_for(d)
-        revenue = s["orders_sum"] * OWNER_ORDERS_AFTER_COMMISSION / vat
-        margin = revenue - s["cogs"]
+        revenue = None if OWNER_ORDERS_AFTER_COMMISSION is None else s["orders_sum"] * OWNER_ORDERS_AFTER_COMMISSION / vat
+        margin = None if revenue is None else revenue - s["cogs"]
         ads = (ads_by_day.get(d, Z) / vat) if (ads_known and platform == "all") else None
         ci = coinvest.get(d, {}).get(platform)
         coinvest_pct = ((ci[0] - ci[1]) / ci[0]).quantize(Decimal("0.0001")) if ci and ci[0] else None
@@ -533,7 +537,7 @@ def orders_total_row(rows):
     for k in ("cards", "orders_qty", "funnel_buyouts_qty", "funnel_cancel_qty", "no_cost_qty"):
         t[k] = sum(r[k] for r in rows)
     for k in ("orders_sum", "revenue", "cogs", "margin", "funnel_buyouts_sum", "funnel_cancel_sum", "no_cost_sum"):
-        t[k] = sum((r[k] for r in rows), Z)
+        t[k] = None if any(r[k] is None for r in rows) else sum((r[k] for r in rows), Z)   # «Выручка» без множителя владельца — пусто
     t["ads"] = sum((r["ads"] for r in rows if r["ads"] is not None), Z) if any(r["ads"] is not None for r in rows) else None
     t["margin_pct"] = ratio(t["margin"], t["revenue"])
     t["drr_pct"] = ratio(t["ads"], t["orders_sum"]) if t["ads"] is not None else None
@@ -913,15 +917,16 @@ def main(argv=None):
             o_total = orders_total_row(o_rows)
             sheets[platform] = o_rows
             o_notes = [f"Источник: воронка продаж WB по товарам (sales-funnel/products, день заказа МСК) — {funnel_note}. Площадка — первая буква артикула: "
-                       f"`{DISCOUNTER_LETTER}` — Дискаунтер (КОЮЗ Топаз), остальное — Standard; лист «{title}».",
-                       f"Выручка = Σ orderSum × {OWNER_ORDERS_AFTER_COMMISSION} / НДС (как K владельца); Себестоимость = Σ orderCount × СС снимка {args.snapshot} по базовому артикулу; "
+                       + (f"`{DISCOUNTER_LETTER}` — Дискаунтер, остальное — Standard" if DISCOUNTER_LETTER else "буква «Дискаунтера» в профиле кабинета не задана, площадки не делятся") + f"; лист «{title}».",
+                       (f"Выручка = Σ orderSum × {OWNER_ORDERS_AFTER_COMMISSION} / НДС (как K владельца)" if OWNER_ORDERS_AFTER_COMMISSION is not None
+                        else "Выручка и Маржа пусты: множитель владельца в профиле кабинета не задан") + f"; Себестоимость = Σ orderCount × СС снимка {args.snapshot} по базовому артикулу; "
                        f"без СС {o_total['no_cost_qty']} из {o_total['orders_qty']} заказов ({o_total['no_cost_sum']:,.0f} с НДС); позиций по источникам: "
                        + ", ".join(f"{k} {v}" for k, v in sorted(o_total["cost_sources"].items())) + ".",
                        "Соинвест, % — рабочее правило: (Σ retailPriceWithDisc − Σ retailAmount) / Σ retailPriceWithDisc по строкам «Продажа» отчёта реализации за день (saleDt МСК); точного правила владельца нет (WB-6 §2).",
                        "Реклама — только на общем листе (списания по кампаниям на площадки не делятся); ДРР — от суммы заказов с НДС.",
                        f"Жёлтым — дни моложе {YOUNG_DAYS} суток: воронка пересматривает день задним числом."]
             orders.append((title, o_rows, o_total, o_notes))
-    out = args.out or os.path.join(OUT_DIR, f"wb_{args.month}_to_{days[-1]}.xlsx")
+    out = args.out or os.path.join(OUT_DIR, f"{CABINET.REPORT_PREFIX}wb_{args.month}_to_{days[-1]}.xlsx")
     write_xlsx(out, args.month, daily, total, notes, orders=orders)
     for title, _r, o_total, _n in orders:
         print(f"{title} {d1}…{days[-1]}: заказов {o_total['orders_qty']} на {o_total['orders_sum']:,.2f}, выручка {o_total['revenue']:,.2f}, "

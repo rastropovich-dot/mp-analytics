@@ -72,27 +72,23 @@ import report_wb_month as wbm  # noqa: E402  — те же строки отчё
 Z = Decimal(0)
 C2 = Decimal("0.01")
 PLATFORM = "WB"
-SHOP = "KARATOV"                       # кабинет; имя магазина в книге владельца — уточнить (WB-8 §2 вопрос)
-DISCOUNTER_LETTER = "t"
-# Ярлыки бренда и категории — одни на обе площадки, как у Ozon-скрипта (WB-9 §2): бренд по первой букве артикула
-# (t → «Топаз», иначе KARATOV; бренд WB — только когда артикула нет, и тогда нормализуется), категория — словарь владельца
-# строчными (= scripts/ozon_product_catalog.OWNER_CATEGORIES, тест на равенство).
-BRAND_TOPAZ = "Топаз"
-BRAND_BY_LETTER = {DISCOUNTER_LETTER: BRAND_TOPAZ}
-BRAND_DEFAULT = "KARATOV"
-BRAND_NORMALIZE = {"коюз топаз": BRAND_TOPAZ, "топаз": BRAND_TOPAZ, "karatov": BRAND_DEFAULT}
+SHOP = CABINET.SHOP                    # колонка «Магазин» книги — из профиля кабинета (вопрос о SHOP снят владельцем 09-30)
+DISCOUNTER_LETTER = (CABINET.DISCOUNTER_LETTER or "").lower() or None   # буква артикула «Дискаунтер»; None — площадки не делятся
+# Ярлыки бренда и категории — одни на обе площадки, как у Ozon-скрипта (WB-9 §2), из профиля кабинета: бренд по первой букве
+# артикула (BRAND_BY_LETTER, иначе BRAND_DEFAULT; бренд WB — только когда артикула нет, и тогда нормализуется), категория —
+# словарь владельца строчными (OWNER_CATEGORIES те же, что у ozon_product_catalog, — оба из профиля, тест на равенство).
+BRAND_BY_LETTER = {str(k).lower(): v for k, v in CABINET.BRAND_BY_LETTER.items()}
+BRAND_DEFAULT = CABINET.BRAND_DEFAULT
+BRAND_NORMALIZE = {str(k).lower(): v for k, v in CABINET.BRAND_NORMALIZE.items()}
 UNIDENTIFIED = "неопознанный товар"    # артикул и бренд WB у операций без опознанного товара — считаем строками без товара
 NO_PRODUCT = "(без товара)"
 MONTHS_SHORT = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
-OWNER_CATEGORIES = ("кольца", "серьги", "подвески", "цепочки", "браслеты", "пирсинг", "колье", "броши")   # = ozon_product_catalog.OWNER_CATEGORIES
+OWNER_CATEGORIES = tuple(CABINET.OWNER_CATEGORIES)
 # Предмет WB → категория владельца; всё остальное — «прочее», считается вслух (в данных на 09-25: иконы, упаковки, запонки).
-CATEGORY_BY_SUBJECT = {
-    "Ювелирные кольца": "кольца", "Ювелирные серьги": "серьги", "Ювелирные подвески": "подвески", "Ювелирные цепочки": "цепочки",
-    "Ювелирные браслеты": "браслеты", "Ювелирный пирсинг": "пирсинг", "Ювелирные колье": "колье", "Ювелирные броши": "броши",
-}
+CATEGORY_BY_SUBJECT = dict(CABINET.CATEGORY_BY_SUBJECT)
 CATEGORY_OTHER = "прочее"
 CATEGORY_UNKNOWN = "прочее (нет предмета)"
-BRAND_LABELS = frozenset({BRAND_DEFAULT, BRAND_TOPAZ, NO_PRODUCT})
+BRAND_LABELS = frozenset({BRAND_DEFAULT, NO_PRODUCT} | set(BRAND_BY_LETTER.values()))
 CATEGORY_LABELS = frozenset(OWNER_CATEGORIES) | {CATEGORY_OTHER, CATEGORY_UNKNOWN, NO_PRODUCT}
 SELECT = wbm.SELECT + ",additional_payment,brand_name"   # в wbm.SELECT с WB-14 уже subject_name и bonus_type_name   # поля «WB - месяц» (мост зовёт его build_daily) + доплаты, предмет, бренд
 # build_rows читает только то, что использует: без doc_type, for_pay, cashback_discount (они нужны мосту через build_daily — main читает SELECT). WB-9 §4.
@@ -163,15 +159,22 @@ def is_unidentified(vendor_code=None, brand=None):
 
 
 def brand_of(vendor_code, funnel_brand=None):
-    """Ярлык бренда владельца: первая буква артикула первична (t → «Топаз», иначе KARATOV); бренд WB (строка отчёта /
-    карточка) — только когда артикула нет, и тогда нормализуется («КОЮЗ Топаз» → «Топаз»), неизвестный бренд без
-    артикула — KARATOV; «Неопознанный товар» — «(без товара)»."""
+    """Ярлык бренда владельца: первая буква артикула первична (BRAND_BY_LETTER профиля, иначе BRAND_DEFAULT); бренд WB (строка
+    отчёта / карточка) — только когда артикула нет, и тогда нормализуется (BRAND_NORMALIZE), неизвестный бренд без
+    артикула — BRAND_DEFAULT; «Неопознанный товар» — «(без товара)»."""
     code = str(vendor_code or "").strip()
     if is_unidentified(code, funnel_brand):
         return NO_PRODUCT
     if code:
         return BRAND_BY_LETTER.get(code[:1].lower(), BRAND_DEFAULT)
     return BRAND_NORMALIZE.get(str(funnel_brand or "").strip().lower(), BRAND_DEFAULT)
+
+
+def brand_rule_text():
+    """Подпись правила бренда для примечаний: «t → Топаз, иначе KARATOV» / «правила по букве артикула не заданы, бренд …»."""
+    if not BRAND_BY_LETTER:
+        return f"правила по букве артикула не заданы, бренд {BRAND_DEFAULT}"
+    return ", ".join(f"{k} → {v}" for k, v in sorted(BRAND_BY_LETTER.items())) + f", иначе {BRAND_DEFAULT}"
 
 
 def category_of(subject_name):
@@ -1158,7 +1161,7 @@ def main(argv=None):
                  "Отличие от образца: эквайринг V заполнен (у второго кабинета 0). Логистика ₽ = deliveryService (возмещение издержек по перевозке — не берём, справочно в «Данных»); Ост. расходы = penalty + deduction − additionalPayment.",
                  "Реклама — списания дня (wb_ad_spend_daily, биллинг, с НДС), разнесённые по артикулам долями из статистики по номенклатурам (fullstats, нормировка к списаниям дня; Σ по дню = списаниям), где статистики нет — пропорционально продажам дня.",
                  f"Себестоимость — снимок 1С {wbm.SNAP} по базовому артикулу. Ярлыки одни с Ozon: категория — предмет строки отчёта / карточки по словарю владельца "
-                 "(строчными), прочее — вслух; бренд — по первой букве артикула (t → Топаз, иначе KARATOV); «Неопознанный товар» — как строки без товара.",
+                 f"(строчными), прочее — вслух; бренд — по первой букве артикула ({brand_rule_text()}); «Неопознанный товар» — как строки без товара.",
                  "Правила WB-14 (loaders/wb_money_rules, решения владельца 28.09): «Ост. расходы» = штрафы + удержания вида «прочее» − доплаты; удержания "
                  "«Оказание услуг «WB Продвижение»» — реклама с баланса, её деньги уже в «Рекламе» (из upd), сюда не входят; аванс «Баллы за отзывы» и его "
                  "возврат — только нетто в день возврата, строкой «(без товара)»; «Реклама» — только оплата «Баланс», реклама за кэшбэк WB — справочной "

@@ -460,7 +460,7 @@ def build_excel(full_history=False):
     del daily_sku_kpi, raw_rows
     gc.collect()
 
-    filename = "management_report.xlsx"
+    filename = f"{CABINET.REPORT_PREFIX}management_report.xlsx"   # у KARATOV префикс пуст — имя прежнее
     wb.save(filename)
     print(f"✅ Excel-отчет создан: {filename}")
 

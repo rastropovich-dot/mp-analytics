@@ -239,7 +239,7 @@ class OrdersSheetCoinvest(unittest.TestCase):
 
     def build(self, orders, days=("2026-09-20",)):
         blocks, said = fc.build_orders_daily(list(days), orders, self.CURVE, "2026-09-21", {"Основная": D("0.4"), "все": D("0.3")}, D("0.05"), {},
-                                             lambda sku: D(300), lambda d: D("1.22"), lambda r: "Основная")
+                                             lambda sku, day=None, qty=None: D(300), lambda d: D("1.22"), lambda r: "Основная")
         for rows in blocks.values():
             for r in rows:
                 fc.add_order_ratios(r)
@@ -272,12 +272,12 @@ class MonthSheetCoinvest(unittest.TestCase):
                 "bonus_amount": bonus, "coinvestment_amount": coinv}
 
     def test_coinvest_is_bonus_plus_green_prices_and_share_of_turnover(self):
-        rows, _u = rep.build_daily(["2026-09-01"], [self.buyout("1000", "100", "50"), self.buyout("1000", "20", "0", sku="2")], [], {}, lambda sku: None, "2026-09-24")
+        rows, _u = rep.build_daily(["2026-09-01"], [self.buyout("1000", "100", "50"), self.buyout("1000", "20", "0", sku="2")], [], {}, lambda sku, day=None, qty=None: None, "2026-09-24")
         r = rep.add_ratios(rows[0])
         self.assertEqual((r["coinvest"], r["coinvest_pct"]), (D(170), D(170) / D(2000)))
 
     def test_row_without_columns_empties_the_day(self):
-        rows, _u = rep.build_daily(["2026-09-01"], [self.buyout("1000", "100", "50"), self.buyout("1000", None, None, sku="2")], [], {}, lambda sku: None, "2026-09-24")
+        rows, _u = rep.build_daily(["2026-09-01"], [self.buyout("1000", "100", "50"), self.buyout("1000", None, None, sku="2")], [], {}, lambda sku, day=None, qty=None: None, "2026-09-24")
         r = rep.add_ratios(rows[0])
         self.assertIsNone(r["coinvest"]); self.assertIsNone(r["coinvest_pct"])
         self.assertIn("coinvest", rep.MONEY)

@@ -277,7 +277,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         if share is None:
             share = commission_share.get("все")
             said.add(f"у площадки «{platform}» нет выкупов в окне комиссии — взята общая доля")
-        uc = unit_cost(r["marketplace_sku"])
+        uc = unit_cost(r["marketplace_sku"], d)                # снимок по дате заказа (сорок шестая §3)
         vat = vat_for(d)
         for key in (schema, "all", pkey):
             a = blocks[key][d]

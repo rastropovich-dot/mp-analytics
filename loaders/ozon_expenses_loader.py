@@ -352,7 +352,9 @@ def run(days_back=30, apply=True):
     print(f"  строк к записи: {len(rows)}")
     print(f"  счётчики: {counters}")
     if unknown:
-        print("  НЕРАЗОБРАННЫЕ ТИПЫ (в витрины не идут, ждут классификации):")
+        # Пишутся как unknown_<type_id> без SKU; витрина KPI и книги считают их в «прочем» и называют вслух каждое утро
+        # (правило CLAUDE.md §2). Классификация — решение владельца, одна строка в accrual.TYPE_TO_EXPENSE.
+        print("  НЕРАЗОБРАННЫЕ ТИПЫ (пишутся как unknown_<id>, витрины и книги считают их в «прочем» и называют вслух; классификация — решение владельца):")
         for type_id, amount in unknown.items():
             print(f"    unknown_{type_id:<5} {type_names.get(type_id, '?'):<34} {amount:>14,.2f}")
 

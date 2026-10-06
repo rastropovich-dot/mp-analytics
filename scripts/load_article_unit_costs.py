@@ -40,12 +40,36 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 
 TABLE = "article_unit_costs"
 SHEET = "TDSheet"
-VARIANT_COLUMNS = {
-    "main": "Идентификатор Ozon",
-    "select": "селект Ozon",
-    "discount": "дискаунтер Ozon",
+# Имена колонок по снимкам 1С разные (сорок шестая §2, шесть файлов чата «Товары ECOM» 30.03 … 20.05.26): разбор — по имени колонки,
+# не по номеру; сравнение без регистра и лишних пробелов. Первое имя в кортеже — как в снимке 20.05 (наш data/cost_20260520.xlsx).
+COLUMN_ALIASES = {
+    "main": ("Идентификатор Ozon", "ОЗОН основной"),
+    "select": ("селект Ozon", "СЕЛЕКТ Ozon", "Идентификатор Селект", "ОЗОН селект", "Озон селект", "озон селект"),
+    "discount": ("дискаунтер Ozon", "Дискаунтер Ozon", "Идентификатор Дискаунтер", "ОЗОН дискаунтер", "озон дискаунтер"),
+    "cost": ("Себестоимость", "Себестоимость Озон и ЛК ВБ", "Себестоимость Озон"),
+    "uniform": ("единая", "Единая сс", "единая сс", "единая сс для ВБ"),
+    "wb_main": ("Идентификатор WB", "Основной ВБ"),
+    "wb_discount": ("дискаунтер WB", "Дискаунтер WB", "Идентификатор WB Дискаунтер", "Идентификатор WB дискаунтер", "ВБ дискаунтер", "WB дискаунтерр"),
 }
+REQUIRED_ROLES = ("main", "cost")
+VARIANT_ROLES = ("main", "select", "discount")
 BATCH = 500
+
+
+def _norm_header(name):
+    return " ".join(str(name).split()).casefold()
+
+
+def resolve_columns(columns):
+    """{роль: имя колонки файла | None} по COLUMN_ALIASES; нет обязательной (main, cost) — RuntimeError с перечнем шапки."""
+    by_norm = {_norm_header(c): c for c in columns}
+    out = {}
+    for role, aliases in COLUMN_ALIASES.items():
+        out[role] = next((by_norm[_norm_header(a)] for a in aliases if _norm_header(a) in by_norm), None)
+    missing = [r for r in REQUIRED_ROLES if out[r] is None]
+    if missing:
+        raise RuntimeError(f"в шапке нет колонок для {missing}; шапка файла: {list(columns)}")
+    return out
 
 
 def money(value):
@@ -71,22 +95,38 @@ def text_or_none(value):
 def read_snapshot(path, snapshot_date, marketplace_code, with_analytics_group=False):
     df = pd.read_excel(path, sheet_name=SHEET, dtype=str)
     source_file = os.path.basename(path)
+    cols = resolve_columns(df.columns)
     stats = {"rows_read": len(df), "offer_ids_seen": 0, "empty_offer_id": 0,
-             "empty_cost": 0, "duplicates_same_cost": 0, "conflicts": 0}
+             "empty_cost": 0, "duplicates_same_cost": 0, "conflicts": 0,
+             "columns": cols, "wb_ids_seen": 0, "wb_ids_unique": 0, "rows_main": 0, "sum_cost_main_rows": Decimal(0),
+             "by_variant_seen": defaultdict(int)}
     by_norm = defaultdict(list)
+    wb_ids = set()
 
     for idx, row in df.iterrows():
-        unit_cost = money(row.get("Себестоимость"))
-        uniform = money(row.get("единая"))
+        for role in ("wb_main", "wb_discount"):
+            wb_id = text_or_none(row.get(cols[role])) if cols[role] else None
+            if wb_id:
+                stats["wb_ids_seen"] += 1
+                wb_ids.add(wb_id.lower())
+        unit_cost = money(row.get(cols["cost"]))
+        uniform = money(row.get(cols["uniform"])) if cols["uniform"] else None
         if unit_cost is None or unit_cost <= 0:
             stats["empty_cost"] += 3
             continue
-        for variant, column in VARIANT_COLUMNS.items():
+        if text_or_none(row.get(cols["main"])):
+            stats["rows_main"] += 1
+            stats["sum_cost_main_rows"] += unit_cost
+        for variant in VARIANT_ROLES:
+            column = cols[variant]
+            if column is None:
+                continue
             offer_id = text_or_none(row.get(column))
             if not offer_id:
                 stats["empty_offer_id"] += 1
                 continue
             stats["offer_ids_seen"] += 1
+            stats["by_variant_seen"][variant] += 1
             by_norm[offer_id.lower()].append({
                 "marketplace_code": marketplace_code,
                 "offer_id": offer_id,
@@ -110,6 +150,7 @@ def read_snapshot(path, snapshot_date, marketplace_code, with_analytics_group=Fa
                 **({"analytics_group": text_or_none(row.get("Аналитическая группа"))} if with_analytics_group else {}),
             })
 
+    stats["wb_ids_unique"] = len(wb_ids)
     rows, conflicts = [], []
     for norm, candidates in by_norm.items():
         costs = sorted({c["unit_cost"] for c in candidates}, key=Decimal)
@@ -127,7 +168,11 @@ def read_snapshot(path, snapshot_date, marketplace_code, with_analytics_group=Fa
 
 def print_plan(rows, conflicts, stats):
     print("=== файл")
-    print(f"строк прочитано: {stats['rows_read']}")
+    print("колонки по ролям:", {k: v for k, v in stats.get("columns", {}).items()})
+    print(f"строк прочитано: {stats['rows_read']}; строк с основным Ozon-идентификатором и ценой: {stats.get('rows_main', 0)}, "
+          f"Σ себестоимости по ним {stats.get('sum_cost_main_rows', 0):,.2f}; WB-идентификаторов {stats.get('wb_ids_seen', 0)} "
+          f"(уникальных без регистра {stats.get('wb_ids_unique', 0)}) — в таблицу Ozon не грузятся")
+    print("offer_id по колонкам:", dict(stats.get("by_variant_seen", {})))
     print(f"offer_id получено (три колонки): {stats['offer_ids_seen']}, уникальных по lower(): {len(rows) + stats['conflicts']}")
     print(f"пропущено: пустой offer_id {stats['empty_offer_id']}, пустая/нулевая себестоимость {stats['empty_cost']}, "
           f"конфликтных offer_id {stats['conflicts']}, дублей с той же ценой (свёрнуто) {stats['duplicates_same_cost']}")

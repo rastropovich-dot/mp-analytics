@@ -7,6 +7,52 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-06 (ночь), первая задача RBH §1–§3 СЛИТА по слову владельца: мерж `af73ae7` --no-ff, набор 1 250 OK, push 20:10:55 UTC, Render live на обоих сервисах 20:11:28 / 20:11:33 UTC; `~/mp-analytics` на слитом `main`; первая ночь KARATOV на новом коде — 10-07; дальше §5.2а по слову
+
+Порядок, как в слове: (1) `origin/main` с мержем сорок шестой (`b9fb8af`, закрытие `75d5eb3`) влит в `multi-cabinet` — `848c942`,
+**конфликтов не было** (`merge-tree` чистый: сорок шестая правила источник себестоимости в `report_finrez.py` / `report_ozon_month.py`,
+мои правки там — константы профиля, строки не пересеклись); (2) набор после мержа — 2 падения моих же тестов-стражей на новом коде соседей:
+`scripts/cost_by_date_check.py` создаёт клиент без guard, и четыре новых скрипта (`cost_by_date_check`, `wb_sales_report_weekly_check`,
+`wb_cogs_by_date_estimate`, `wb_sales_report_list_probe`) строят `data/` / `logs/` литералами — guard и пути через профиль добавлены
+(`1dc98d4`, там же запись о многокабинетности в CLAUDE.md §1 и `cabinet.py` в §10); набор **1 250 OK (skipped 3)**; (3) мерж в `main`
+`--no-ff` во временном worktree от `origin/main` (`main` checked out в `~/mp-analytics`, в этот worktree его не взять) — `af73ae7`, дерево мержа
+= дереву ветки `1dc98d4` (проверено `rev-parse ^{tree}`), push `af73ae7:refs/heads/main` 20:10:55 UTC; (4) `~/mp-analytics`: `git pull --ff-only`
+→ `af73ae7`, рабочее дерево чистое (untracked «Claude outputs/» советника — как было); (5) Render: `mp-analytics` deploy `…738nsem0` commit
+`af73ae7` **live 20:11:33 UTC**, `mp-analytics-telegram-report` `…738nsek0` **live 20:11:28 UTC** (4 обращения к Render API, только статусы).
+Соседние сессии: «ВБ» жива в `~/mp-analytics-wb`, «Озон» остановлена; им не писал. db_writes 0, Seller / Performance / WB / Telegram — 0.
+
+`git log 75d5eb3..af73ae7` — 16 коммитов ветки (`f55e9f1` … `1dc98d4`) + мерж. Ветка `multi-cabinet` в worktree подтянута к `main`
+(fast-forward на `af73ae7`), §5 пойдёт от него.
+
+### Утром 10-07 смотреть (первая ночь KARATOV на коде с профилем)
+
+1. Лог Render `mp-analytics` (00:15 UTC): **первая строка «кабинет: KARATOV»**, за ней «🚀 Запуск ежедневного пайплайна»; строки «кабинет …:
+   SUPABASE_URL указывает на …» / «не тот .env» быть не должно — это guard, и он остановил бы ночь на первой строке с кодом 1 (хост обоих сервисов
+   сверен 10-06: `pkrsrwjrlurlfpdyixei.supabase.co` = профилю). Дальше — обычный чек-лист Ozon/WB: «Весь пайплайн успешно завершен», «Шаг не
+   выполнен» — 0, 429 по видам.
+2. Алерт 07:30 UTC: первая строка сообщения «кабинет: KARATOV», вторая «📊 MP Analytics Alerts» (заголовок из профиля, тот же текст); блокеры —
+   только `ozon_daily_sku_organic_missing`.
+3. Книга launchd 06:00 МСК (`finrez_nightly.sh` теперь через `cabinet.py --shell`): лог `logs/finrez_nightly/finrez_20261007T0300…Z.log` начинается
+   с «кабинет: KARATOV», путь книги `data/reports/finrez_2026-04_2026-10.xlsx` (префикс пуст, каталог тот же), копия в iCloud, `rc 0`, строка
+   `finrez_nightly:last` в `pipeline_runtime_state`; **числа сорок шестой:** себестоимость в «Выкупы Ozon» апрель **52 260 182,52**, май
+   **58 536 833,10**, июнь … октябрь без изменений против книги 10-06 (запись сорок шестой в `docs/outbox.md`), `unknown_127` снят механизмом.
+   Если книги нет или `rc ≠ 0` — первым смотреть первые строки лога: код 3 — guard (`cabinet.py --shell` не прошёл), код 4 — не задан первый
+   месяц (у `karatov` `BOOK_MONTH_FROM = 2026-04`, быть не должно).
+4. Утренняя книга Ozon в Telegram (`send_ozon_month_report.py`): имя `ozon_2026-10_to_2026-10-06.xlsx` без префикса, путь `data/reports/`.
+
+### §5.2а — план снимка схемы KARATOV (код — следующим шагом, запуск против базы — по слову)
+
+Скрипт `scripts/db_schema_snapshot.py --cabinet karatov [--out data/schema/karatov_<дата>.json]`: одно соединение к Supabase Management API
+`POST /v1/projects/{ref}/database/query` с `read_only: true` (токен `SUPABASE_ACCESS_TOKEN` из общего `.env`, владелец создаёт в Account →
+Access Tokens и отзывает после работ со схемой), ~12 запросов к `information_schema` / `pg_catalog` схемы `public`: таблицы и колонки (тип,
+nullable, default, identity), ограничения (PK / unique / check / FK с `pg_get_constraintdef`), индексы (`pg_indexes`), представления
+(`pg_get_viewdef`), функции (`pg_get_functiondef`), последовательности, триггеры, RLS и гранты `service_role` / `anon`, справочные строки
+`marketplaces`. Выход: JSON-снимок (вне git) + `sql/00000000_baseline_public_schema.sql` — DDL только тех объектов, которых 42 датированных файла
+не создают (11 известных + дрейф). Проверка без базы РБХ: снимок прогоняется через «базовый файл + 42 датированных» на пустой БД — это уже
+§5.2 после создания проекта `rbh1`; до него — план с таблицей объектов (имя, вид, есть ли в `sql/`) в outbox. Обращений к базе KARATOV: только
+чтение каталога, db_writes 0; в `pipeline_runtime_state` и таблицы данных не ходит. Ждёт: токен в общем `.env` и слово.
+
+---
 ## 2026-10-06 (вечер), §3 принят; пути `data/…` и `logs/…` переведены на профиль кабинета — отдельный коммит `51a85c7` (41 файл), набор 1 230 OK; мерж — после сорок шестой Ozon, по слову
 
 Слово владельца: §3 принят, мерж `multi-cabinet` — после мержа сорок шестой Ozon (она правит `report_finrez.py` и `report_ozon_month.py`),

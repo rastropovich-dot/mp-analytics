@@ -17,6 +17,35 @@
 
 ---
 
+## 2026-10-06 (вечер), сорок шестая — СЛИТА по слову владельца: `origin/main` (d0d1b0e, мерж WB-15 — код WB не менялся, три WB-скрипта и `docs/outbox_wb.md`) влит в ветку без конфликтов (`e7df93e`), 1 221 тест OK на ветке, в слитом дереве и в `~/mp-analytics`; мерж `b9fb8af` --no-ff, push 19:32:08 UTC, Render live 19:32:47 UTC (mp-analytics) / 19:32:44 UTC (telegram-report); `~/mp-analytics` подтянут до `b9fb8af` (ff-only) — ночная книга 06:00 МСК соберётся новым кодом; worktree `~/mp-analytics-46` снят
+
+Выполнено 19:30 … 19:4x UTC. Обращения: GitHub — fetch / push; Render API — опрос списка деплоев (`GET /v1/services/{id}/deploys`, по одному в 30 с, ~6 на сервис); Supabase, Seller,
+Performance — 0. **db_writes = 0.**
+
+```
+git fetch                  origin/main = d0d1b0e (мерж WB-15 14:20 МСК); merge-tree против ветки — конфликтов 0
+git merge origin/main      e7df93e в ветку: + scripts/wb_cogs_by_date_estimate.py, wb_sales_report_list_probe.py, wb_sales_report_weekly_check.py, docs/outbox_wb.md (972 строки, только WB)
+тесты                      ветка 1 221 OK · временный detached worktree на origin/main после мержа — 1 221 OK (skipped 3: без .env / данных worktree) · ~/mp-analytics после pull — 1 221 OK
+merge --no-ff              b9fb8af (родители d0d1b0e, e7df93e) — сделан в detached worktree от origin/main (main занят в ~/mp-analytics), затем push b9fb8af:refs/heads/main
+Render                     mp-analytics: created 19:32:08 → live 19:32:47 UTC; telegram-report: 19:32:07 → live 19:32:44 UTC; d0d1b0e — deactivated у обоих
+~/mp-analytics             git pull --ff-only: 3167232 → b9fb8af (рабочая копия чистая, кроме чужой папки «Claude outputs/»); loaders/unit_cost_history.py на месте
+worktree                   временный снят; ~/mp-analytics-46 — снят последней командой этой сессии (ветка finrez-cost-by-date оставлена, слита)
+```
+Что уезжает в прод: `loaders/unit_cost_history.py` (себестоимость по дате продажи с источником), `scripts/load_article_unit_costs.py` (колонки по имени),
+`scripts/report_ozon_month.py` / `scripts/report_finrez.py` / `scripts/ozon_orders_forecast.py` (читатели по дню, колонка «СС источник»), `loaders/ozon_finance_accrual.py`
+(тип 127 → `other`), `loaders/ozon_expenses_loader.py` (формулировка), `scripts/cost_by_date_check.py`, тесты; ночной прогон Render код себестоимости не зовёт — его трогает
+только шаг расходов (тип 127). Утренняя книга 07:30 UTC и ночная книга launchd 06:00 МСК — новым кодом.
+
+**Утром 10-07 смотреть** (по слову владельца): ночная книга `finrez_2026-04_2026-10.xlsx` (03:00 UTC, лог `logs/finrez_nightly/finrez_20261007T03*.log`) — «Выкупы Ozon» апрель
+себестоимость **52 260 182,52**, май **58 536 833,10** (в книге 10-06 было 47 101 403,74 / 56 444 336,23), июнь … октябрь без изменений; листы «Данные Ozon выкупы» (колонка 18)
+и «Данные заказы» (колонка 35) с «СС источник»; примечание «Выкупы Ozon» — шесть снимков со счётчиками; утренняя книга 07:30 — «По SKU» с колонкой 15 «СС источник». Ночь Render:
+шаг «Ozon: расходы и комиссии» — в счётчиках нет `unknown_127`, «Застрявшие ключи marketplace_expenses … к удалению 1: 2026-10-01 sku — unknown_127 28 000,00 … удалено 1 из 1»;
+в таблице `select expense_type, sum(expense_amount) from marketplace_expenses where expense_date='2026-10-01' and marketplace_sku='' group by 1` — строки `unknown_127` нет,
+`other` без SKU вырос на 28 000,00; шаг KPI — без «НЕЗНАКОМЫЕ ТИПЫ РАСХОДА», утренний алерт — без «ВНИМАНИЕ: незнакомые статьи». Если ночь прошла старым кодом (live ушёл
+назад) — проверить список деплоев, как 09-28.
+
+---
+
 ## 2026-10-06 (день … вечер), сорок шестая — ПОСЕВ ВЫПОЛНЕН по слову владельца (шесть команд, `article_unit_costs` 86 766 → 461 585 строк, шесть снимков = плану по count и Σ main до копейки; запись 20.04 оборвалась на 58 000 строках разрывом соединения Supabase и дописана повтором с `--force`), приёмка по датам = ожиданию (апрель +5 158 778,78, май +2 092 496,87, июнь … сентябрь 0), §3 — себестоимость возвращается вместе с источником и доезжает до книг колонкой «СС источник» (`402e66d`), §4 — книга из worktree 90 453 092 байт (sha256 e1c99cdf…), Excel 27 / 0, контрольная сборка `main` — 3 213 разниц на 149 147 ячейках, все в колонках себестоимости и зависимых от неё, WB-листы 0; тесты 1 221 OK; ветка `finrez-cost-by-date` — 5 коммитов над `main` 3167232, **мерж — по слову**
 
 Снято 12:48 … 14:20 UTC. Обращения: Supabase — запись шести снимков (374 819 upsert-строк батчами по 500) + SELECT-контроли + чтения трёх сборок и приёмки; Seller API — только

@@ -421,11 +421,14 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
     """Лист «По SKU»: daily_sku_kpi за месяц, реклама — Performance API (ad_spend)."""
     by = defaultdict(lambda: defaultdict(Decimal))
     names = {}
+    sources = defaultdict(set)                      # sku → источники себестоимости по дням (дата снимка / «после последнего снимка …»)
     for r in kpi_rows:
         sku = str(r.get("marketplace_sku") or "")
         a = by[sku]
         a["positions"] += D(r.get("buyouts_qty")); a["turnover"] += D(r.get("buyouts_amount_seller"))
-        uc_day = unit_cost(sku, r.get("kpi_date")) if sku else None          # снимок по дате продажи (сорок шестая §3)
+        uc_day, src = unit_cost_history.with_source(unit_cost, sku, r.get("kpi_date")) if sku else (None, "")   # снимок по дате продажи (сорок шестая §3)
+        if src and D(r.get("buyouts_qty")):
+            sources[sku].add(src)
         if uc_day is None:
             a["no_cost_positions"] += D(r.get("buyouts_qty"))
         else:
@@ -443,7 +446,8 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
                "revenue": (a["turnover"] - a["commission"]) / vat,
                # СС нет ни у одной позиции — None (счётчик), иначе Σ по дням; позиции без СС внутри строки в сумму не входят
                "cogs": None if (a["positions"] and a["no_cost_positions"] == a["positions"]) else a["cogs_by_day"],
-               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat}
+               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat,
+               "cost_source": "; ".join(sorted(sources.get(sku, ()))) or None}
         row["margin"] = None if row["cogs"] is None else row["revenue"] - row["cogs"]
         row["margin_pct"] = None if row["margin"] is None else ratio(row["margin"], row["revenue"])
         row["drr_pct"] = drr(row["ads"], row["revenue"])
@@ -672,7 +676,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
              ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money), ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money)]
+             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money),
+             ("СС источник", "cost_source", None)]
     for j, (head, _k, _f) in enumerate(cols2, 1):
         c = ws2.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
         c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")

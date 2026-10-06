@@ -31,8 +31,28 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(self.h.lookup("f1", "2026-03-01"), (D("100"), "2026-03-30", "later"))
 
     def test_after_last_snapshot_is_last(self):
-        self.assertEqual(self.h.lookup("f1", "2026-09-15"), (D("120"), "2026-05-20", "exact"))
-        self.assertEqual(self.h.lookup("f2", "2026-09-15"), (D("220"), "2026-05-20", "exact"))
+        self.assertEqual(self.h.lookup("f1", "2026-09-15"), (D("120"), "2026-05-20", "after"))
+        self.assertEqual(self.h.lookup("f2", "2026-09-15"), (D("220"), "2026-05-20", "after"))
+        self.assertEqual(self.h.lookup("f1", "2026-05-20"), (D("120"), "2026-05-20", "exact"))    # день снимка — ещё не «после»
+
+    def test_source_label_is_snapshot_date_or_after_last(self):
+        self.assertEqual(uch.source_label("2026-04-20", "exact"), "2026-04-20")
+        self.assertEqual(uch.source_label("2026-05-20", "after"), "после последнего снимка 2026-05-20")
+        self.assertEqual(uch.source_label("2026-05-20", "later"), "2026-05-20 (ключа нет в снимке ≤ даты, взят более поздний)")
+        self.assertEqual(uch.source_label(None, "none"), "нет снимка")
+        self.assertEqual(self.h.cost_source("f1", "2026-04-25"), (D("110"), "2026-04-20"))
+        self.assertEqual(self.h.cost_source("f1", "2026-09-15"), (D("120"), "после последнего снимка 2026-05-20"))
+        self.assertEqual(self.h.cost_source("f2", "2026-04-25"), (D("220"), "2026-05-20 (ключа нет в снимке ≤ даты, взят более поздний)"))
+        self.assertEqual(dict(self.h.counters), {"exact": 1, "after": 1, "later": 1})
+
+    def test_readers_get_source_through_unit_cost_fn_and_stubs_stay_valid(self):
+        fn = uch.unit_cost_fn(self.h, {"11": "F1"})
+        self.assertEqual(fn.with_source("11", "2026-09-15", qty=2), (D("120"), "после последнего снимка 2026-05-20"))
+        self.assertEqual(uch.with_source(fn, "11", "2026-04-25"), (D("110"), "2026-04-20"))
+        self.assertEqual(uch.with_source(fn, "99", "2026-04-25"), (None, "нет артикула"))
+        stub = lambda sku, day=None, qty=None: D("7")                                 # noqa: E731 — заглушка читателей в тестах
+        self.assertEqual(uch.with_source(stub, "11", "2026-04-25"), (D("7"), ""))
+        self.assertEqual(self.h.rubles["after"], D("240"))
 
     def test_key_only_in_earlier_snapshot(self):
         h = uch.CostHistory({"2026-03-30": {"old": D("50")}, "2026-05-20": {"f1": D("1")}})
@@ -62,6 +82,10 @@ class RuleTests(unittest.TestCase):
         note = self.h.note()
         self.assertIn("2026-03-30, 2026-04-20, 2026-05-20", note)
         self.assertIn("более поздний: 1 строк, 660.00 ₽", note)
+
+    def test_note_names_rows_after_last_snapshot(self):
+        self.h.cost("f1", "2026-09-15", qty=1)
+        self.assertIn("день после последнего снимка — взят последний: 1 строк, 120.00 ₽", self.h.note())
 
 
 class LoadTests(unittest.TestCase):

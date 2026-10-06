@@ -19,13 +19,33 @@ sys.path.insert(0, ROOT)
 
 STATE_KEY = "finrez_nightly:last"
 STATE_TYPE = "finrez_nightly"
+# Оговорки сборки (WB-16 §1): строки лога, где чтение не удалось, — книга вышла с кодом 0, но без части данных
+# (10-01: «аванс «Баллы за отзывы» не прочитан: … 57014» — июль «Прочее» без 33 000,00). Попадают в payload["caveats"],
+# утренний алерт пишет «⚠️ … с оговоркой: …» вместо чистого «собрана».
+CAVEAT_MARKERS = ("не прочитан", "не получен", "не собран", "57014", "statement timeout", "Traceback")
+CAVEAT_LIMIT = 3
+CAVEAT_WIDTH = 160
+
+
+def caveats_from_log(path, markers=CAVEAT_MARKERS, limit=CAVEAT_LIMIT, width=CAVEAT_WIDTH):
+    """Первые limit строк лога сборки с признаком отказа чтения (без повторов); лога нет — []."""
+    if not path or not os.path.exists(path):
+        return []
+    found = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            text = line.strip()
+            if any(m in text for m in markers) and text[:width] not in found:
+                found.append(text[:width])
+    return found[:limit]
 
 
 def build_payload(args):
     finished = datetime.now(timezone.utc)
     return {"date": args.date, "started_at": args.started, "finished_at": finished.isoformat(timespec="seconds"), "seconds": int(args.seconds),
             "out": args.out, "bytes": int(args.bytes or 0), "sha256": args.sha256 or None, "rc": int(args.rc), "copied": args.copied or None,
-            "error": args.error or None, "log": args.log or None, "host": os.uname().nodename}
+            "error": args.error or None, "log": args.log or None, "host": os.uname().nodename,
+            "caveats": caveats_from_log(args.log)}
 
 
 def write_payload(payload, client=None):

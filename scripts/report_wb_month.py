@@ -296,16 +296,60 @@ def load_ads_db(sb, d1, d2):
     return load_ads_split(sb, d1, d2)["balance"], Z
 
 
-def load_review_advance_rows(sb):
-    """Строки аванса «Баллы за отзывы» и его возврата за всю историю (их единицы: аванс июня нужен окну июля)."""
+def load_review_advance_rows(sb, d1, d2):
+    """Строки аванса «Баллы за отзывы» и его возврата по rrDate d1 … d2 — по индексу rr_date. Без границ дат это был seq scan
+    по всей таблице (~330 тыс. строк), флапавший 57014 на границе 8 с PostgREST (книга 10-01, WB-16 §1) — так больше не читаем:
+    строки окна лист уже прочитал, сюда ходят только за авансом раньше окна (advance_net_by_day)."""
     return stale_keys.read_window_rows(sb, loader.TABLE, "rrd_id,rr_date,sale_dt,bonus_type_name,deduction",
-                                       [("eq", "seller_oper_name", "Удержание"), ("like", "bonus_type_name", rules.REVIEW_POINTS_LIKE)], ["rr_date", "rrd_id"])
+                                       [("gte", "rr_date", d1), ("lte", "rr_date", d2), ("eq", "seller_oper_name", "Удержание"),
+                                        ("like", "bonus_type_name", rules.REVIEW_POINTS_LIKE)], ["rr_date", "rrd_id"])
 
 
-def advance_net_by_day(sb=None, rows=None):
-    """{день: нетто аванса} по дню строки листа (row_day) и открытый остаток; rows — готовые строки (тесты)."""
-    rows = load_review_advance_rows(sb) if rows is None else rows
-    return rules.review_advance_net(rows, row_day)
+def advance_net_by_day(sb=None, rows=None, d1=None, info=None):
+    """{день: нетто аванса} по дню строки листа (row_day) и открытый остаток — из строк отчёта rows, которые лист уже прочитал
+    (аванс и возврат — те же строки удержаний; отдельного чтения всей истории нет, WB-16 §1). Возврат в окне без аванса
+    (нетто < 0) — аванс лежит раньше окна: при заданных sb и d1 дочитываются ТОЛЬКО строки аванса за ADVANCE_LOOKBACK_DAYS
+    до d1 по индексу rr_date; без sb (файлы, тесты) такой день из нетто исключается и называется в info["missing"] —
+    в «Прочее» отрицательное нетто не идёт. info (dict): in_window — строк аванса/возврата среди rows, lookback — (от, до,
+    строк) если дочитывали, missing — {день: нетто < 0} после дочитки, net — итоговое нетто по дням."""
+    if rows is None:
+        raise ValueError("advance_net_by_day: нужны строки отчёта окна (rows); чтение всей истории снято в WB-16 §1")
+    info = info if info is not None else {}
+    pts = rules.review_points_rows(rows)
+    info["in_window"] = len(pts)
+    net, open_ = rules.review_advance_net(pts, row_day)
+    missing = rules.refunds_without_advance(net)
+    if missing and sb is not None and d1:
+        lb1 = (date.fromisoformat(d1) - timedelta(days=rules.ADVANCE_LOOKBACK_DAYS)).isoformat()
+        lb2 = (date.fromisoformat(d1) - timedelta(days=1)).isoformat()
+        extra = load_review_advance_rows(sb, lb1, lb2)
+        seen = {str(r.get("rrd_id")) for r in pts}
+        extra = [r for r in extra if str(r.get("rrd_id")) not in seen]
+        info["lookback"] = (lb1, lb2, len(extra))
+        net, open_ = rules.review_advance_net(pts + extra, row_day)
+        missing = rules.refunds_without_advance(net)
+    info["missing"] = missing
+    net = {d: v for d, v in net.items() if d not in missing}
+    info["net"] = net
+    return net, open_
+
+
+def advance_info_text(info):
+    """Строка примечания об авансе «Баллы за отзывы» — всегда явная, нуля молча нет (WB-16 §1)."""
+    if not info:
+        return "аванс «Баллы за отзывы»: не считался"
+    n = info.get("in_window", 0)
+    if not n and not info.get("lookback"):
+        return "аванс «Баллы за отзывы»: строк аванса/возврата в окне нет — нетто 0,00"
+    net = info.get("net") or {}
+    text = f"аванс «Баллы за отзывы»: строк в окне {n}; нетто " + (", ".join(f"{d} {v:,.2f}" for d, v in sorted(net.items())) or "нет")
+    if info.get("lookback"):
+        lb1, lb2, k = info["lookback"]
+        text += f"; аванс дочитан за {lb1} … {lb2} по индексу rr_date: строк {k}"
+    if info.get("missing"):
+        text += "; ⚠️ возврат без аванса в окне и за " + str(rules.ADVANCE_LOOKBACK_DAYS) + " дней до него: " + ", ".join(
+            f"{d} {v:,.2f}" for d, v in sorted(info["missing"].items())) + " — нетто этих дней в «Прочее» не добавлено"
+    return text
 
 
 # ---------- расчёт ----------
@@ -856,7 +900,8 @@ def main(argv=None):
     print(ads_note)
     cost_fn = lambda code, size: unit_cost_for(exact, uniform, code, size, args.cogs_by)  # noqa: E731
     outside, excluded = {}, {}
-    advance_net, advance_open = ({}, Z) if args.rows_from_files else advance_net_by_day(sb)
+    ainfo = {}   # WB-16 §1: аванс/возврат — из прочитанных строк окна; аванс раньше окна дочитывается по индексу (из файлов — без дочитки)
+    advance_net, advance_open = advance_net_by_day(None if args.rows_from_files else sb, rows, d1, info=ainfo)
     daily = build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside, advance_net=advance_net, excluded=excluded)
     total = total_row(daily)
     young = [r["date"] for r in daily if r["young"]]
@@ -867,6 +912,7 @@ def main(argv=None):
     pack = excluded.get("packaging") or {}
     rules_text = (f"{tally.text()}; в «Прочем» — вид «прочее» {total['deduction'] - total['advance_net']:,.2f} + нетто аванса {total['advance_net']:,.2f}"
                   + (f" (открытый аванс без возврата {advance_open:,.2f} — не расход до возврата)" if advance_open else "")
+                  + f"; {advance_info_text(ainfo)}"
                   + f"; упаковка исключена: строк {pack.get('rows', 0)}, оборот {pack.get('turnover', Z):,.2f}, позиций {pack.get('positions', 0)}, "
                   f"доставка {pack.get('delivery', Z):,.2f}, nmId {sorted(n for n in pack.get('nm_ids', ()) if n) or '—'}")
     print("правила WB-14: " + rules_text)

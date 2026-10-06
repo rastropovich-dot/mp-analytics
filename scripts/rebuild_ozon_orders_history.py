@@ -38,12 +38,14 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import http_retry  # noqa: E402
 from loaders import ozon_orders_rows as rules  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
-RAW_DIR = os.path.join("data", "postings_raw")
-SNAP_DIR = os.path.join("data", "snapshots")
+RAW_DIR = cabinet.data_path("postings_raw", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 CHUNK_DAYS = 30
 PAGE = 100
 SECONDS_PER_CALL = 2.05       # замер 2026-09-14, FBO /v3, пауза 1,5 с (docs/ozon_postings_migration.md)

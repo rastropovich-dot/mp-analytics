@@ -22,11 +22,16 @@
 
 Лог копится каждую ночь, кривая каждое утро строится заново по последним CURVE_NIGHTS ночам и шумит всё меньше.
 """
+import os
 import re
+import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import cabinet  # noqa: E402  — только профиль (MP_CABINET), без guard: модуль чистых функций, в базу не ходит
 
 Z = Decimal(0)
 SCHEMAS = ("fbo", "fbs")
@@ -39,21 +44,22 @@ FIRST_NIGHT = {"fbo": "2026-09-17", "fbs": "2026-09-18"}
 AGE_BUCKETS = ((0,), (1,), (2,), (3, 4), (5, 6), (7, 8, 9), (10, 11, 12, 13), (14, 15, 16, 17, 18, 19, 20))
 CURVE_NIGHTS = 45                  # сколько последних ночей складывать: старше — другая когорта, другой сезон
 
-# Константы ручного листа владельца (reports_model.md §1, июльская книга). Справочные колонки считаются на них,
-# чтобы разница с измеренным была видна. Они дрейфуют: в сентябрьской книге на листе «Заказы» уже 0,58,
-# на «Заказы Standard» — 0,73.
-OWNER = {"buyout_rate": Decimal("0.65"), "after_commission": Decimal("0.59"), "other_rate": Decimal("0.024")}
-# Множитель «выручки» владельца по площадке, с датой действия. Сентябрьский лист (22.09) проверен сырьём отправлений
-# 09-01 … 09-16: его B = заказы × 0,53 / НДС на Standard и Дискаунтере (комиссия 47 %) и × 0,90 / НДС на Селекте (10 %) —
-# по UTC-суткам, 0,530 / 0,900 / 0,530 без разброса на 16 днях. До 09-01 — 0,59 по подписи июльской книги (не перепроверялось).
+# Константы ручного листа владельца — из профиля кабинета (cabinets/<код>.py: OWNER_SHEET, OWNER_AFTER_COMMISSION). Справочные
+# колонки считаются на них, чтобы разница с измеренным была видна; у кабинета без констант они пусты (None), не ноль.
+# KARATOV: reports_model.md §1, июльская книга (0,65 / 0,59 / 0,024; дрейфуют: в сентябрьской книге на «Заказы» уже 0,58, на
+# «Заказы Standard» — 0,73); множитель «выручки» по площадке с датой действия — сентябрьский лист (22.09) проверен сырьём
+# отправлений 09-01 … 09-16: B = заказы × 0,53 / НДС на Standard и Дискаунтере (комиссия 47 %) и × 0,90 / НДС на Селекте
+# (10 %) по UTC-суткам, 0,530 / 0,900 / 0,530 без разброса на 16 днях; до 09-01 — 0,59 по подписи июльской книги.
 # «*» — площадка, не названная явно (в т. ч. «Без площадки»).
-OWNER_AFTER_COMMISSION = (
-    ("2026-09-01", {"Основная": Decimal("0.53"), "Дискаунтер": Decimal("0.53"), "Селект": Decimal("0.90"), "*": Decimal("0.53")}),
-    ("0001-01-01", {"*": Decimal("0.59")}),
-)
+_PROFILE = cabinet.profile()
+OWNER = dict(_PROFILE.OWNER_SHEET)
+OWNER_AFTER_COMMISSION = tuple(_PROFILE.OWNER_AFTER_COMMISSION)
 
 
 def owner_after_commission(day, platform):
+    """Множитель владельца на дату и площадку; None — в профиле кабинета не задан (справочные колонки пусты)."""
+    if not OWNER_AFTER_COMMISSION:
+        return None
     for valid_from, table in OWNER_AFTER_COMMISSION:
         if day >= valid_from:
             return table.get(platform, table["*"])
@@ -284,7 +290,8 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             a["conf_q"] += conf_q; a["conf_a"] += conf_a
             a["canc_q"] += canc_q; a["canc_a"] += canc_a
             a["cogs_created"] += (conf_q + canc_q) * (uc or Z)
-            a["owner_gross"] += (conf_a + canc_a) * owner_after_commission(d, platform)     # его «выручка» с НДС: создано × множитель площадки
+            mult = owner_after_commission(d, platform)     # его «выручка» с НДС: создано × множитель площадки; None — не задан
+            a["owner_gross"] = None if (mult is None or a.get("owner_gross", Z) is None) else a.get("owner_gross", Z) + (conf_a + canc_a) * mult
             if uc is None:
                 a["no_cost_q"] += conf_q
             if r_cnt is None or share is None:
@@ -320,10 +327,12 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             row["fin_result"] = None if None in (row["margin"], row["ads"], row["other"]) else row["margin"] - row["ads"] - row["other"]
             # справочно: формулы владельца на его константах и на ЕГО рекламе («по образцу»: 41 + 54 + 96 + вся подписка) —
             # чтобы его лист «Заказы» и эти колонки сравнивались напрямую (2026-09-22, тридцать первая).
-            row["owner_revenue"] = a["owner_gross"] / vat
-            row["owner_margin"] = row["owner_revenue"] - a["cogs_created"]
-            row["owner_fin_result"] = None if row["ads_manual"] is None else (row["owner_margin"] * OWNER["buyout_rate"] - row["ads_manual"]
-                                                                               - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])
+            gross = a["owner_gross"] if OWNER_AFTER_COMMISSION else None   # день без строк у defaultdict — 0; без множителя — пусто
+            owner_known = gross is not None and OWNER.get("buyout_rate") is not None
+            row["owner_revenue"] = None if gross is None else gross / vat
+            row["owner_margin"] = None if row["owner_revenue"] is None else row["owner_revenue"] - a["cogs_created"]
+            row["owner_fin_result"] = None if (row["ads_manual"] is None or not owner_known) else (row["owner_margin"] * OWNER["buyout_rate"] - row["ads_manual"]
+                                                                                                  - row["owner_revenue"] * OWNER["buyout_rate"] * OWNER["other_rate"])
             rows.append(row)
         out[key] = rows
     if dup_days:
@@ -353,7 +362,8 @@ def add_order_ratios(row):
     row["drr_created_pct"] = ratio(row["ads"], created_net)
     row["drr_fc_pct"] = ratio(row["ads"], fc_net)
     row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
-    row["owner_drr_pct"] = ratio(row.get("ads_manual", row["ads"]), row["owner_revenue"] * OWNER["buyout_rate"] * vat / OWNER["after_commission"])
+    row["owner_drr_pct"] = (None if (row["owner_revenue"] is None or OWNER.get("buyout_rate") is None)
+                            else ratio(row.get("ads_manual", row["ads"]), row["owner_revenue"] * OWNER["buyout_rate"] * vat / OWNER["after_commission"]))
     row["fin_result_minus_owner"] = None if None in (row["fin_result"], row["owner_fin_result"]) else row["fin_result"] - row["owner_fin_result"]
     # соинвест владельца: (создано − оплачено покупателем) / создано; цена покупателя неизвестна хоть у одной строки — пусто
     row["coinvest_pct"] = None if row.get("created_buyer_a") is None else ratio(row["created_a"] - row["created_buyer_a"], row["created_a"])

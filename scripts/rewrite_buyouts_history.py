@@ -34,11 +34,13 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders.pipeline_window import in_morning_alert_window, in_nightly_run_window  # noqa: E402
 
-RAW_DIR = os.path.join("data", "accrual_history")
-SNAP_DIR = os.path.join("data", "snapshots")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 FIELDS = ("buyouts_qty", "buyouts_amount_buyer", "buyouts_amount_seller", "commission_amount", "revenue_after_commission_vat")
 BATCH = 500
 C = Decimal("0.01")

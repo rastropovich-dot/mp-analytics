@@ -40,10 +40,12 @@ import requests  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 URL = "https://api-seller.ozon.ru/v1/finance/realization/by-day"
 TABLE = "ozon_realization_by_day"
-RAW_DIR = os.path.join("data", "ozon_realization_by_day")
+RAW_DIR = cabinet.data_path("ozon_realization_by_day", prof=CABINET)
 RETENTION_DAYS = 32
 PAGE_PAUSE_SECONDS = 1.5
 ANTISPAM_PAUSE_SECONDS = 60

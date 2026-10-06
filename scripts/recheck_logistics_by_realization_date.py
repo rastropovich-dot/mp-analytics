@@ -28,11 +28,13 @@ import sys
 from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 from loaders.ozon_finance_accrual import TYPE_TO_EXPENSE  # noqa: E402
 
 DAYS = [f"2026-07-0{i}" for i in range(1, 10)]
-BYDAY_DIR = os.path.join("data", "accrual_history")
-POSTINGS_FILE = os.path.join("data", "accrual_postings", "2026-07-01_2026-07-09.json")
+BYDAY_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
+POSTINGS_FILE = cabinet.data_path("accrual_postings", "2026-07-01_2026-07-09.json", prof=_PROFILE)
 LOGISTICS_TYPES = {t for t, article in TYPE_TO_EXPENSE.items() if article == "logistics"}
 
 # Ручной отчёт, строка «Логистика», по дням (сумма дней 714 443,98; итог в

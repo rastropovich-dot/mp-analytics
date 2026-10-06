@@ -32,9 +32,11 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 
-RAW_DIR = os.path.join("data", "accrual_history")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
 TABLE = "ozon_accrual_daily_types"
 WATCH_TYPES = (41, 54, 1, 51, 96, 25, 10)
 YOUNG_DAYS = 2

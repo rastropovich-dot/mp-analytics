@@ -31,6 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(".env")
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
 import pandas as pd  # noqa: E402
 
@@ -162,7 +164,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     d1, d2 = fw.month_bounds(args.month_from, args.month_to, args.date_to)
     dates = sorted(SNAPSHOTS)
-    rows_cache = args.rows_cache or os.path.join("logs", f"wb15_sale_rows_{d1}_{d2}.json")
+    rows_cache = args.rows_cache or cabinet.logs_path(f"wb15_sale_rows_{d1}_{d2}.json", prof=_PROFILE)
 
     snaps = {}
     for sd in dates:

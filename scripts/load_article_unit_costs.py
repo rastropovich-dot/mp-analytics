@@ -35,6 +35,8 @@ from dotenv import load_dotenv  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 TABLE = "article_unit_costs"
 SHEET = "TDSheet"
@@ -261,7 +263,8 @@ def coverage_check(sb, snapshot_date, marketplace_code, days=90, today=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--file", default="data/cost_20260520.xlsx")
+    parser.add_argument("--file", default=(cabinet.data_path(CABINET.COST_SNAPSHOT_FILE, prof=CABINET) if CABINET.COST_SNAPSHOT_FILE else None),
+                        required=not CABINET.COST_SNAPSHOT_FILE, help="файл 1С; по умолчанию — снимок из профиля кабинета (COST_SNAPSHOT_FILE)")
     parser.add_argument("--snapshot-date", required=True, help="дата снимка 1С, YYYY-MM-DD")
     parser.add_argument("--marketplace-code", default="ozon")
     parser.add_argument("--apply", action="store_true", help="писать в БД; без флага — только план, db_writes = 0")

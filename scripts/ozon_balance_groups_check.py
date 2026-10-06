@@ -90,12 +90,14 @@ def book_turnover(path):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--balance", default=os.path.join(ROOT, "data", "snapshots", "finance_balance_2026-04_2026-08.json"))
-    ap.add_argument("--book", default=os.path.join(ROOT, "data", "reports", "finrez_2026-04_2026-09.xlsx"))
+    ap.add_argument("--balance", default=cabinet.data_path("snapshots", "finance_balance_2026-04_2026-08.json", prof=cabinet.profile()))
+    ap.add_argument("--book", default=cabinet.data_path("reports", "finrez_2026-04_2026-09.xlsx", prof=cabinet.profile()))
     args = ap.parse_args(argv)
     from dotenv import load_dotenv
     from supabase import create_client
     load_dotenv(os.path.join(ROOT, ".env"))
+    import cabinet
+    cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
     bal, led = balance_by_month(args.balance), ledger_by_month(sb)
     book = book_turnover(args.book) if os.path.exists(args.book) else {}

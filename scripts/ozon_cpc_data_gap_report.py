@@ -39,6 +39,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 sys.path.insert(0, ".")
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders.ozon_performance_ads_loader import supabase  # noqa: E402
 

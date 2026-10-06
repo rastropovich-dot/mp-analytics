@@ -6,6 +6,8 @@ from loaders import wb_buyout_cohort as cohort
 from reports_daily_sku_kpi import buyout_rate, created_orders_qty, read_all_by_id
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")

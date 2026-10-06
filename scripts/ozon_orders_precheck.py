@@ -30,10 +30,12 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 from loaders import http_retry  # noqa: E402
 from loaders import ozon_orders_rows as rules  # noqa: E402
 
-RAW_DIR = os.path.join("data", "postings_raw")
+RAW_DIR = cabinet.data_path("postings_raw", prof=_PROFILE)
 D = lambda v: Decimal(str(v or 0))  # noqa: E731
 
 

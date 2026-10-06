@@ -26,9 +26,11 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
 COLS = ("orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "ad_spend", "commission_amount", "logistics_amount", "other_expenses_amount")
-OUT_DIR = os.path.join(ROOT, "data", "snapshots")
+OUT_DIR = cabinet.data_path("snapshots", prof=_PROFILE)
 
 
 def take(sb):

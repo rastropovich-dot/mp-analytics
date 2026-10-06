@@ -24,6 +24,7 @@ LIVE = os.getenv("MP_TESTS_LIVE") == "1"
 
 # Все секреты .env и запасные имена, которые читает код (grep os.getenv по проекту, 2026-09-23).
 FAKE_ENV = {
+    "MP_CABINET": "karatov",   # набор считает числа KARATOV; хост .invalid guard cabinet.assert_env пропускает как тестовый
     "SUPABASE_URL": "http://supabase.tests.invalid",
     "SUPABASE_SERVICE_KEY": "fake.test.key",
     "SUPABASE_SERVICE_ROLE_KEY": "fake.test.key",

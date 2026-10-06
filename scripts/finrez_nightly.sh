@@ -7,24 +7,29 @@
 #     scripts/finrez_nightly.sh                      обычный запуск (как из launchd)
 #     FINREZ_NO_STATUS=1 scripts/finrez_nightly.sh   ручная проверка: книга, лог, копия — без записи итога в базу (db_writes = 0)
 #
-# Окно книги: с FINREZ_MONTH_FROM (по умолчанию 2026-04) по вчера; приёмка — последний месяц, дней min(21, число вчера).
+# Окно книги: с FINREZ_MONTH_FROM (по умолчанию — BOOK_MONTH_FROM профиля кабинета; у KARATOV 2026-04) по вчера; приёмка —
+# последний месяц, дней min(21, число вчера). Кабинет — MP_CABINET (профиль даёт каталоги данных и логов, префикс имён книг).
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
-LOGDIR="$ROOT/logs/finrez_nightly"
-mkdir -p "$LOGDIR"
+PROFILE_EXPORTS="$(venv/bin/python3 cabinet.py --shell)" || { echo "finrez_nightly: кабинет (MP_CABINET) и база (SUPABASE_URL) не совпали — стоп"; exit 3; }
+eval "$PROFILE_EXPORTS"
+LOGDIR="$MP_LOGS_DIR/finrez_nightly"
+mkdir -p "$LOGDIR" "$MP_DATA_DIR/reports"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$LOGDIR/finrez_$STAMP.log"
 exec > >(tee -a "$LOG") 2>&1
+echo "кабинет: $MP_CABINET_NAME"
 STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 T0=$(date +%s)
 YESTERDAY="$(date -v-1d +%Y-%m-%d)"
-MONTH_FROM="${FINREZ_MONTH_FROM:-2026-04}"
+MONTH_FROM="${FINREZ_MONTH_FROM:-$MP_BOOK_MONTH_FROM}"
+if [ -z "$MONTH_FROM" ]; then echo "finrez_nightly: первый месяц книги не задан ни в FINREZ_MONTH_FROM, ни в профиле кабинета (BOOK_MONTH_FROM) — стоп"; exit 4; fi
 MONTH_TO="${YESTERDAY:0:7}"
 DAY="${YESTERDAY:8:2}"
 CHECK_DAYS=$(( ${DAY#0} < 21 ? ${DAY#0} : 21 ))
-OUT="data/reports/finrez_${MONTH_FROM}_${MONTH_TO}.xlsx"
-BOOK="data/reports/ozon_${MONTH_TO}_to_${YESTERDAY}.xlsx"
+OUT="$MP_DATA_DIR/reports/${MP_REPORT_PREFIX}finrez_${MONTH_FROM}_${MONTH_TO}.xlsx"
+BOOK="$MP_DATA_DIR/reports/${MP_REPORT_PREFIX}ozon_${MONTH_TO}_to_${YESTERDAY}.xlsx"
 echo "finrez_nightly: старт $STARTED, окно $MONTH_FROM … $YESTERDAY, книга → $OUT, лог $LOG"
 ARGS=(--month-from "$MONTH_FROM" --month-to "$MONTH_TO" --date-to "$YESTERDAY" --check --check-month "$MONTH_TO" --check-days "$CHECK_DAYS" --out "$OUT")
 if [ -f "$BOOK" ]; then ARGS+=(--book "$BOOK"); else echo "утренней книги $BOOK на диске нет — сверка заказов с ней пропущена"; fi

@@ -45,6 +45,8 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 import report_ozon_month as rep  # noqa: E402
 from loaders import ozon_finance_accrual as accrual_mod  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402
@@ -60,11 +62,10 @@ MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "ию
 ARTICLES = ("Комиссия", "Логистика", "Прочее", "Реклама", "Товарооборот", "Эквайринг")       # порядок колонок владельца
 NO_SKU = "(без SKU)"
 PLATFORM = "Ozon"
-OWNER_COEF = {"buyout": (("Ozon", Decimal("0.84")), ("WB", Decimal("0.86"))),
-              "commission": (("Ozon (<300)", Decimal("0.23")), ("Ozon (>300)", Decimal("0.52")), ("WB", Decimal("0.43")))}
+OWNER_COEF = dict(CABINET.OWNER_COEF)        # коэффициенты листа владельца «Коэффициенты» — из профиля; пусто — колонка «образец» пуста
 MATURE_AGE = 21
-CATALOG_FILE = os.path.join(ROOT, "data", "ozon_products", "catalog_latest.json")
-OUT_DIR = os.path.join(ROOT, "data", "reports")
+CATALOG_FILE = cabinet.data_path(CABINET.CATALOG_FILE, prof=CABINET)
+OUT_DIR = cabinet.data_path("reports", prof=CABINET)
 
 
 def month_label(day):
@@ -121,7 +122,7 @@ def describe(sku, sku2art, catalog, names):
 
 # ---------- эквайринг по SKU — из сырья by-day ----------
 
-RAW_DIR = os.path.join(ROOT, "data", "accrual_history")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
 ACQUIRING_TYPE = rep.ACQUIRING_TYPE
 
 
@@ -287,7 +288,7 @@ def vat_split_table(long_rows, sheet_rows):
             b[(r.month_num, r.month, r.kind)] += r.amount
             bx[(r.month_num, r.month, r.kind)] += r.amount * vat_for(r.date)
     return [(k[1], k[2], q(a[k]), q(b[k]), q(bx[k]), (a[k] - bx[k]).quantize(Decimal("0.01"))) for k in sorted(set(a) | set(b))]
-SHOP = "KARATOV"
+SHOP = CABINET.SHOP          # колонка «Магазин» — из профиля кабинета
 
 
 def dec_money(node):
@@ -1469,15 +1470,15 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     for j, h in enumerate(heads, 1):
         g.set(r, j, h, bold=True, fill=True)
     r += 1
-    owner_b = dict(OWNER_COEF["buyout"])
+    owner_b = dict(OWNER_COEF.get("buyout", ()))   # нет в профиле — колонка «образец владельца» пуста
     for key in ["все"] + [n for _p, n in rep.PLATFORMS] + [rep.NO_PLATFORM]:
         if key not in coef["buyout"]:
             continue
         conf, created = coef["buyout_base"][key]
         g.set(r, 1, f"Ozon — {key}"); g.set(r, 2, coef["buyout"][key], "pct"); g.set(r, 3, conf, "money"); g.set(r, 4, created, "money")
-        g.set(r, 5, owner_b["Ozon"] if key == "все" else None, "pct")
+        g.set(r, 5, owner_b.get("Ozon") if key == "все" else None, "pct")
         r += 1
-    g.set(r, 1, "WB — итого (зрелые месяцы, когорта месяца заказа, ₽)"); g.set(r, 2, wb_rate.get("итого"), "pct"); g.set(r, 5, owner_b["WB"], "pct")
+    g.set(r, 1, "WB — итого (зрелые месяцы, когорта месяца заказа, ₽)"); g.set(r, 2, wb_rate.get("итого"), "pct"); g.set(r, 5, owner_b.get("WB"), "pct")
     if wb_rate.get("итого") is None:
         g.set(r, 3, (wb_parts or {}).get("buyout_note") or "зрелых месяцев нет")
     r += 1
@@ -1495,7 +1496,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     r += 1
     for key in [k for k in coef["commission"] if k != "все"] + ["все"]:
         g.set(r, 1, f"Ozon — {key}"); g.set(r, 2, coef["commission"][key], "pct"); r += 1
-    for name, v in OWNER_COEF["commission"]:
+    for name, v in OWNER_COEF.get("commission", ()):
         g.set(r, 1, name + " — образец владельца"); g.set(r, 5, v, "pct"); r += 1
     for n, line in enumerate(notes["coef"], 1):
         g.set(r + n, 1, line)
@@ -1650,7 +1651,7 @@ def main(argv=None):
                     "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
                     ("Дни моложе двух суток (" + ", ".join(young_days) + "): реклама 41 + 54 в леджере появляется следующей ночью — в этих строках реклама занижена; утренняя книга берёт их живым ответом."
                      if young_days else "Дней моложе двух суток в книге нет."),
-                    f"Категория — карточка Ozon ({catalog_source}); бренд — по первой букве артикула (T — Топаз, иначе KARATOV)."
+                    f"Категория — карточка Ozon ({catalog_source}); бренд — по первой букве артикула ({catalog_rules.brand_rule_text()})."
                     + (f" Дней без сырья рекламы: {bstats['days_without_raw_ads']}." if bstats.get("days_without_raw_ads") else "")],
         "buyout_data": ["Длинный формат кэша сводной владельца: строка на начисление × SKU × статья; 15 его полей по порядку, справа наши «Соинвест» и «Площадка». "
                         "Знак как в его сводной: списания отрицательные, товарооборот и себестоимость положительные. НДС — как в запросе Power Query владельца «Фин начисления»: "
@@ -1761,7 +1762,7 @@ def main(argv=None):
               + (f" (у выброшенных WB подтверждено по воронке {dstats['dropped_confirmed_WB']:,.2f} — в сводной не участвует)" if dstats.get("dropped_confirmed_WB") else "")
               + (f"; строк WB без СС {dstats['wb_rows_without_cost']}" if dstats.get("wb_rows_without_cost") else ""))
     phase("«Данные заказы»")
-    out = args.out or os.path.join(OUT_DIR, f"finrez_{args.month_from}_{args.month_to}.xlsx")
+    out = args.out or os.path.join(OUT_DIR, f"{CABINET.REPORT_PREFIX}finrez_{args.month_from}_{args.month_to}.xlsx")
     timings = {}
     counts = write_book(out, days, long_rows, pivots, order_data, orders_pivot, coef, notes, catalog_source, today, wb=wb_parts, order_data_rows=order_data_rows, timings=timings)
     phase("запись книги")
@@ -1880,7 +1881,7 @@ def main(argv=None):
             for r in order_data:
                 if r["date"] in b_days:
                     s["created_a"] += r["created_a"]; s["created_q"] += r["created_q"]; s["ads"] += r["ads"] / r["vat"]
-                    if r["platform_name"] == rep.PLATFORMS[0][1] and r["buyer_a"] is not None:
+                    if rep.PLATFORMS and r["platform_name"] == rep.PLATFORMS[0][1] and r["buyer_a"] is not None:
                         std["buyer"] += r["buyer_a"]; std["created"] += r["created_a"]
             print(f"\nзаказы за {cm} против «Заказы» книги {os.path.basename(args.book)} (её дни):")
             for title, ours, theirs in (("Создано, руб.", s["created_a"], book.get("Создано, руб.")), ("Создано, шт", s["created_q"], book.get("Создано, шт")),

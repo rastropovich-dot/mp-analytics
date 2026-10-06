@@ -13,7 +13,11 @@
 import argparse, json, os, re, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
-OWNER = "tea-d7n5qs1f9bms738bfvug"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402  — организация Render из профиля; ключ — из окружения или .env СВОЕГО каталога (чужой .env не читается)
+
+OWNER = cabinet.profile().RENDER["owner"]
 PAUSE_S = 1.2
 OVERLAP_S = 2
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -21,7 +25,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 def load_key():
     key = os.environ.get("RENDER_API_KEY")
-    for p in (".env", os.path.expanduser("~/mp-analytics/.env")):
+    for p in (os.path.join(ROOT, ".env"),):
         if key:
             break
         if os.path.exists(p):

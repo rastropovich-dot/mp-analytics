@@ -59,6 +59,9 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
 import loaders.wb_orders_loader as orders_loader  # noqa: E402
 from loaders import http_retry  # noqa: E402
@@ -71,7 +74,7 @@ from loaders.wb_orders_loader import (  # noqa: E402
 from loaders.wb_orders_rows import build_order_rows  # noqa: E402
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
-PROGRESS_PATH = "logs/wb_orders_history_restore_progress.json"
+PROGRESS_PATH = cabinet.logs_path("wb_orders_history_restore_progress.json", prof=_PROFILE)
 SNAPSHOT_DIR = "snapshots"
 DEFAULT_SLEEP_SECONDS = 65
 PAGE_SIZE = 1000  # PostgREST отдаёт не больше 1000 строк на ответ, просить больше бессмысленно

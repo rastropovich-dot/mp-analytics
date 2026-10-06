@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 OZON_CLIENT_ID = os.getenv("OZON_CLIENT_ID")
 OZON_API_KEY = os.getenv("OZON_API_KEY")

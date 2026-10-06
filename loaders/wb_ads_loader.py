@@ -35,6 +35,13 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+try:
+    import cabinet
+except ImportError:  # запуск как python3 loaders/<файл>.py: корня проекта нет в sys.path
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    import cabinet
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 URL = "https://advert-api.wildberries.ru/adv/v1/upd"
 TABLE = "wb_ad_spend_daily"

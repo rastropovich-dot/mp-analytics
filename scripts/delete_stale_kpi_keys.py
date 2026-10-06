@@ -31,8 +31,10 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
-SNAP_DIR = os.path.join("data", "snapshots")
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 MARKETPLACE = "ozon"
 SOURCES = (("marketplace_orders", "order_date"), ("marketplace_buyouts", "buyout_date"),
            ("marketplace_expenses", "expense_date"), ("ozon_daily_sku_organic", "sale_date"))

@@ -28,10 +28,12 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 
 DOC = os.path.join(ROOT, "docs", "owner_manual_report_instruction.md")
-RAW_DIR = os.path.join(ROOT, "data", "accrual_history")
+RAW_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
 Z = Decimal(0)
 D = lambda v: Decimal(str(v or 0))  # noqa: E731
 

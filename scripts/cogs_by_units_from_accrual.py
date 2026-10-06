@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
 from check_accrual_postings_quantity import D, load_byday, match_day, sale_index  # noqa: E402
 
 C = Decimal("0.01")
@@ -50,7 +51,7 @@ def main():
     ap.add_argument("--date-from", required=True)
     ap.add_argument("--date-to", required=True)
     ap.add_argument("--postings", nargs="+", required=True)
-    ap.add_argument("--snapshot", default="2026-05-20")
+    ap.add_argument("--snapshot", default=cabinet.profile().COST_SNAPSHOT_DATE, help="дата снимка 1С; по умолчанию — из профиля кабинета")
     args = ap.parse_args()
     postings = []
     for path in args.postings:
@@ -88,7 +89,7 @@ def main():
     d, d_to = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)
     while d <= d_to:
         day = d.isoformat()
-        path = os.path.join("data", "accrual_history", f"{day}.json")
+        path = cabinet.data_path("accrual_history", f"{day}.json")
         if not os.path.exists(path):
             missing_days.append(day)
             d += timedelta(days=1)

@@ -96,7 +96,7 @@ class OrdersSheet(unittest.TestCase):
     CURVE = {"fbo": {"r_cnt": {a: D("0.2") for a in range(21)}, "r_amt": {a: D("0.1") for a in range(21)}}}
     VAT = staticmethod(lambda d: D("1.22"))
 
-    def build(self, orders, days, curve=None, shares=None, other=D("0.05"), ads=None, cost=lambda sku: D(300)):
+    def build(self, orders, days, curve=None, shares=None, other=D("0.05"), ads=None, cost=lambda sku, day=None, qty=None: D(300)):
         return fc.build_orders_daily(days, orders, self.CURVE if curve is None else curve, "2026-09-21", shares or {"Основная": D("0.4"), "все": D("0.3")},
                                      other, ads or {}, cost, self.VAT, lambda r: "Основная" if str(r.get("article") or "").startswith("F") else "Селект")
 
@@ -150,7 +150,7 @@ class OrdersSheet(unittest.TestCase):
         curve = {**self.CURVE, "fbs": self.CURVE["fbo"]}
         blocks, said = fc.build_orders_daily(["2026-08-31"], [order("2026-08-31"), order("2026-08-31", schema="fbs")], curve,
                                              {"fbo": "2026-09-21", "fbs": "2026-09-20"}, {"Основная": D("0.4"), "все": D("0.3")}, D("0.05"), {},
-                                             lambda sku: D(300), self.VAT, lambda r: "Основная")
+                                             lambda sku, day=None, qty=None: D(300), self.VAT, lambda r: "Основная")
         self.assertEqual((blocks["fbo"][0]["age"], blocks["fbo"][0]["fc_a"]), (21, D(1000)))
         self.assertEqual((blocks["fbs"][0]["age"], blocks["fbs"][0]["fc_a"]), (20, D(900)))
         self.assertTrue(any("разной свежести" in x for x in said))
@@ -171,7 +171,7 @@ class Shares(unittest.TestCase):
     def test_commission_share_by_platform_with_common_fallback(self):
         rows = [{"marketplace_sku": "1", "commission_amount": "400", "buyouts_amount_seller": "1000"},
                 {"marketplace_sku": "2", "commission_amount": "80", "buyouts_amount_seller": "1000"}]
-        share, base = fc.shares_by_platform(rows, lambda sku: "Основная" if sku == "1" else "Селект")
+        share, base = fc.shares_by_platform(rows, lambda sku, day=None, qty=None: "Основная" if sku == "1" else "Селект")
         self.assertEqual((share["Основная"], share["Селект"], share["все"]), (D("0.4"), D("0.08"), D("0.24")))
         self.assertEqual(base["все"], D(2000))
 
@@ -197,7 +197,7 @@ class OwnerAdsAndPlatforms(unittest.TestCase):
 
     def build(self, orders, ads=None, ads_manual=None):
         return fc.build_orders_daily(["2026-09-20"], orders, self.CURVE, "2026-09-21", {"Основная": D("0.4"), "Селект": D("0.1"), "все": D("0.3")},
-                                     D("0.05"), ads or {}, lambda sku: D(300), self.VAT,
+                                     D("0.05"), ads or {}, lambda sku, day=None, qty=None: D(300), self.VAT,
                                      lambda r: "Селект" if str(r.get("article") or "").startswith("S") else "Основная", ads_manual)
 
     def test_owner_formulas_use_the_owner_style_ads_and_the_model_keeps_41_54(self):

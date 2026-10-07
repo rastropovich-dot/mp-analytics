@@ -20,7 +20,13 @@ try:
 except ImportError:  # вызов как скрипт из корня
     from ozon_fbo_orders_loader import to_local_order_date, posting_price
 
-RAW_DIR = os.path.join("data", "postings_raw")
+try:
+    import cabinet
+except ImportError:  # вызов как скрипт из корня
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import cabinet
+RAW_DIR = cabinet.data_path("postings_raw", prof=cabinet.profile())   # сырьё отправлений — в каталоге данных кабинета
 TABLE = "ozon_posting_status_log"
 BATCH = 500
 

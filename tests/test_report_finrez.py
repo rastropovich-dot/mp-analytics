@@ -20,7 +20,8 @@ D = Decimal
 DAYS = ["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]
 CATALOG = {"11": {"category": "кольца", "brand": "KARATOV", "name": "Кольцо", "offer_id": "F1"},
            "22": {"category": "серьги", "brand": "Топаз", "name": "Серьги", "offer_id": "T2"}}
-UNIT_COST = {"11": D(100), "22": None}.get
+def UNIT_COST(sku, day=None, qty=None):                     # сорок шестая §3: читатели зовут unit_cost(sku, день[, штуки])
+    return {"11": D(100), "22": None}.get(sku)
 
 
 def buyout(day, sku, seller, commission, units=1, bonus="10", coinv="1"):
@@ -269,9 +270,11 @@ class OrdersData(unittest.TestCase):
         self.assertEqual((r["week"], r["day_num"], r["month_num"]), (36, 1, 9))
         self.assertEqual(r["drr_pct"], r["ads_net"] / r["buyout_rub"])
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][:4], ["Дата", "МП", "Магазин", "Артикул поставщика"])
-        self.assertEqual(len(fr.ORDER_DATA_COLS), 34)
+        self.assertEqual(len(fr.ORDER_DATA_COLS), 35)
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][28:31], ["Фин.рез %", "Месяцы", "SKU/nmId"])      # «Месяцы» — после 29 полей владельца
-        self.assertEqual(fr.ORDER_DATA_COLS[-1][:2], ("СПП источник", "spp_source"))                              # сорок первая §4 — последняя, наша
+        self.assertEqual(fr.ORDER_DATA_COLS[-2][:2], ("СПП источник", "spp_source"))                              # сорок первая §4 — наша
+        self.assertEqual(fr.ORDER_DATA_COLS[-1][:2], ("СС источник", "cost_source"))                              # сорок шестая §3 — последняя, наша
+        self.assertEqual(fr.LONG_COLS[-1][:2], ("СС источник", "cost_source"))
         self.assertEqual(stats, {"spp_measured_Ozon": 1, "spp_empty_Ozon": 3})                                     # без долей месяца — подстановки нет
         self.assertEqual(r["spp_source"], fr.SPP_MEASURED)
 

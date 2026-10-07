@@ -64,29 +64,32 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders import unit_cost_history  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet, type_sums  # noqa: E402
 import ozon_orders_forecast as forecast  # noqa: E402
 
 Z = Decimal(0)
 C = Decimal("0.01")
-SNAP = "2026-05-20"
-OUT_DIR = os.path.join("data", "reports")
-RAW_DIR = os.path.join("data", "accrual_history")
+SNAP = CABINET.COST_SNAPSHOT_DATE              # снимок 1С себестоимости — из профиля; None — не задан, СС не считается
+OUT_DIR = cabinet.data_path("reports", prof=CABINET)
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
 YOUNG_DAYS = 2                     # сверка берёт дату не моложе двух суток: начисления доезжают (CLAUDE.md §2)
 ACQUIRING_TYPE, PREMIUM_TYPE, REVIEWS_TYPE = 1, 51, 96
 KNOWN_ARTICLES = {"logistics", "other", "subscription", "external_promo", "commission"}
 
 # НДС с датой действия: (с какой даты, коэффициент). Лист декабря 2025 считался с 1,2.
 VAT_RATES = (("2026-01-01", Decimal("1.22")), ("0001-01-01", Decimal("1.20")))
-# Накладные в день по площадке, с датой действия. Источник — ручной лист владельца от 2026-09-22: на листе
-# «Ozon - сентябрь» R = P − $T$83, T83 = 311 527,00 (у WB своя константа 74 002,00 — здесь не используется).
-# Откуда число и как оно меняется — владелец скажет; до даты действия Ebitda пуста, не ноль.
-OVERHEAD_PER_DAY = {"ozon": (("2026-09-01", Decimal("311527.00")),)}
+# Накладные в день по площадке, с датой действия — из профиля кабинета. У KARATOV источник — ручной лист владельца от
+# 2026-09-22: на листе «Ozon - сентябрь» R = P − $T$83, T83 = 311 527,00 (у WB своя константа 74 002,00 — здесь не используется).
+# Откуда число и как оно меняется — владелец скажет; до даты действия (и у кабинета без константы) Ebitda пуста, не ноль.
+OVERHEAD_PER_DAY = dict(CABINET.OVERHEAD_PER_DAY)
 # Индекс себестоимости — справочно, пока нет новой выгрузки 1С: наш снимок 05-20 против цен владельца за 1–21 сентября
 # (лист 22.09): 27 401 217,62 / 23 824 962,63 = 1,150; по дням 1,175 (начало месяца) → 1,116 (21-е) — у него величина
 # движется внутри месяца, по SKU из его файла не восстановить. С новым снимком 1С индекс с той даты — 1,00.
-COST_INDEX = (("2026-09-01", Decimal("1.150")),)
+COST_INDEX = tuple(CABINET.COST_INDEX)        # из профиля; пусто — колонки «по индексу» пусты
 COST_INDEX_STALE_PCT = Decimal("0.03")     # индекс по листу отличается от параметра больше — «протух», --check говорит вслух
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
@@ -182,7 +185,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         base = qty if units is None else D(units)
         acc[d]["rows_by_units" if units is not None else "rows_by_positions"] += 1
         acc[d]["units"] += base
-        uc = unit_cost(r["marketplace_sku"])
+        uc = unit_cost(r["marketplace_sku"], d, base)          # снимок по дате продажи (сорок шестая §3)
         if uc is None:
             no_cost[d] += int(qty)
         else:
@@ -304,7 +307,7 @@ def total_row(rows):
     return t
 
 
-PLATFORMS = (("F", "Основная"), ("S", "Селект"), ("T", "Дискаунтер"))
+PLATFORMS = tuple(CABINET.OZON_PLATFORMS)     # площадки по первой букве артикула — из профиля; пусто — всё «Без площадки»
 NO_PLATFORM = "Без площадки"
 
 
@@ -317,7 +320,7 @@ def platform_of(article):
 # Сегмент по металлу — по названию товара (дыра 5 реестра docs/owner_workbook_gaps.md, лист владельца «в т.ч. Серебро - месяц»).
 # Проверено 2026-09-23 по августу: серебро по признаку «серебр» или «925» в названии даёт оборот 01.08 142 567,00 и комиссию
 # 59 791,90 — ровно строку его листа; всё прочее — золото («золот» или проба 585 / 375 / 750). SKU без названия — «Без признака».
-METALS = (("серебр|925", "Серебро"), ("золот|585|375|750", "Золото"))
+METALS = tuple(CABINET.METALS)                # из профиля; пусто — всё «Без признака металла»
 NO_METAL = "Без признака металла"
 
 
@@ -358,7 +361,7 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, 
         qty, units = D(r["buyouts_qty"]), r.get("buyouts_units")
         a["positions"] += qty
         a["turnover"] += D(r["buyouts_amount_seller"]); a["commission"] += D(r["commission_amount"])
-        uc = unit_cost(r["marketplace_sku"])
+        uc = unit_cost(r["marketplace_sku"], d)
         if uc is not None:
             a["cogs"] += (qty if units is None else D(units)) * uc
     for r in expenses:
@@ -420,10 +423,18 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
     """Лист «По SKU»: daily_sku_kpi за месяц, реклама — Performance API (ad_spend)."""
     by = defaultdict(lambda: defaultdict(Decimal))
     names = {}
+    sources = defaultdict(set)                      # sku → источники себестоимости по дням (дата снимка / «после последнего снимка …»)
     for r in kpi_rows:
         sku = str(r.get("marketplace_sku") or "")
         a = by[sku]
         a["positions"] += D(r.get("buyouts_qty")); a["turnover"] += D(r.get("buyouts_amount_seller"))
+        uc_day, src = unit_cost_history.with_source(unit_cost, sku, r.get("kpi_date")) if sku else (None, "")   # снимок по дате продажи (сорок шестая §3)
+        if src and D(r.get("buyouts_qty")):
+            sources[sku].add(src)
+        if uc_day is None:
+            a["no_cost_positions"] += D(r.get("buyouts_qty"))
+        else:
+            a["cogs_by_day"] += D(r.get("buyouts_qty")) * uc_day
         a["commission"] += D(r.get("commission_amount")); a["ads_gross"] += D(r.get("ad_spend"))
         a["logistics_gross"] += D(r.get("logistics_amount")); a["other_gross"] += D(r.get("other_expenses_amount"))
         if sku not in names and (r.get("article") or r.get("product_name")):
@@ -432,12 +443,13 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
     for sku, a in by.items():
         if not any(a.values()):
             continue
-        uc = unit_cost(sku) if sku else None
         row = {"sku": sku or "(без SKU)", "article": sku2art.get(sku) or names.get(sku, ("", ""))[0], "name": names.get(sku, ("", ""))[1],
                "positions": a["positions"], "turnover": a["turnover"], "commission": a["commission"],
                "revenue": (a["turnover"] - a["commission"]) / vat,
-               "cogs": None if (uc is None and a["positions"]) else a["positions"] * (uc or Z),
-               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat}
+               # СС нет ни у одной позиции — None (счётчик), иначе Σ по дням; позиции без СС внутри строки в сумму не входят
+               "cogs": None if (a["positions"] and a["no_cost_positions"] == a["positions"]) else a["cogs_by_day"],
+               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat,
+               "cost_source": "; ".join(sorted(sources.get(sku, ()))) or None}
         row["margin"] = None if row["cogs"] is None else row["revenue"] - row["cogs"]
         row["margin_pct"] = None if row["margin"] is None else ratio(row["margin"], row["revenue"])
         row["drr_pct"] = drr(row["ads"], row["revenue"])
@@ -523,25 +535,25 @@ def load_costs(sb, snapshot):
         sku_art[str(r["marketplace_sku"])][str(r["article"] or "")] += D(r["orders_qty"]) + D(r.get("cancelled_orders_qty"))
     sku2art = {s: max(sorted(a.items()), key=lambda kv: kv[1])[0] for s, a in sku_art.items()}
     norms = sorted({a.lower() for a in sku2art.values() if a})
-    cost = {}
-    for i in range(0, len(norms), 500):
-        res = sb.table("article_unit_costs").select("offer_id_norm,unit_cost").eq("snapshot_date", snapshot).in_("offer_id_norm", norms[i:i + 500]).order("offer_id_norm").execute()
-        for r in res.data:
-            cost[r["offer_id_norm"]] = D(r["unit_cost"])
-
-    def unit_cost(sku):
-        art = sku2art.get(str(sku))
-        return cost.get(art.lower()) if art else None
-    return sku2art, unit_cost, len(cost), len(norms), orders
+    # все снимки таблицы по этим ключам: себестоимость продажи дня — снимок ≤ дате (сорок шестая §3, loaders/unit_cost_history);
+    # snapshot оставлен в подписи как «последний известный» — на выбор снимка он больше не влияет
+    history = unit_cost_history.load_history(sb, norms)
+    unit_cost = unit_cost_history.unit_cost_fn(history, sku2art)
+    found = {n for n in norms if history.lookup(n)[0] is not None}
+    return sku2art, unit_cost, len(found), len(norms), orders
 
 
-def cost_index_note(days, snapshot):
+def cost_index_note(days, snapshot, history=None):
+    """Примечание о себестоимости: снимки по дате продажи (сорок шестая §3) и индекс СС; history — CostHistory читателя (счётчики подбора)."""
     rates = sorted({cost_index_for(d) for d in days if cost_index_for(d) is not None})
+    src = (history.note() if history is not None and history.dates else f"Себестоимость — снимок 1С {snapshot}.")
     if not rates:
-        return f"Себестоимость — снимок 1С {snapshot}; индекса СС на эти даты нет, колонки «по индексу» пусты."
-    return (f"Себестоимость — снимок 1С {snapshot}. Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
+        return src + " Индекса СС на эти даты нет, колонки «по индексу» пусты."
+    return (src + " Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
             + " (справочно, пока нет новой выгрузки 1С; источник — лист владельца 22.09, 1–21 сентября: 27 401 217,62 / 23 824 962,63; "
-              "у него по дням 1,175 → 1,116). Колонки «по индексу» = снимок × индекс; основные — на снимке.")
+              "у него по дням 1,175 → 1,116) — применяется к цене того снимка, который выбран по дате; сейчас последний снимок 20.05 старше "
+              "01.09, двойного учёта нет; появится снимок новее 01.09 — индекс к его датам применять нельзя (решение владельца). "
+              "Колонки «по индексу» = снимок × индекс; основные — на снимке по дате.")
 
 
 def overhead_note(days):
@@ -666,7 +678,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
              ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money), ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money)]
+             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money),
+             ("СС источник", "cost_source", None)]
     for j, (head, _k, _f) in enumerate(cols2, 1):
         c = ws2.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
         c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
@@ -786,7 +799,7 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name, 
             r["fin_result_index"] = None if idx is None or r.get("fin_result") is None else r["fin_result"] + r["cogs"] - r["cogs_index"]
         totals[key] = forecast.orders_total(rows)
     # соинвест по формуле владельца — только Standard (Основная): на общий лист его доля идёт отдельной колонкой
-    std = f"platform:{PLATFORMS[0][1]}"
+    std = f"platform:{PLATFORMS[0][1]}" if PLATFORMS else None   # у кабинета без площадок соинвест Standard не выделяется
     std_by_day = {r["date"]: r.get("coinvest_pct") for r in blocks.get(std, [])}
     for r in blocks["all"]:
         r["coinvest_standard_pct"] = std_by_day.get(r["date"])
@@ -858,6 +871,9 @@ def owner_multiplier_note(o):
     mult = lambda d: ", ".join(f"{n} {str(forecast.owner_after_commission(d, n)).replace('.', ',')}" for n in names)  # noqa: E731
     share = o["commission_share"]
     pct = lambda v: "—" if v is None else f"{v * 100:.1f} %".replace(".", ",")  # noqa: E731
+    if not forecast.OWNER_AFTER_COMMISSION:
+        return ("Множители «выручки» владельца в профиле кабинета не заданы — справочные колонки «выручка / маржа / фин. рез. владельца» пусты. "
+                "Измеренная доля комиссии — в модели: " + ", ".join(f"{n} {pct(share.get(n))}" for n in names) + ".")
     return (f"Справочная «Выручка» = создано × множитель площадки владельца / НДС; множители по его сентябрьскому листу (проверены сырьём отправлений 09-01 … 09-16 "
             f"по UTC-суткам: 0,530 / 0,900 / 0,530 без разброса): на {d2} — {mult(d2)}" + (f"; на {d1} — {mult(d1)}" if mult(d1) != mult(d2) else "")
             + " (комиссия 47 % / 47 % / 10 %; до 2026-09-01 — 0,59 по подписи июльской книги, июль не перепроверялся). "
@@ -1570,7 +1586,7 @@ def main():
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
              "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
              overhead_note(days),
-             cost_index_note(days, args.snapshot),
+             cost_index_note(days, args.snapshot, getattr(unit_cost, "history", None)),
              "Граница свёртки типов начислений — 24.08.2026: с 25.08 расходы лежат по справочнику владельца (типы 16, 17, 45, 62, 78, 82 — прочее; "
              "46, 63 — логистика), до неё — старой свёрткой; до пересборки истории логистика / прочее по обе стороны границы не сопоставимы.",
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
@@ -1578,7 +1594,7 @@ def main():
              + ("Колонок в marketplace_buyouts ещё нет — миграция sql/20260924_add_buyouts_bonus_coinvestment.sql не применена, колонка пуста."
                 if not coinvest_columns else "null у строки — записана до колонок (2026-09-24): такой день пуст, не ноль."),
              f"Собрано {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}; scripts/report_ozon_month.py."]
-    out = args.out or os.path.join(OUT_DIR, f"ozon_{args.month}.xlsx")
+    out = args.out or os.path.join(OUT_DIR, f"{CABINET.REPORT_PREFIX}ozon_{args.month}.xlsx")
     cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
                  + ("." if units_column else " (колонки marketplace_buyouts.buyouts_units ещё нет — миграция не применена)."))
     notes.insert(1, cogs_note)

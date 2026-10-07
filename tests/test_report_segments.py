@@ -36,7 +36,7 @@ class MetalTests(unittest.TestCase):
                     {"expense_date": DAY, "marketplace_sku": None, "expense_type": "other", "expense_amount": "6.1"}]
         kpi = [{"kpi_date": DAY, "marketplace_sku": "2", "ad_spend": "24.4"}]
         names = {"1": "Серьги серебряные 925", "2": "Кольцо золотое 585"}          # у SKU 3 названия нет
-        metals = rep.build_metal_daily([DAY], buyouts, expenses, kpi, names, lambda sku: D("100"))
+        metals = rep.build_metal_daily([DAY], buyouts, expenses, kpi, names, lambda sku, day=None, qty=None: D("100"))
         self.assertEqual(set(metals), {"Серебро", "Золото", rep.NO_METAL})
         silver, gold, rest = metals["Серебро"][0], metals["Золото"][0], metals[rep.NO_METAL][0]
         self.assertEqual((silver["turnover"], silver["commission"], silver["logistics"]), (D("1220"), D("220"), D("12.2") / D("1.22")))
@@ -47,7 +47,7 @@ class MetalTests(unittest.TestCase):
 
     def test_platforms_still_work_without_classify(self):
         buyouts = [buyout("1", "100"), buyout("2", "200")]
-        platforms = rep.build_platform_daily([DAY], buyouts, [], [], {"1": "F1", "2": "S2"}, lambda sku: None)
+        platforms = rep.build_platform_daily([DAY], buyouts, [], [], {"1": "F1", "2": "S2"}, lambda sku, day=None, qty=None: None)
         self.assertEqual((platforms["Основная"][0]["turnover"], platforms["Селект"][0]["turnover"]), (D("100"), D("200")))
 
 

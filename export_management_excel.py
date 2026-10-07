@@ -10,6 +10,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.chart import LineChart, BarChart, Reference
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -458,7 +460,7 @@ def build_excel(full_history=False):
     del daily_sku_kpi, raw_rows
     gc.collect()
 
-    filename = "management_report.xlsx"
+    filename = f"{CABINET.REPORT_PREFIX}management_report.xlsx"   # у KARATOV префикс пуст — имя прежнее
     wb.save(filename)
     print(f"✅ Excel-отчет создан: {filename}")
 

@@ -30,10 +30,13 @@ from dotenv import load_dotenv
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT, ".env"))
+sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402  — каталог отчётов и сервис алерта Render — из профиля кабинета (только чтение, guard не нужен)
+_PROFILE = cabinet.profile()
 
-REPORTS_DIR = os.path.join(ROOT, "data", "reports")
-RENDER_OWNER = "tea-d7n5qs1f9bms738bfvug"
-RENDER_ALERT_SERVICE = "crn-d7t5ed1j2pic73aiqmog"      # mp-analytics-telegram-report, 30 7 * * *
+REPORTS_DIR = cabinet.data_path("reports", prof=_PROFILE)
+RENDER_OWNER = _PROFILE.RENDER["owner"]
+RENDER_ALERT_SERVICE = _PROFILE.RENDER["alert"]       # KARATOV: mp-analytics-telegram-report, 30 7 * * *; None — сервиса у кабинета ещё нет
 LINE_RE = re.compile(r"книга в Telegram: (?P<name>\S+) file_id=(?P<file_id>\S+) file_unique_id=(?P<file_unique_id>\S+) "
                      r"size=(?P<size>\d+) sha256=(?P<sha256>[0-9a-f]{64})")
 

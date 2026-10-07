@@ -16,9 +16,13 @@ from datetime import datetime, timezone
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(".env")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 KEY = os.getenv("WB_API_KEY")
-OUT = sys.argv[1] if len(sys.argv) > 1 else "logs/wb_api_probe_20260922"
+OUT = sys.argv[1] if len(sys.argv) > 1 else cabinet.logs_path("wb_api_probe_20260922", prof=_PROFILE)
 os.makedirs(OUT, exist_ok=True)
 H = {"Authorization": KEY, "Content-Type": "application/json"}
 ledger = []

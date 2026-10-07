@@ -25,11 +25,13 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 import ozon_product_catalog as cat  # noqa: E402
 
 STATE_KEY = "ozon_catalog_topup:last"
 STATE_TYPE = "ozon_catalog_topup"
-TREE_FILE = os.path.join(cat.OUT_DIR, "category_tree.json")
+TREE_FILE = cabinet.data_path(CABINET.CATEGORY_TREE_FILE, prof=CABINET)   # дерево категорий — в каталоге данных кабинета
 LIST_LIMIT = 50        # сколько SKU без карточки хранить в итоге
 
 

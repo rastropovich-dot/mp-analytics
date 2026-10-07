@@ -27,6 +27,9 @@ from collections import Counter
 from datetime import date
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 ARCHIVE = os.path.join(ROOT, "knowledge", "telegram", "ozon-dev-chat.json")
 PHOTO_ROOT = os.path.expanduser("~/Downloads/Telegram Desktop/ChatExport_2026-09-13")
 PHOTO_DIR = "chats/chat_562951630583447/topic_1/photos"

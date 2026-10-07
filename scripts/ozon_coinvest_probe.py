@@ -30,9 +30,12 @@ from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPORTS_DIR = os.path.join(ROOT, "data", "ozon_report_postings")
-RAW_DIR = os.path.join(ROOT, "data", "postings_raw")
-ACCRUAL_DIR = os.path.join(ROOT, "data", "accrual_history")
+sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
+REPORTS_DIR = cabinet.data_path("ozon_report_postings", prof=_PROFILE)
+RAW_DIR = cabinet.data_path("postings_raw", prof=_PROFILE)
+ACCRUAL_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
 
 OWNER_G = {f"2026-09-{d:02d}": Decimal(g) for d, g in enumerate(
     ["0.52", "0.54", "0.53", "0.55", "0.54", "0.53", "0.52", "0.53", "0.57", "0.54", "0.53", "0.56", "0.56", "0.56", "0.56", "0.57",

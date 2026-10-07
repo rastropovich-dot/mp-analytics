@@ -24,8 +24,10 @@ from decimal import Decimal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import cabinet  # noqa: E402
+_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
-BYDAY_DIR = os.path.join("data", "accrual_history")
+BYDAY_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
 SALE_TYPE = 69
 
 

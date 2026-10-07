@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -584,6 +586,7 @@ def record_pipeline_run(started_at, finished_at, failed_steps, client=None):
 def main():
     args = parse_args()
     steps = build_steps(args)
+    print(cabinet.banner(CABINET))   # первая строка лога: какой кабинет
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 

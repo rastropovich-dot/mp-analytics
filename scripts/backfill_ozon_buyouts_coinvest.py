@@ -31,6 +31,8 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders.pipeline_window import in_morning_alert_window, in_nightly_run_window, window_text  # noqa: E402
 
@@ -38,8 +40,8 @@ TABLE = "marketplace_buyouts"
 KEY = ("buyout_date", "marketplace_code", "marketplace_sku")
 COLS = ("buyouts_amount_buyer", "bonus_amount", "coinvestment_amount")
 GUARD = ("buyouts_amount_seller", "commission_amount")
-RAW_DIR = os.path.join(ROOT, "data", "accrual_history")
-SNAP_DIR = os.path.join(ROOT, "data", "snapshots")
+RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
+SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 C = Decimal("0.01")
 Z = Decimal(0)
 

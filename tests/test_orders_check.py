@@ -75,13 +75,13 @@ class CostIndexAndUtc(unittest.TestCase):
         self.assertIsNone(rep.cost_index_for("2026-08-31")); self.assertEqual(rep.cost_index_for("2026-09-01"), D("1.150"))
         day = "2026-09-10"
         rows, _ = rep.build_daily([day], [{"buyout_date": day, "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
-                                  {day: {41: D("61"), 32: D("122")}}, lambda sku: D(300), "2026-09-25")
+                                  {day: {41: D("61"), 32: D("122")}}, lambda sku, day=None, qty=None: D(300), "2026-09-25")
         r = rows[0]
         self.assertEqual(r["cogs_index"], D(300) * D("1.150"))
         self.assertEqual(r["fin_result_index"], r["fin_result"] - D(300) * D("0.150"))          # разница только в СС
         self.assertEqual(r["ebitda_index"], r["fin_result_index"] - D("311527.00"))
         old = rep.build_daily(["2026-08-31"], [{"buyout_date": "2026-08-31", "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
-                              {"2026-08-31": {32: D("122")}}, lambda sku: D(300), "2026-09-25")[0][0]
+                              {"2026-08-31": {32: D("122")}}, lambda sku, day=None, qty=None: D(300), "2026-09-25")[0][0]
         self.assertIsNone(old["cogs_index"]); self.assertIsNone(old["fin_result_index"])
 
     def test_check_reports_the_cost_index_by_day_and_flags_a_stale_parameter(self):

@@ -53,6 +53,8 @@ sys.path.insert(0, ROOT)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import stale_keys  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
@@ -112,9 +114,9 @@ def print_plan(cls, d1, d2, days_with_sales, db_rows):
 # ---------- запись ----------
 
 def snapshot(db_rows, label):
-    os.makedirs(os.path.join(ROOT, "data", "snapshots"), exist_ok=True)
+    os.makedirs(cabinet.data_path("snapshots", prof=CABINET), exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(ROOT, "data", "snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz")
+    path = cabinet.data_path("snapshots", f"marketplace_buyouts_wb_before_rebuild_{label}_{ts}.csv.gz", prof=CABINET)
     cols = ["id", "buyout_date", "marketplace_sku", "article", "product_name", "buyouts_qty", "buyouts_amount_buyer", "buyouts_amount_seller", "buyouts_units"]
     with gzip.open(path, "wt", encoding="utf-8", newline="") as f:
         w = csv.writer(f); w.writerow(cols)

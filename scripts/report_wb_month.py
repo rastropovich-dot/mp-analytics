@@ -356,27 +356,54 @@ def _cost_call(cost_fn, code, size, day):
     return cost_fn(code, size, day) if n >= 3 else cost_fn(code, size)
 
 
-def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES):
-    """Все снимки article_unit_costs по базам артикулов из vendor_codes (offer_id_norm = база или база-*), страницы с
-    сортировкой по (offer_id_norm, snapshot_date); баз больше max_bases — таблица целиком. Возвращает WbCostHistory:
-    costs {дата: {ключ: unit_cost}}, uniform_id {дата: {безразмерный ключ: unit_cost_uniform}} (первая строка ключа побеждает),
-    uniform_base {дата: {база: unit_cost_uniform}} (первая по ключу). stats: bases, rows, requests, mode, snapshots."""
+def snapshot_dates(sb, table="article_unit_costs"):
+    """Даты снимков таблицы: по одной на запрос (min snapshot_date > предыдущей, order + limit 1) — PostgREST без distinct;
+    запросов = снимков + 1 (шесть снимков — 7 запросов)."""
+    dates, last = [], None
+    while True:
+        qb = sb.table(table).select("snapshot_date").order("snapshot_date").limit(1)
+        if last is not None:
+            qb = qb.gt("snapshot_date", last)
+        data = qb.execute().data or []
+        if not data:
+            return dates
+        last = str(data[0]["snapshot_date"])
+        dates.append(last)
+
+
+def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES, dates=None):
+    """Все снимки article_unit_costs по базам артикулов из vendor_codes — ПО ОДНОМУ СНИМКУ ЗА ЗАПРОС (eq snapshot_date + or_ по
+    базам, страницы по ключу offer_id_norm — ровно шаблон load_costs_for, ≈ 0,9 с на пачку из 80 баз; один or_-запрос по всем
+    снимкам разом на 461 тыс. строк упирался в statement_timeout 8 с — сборка 10-08 01:39 МСК, WB-17 §3). Баз больше max_bases —
+    снимки целиком, тоже по одному. Возвращает WbCostHistory: costs {дата: {ключ: unit_cost}}, uniform_id {дата: {безразмерный
+    ключ: unit_cost_uniform}} (первая строка ключа побеждает), uniform_base {дата: {база: unit_cost_uniform}} (первая по ключу).
+    stats: bases, rows, requests, mode, snapshots."""
     bases = sorted(cost_bases(vendor_codes))
     select = "offer_id_norm,snapshot_date,unit_cost,unit_cost_uniform"
-    order = ["offer_id_norm", "snapshot_date"]
-    rows_all, requests = [], 0
-    if len(bases) > max_bases:
-        rows_all = stale_keys.read_window_rows(sb, "article_unit_costs", select, [], order, page=page)
-        requests = (len(rows_all) + page - 1) // page + 1
-        mode = "full"
-    else:
+    dates = list(dates) if dates is not None else snapshot_dates(sb)
+    requests = 0 if dates is not None and stats is None else len(dates) + 1
+    rows_all = []
+    mode = "full" if len(bases) > max_bases else "narrow"
+    for d in dates:
+        if mode == "full":
+            got = stale_keys.read_window_rows(sb, "article_unit_costs", select, [("eq", "snapshot_date", d)], ["offer_id_norm"], page=page)
+            rows_all.extend(got)
+            requests += (len(got) + page - 1) // page + 1
+            continue
         for i in range(0, len(bases), batch):
             chunk = bases[i:i + batch]
             expr = ",".join(f'offer_id_norm.eq."{b}",offer_id_norm.like."{b}-*"' for b in chunk)
-            got = stale_keys.read_window_rows(sb, "article_unit_costs", select, [("or_", expr)], order, page=page)
-            rows_all.extend(got)
-            requests += (len(got) + page - 1) // page + 1
-        mode = "narrow"
+            last = None
+            while True:
+                qb = (sb.table("article_unit_costs").select(select).eq("snapshot_date", d).or_(expr).order("offer_id_norm").limit(page))
+                if last is not None:
+                    qb = qb.gt("offer_id_norm", last)
+                data = qb.execute().data or []
+                requests += 1
+                rows_all.extend(data)
+                if len(data) < page:
+                    break
+                last = data[-1]["offer_id_norm"]
     costs, uniform_id, uniform_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
     for r in rows_all:
         d, key = str(r["snapshot_date"]), str(r["offer_id_norm"])

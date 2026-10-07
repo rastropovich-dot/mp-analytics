@@ -95,7 +95,8 @@ class LadderTests(unittest.TestCase):
 
 
 class FakeCosts:
-    """PostgREST над строками article_unit_costs: or_(eq/like по базам), order, range."""
+    """PostgREST над строками article_unit_costs: select snapshot_date + gt/order/limit (даты снимков), eq snapshot_date + or_(eq/like по
+    базам) + gt offer_id_norm + order + limit (страницы по ключу)."""
 
     def __init__(self, rows):
         self.rows, self.calls = rows, []
@@ -106,23 +107,30 @@ class FakeCosts:
 
         class Q:
             def __init__(self):
-                self.expr, self.rng, self.orders = None, None, []
+                self.sel, self.expr, self.eqs, self.gts, self.lim, self.rng, self.orders = None, None, [], [], None, None, []
 
-            def select(self, *_a): return self
+            def select(self, cols): self.sel = cols; return self
+            def eq(self, c, v): self.eqs.append((c, v)); return self
             def or_(self, expr): self.expr = expr; return self
+            def gt(self, c, v): self.gts.append((c, v)); return self
             def order(self, c, **_k): self.orders.append(c); return self
+            def limit(self, n): self.lim = n; return self
             def range(self, a, b): self.rng = (a, b); return self
 
             def execute(self):
-                sb.calls.append({"or": self.expr, "range": self.rng, "order": list(self.orders)})
-                rows = list(sb.rows)
+                sb.calls.append({"select": self.sel, "eq": list(self.eqs), "or": self.expr, "gt": list(self.gts), "limit": self.lim, "order": list(self.orders)})
+                rows = [r for r in sb.rows if all(str(r.get(c)) == str(v) for c, v in self.eqs) and all(str(r.get(c)) > str(v) for c, v in self.gts)]
                 if self.expr is not None:
                     alts = re.findall(r'offer_id_norm\.(eq|like)\."([^"]*)"', self.expr)
                     rows = [r for r in rows if any((op == "eq" and r["offer_id_norm"] == pat) or (op == "like" and r["offer_id_norm"].startswith(pat[:-1]))
                                                    for op, pat in alts)]
-                rows.sort(key=lambda r: tuple(r[c] for c in self.orders))
-                a, b = self.rng
-                return type("R", (), {"data": rows[a:b + 1]})()
+                rows.sort(key=lambda r: tuple(str(r[c]) for c in self.orders))
+                if self.rng is not None:
+                    a, b = self.rng
+                    rows = rows[a:b + 1]
+                if self.lim is not None:
+                    rows = rows[:self.lim]
+                return type("R", (), {"data": [dict(r) for r in rows]})()
         return Q()
 
 
@@ -143,17 +151,21 @@ class LoadHistoryTests(unittest.TestCase):
         self.assertEqual(stats["mode"], "narrow")
         self.assertEqual(stats["snapshots"], ["2026-04-20", "2026-05-20"])
         self.assertEqual(stats["rows"], 4)                                                # f009999999 — чужая база, не читалась
-        self.assertEqual(sb.calls[0]["order"], ["offer_id_norm", "snapshot_date"])
+        self.assertEqual([c["select"] for c in sb.calls[:3]], ["snapshot_date"] * 3)           # даты снимков: 2 даты + пустой ответ
+        self.assertEqual(sorted({c["eq"][0][1] for c in sb.calls if c["eq"]}), ["2026-04-20", "2026-05-20"])   # по одному снимку за запрос
+        self.assertEqual(stats["requests"], 3 + 2)
         self.assertEqual(h.lookup("f000078698", "23.5", "2026-04-25")[::3], (D("5000"), "size"))
         self.assertEqual(h.lookup("f000078698", "23.5", "2026-06-01")[::3], (D("5500"), "size"))
         self.assertEqual(h.lookup("f000078698", "17", "2026-06-01")[::3], (D("5200"), "uniform_id"))
         self.assertEqual(h.lookup("f007753194-жм", "16.5", "2026-04-25")[1:], ("2026-05-20", "later", "size"))
 
-    def test_pages_by_range_with_order(self):
+    def test_pages_by_key_inside_a_snapshot(self):
         sb = FakeCosts(ROWS_DB)
-        h = wbm.load_cost_history_for(sb, ["f000078698"], page=2)
-        self.assertGreaterEqual(len(sb.calls), 2)
+        h = wbm.load_cost_history_for(sb, ["f000078698"], page=1, dates=["2026-04-20", "2026-05-20"])
+        gts = [c["gt"] for c in sb.calls if c["gt"]]
+        self.assertTrue(any(g[0][0] == "offer_id_norm" for g in gts))                       # страница по ключу внутри снимка
         self.assertEqual(sorted(h.exact.snaps["2026-04-20"]), ["f000078698-19,5", "f000078698-23,5"])
+        self.assertEqual(h.exact.snaps["2026-05-20"], {"f000078698-23,5": D("5500")})
 
 
 class ModuleRowsTests(unittest.TestCase):

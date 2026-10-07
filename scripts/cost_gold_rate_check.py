@@ -305,6 +305,7 @@ def main(argv=None):
             tag = "no_comp"
         for P in periods:
             mon[P]["was"] += units * c; mon[P]["cat"] += units * new_cat; mon[P]["row"] += units * new_row; cnt[P][tag] += 1
+            mon[P][f"{tag}_was"] += units * c; mon[P][f"{tag}_cat"] += units * new_cat
     book = cbc.book_by_month(os.path.expanduser(args.book)) if os.path.exists(os.path.expanduser(args.book)) else {}
     manual = cbc.manual_by_month(os.path.expanduser(args.manual)) if os.path.exists(os.path.expanduser(args.manual)) else {}
     print("\nпериод | строк | СС было (правило читателей) | СС стало (k кат. × Δзолота) | Δ % | СС стало (построчно +доллар) | Δ % | фин.рез книги → стало | СС владельца: расх. было → стало | фин.рез владельца: расх. было → стало")
@@ -322,7 +323,8 @@ def main(argv=None):
         print(line)
         if b_cogs is not None and abs(b_cogs - w) > D("0.5"):
             print(f"      книга: СС {b_cogs:,.2f} ≠ «было» {w:,.2f} — книга / было = {b_cogs / w:.4f} (индекс СС 1,150 с 09-01); фин. рез. «стало» считан от СС книги")
-        print(f"      счётчики: {dict(cnt[P])}")
+        print(f"      счётчики: {dict(cnt[P])}; with_comp (F в файле {last}): {mon[P]['with_comp_was']:,.2f} → {mon[P]['with_comp_cat']:,.2f}; "
+              f"no_comp (k пробы 585 × Δзолота): {mon[P]['no_comp_was']:,.2f} → {mon[P]['no_comp_cat']:,.2f}")
     g_0901, g_1006 = rate_on(G, "2026-09-01"), rate_on(G, "2026-10-06")
     import datetime as dt
     sept = [(dt.date(2026, 9, 1) + dt.timedelta(i)).isoformat() for i in range(30)]

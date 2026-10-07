@@ -1051,8 +1051,12 @@ scripts/reconcile_manual_report_ozon.py   сверка ручного отчёт
 scripts/ozon_coinvest_probe.py            соинвест Ozon по отчётам ЛК (report/postings/create, файлы в data/ozon_report_postings/): формула колонки G владельца найдена 2026-09-23 — только Standard, все созданные, UTC-сутки; только чтение
 scripts/accrual_types_owner_check.py      справочник владельца «Тип → Вид» против TYPE_TO_EXPENSE; ключ — русское название типа из accrual/types (knowledge/ozon/accrual_types_2026-09-23.json); арбитр — полотно за ноябрь 2025
 scripts/ll_rates_ocr.py                   курсы золота 585 / серебра 925 / доллара / тенге / лома с картинок бота ЦУП (чат «LL Курсы») через Vision macOS (tesseract на машине нет) → data/ll_rates/ll_rates.csv и история курса 1С (вне git); приёмка формулами и полнотой; только чтение
-scripts/cost_gold_rate_check.py           курс 1С и себестоимость: металл = вес × курс 1С в снимках, k по категориям, СС выкупов по месяцам «было → стало по курсу» против книги и ручного отчёта; только чтение
+scripts/cost_gold_rate_check.py           курс 1С и себестоимость: металл = вес × курс 1С в снимках, k по категориям, СС выкупов по месяцам «было → стало по курсу» против книги и ручного отчёта; только чтение; --k-profile --k-digits 4 --k-min-rows 10 печатает COST_RATE_K для профиля (не править руками)
 scripts/fetch_accrual_history_range.py    снять by-day за окно дат в data/accrual_history/ (глубина метода до ноября 2025 есть); только чтение
+sql/20261008_create_metal_rates_1c.sql    курс 1С по металлам и доллару (сорок восьмая §1): установка = строка (metal, set_date), seen_to — последняя картинка; применяется по слову через MCP
+scripts/load_metal_rates_1c.py            посев / обновление metal_rates_1c из data/ll_rates/ll_rates_1c_history.csv (+ ll_rates.csv для seen_to); план без --apply, --check — таблица против csv
+scripts/cost_by_rate_check.py             приёмка «было (снимок × индекс) → стало (по курсу 1С)» по месяцам против книги и ручного отчёта; --rates-csv — без таблицы; только чтение
+loaders/unit_cost_history.py              один читатель СС: снимок ≤ дате (сорок шестая) × (1 + k × Δ курса 1С металла с даты снимка) (сорок восьмая); MetalRates, rate_adjust, lookup_by_rate; k — COST_RATE_K профиля
 scripts/merge_telegram_export.py          слияние экспортов чата разработчиков в knowledge/telegram/ (план без --apply); фото — в корень 09-13 по хэшу, нумерация между экспортами не сквозная
 docs/ozon_performance_limits.md         ← содержит опровергнутую «половину лимита»
 docs/ozon_finance_migration.md          миграция на accrual API, разрыв ряда, классификация,

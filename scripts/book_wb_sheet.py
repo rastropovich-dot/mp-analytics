@@ -37,7 +37,8 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
     days = wb_report.month_days(month, date_to)
     d1, d2 = days[0], days[-1]
     rows = wb_report.load_rows_db(sb, d1, d2)
-    exact, uniform = wb_report.load_costs(sb, snapshot or wb_report.SNAP)
+    cstats = {}
+    hist = wb_report.load_cost_history_for(sb, (r.get("vendor_code") for r in rows), stats=cstats)   # WB-17 §2: СС по дате продажи
     ads_note, ads_known, ads_by_day = "", False, {}
     try:
         ads_by_day, undated = wb_report.load_ads_db(sb, d1, d2)
@@ -45,7 +46,7 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
         ads_note = f"реклама: {wb_report.ads_loader.TABLE} за {d1}…{d2} — списаний {sum(ads_by_day.values(), Z):,.2f} с НДС" + (f", без даты {undated:,.2f}" if undated else "")
     except Exception as error:  # реклама не обязана останавливать лист; пусто — не ноль (как у report_wb_month)
         ads_note = f"реклама не получена: {error}"
-    cost_fn = lambda code, size: wb_report.unit_cost_for(exact, uniform, code, size, "base")  # noqa: E731
+    cost_fn = hist.cost_fn
     outside, excluded = {}, {}
     ainfo = {}
     try:   # WB-16 §1: нетто аванса «Баллы за отзывы» — из тех же строк окна; аванс раньше окна дочитывается по индексу rr_date
@@ -59,7 +60,7 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
     notes = [f"Источник: отчёт реализации WB (finance-api sales-reports/detailed, period=daily) из таблицы {wb_loader.TABLE}; строк {len(rows)}; "
              "день строки — saleDt в московском времени, без saleDt — rrDate. Строки и колонки — те же функции, что у отдельной книги WB (scripts/report_wb_month.py).",
              f"Комиссия = Σ цена × кВВ строки (commissionPercent), как у владельца; справочно «удержано из выплаты всего» = Оборот − forPay. НДС {total['vat']}.",
-             f"Себестоимость: снимок 1С {snapshot or wb_report.SNAP}, стыковка base; без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}.",
+             f"{hist.note()} Без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}.",
              ads_note,
              "Правила WB-14 (loaders/wb_money_rules): «Прочее» без удержаний «WB Продвижение» (реклама с баланса) и без аванса «Баллы за отзывы» "
              "(нетто — в день возврата); реклама — только оплата «Баланс»; упаковка исключена"

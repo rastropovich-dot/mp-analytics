@@ -110,6 +110,7 @@ DATA_COLS = [
     ("справочно: Возмещение ПВЗ, ₽ (в форму не входит)", "ppvz_reward", "money"), ("справочно: возмещение издержек по перевозке (rebillLogisticCost), ₽ — не берём", "rebill", "money"),
     ("реклама разнесена по", "ads_allocated", None), ("без СС, шт", "no_cost_qty", "int"),
     ("справочно: реклама за кэшбэк WB, ₽ (в форму не входит)", "ads_cashback", "money"),   # WB-14 §3: реклама за кэшбэк — не расход
+    ("СС источник", "cost_source", None),   # WB-17 §2: снимок 1С по дате продажи и ступень ключа (как у Ozon)
 ]
 assert tuple(h for h, _k, _f in DATA_COLS[:15]) == OWNER_DATA_FIELDS
 SHEET_COLS = [
@@ -346,14 +347,14 @@ def load_ads_nm_db(sb, d1, d2, advert_day=None, which="balance"):
 # ---------- «Данные WB выкупы» ----------
 
 def costs_for_codes(sb, vendor_codes, what="строк"):
-    """Снимок 1С адресно по кодам строк (WB-12 §4: wbm.load_costs_for) с печатью объёма чтения."""
+    """Все снимки 1С адресно по кодам строк (WB-17 §2: wbm.load_cost_history_for) с печатью объёма чтения → WbCostHistory."""
     started = datetime.now(timezone.utc)
     cstats = {}
-    exact, uniform = wbm.load_costs_for(sb, vendor_codes, stats=cstats)
+    hist = wbm.load_cost_history_for(sb, vendor_codes, stats=cstats)
     how = "адресно" if cstats.get("mode") == "narrow" else f"целиком (баз больше {wbm.COST_NARROW_MAX_BASES} — так дешевле)"
-    print(f"себестоимость: снимок 1С {wbm.SNAP} {how} по кодам {what} — баз {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений, "
-          f"{(datetime.now(timezone.utc) - started).total_seconds():.1f} с; точных {len(exact)}, единых {len(uniform)}", flush=True)
-    return exact, uniform
+    print(f"себестоимость: снимки 1С {', '.join(cstats['snapshots']) or 'нет'} {how} по кодам {what} — баз {cstats['bases']}, строк {cstats['rows']} "
+          f"за {cstats['requests']} обращений, {(datetime.now(timezone.utc) - started).total_seconds():.1f} с; СС по дате продажи, ключ WB → Ozon-ключ строки", flush=True)
+    return hist
 
 
 def packaging_nm_ids(rows, products=None):
@@ -376,11 +377,11 @@ def _is_packaging_row(r, packaging_nm):
 
 def _new_acc():
     a = {k: Z for k in MONEY_KEYS}
-    a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None})
+    a.update({"qty": 0, "no_cost_qty": 0, "vendor": "", "subject": None, "brand": None, "cost_sources": set()})
     return a
 
 
-def _add_report_row(a, r, exact, uniform):
+def _add_report_row(a, r, hist, uniform=None):
     """Деньги строки отчёта в накопитель (день × nmId): продажи / возвраты со знаком, логистика, хранение, «прочее» по
     правилам WB-14 (rules.other_amount), возмещение ПВЗ и rebill справочно."""
     op = r["seller_oper_name"]
@@ -392,11 +393,13 @@ def _add_report_row(a, r, exact, uniform):
         a["coinvest"] += sign * (price - amount)
         a["acquiring"] += sign * D(r.get("acquiring_fee"))
         a["qty"] += sign * qty
-        cost, _source = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), r.get("tech_size"), "base")
+        hist = wbm.as_cost_history(hist if uniform is None else (hist, uniform))
+        cost, source, _step = hist.cost_source(r.get("vendor_code"), r.get("tech_size"), wbm.row_day(r), qty)   # WB-17 §2: снимок по дате продажи
         if cost is None:
             a["no_cost_qty"] += qty
         else:
             a["cogs"] += sign * cost * qty
+            a["cost_sources"].add(source)
     a["logistics"] += D(r.get("delivery_service"))            # rebillLogisticCost — не берём (инструкция владельца), справочно ниже
     a["rebill"] += D(r.get("rebill_logistic_cost"))
     a["storage"] += D(r.get("paid_storage"))
@@ -423,9 +426,9 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     products = load_product_dictionary(sb, d1, d2) if products is None else products
     packaging_nm = packaging_nm_ids(rows, products)
     if costs is None:
-        exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in rows if not _is_packaging_row(r, packaging_nm)), "строк отчёта")
-    else:
-        exact, uniform = costs
+        costs = costs_for_codes(sb, (r.get("vendor_code") for r in rows if not _is_packaging_row(r, packaging_nm)), "строк отчёта")
+    hist = wbm.as_cost_history(costs)   # WB-17 §2: история снимков; пара карт (тесты) — один снимок
+    exact = uniform = None   # прежние карты одного снимка больше не читаются
     advert_day = None
     if ads_by_day is None:
         try:
@@ -458,7 +461,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
             continue
         tally.add(r)
         if _is_packaging_row(r, packaging_nm):               # WB-14 §4: упаковка — не товар, в «Данные» не входит
-            _add_report_row(pack, r, exact, uniform)
+            _add_report_row(pack, r, hist)
             pack["rows"] += 1
             if r.get("nm_id") not in (None, "", 0, "0"):
                 pack["nm_ids"].add(int(r["nm_id"]))
@@ -481,7 +484,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
             a["subject"] = r["subject_name"]
         if not a["brand"] and r.get("brand_name"):
             a["brand"] = r["brand_name"]
-        _add_report_row(a, r, exact, uniform)
+        _add_report_row(a, r, hist)
     # аванс «Баллы за отзывы»: нетто — в день возврата, строкой «(без товара)» (аванс и возврат сами в «прочее» не идут).
     # WB-16 §1: строки аванса/возврата — из тех же rows (отдельного чтения всей истории нет); аванс раньше окна — дочитка по
     # индексу rr_date (advance_net_by_day); advance_rows — для тестов
@@ -572,7 +575,8 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                "title": p.get("title") if nm is not None else NO_PRODUCT,
                "brand": brand_of(vendor, a["brand"] or p.get("brand")) if nm is not None else NO_PRODUCT,
                "category": category_of(a["subject"] or p.get("subject")) if nm is not None else NO_PRODUCT,
-               "ads_allocated": (ads_source.get(day) if (ads_by_day is not None and a["ads"]) else ""), "qty": a["qty"], "no_cost_qty": a["no_cost_qty"]}
+               "ads_allocated": (ads_source.get(day) if (ads_by_day is not None and a["ads"]) else ""), "qty": a["qty"], "no_cost_qty": a["no_cost_qty"],
+               "cost_source": "; ".join(sorted(a["cost_sources"]))}
         for k in MONEY_KEYS:
             row[k] = a[k] if (k != "ads" or ads_by_day is not None) else None
         out.append(row)
@@ -725,7 +729,14 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
                               "order_count": 0, "order_sum": 0, "buyout_count": 0, "buyout_sum": 0, "cancel_count": 0, "cancel_sum": 0})
         synthesized = len(extra)
         funnel_rows = sorted(list(funnel_rows) + extra, key=lambda r: (str(r["day"]), int(r["nm_id"])))
-    exact, uniform = costs_for_codes(sb, (r.get("vendor_code") for r in funnel_rows), "строк воронки") if costs is None else costs
+    if costs is None or (isinstance(costs, wbm.SnapshotMaps) and hasattr(sb, "table")):
+        # WB-17 §2: карты одного снимка из базы (report_finrez.py: wbm.load_costs) при живом клиенте заменяются историей снимков
+        # по дате заказа — вслух; обычная пара карт (тесты, файлы) — один снимок
+        if costs is not None:
+            print(f"себестоимость заказов: карты снимка {costs.snapshot} от вызывающего заменены историей снимков по дате заказа (WB-17 §2)", flush=True)
+        hist = costs_for_codes(sb, (r.get("vendor_code") for r in funnel_rows), "строк воронки")
+    else:
+        hist = wbm.as_cost_history(costs)
     out, before, after = [], defaultdict(Decimal), defaultdict(Decimal)
     n_before = 0
     for r in funnel_rows:
@@ -736,14 +747,15 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         n_before += 1; before[day[:7]] += order_sum
         if not keep_empty and qty == 0 and order_sum == 0 and ads == 0:
             continue
-        cost, _src = wbm.unit_cost_for(exact, uniform, r.get("vendor_code"), None, "base")
+        cost, cost_src, _step = hist.cost_source(r.get("vendor_code"), None, day, qty)   # WB-17 §2: снимок по дню заказа
         vat = wbm.vat_for(day)
         after[day[:7]] += order_sum
         out.append({"date": day, "month": month_label(day), "month_no": int(day[5:7]), "platform": PLATFORM, "shop": SHOP, "article": (str(r.get("vendor_code") or "").upper() or None),
                     "nm_id": int(r["nm_id"]), "title": r.get("title"), "brand": brand_of(r.get("vendor_code"), r.get("brand")),
                     "category": category_of(r.get("subject_name")), "orders_qty": qty, "orders_sum": order_sum, "ads": ads,
                     "revenue": order_sum * wbm.OWNER_ORDERS_AFTER_COMMISSION / vat, "cogs": (cost * qty) if cost is not None else None,
-                    "no_cost": cost is None and qty > 0, "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
+                    "no_cost": cost is None and qty > 0, "cost_source": cost_src if cost is not None else "",
+                    "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
                     "funnel_cancel_qty": int(r.get("cancel_count") or 0), "funnel_cancel_sum": D(r.get("cancel_sum"))})
     if stats is not None:
         stats.update({"rows_before": n_before, "rows_after": len(out), "sum_before": dict(before), "sum_after": dict(after), "equal": dict(before) == dict(after),
@@ -892,8 +904,7 @@ def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day, advance_
     d = date.fromisoformat(d1)
     while d <= date.fromisoformat(d2):
         days.append(d.isoformat()); d += timedelta(days=1)
-    exact, uniform = costs
-    cost_fn = lambda code, size: wbm.unit_cost_for(exact, uniform, code, size, "base")  # noqa: E731
+    cost_fn = wbm.as_cost_history(costs).cost_fn   # WB-17 §2: та же история снимков, что у строк «Данных»
     daily = wbm.build_daily(report_rows, days, cost_fn, ads_by_day or {}, date.today() + timedelta(days=3), ads_by_day is not None, advance_net=advance_net)
     m = wbm.total_row(daily)
     form = build_month_sheet(rows)[-1]

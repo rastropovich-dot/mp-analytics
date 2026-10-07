@@ -63,3 +63,6 @@ data/ozon_products/
 
 # сырой CSV отчёта CPO «Все» за один день (scripts/ozon_cpo_one_day.py) — вне git
 data/ozon_cpo_raw/
+
+# сорок седьмая: курсы с картинок чата «LL Курсы» — csv, сырьё OCR и бинарники Vision; вне git
+data/ll_rates/

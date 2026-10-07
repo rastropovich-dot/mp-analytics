@@ -70,34 +70,54 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class CostIndexAndUtc(unittest.TestCase):
-    def test_cost_index_has_an_effective_date_and_reference_columns(self):
-        self.assertIsNone(rep.cost_index_for("2026-08-31")); self.assertEqual(rep.cost_index_for("2026-09-01"), D("1.150"))
+class CostByRateAndUtc(unittest.TestCase):
+    """Сорок восьмая: основная СС — по курсу 1С (unit_cost уже с поправкой), справочные колонки «по снимку» — СС снимка без курса; --check кричит,
+    когда курс устарел."""
+
+    @staticmethod
+    def unit_cost_by_rate():
+        from loaders import unit_cost_history as uch
+        rates = uch.MetalRates([{"metal": "gold585", "set_date": "2026-05-20", "rate": "6000", "seen_to": "2026-05-22"},
+                                {"metal": "gold585", "set_date": "2026-09-01", "rate": "6600", "seen_to": "2026-09-12"}])
+        hist = uch.CostHistory({"2026-05-20": {"f1": D(300)}}, meta={"2026-05-20": {"f1": ("585", "Цепь")}}, rates=rates, k_table={"585": {"*": D("0.9"), "Цепь": D("1")}})
+        return uch.unit_cost_fn(hist, {"11": "F1"})
+
+    def test_main_cogs_by_rate_and_reference_columns_by_snapshot(self):
+        day = "2026-09-10"
+        uc = self.unit_cost_by_rate()
+        rows, _ = rep.build_daily([day], [{"buyout_date": day, "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
+                                  {day: {41: D("61"), 32: D("122")}}, uc, "2026-09-25")
+        r = rows[0]
+        self.assertEqual(r["cogs"], D("330.00"))                                           # 300 × (1 + 1 × 0,10): цепь k = 1
+        self.assertEqual(r["cogs_snapshot"], D(300))
+        self.assertEqual(r["fin_result_snapshot"], r["fin_result"] + D("30.00"))           # разница только в СС
+        self.assertEqual(r["ebitda_snapshot"], r["fin_result_snapshot"] - D("311527.00"))
+        self.assertEqual(r["rate_stale_days"], 0)
+        old = rep.build_daily(["2026-08-31"], [{"buyout_date": "2026-08-31", "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
+                              {"2026-08-31": {32: D("122")}}, uc, "2026-09-25")[0][0]
+        self.assertEqual((old["cogs"], old["cogs_snapshot"]), (D(300), D(300)))             # курс с даты снимка не менялся — СС снимка
+        self.assertEqual(old["fin_result_snapshot"], old["fin_result"])                    # поправки нет — справочный фин. рез. = основному
+
+    def test_stub_without_history_gives_snapshot_equal_to_cogs(self):
         day = "2026-09-10"
         rows, _ = rep.build_daily([day], [{"buyout_date": day, "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
                                   {day: {41: D("61"), 32: D("122")}}, lambda sku, day=None, qty=None: D(300), "2026-09-25")
-        r = rows[0]
-        self.assertEqual(r["cogs_index"], D(300) * D("1.150"))
-        self.assertEqual(r["fin_result_index"], r["fin_result"] - D(300) * D("0.150"))          # разница только в СС
-        self.assertEqual(r["ebitda_index"], r["fin_result_index"] - D("311527.00"))
-        old = rep.build_daily(["2026-08-31"], [{"buyout_date": "2026-08-31", "marketplace_sku": "11", "buyouts_qty": 1, "buyouts_amount_seller": "1220", "commission_amount": "0"}], [],
-                              {"2026-08-31": {32: D("122")}}, lambda sku, day=None, qty=None: D(300), "2026-09-25")[0][0]
-        self.assertIsNone(old["cogs_index"]); self.assertIsNone(old["fin_result_index"])
+        self.assertEqual((rows[0]["cogs"], rows[0]["cogs_snapshot"], rows[0]["fin_result_snapshot"], rows[0]["rate_stale_days"]), (D(300), D(300), rows[0]["fin_result"], 0))
 
-    def test_check_reports_the_cost_index_by_day_and_flags_a_stale_parameter(self):
-        rows = [dict(date="2026-09-10", cogs=D(1000), turnover=D(0), commission=D(0), revenue=D(0), acquiring=D(0), ads_like_manual=D(0), compensations=D(0),
-                     log_other_like_manual=None, fin_result_with_comp=None, ebitda_with_comp=None, logistics=None, other=None, ads=None),
-                dict(date="2026-09-11", cogs=D(1000), turnover=D(0), commission=D(0), revenue=D(0), acquiring=D(0), ads_like_manual=D(0), compensations=D(0),
-                     log_other_like_manual=None, fin_result_with_comp=None, ebitda_with_comp=None, logistics=None, other=None, ads=None)]
+    def test_check_reports_the_cost_ratio_by_day_and_flags_a_stale_rate(self):
+        def row(d, stale):
+            return dict(date=d, cogs=D(1000), turnover=D(0), commission=D(0), revenue=D(0), acquiring=D(0), ads_like_manual=D(0), compensations=D(0),
+                        log_other_like_manual=None, fin_result_with_comp=None, ebitda_with_comp=None, logistics=None, other=None, ads=None, rate_stale_days=stale)
+        rows = [row("2026-09-10", 0), row("2026-09-11", 0)]
         manual = {d: {"turnover": D(0), "commission": D(0), "revenue": D(0), "acquiring": D(0), "ads": D(0), "cogs": c, "logistics": None, "other": None, "fin_result": None, "ebitda": None}
                   for d, c in (("2026-09-10", D(1175)), ("2026-09-11", D(1125)))}
         table, _f = rep.check(rows, manual)
         cogs = next(t for t in table if t["title"].startswith("Себестоимость"))
-        self.assertEqual(cogs["index_days"], [("2026-09-10", D("1.175")), ("2026-09-11", D("1.125"))])
-        self.assertEqual((cogs["index_total"], cogs["index_param"], cogs["index_stale"]), (D("1.150"), D("1.150"), False))
-        manual["2026-09-11"]["cogs"] = D(1300)                                                         # итог 1,2375 — дальше 3 % от 1,150
+        self.assertEqual(cogs["ratio_days"], [("2026-09-10", D("1.175")), ("2026-09-11", D("1.125"))])
+        self.assertEqual((cogs["ratio_total"], cogs["rate_stale"], cogs["rate_stale_days"]), (D("1.150"), False, 0))
+        rows[1]["rate_stale_days"] = 9
         cogs = next(t for t in rep.check(rows, manual)[0] if t["title"].startswith("Себестоимость"))
-        self.assertTrue(cogs["index_stale"])
+        self.assertEqual((cogs["rate_stale"], cogs["rate_stale_days"]), (True, 9))
 
     def test_utc_day_table_uses_raw_postings_and_the_owner_multiplier(self):
         postings = {"fbo": [{"created_at": "2026-09-10T22:30:00Z", "products": [{"offer_id": "F1", "price": "1220", "quantity": 1}]},      # 22:30 UTC = 11-е по МСК, 10-е по UTC

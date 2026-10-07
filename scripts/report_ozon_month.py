@@ -86,11 +86,11 @@ VAT_RATES = (("2026-01-01", Decimal("1.22")), ("0001-01-01", Decimal("1.20")))
 # 2026-09-22: на листе «Ozon - сентябрь» R = P − $T$83, T83 = 311 527,00 (у WB своя константа 74 002,00 — здесь не используется).
 # Откуда число и как оно меняется — владелец скажет; до даты действия (и у кабинета без константы) Ebitda пуста, не ноль.
 OVERHEAD_PER_DAY = dict(CABINET.OVERHEAD_PER_DAY)
-# Индекс себестоимости — справочно, пока нет новой выгрузки 1С: наш снимок 05-20 против цен владельца за 1–21 сентября
-# (лист 22.09): 27 401 217,62 / 23 824 962,63 = 1,150; по дням 1,175 (начало месяца) → 1,116 (21-е) — у него величина
-# движется внутри месяца, по SKU из его файла не восстановить. С новым снимком 1С индекс с той даты — 1,00.
-COST_INDEX = tuple(CABINET.COST_INDEX)        # из профиля; пусто — колонки «по индексу» пусты
-COST_INDEX_STALE_PCT = Decimal("0.03")     # индекс по листу отличается от параметра больше — «протух», --check говорит вслух
+# Себестоимость — по курсу 1С металла (сорок восьмая, решение владельца 10-07): СС снимка по дате × (1 + k × Δ курса с даты снимка);
+# k по пробам и видам — COST_RATE_K профиля (у кабинета без k — СС снимка без поправки). Индекс 1,150 (COST_INDEX) снят.
+# Справочные колонки «по снимку» = СС снимка без поправки по курсу — чтобы видеть, что дал курс.
+COST_RATE_K = dict(CABINET.COST_RATE_K)
+RATE_STALE_DAYS = unit_cost_history.STALE_DAYS   # последняя картинка бота старше даты на столько дней — «курс устарел», --check говорит вслух
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
@@ -118,12 +118,18 @@ def overhead_for(day, platform="ozon"):
     return None
 
 
-def cost_index_for(day):
-    """Индекс СС на дату или None, если на эту дату не задан."""
-    for valid_from, value in COST_INDEX:
-        if day >= valid_from:
-            return value
-    return None
+def rates_from_arg(path):
+    """MetalRates из --rates-csv (ll_rates.csv рядом с историей даёт дату последней картинки) или None (таблица)."""
+    if not path:
+        return None
+    pictures = os.path.join(os.path.dirname(path), "ll_rates.csv")
+    return unit_cost_history.rates_from_csv(path, pictures if os.path.exists(pictures) else None)
+
+
+def rate_stale_days(unit_cost, day):
+    """На сколько дней курс 1С устарел к дате (0 — нет); у заглушек без истории — 0."""
+    history = getattr(unit_cost, "history", None)
+    return history.rate_stale_days(day) if history is not None else 0
 
 
 def month_days(month, date_to=None):
@@ -185,11 +191,12 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         base = qty if units is None else D(units)
         acc[d]["rows_by_units" if units is not None else "rows_by_positions"] += 1
         acc[d]["units"] += base
-        uc = unit_cost(r["marketplace_sku"], d, base)          # снимок по дате продажи (сорок шестая §3)
+        uc, uc_base, _src = unit_cost_history.with_base(unit_cost, r["marketplace_sku"], d, base)   # СС по курсу и снимка (сорок шестая §3, сорок восьмая §2)
         if uc is None:
             no_cost[d] += int(qty)
         else:
             acc[d]["cogs"] += base * uc
+            acc[d]["cogs_base"] += base * uc_base
     for r in expenses:
         d, t, v = r["expense_date"], str(r["expense_type"] or ""), D(r["expense_amount"])
         if d not in acc:
@@ -220,12 +227,12 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             row["subscription"] = a["exp_subscription"] / vat
             row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
             for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
-                      "ebitda", "ebitda_with_comp", "fin_result_index", "ebitda_index"):
+                      "ebitda", "ebitda_with_comp", "fin_result_snapshot", "ebitda_snapshot"):
                 row[k] = None
             row["overhead"] = overhead_for(d)
-            row["cost_index"] = cost_index_for(d)
-            row["cogs_index"] = None if row["cost_index"] is None else row["cogs"] * row["cost_index"]
-            row["margin_index"] = None if row["cost_index"] is None else row["revenue"] - row["cogs_index"]
+            row["cogs_snapshot"] = a["cogs_base"]
+            row["margin_snapshot"] = row["revenue"] - row["cogs_snapshot"]
+            row["rate_stale_days"] = rate_stale_days(unit_cost, d)
             rows.append(row)
             continue
         # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
@@ -256,13 +263,12 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         row["overhead"] = overhead_for(d)
         row["ebitda"] = None if row["overhead"] is None else row["fin_result"] - row["overhead"]
         row["ebitda_with_comp"] = None if row["overhead"] is None else row["fin_result_with_comp"] - row["overhead"]
-        # справочно по индексу СС: та же строка, где себестоимость = снимок × индекс
-        row["cost_index"] = cost_index_for(d)
-        idx = row["cost_index"]
-        row["cogs_index"] = None if idx is None else row["cogs"] * idx
-        row["margin_index"] = None if idx is None else row["revenue"] - row["cogs_index"]
-        row["fin_result_index"] = None if idx is None else row["fin_result"] + row["cogs"] - row["cogs_index"]
-        row["ebitda_index"] = None if idx is None or row["overhead"] is None else row["fin_result_index"] - row["overhead"]
+        # справочно по снимку без курса: та же строка, где себестоимость = СС снимка без поправки по курсу 1С (сорок восьмая)
+        row["cogs_snapshot"] = a["cogs_base"]
+        row["margin_snapshot"] = row["revenue"] - row["cogs_snapshot"]
+        row["fin_result_snapshot"] = row["fin_result"] + row["cogs"] - row["cogs_snapshot"]
+        row["ebitda_snapshot"] = None if row["overhead"] is None else row["fin_result_snapshot"] - row["overhead"]
+        row["rate_stale_days"] = rate_stale_days(unit_cost, d)
         # Сверка двух таблиц одной базы: статья из типов против той же статьи в marketplace_expenses. Расходятся —
         # называем: upsert расходов строк не удаляет, и начисление, которое Ozon убрал, застревает в базе
         # (найдено 2026-09-21: 09-11, 09-12, 09-15, 09-19 — по одной строке). Лист считает по типам.
@@ -274,7 +280,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
 
 MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
          "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
-         "cogs_index", "margin_index", "fin_result_index", "ebitda_index",
+         "cogs_snapshot", "margin_snapshot", "fin_result_snapshot", "ebitda_snapshot",
          "ads_like_manual", "log_other_like_manual", "positions", "units", "coinvest"]
 
 
@@ -524,7 +530,15 @@ def types_differ(a, b):
     return {t: (a.get(t, Z), b.get(t, Z)) for t in sorted(set(a) | set(b)) if q(a.get(t, Z)) != q(b.get(t, Z))}
 
 
-def load_costs(sb, snapshot):
+def load_rates_for(sb, rates=None):
+    """Курсы 1С для поправки СС: None — из таблицы metal_rates_1c (только если у кабинета заданы k); MetalRates — как дано (--rates-csv);
+    False — без курсов (СС снимка, как сорок шестая)."""
+    if rates is False or not COST_RATE_K:
+        return None
+    return rates if rates is not None else unit_cost_history.load_rates(sb)
+
+
+def load_costs(sb, snapshot, rates=None):
     orders = fetch(sb, "marketplace_orders", "id,order_date,order_schema,marketplace_sku,article,orders_qty,orders_amount_seller,orders_amount_buyer,cancelled_orders_amount_buyer,"
                                              "cancelled_orders_qty,cancelled_orders_amount_seller,observed_at",
                    [("eq", "marketplace_code", "ozon"), ("gte", "order_date", "2026-03-28")],
@@ -537,23 +551,19 @@ def load_costs(sb, snapshot):
     norms = sorted({a.lower() for a in sku2art.values() if a})
     # все снимки таблицы по этим ключам: себестоимость продажи дня — снимок ≤ дате (сорок шестая §3, loaders/unit_cost_history);
     # snapshot оставлен в подписи как «последний известный» — на выбор снимка он больше не влияет
-    history = unit_cost_history.load_history(sb, norms)
+    history = unit_cost_history.load_history(sb, norms, rates=load_rates_for(sb, rates), k_table=COST_RATE_K)   # + курс 1С и k (сорок восьмая §2)
     unit_cost = unit_cost_history.unit_cost_fn(history, sku2art)
     found = {n for n in norms if history.lookup(n)[0] is not None}
     return sku2art, unit_cost, len(found), len(norms), orders
 
 
-def cost_index_note(days, snapshot, history=None):
-    """Примечание о себестоимости: снимки по дате продажи (сорок шестая §3) и индекс СС; history — CostHistory читателя (счётчики подбора)."""
-    rates = sorted({cost_index_for(d) for d in days if cost_index_for(d) is not None})
+def cost_rate_note(days, snapshot, history=None):
+    """Примечание о себестоимости: снимки по дате продажи (сорок шестая §3) и поправка по курсу 1С (сорок восьмая §2); history — CostHistory
+    читателя (счётчики подбора и поправки, курсы, «устарел»)."""
     src = (history.note() if history is not None and history.dates else f"Себестоимость — снимок 1С {snapshot}.")
-    if not rates:
-        return src + " Индекса СС на эти даты нет, колонки «по индексу» пусты."
-    return (src + " Индекс СС " + ", ".join(f"{v:.3f}" for v in rates)
-            + " (справочно, пока нет новой выгрузки 1С; источник — лист владельца 22.09, 1–21 сентября: 27 401 217,62 / 23 824 962,63; "
-              "у него по дням 1,175 → 1,116) — применяется к цене того снимка, который выбран по дате; сейчас последний снимок 20.05 старше "
-              "01.09, двойного учёта нет; появится снимок новее 01.09 — индекс к его датам применять нельзя (решение владельца). "
-              "Колонки «по индексу» = снимок × индекс; основные — на снимке по дате.")
+    return (src + " Себестоимость = СС снимка 1С по дате × (1 + k × Δ курса 1С металла с даты снимка до дня продажи); 585 и 375 — по золоту, "
+                  "925 — по серебру; k — по пробе и виду изделия (COST_RATE_K профиля, scripts/cost_gold_rate_check.py --k-profile). Индекс СС 1,150 "
+                  "снят (решение владельца 2026-10-07). Колонки «по снимку» = СС снимка без поправки по курсу; основные — по курсу.")
 
 
 def overhead_note(days):
@@ -588,8 +598,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
             ("% Фин. рез. с компенсациями", "fin_result_with_comp_pct", pct),
             ("справочно: Ebitda с компенсациями", "ebitda_with_comp", money), ("% Ebitda с компенсациями", "ebitda_with_comp_pct", pct),
             ("справочно: Соинвест Ozon (баллы + зелёные цены), руб.", "coinvest", money), ("Соинвест, % от оборота", "coinvest_pct", pct),
-            ("справочно: СС по индексу", "cogs_index", money), ("Маржа по индексу", "margin_index", money),
-            ("Фин. рез. по индексу", "fin_result_index", money), ("Ebitda по индексу", "ebitda_index", money),
+            ("справочно: СС по снимку (без курса)", "cogs_snapshot", money), ("Маржа по снимку", "margin_snapshot", money),
+            ("Фин. рез. по снимку", "fin_result_snapshot", money), ("Ebitda по снимку", "ebitda_snapshot", money),
             ("справочно: Реклама по образцу", "ads_like_manual", money), ("справочно: Логистика + Прочее по образцу", "log_other_like_manual", money),
             ("Позиций выкупов", "positions", "#,##0"), ("Штук (где не измерены — позиции)", "units", "#,##0"),
             ("строк СС по штукам", "rows_by_units", "#,##0"), ("строк СС по позициям", "rows_by_positions", "#,##0"),
@@ -794,9 +804,8 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name, 
         for r in rows:
             forecast.add_order_ratios(r)
             r["young"] = r["date"] in young
-            idx = cost_index_for(r["date"])
-            r["cogs_index"] = None if idx is None or r.get("cogs") is None else r["cogs"] * idx
-            r["fin_result_index"] = None if idx is None or r.get("fin_result") is None else r["fin_result"] + r["cogs"] - r["cogs_index"]
+            r["cogs_snapshot"] = r.get("cogs_base") if r.get("cogs") is not None else None    # СС снимка без курса (forecast считает рядом с cogs)
+            r["fin_result_snapshot"] = None if r.get("fin_result") is None or r.get("cogs_snapshot") is None else r["fin_result"] + r["cogs"] - r["cogs_snapshot"]
         totals[key] = forecast.orders_total(rows)
     # соинвест по формуле владельца — только Standard (Основная): на общий лист его доля идёт отдельной колонкой
     std = f"platform:{PLATFORMS[0][1]}" if PLATFORMS else None   # у кабинета без площадок соинвест Standard не выделяется
@@ -818,7 +827,7 @@ def build_orders(sb, days, order_rows, daily_rows, sku2art, unit_cost, tz_name, 
             "window": (w1, w2), "commission_share": commission_share, "commission_base": commission_base,
             "other_share": other_share, "other_expense": other_expense, "other_turnover": other_turnover, "ledger_days": len(ledger_w),
             "unknown_types": unknown_types, "table_plateau": table_plateau, "sensitivity": sensitivity, "mature": forecast.mature_check(blocks["all"]),
-            "day_note": day_note or {}, "snapshot": snapshot}
+            "day_note": day_note or {}, "snapshot": snapshot, "history": getattr(unit_cost, "history", None)}
 
 
 def orders_notes(o):
@@ -852,8 +861,9 @@ def orders_notes(o):
              "Справочный фин. рез. = Маржа (созданных) × 0,65 − Реклама по образцу − Выручка × 0,65 × 0,024; реклама по образцу = (41 + 54 + 96 + вся статья подписки) / НДС "
              "по дню заказа, как в его листе; себестоимость — по созданным штукам. Справочный ДРР = Реклама по образцу / (Выручка × 0,65 × НДС / 0,59) — "
              "у него на листе «Заказы» в знаменателе 0,58, на «Заказы Standard» — 0,73. Колонка модели «Реклама (41 + 54)» и наш фин. рез. прогноз — без подписки и сбора отзывов.",
-             cost_index_note([r["date"] for r in o["blocks"]["all"]], o.get("snapshot", SNAP)).replace("Колонки «по индексу» = снимок × индекс; основные — на снимке.",
-                                                                                                    "«СС по индексу» и «Фин. рез. прогноз по индексу» = снимок × индекс; основные — на снимке."),
+             cost_rate_note([r["date"] for r in o["blocks"]["all"]], o.get("snapshot", SNAP), o.get("history")).replace(
+                 "Колонки «по снимку» = СС снимка без поправки по курсу; основные — по курсу.",
+                 "«СС по снимку» и «Фин. рез. прогноз по снимку» = СС снимка без поправки по курсу; основные — по курсу."),
              platform_note(o),
              "Реклама и фин. рез. — только на общем листе: леджер начислений без схемы. Себестоимость — article_unit_costs × прогноз подтверждённых штук товара.",
              f"Приёмка: дозревших дней {o['mature'][0]}, прогноз = факту на {o['mature'][1]}" + (f"; НЕ равен: {', '.join(o['mature'][2])}" if o["mature"][2] else "") + "."]
@@ -947,7 +957,7 @@ def write_orders_sheets(wb, o, styles):
             ("Реклама (41 + 54), руб.", "ads", money), ("Реклама по образцу (41 + 54 + 96 + подписка), руб.", "ads_manual", money),
             ("% ДРР от созданного", "drr_created_pct", pct), ("% ДРР от прогноза подтв.", "drr_fc_pct", pct),
             ("Прочие, руб.", "other", money), ("Фин. рез. прогноз, руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), (None, None, None),
-            ("СС по индексу, руб.", "cogs_index", money), ("Фин. рез. прогноз по индексу, руб.", "fin_result_index", money),
+            ("СС по снимку (без курса), руб.", "cogs_snapshot", money), ("Фин. рез. прогноз по снимку, руб.", "fin_result_snapshot", money),
             ("справочно, формулы владельца: Выручка = создано × множитель площадки владельца / НДС", "owner_revenue", money), ("Маржа (созданных)", "owner_margin", money),
             ("ДРР = Реклама по образцу / (Выручка × 0,65 × НДС / 0,59)", "owner_drr_pct", pct),
             ("Фин. рез. = Маржа × 0,65 − Реклама по образцу − Выручка × 0,65 × 0,024", "owner_fin_result", money),
@@ -955,7 +965,7 @@ def write_orders_sheets(wb, o, styles):
             ("Соинвест, % (Standard, формула владельца G: (создано − оплачено покупателем) / создано, все созданные)", "coinvest_standard_pct", pct),
             ("Соинвест, % по строкам листа", "coinvest_pct", pct),
             ("шт подтв. без себестоимости", "no_cost_q", "#,##0"), ("Примечание", "note", None)]
-    only_total = {"ads", "ads_manual", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "fin_result_index", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner",
+    only_total = {"ads", "ads_manual", "drr_created_pct", "drr_fc_pct", "fin_result", "fin_result_pct", "fin_result_snapshot", "owner_drr_pct", "owner_fin_result", "fin_result_minus_owner",
                   "coinvest_standard_pct"}
     part_cols = [c for c in full if c[1] not in only_total and c[0] is not None]
 
@@ -1053,8 +1063,8 @@ def print_orders(o, buyout_total):
     p = lambda v: "—" if v is None else f"{v * 100:.2f} %"  # noqa: E731
     if t["fin_result"] is not None:
         print(f"  реклама {t['ads']:,.2f}; ДРР от созданного {p(t['drr_created_pct'])}, от прогноза подтв. {p(t['drr_fc_pct'])}; фин. рез. прогноз {t['fin_result']:,.2f} ({p(t['fin_result_pct'])} выручки)")
-        if t.get("fin_result_index") is not None:
-            print(f"  по индексу СС: СС {t['cogs_index']:,.2f}, фин. рез. прогноз {t['fin_result_index']:,.2f}")
+        if t.get("fin_result_snapshot") is not None:
+            print(f"  по снимку без курса: СС {t['cogs_snapshot']:,.2f}, фин. рез. прогноз {t['fin_result_snapshot']:,.2f}")
         print(f"  реклама по образцу (41 + 54 + 96 + подписка) {t['ads_manual']:,.2f}; по формулам владельца (0,65 / множители площадок / 0,024) на ней: выручка {t['owner_revenue']:,.2f}, "
               f"ДРР {p(t['owner_drr_pct'])}, фин. рез. {t['owner_fin_result']:,.2f}; наш − владельца {t['fin_result_minus_owner']:+,.2f}")
         for _pl, name in PLATFORMS + ((None, NO_PLATFORM),):
@@ -1108,7 +1118,7 @@ def build_types_summary(types_by_day, days):
 
 SEGMENT_COLUMNS = (("Оборот (B)", "turnover", ("turnover",)), ("Комиссия (C)", "commission", ("commission",)), ("Логистика (I)", "logistics", ("logistics",)),
                    ("Реклама (K) — у нас Performance по SKU", "ads_perf", ("ads",)), ("Эквайринг + Прочее (M + O) — у нас одной суммой", "other_with_acq", ("acquiring", "other")),
-                   ("Себестоимость (F) через индекс", "cogs_index", ("cogs",)))
+                   ("Себестоимость (F) — у нас по курсу 1С", "cogs", ("cogs",)))
 
 
 def read_manual_segment_sheet(path, sheet):
@@ -1139,7 +1149,7 @@ def check_segment(prows, manual):
             m = manual.get(r["date"])
             if not m or any(m.get(k) is None for k in theirs_ks):
                 missing.append(r["date"]); continue
-            o = r[ours_k] if ours_k != "cogs_index" else r["cogs"] * (cost_index_for(r["date"]) or Decimal(1))
+            o = r[ours_k]
             t = sum((D(m[k]) for k in theirs_ks), Z)
             o, t = q(o), q(t)
             t_o += o; t_t += t; n += 1
@@ -1194,16 +1204,14 @@ def check(rows, manual):
          "у владельца компенсации (типы 25, 10) сидят внутри «Прочего» расходом с обратным знаком; у нас — отдельной строкой дохода (решение 8)")
     line("   то же без компенсаций: Л + П по образцу = их Л + П", lambda r: r.get("log_other_like_manual"), their_lo, False,
          "разница — компенсации дня")
-    line("Себестоимость (наш снимок 1С против их цен)", lambda r: r.get("cogs"), g("cogs"), False,
-         "решение 4 от 2026-09-19: остаёмся на снимке 05-20, расхождение принимается как известное")
+    line("Себестоимость (наш снимок 1С по курсу против их цен)", lambda r: r.get("cogs"), g("cogs"), False,
+         "решение 4 от 2026-09-19: снимок 1С расхождение принимается как известное; с 10-08 СС — по курсу 1С металла (сорок восьмая)")
     cogs_line = out[-1]
-    idx_days = [(r["date"], (D(manual[r["date"]]["cogs"]) / r["cogs"]).quantize(Decimal("0.001")))
-                for r in rows if r.get("cogs") and manual.get(r["date"]) and manual[r["date"]].get("cogs") is not None]
-    total_idx = (cogs_line["theirs"] / cogs_line["ours"]).quantize(Decimal("0.001")) if cogs_line["ours"] else None
-    params = sorted({cost_index_for(r["date"]) for r in rows if cost_index_for(r["date"]) is not None})
-    param = params[0] if len(params) == 1 else None
-    cogs_line.update({"index_days": idx_days, "index_total": total_idx, "index_param": param,
-                      "index_stale": (param is not None and total_idx is not None and abs(total_idx - param) > COST_INDEX_STALE_PCT * param)})
+    ratio_days = [(r["date"], (D(manual[r["date"]]["cogs"]) / r["cogs"]).quantize(Decimal("0.001")))
+                  for r in rows if r.get("cogs") and manual.get(r["date"]) and manual[r["date"]].get("cogs") is not None]
+    total_ratio = (cogs_line["theirs"] / cogs_line["ours"]).quantize(Decimal("0.001")) if cogs_line["ours"] else None
+    stale = max((r.get("rate_stale_days") or 0 for r in rows), default=0)
+    cogs_line.update({"ratio_days": ratio_days, "ratio_total": total_ratio, "rate_stale_days": stale, "rate_stale": stale > 0})
     line("Фин. рез. с компенсациями против их «Фин. рез.»", lambda r: r.get("fin_result_with_comp"), g("fin_result"), False,
          "остаток = разница себестоимости (решение 4) и 09-01; подписка у них внутри рекламы — на итог не влияет")
     line("Ebitda с компенсациями против их «Ebitda»", lambda r: r.get("ebitda_with_comp"), g("ebitda"), False,
@@ -1393,11 +1401,10 @@ def print_check(table):
             print("      нет значения: " + ", ".join(t["missing"]))
         if t["why"] and (t["bad"] or t["missing"]):
             print(f"      чем объясняется: {t['why']}")
-        if t.get("index_days"):
-            print(f"      индекс СС (их / наша): по итогу {t['index_total']}, параметр {t['index_param']}; по дням "
-                  + ", ".join(f"{d[5:]} {v}" for d, v in t["index_days"]))
-            if t.get("index_stale"):
-                print(f"      ВНИМАНИЕ: индекс СС протух: параметр {t['index_param']}, по листу {t['index_total']} (больше {COST_INDEX_STALE_PCT * 100:.0f} %)")
+        if t.get("ratio_days"):
+            print(f"      СС их / наша: по итогу {t['ratio_total']}; по дням " + ", ".join(f"{d[5:]} {v}" for d, v in t["ratio_days"]))
+            if t.get("rate_stale"):
+                print(f"      ВНИМАНИЕ: курс 1С устарел на {t['rate_stale_days']} дней к датам листа (последняя картинка бота старше {RATE_STALE_DAYS} дней) — снять свежий экспорт чата «LL Курсы»")
 
 
 def main():
@@ -1406,6 +1413,7 @@ def main():
     ap.add_argument("--date-to", help="последний день листа; по умолчанию — вчера по местному времени: сегодняшний день ночь ещё не грузила")
     ap.add_argument("--out")
     ap.add_argument("--snapshot", default=SNAP)
+    ap.add_argument("--rates-csv", help="курсы 1С из csv (data/ll_rates/ll_rates_1c_history.csv; ll_rates.csv рядом — дата последней картинки) вместо таблицы metal_rates_1c — для сухих прогонов")
     ap.add_argument("--no-fetch", action="store_true", help="в API не ходить ни за чем (= --fetch none)")
     ap.add_argument("--fetch", choices=("none", "young", "all"), default="young",
                     help="в API: none — никогда; young — только за дни моложе двух суток, живым ответом, файл не сохраняется (реклама за D−1 "
@@ -1457,7 +1465,9 @@ def main():
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
-    sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot)
+    sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot, rates_from_arg(args.rates_csv))
+    if getattr(unit_cost, "history", None) is not None and unit_cost.history.rates:
+        print(f"курс 1С: {unit_cost.history.rates.describe()}" + (" (из csv, не из таблицы)" if args.rates_csv else " (таблица metal_rates_1c)"))
 
     counters, sources, types_by_day, day_note = {"requests": 0, "429": 0}, defaultdict(list), {}, {}
     young_days = {d for d in days if (date.fromisoformat(today) - date.fromisoformat(d)).days < YOUNG_DAYS}
@@ -1586,7 +1596,7 @@ def main():
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
              "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
              overhead_note(days),
-             cost_index_note(days, args.snapshot, getattr(unit_cost, "history", None)),
+             cost_rate_note(days, args.snapshot, getattr(unit_cost, "history", None)),
              "Граница свёртки типов начислений — 24.08.2026: с 25.08 расходы лежат по справочнику владельца (типы 16, 17, 45, 62, 78, 82 — прочее; "
              "46, 63 — логистика), до неё — старой свёрткой; до пересборки истории логистика / прочее по обе стороны границы не сопоставимы.",
              "Даты, залитые жёлтым, моложе двух суток: начисления ещё доезжают, числа вырастут.",
@@ -1621,7 +1631,7 @@ def main():
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "
               f"прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
               + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total.get("ebitda") is not None else ", Ebitda — (накладные не заданы)")
-              + (f"; по индексу СС: СС {total['cogs_index']:,.2f}, фин. рез. {total['fin_result_index']:,.2f}" if total.get("fin_result_index") is not None else ""))
+              + (f"; по снимку без курса: СС {total['cogs_snapshot']:,.2f}, фин. рез. {total['fin_result_snapshot']:,.2f}" if total.get("fin_result_snapshot") is not None else ""))
     print(f"лист «По SKU»: строк {len(sku_rows)}, реклама Performance {ads_sku:,.2f}" + (f" против начислений {ads_sheet1:,.2f}, разница {ads_sku - ads_sheet1:+,.2f}" if ads_sheet1 is not None else ""))
     if ad_gaps:
         print("       по дням (Performance − начисления, без НДС): " + "; ".join(f"{d} {v:+,.2f}" for d, v in ad_gaps[:8])
@@ -1637,7 +1647,7 @@ def main():
         num = lambda v: None if v is None else str(q(v))  # noqa: E731
         no_types = [r["date"] for r in rows if not r["has_raw"]]
         summary = {"month": args.month, "date_from": d1, "date_to": d2,
-                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result", "ebitda", "fin_result_index")},
+                   "buyouts": {k: num(total.get(k)) for k in ("turnover", "revenue", "fin_result", "ebitda", "fin_result_snapshot")},
                    "warnings": ([f"нет типов начислений за {', '.join(no_types)} — реклама, эквайринг и фин. рез. за эти дни пусты, итог неполон"] if no_types else [])
                                + ([f"лист «Заказы» не собран: {orders_error}"] if orders_error else [])}
         if orders is not None:

@@ -87,10 +87,6 @@ def days_between(month_from, month_to, date_to=None):
     return out
 
 
-def cogs_index(day):
-    return rep.cost_index_for(day) or Decimal(1)
-
-
 # ---------- справочники ----------
 
 def load_catalog(sb):
@@ -171,7 +167,7 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         if uc is None:
             stats["positions_without_cost"] += int(D(r["buyouts_qty"]))
         else:
-            a["cogs"] += units * uc * cogs_index(d)
+            a["cogs"] += units * uc          # СС уже по курсу 1С (сорок восьмая §2); индекс 1,150 снят
         if r.get("bonus_amount") is None or r.get("coinvestment_amount") is None:
             stats["rows_without_coinvest"] += 1
         else:
@@ -351,7 +347,6 @@ def long_rows_from_raw(day, accruals, units_by_key, unit_cost, describe_fn, stat
             if type_id not in accrual_mod.TYPE_TO_EXPENSE:
                 stats[f"unknown_type:{type_id}"] += 1
             rows.append(_long(aid, day, article_key_of_type(type_id), amount, sku, describe_fn(sku)))
-    idx = cogs_index(day)
     for sku, ids in turnover_idx.items():
         positions = sum((rows[i].qty for i in ids), Z)
         measured = units_by_key.get((day, sku))
@@ -367,7 +362,7 @@ def long_rows_from_raw(day, accruals, units_by_key, unit_cost, describe_fn, stat
                 stats["positions_without_cost"] += int(abs(r.qty))
                 rows[i] = r._replace(cost_source=src)
             else:
-                rows[i] = r._replace(cogs=r.qty * uc * idx, cost_source=src)
+                rows[i] = r._replace(cogs=r.qty * uc, cost_source=src)
     return rows
 
 
@@ -609,7 +604,7 @@ def build_order_rows(days, order_rows, kpi_rows, daily_rows, unit_cost, sku2art,
         if uc is None:
             stats["qty_without_cost"] += int(conf_q + canc_q)
         else:
-            a["cogs_created"] += (conf_q + canc_q) * uc * cogs_index(d)
+            a["cogs_created"] += (conf_q + canc_q) * uc
     for r in kpi_rows:
         d = r["kpi_date"]
         if d in dayset and D(r.get("ad_spend")):
@@ -1539,21 +1534,21 @@ def check_against_month(buyout_rows, daily_rows, days):
         if r["date"] in dayset:
             for k in ("turnover", "commission", "revenue", "cogs", "logistics"):
                 m[k] += r[k]
-            m["cogs_index"] += r["cogs_index"] if r.get("cogs_index") is not None else r["cogs"]
+            m["cogs_snapshot"] += r["cogs_snapshot"] if r.get("cogs_snapshot") is not None else r["cogs"]
             if r.get("ads") is None:
                 missing_ads += 1
             else:
                 m["ads"] += r["ads"]; m["acquiring"] += r["acquiring"]; m["other"] += r["other"] + (r.get("subscription") or Z)
     s["fin_result"] = s["revenue"] - s["cogs"] - s["logistics"] - s["ads"] - s["acquiring"] - s["other"]
-    m["fin_result_index"] = m["revenue"] - m["cogs_index"] - m["logistics"] - m["ads"] - m["acquiring"] - m["other"]
+    m["fin_result"] = m["revenue"] - m["cogs"] - m["logistics"] - m["ads"] - m["acquiring"] - m["other"]
     out = [("Оборот", s["turnover"], m["turnover"], "те же строки выкупов"), ("Комиссия", s["commission"], m["commission"], "те же строки выкупов"),
            ("Выручка без НДС", s["revenue"], m["revenue"], "те же строки"),
-           ("Себестоимость (лист — × индекс)", s["cogs"], m["cogs_index"], "лист месяца: «СС по индексу»; без индекса " + f"{m['cogs']:,.2f}"),
+           ("Себестоимость", s["cogs"], m["cogs"], "те же строки выкупов: СС снимка по дате × поправка по курсу 1С (сорок восьмая); по снимку без курса " + f"{m['cogs_snapshot']:,.2f}"),
            ("Логистика без НДС", s["logistics"], m["logistics"], "SKU из расходов + остаток без SKU против типов"),
            ("Реклама без НДС", s["ads"], m["ads"], "Performance по SKU + остаток до 41 + 54" + (f"; дней без сырья {missing_ads}" if missing_ads else "")),
            ("Эквайринг без НДС", s["acquiring"], m["acquiring"], "только строка без SKU (леджер)"),
            ("Прочее без НДС (с подпиской)", s["other"], m["other"], "прочее + подписка листа месяца"),
-           ("Фин. рез. (лист — по индексу СС)", s["fin_result"], m["fin_result_index"], "лист месяца: «Фин. рез. по индексу»")]
+           ("Фин. рез.", s["fin_result"], m["fin_result"], "лист месяца: «Фин. рез.» (СС по курсу)")]
     return [(t, a, b, q(a - b), why) for t, a, b, why in out]
 
 
@@ -1574,6 +1569,7 @@ def main(argv=None):
     ap.add_argument("--month-from", required=True); ap.add_argument("--month-to", required=True)
     ap.add_argument("--date-to", help="последний день; по умолчанию вчера")
     ap.add_argument("--out"); ap.add_argument("--snapshot", default=rep.SNAP)
+    ap.add_argument("--rates-csv", help="курсы 1С из csv вместо таблицы metal_rates_1c (сухие прогоны; см. report_ozon_month.py --rates-csv)")
     ap.add_argument("--check", action="store_true"); ap.add_argument("--check-month", help="месяц приёмки YYYY-MM (по умолчанию --month-to)")
     ap.add_argument("--check-days", type=int, default=21, help="дней месяца приёмки (1 … N)")
     ap.add_argument("--book", help="утренняя книга Ozon (xlsx) — сверка заказов с её листом «Заказы»")
@@ -1614,7 +1610,9 @@ def main(argv=None):
     expenses = rep.fetch(sb, "marketplace_expenses", "id,expense_date,marketplace_sku,expense_type,expense_amount", flt("expense_date"),
                          ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = rep.fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,product_name,ad_spend", flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
-    sku2art, unit_cost, cost_found, cost_asked, order_rows = rep.load_costs(sb, args.snapshot)
+    sku2art, unit_cost, cost_found, cost_asked, order_rows = rep.load_costs(sb, args.snapshot, rep.rates_from_arg(args.rates_csv))
+    if getattr(unit_cost, "history", None) is not None and unit_cost.history.rates:
+        print(f"курс 1С: {unit_cost.history.rates.describe()}" + (" (из csv, не из таблицы)" if args.rates_csv else " (таблица metal_rates_1c)"))
     catalog, catalog_source = load_catalog(sb)
     names = {}
     for r in buyouts + kpi:
@@ -1623,9 +1621,6 @@ def main(argv=None):
     ledger = rep.load_types_from_ledger(sb, d1, d2)
     phase("чтение базы Ozon")
     daily_rows, unknown = rep.build_daily(days, buyouts, expenses, ledger, unit_cost, today)
-    for r in daily_rows:
-        idx = rep.cost_index_for(r["date"])
-        r["cogs_index"] = r["cogs"] * idx if idx is not None else r["cogs"]
     print(f"окно {d1} … {d2}: дней {len(days)}, выкупов {len(buyouts)}, расходов {len(expenses)}, строк витрины {len(kpi)}, заказов {len(order_rows)}, "
           f"дней с типами в леджере {len([d for d in days if d in ledger])}; каталог: {catalog_source} ({len(catalog)} SKU); СС: артикулов {cost_found} из {cost_asked}")
     long_rows, buyout_rows, bstats = build_buyout_long_rows(days, RAW_DIR, buyouts, expenses, kpi, daily_rows, unit_cost, sku2art, catalog, names)
@@ -1636,14 +1631,14 @@ def main(argv=None):
     order_data, ostats = build_order_rows(days, order_rows, kpi, daily_rows, unit_cost, sku2art, catalog, names, today)
     coef = coefficients(order_data, buyout_rows, days)
     phase("заказы Ozon: строки, коэффициенты")
-    idx_note = "; ".join(f"с {vf} × {v}" for vf, v in rep.COST_INDEX)
     residual_note = "; ".join(f"{OWNER_ARTICLE[k]} — дней {bstats.get(f'residual_{k}_days', 0)}, Σ {bstats.get(f'residual_{k}_sum', Z):,.2f}"
                               for k in WIDE_KEYS if bstats.get(f"residual_{k}_days"))
     notes = {
         "buyouts": [f"Источники: сырьё начислений by-day (data/accrual_history, дней {bstats.get('days_from_raw', 0)}; без файла — таблицы, дней {bstats.get('days_from_tables', 0)}), "
                     f"реклама — Performance по SKU (ad_spend витрины) плюс остаток до начислений 41 + 54 (леджер). НДС по дате ({vat_for(d2)} на {d2}).",
                     f"Себестоимость = количество × СС снимка 1С по дате продажи (снимок с наибольшей датой ≤ дате; ключа нет — ближайший более поздний; "
-                    f"после последнего снимка — последний) × индекс СС ({idx_note}; до — без индекса); позиций без СС: {bstats.get('positions_without_cost', 0)}. "
+                    f"после последнего снимка — последний) × (1 + k × Δ курса 1С металла с даты снимка до дня продажи; k по пробе и виду изделия, "
+                    f"585 и 375 — золото, 925 — серебро; индекс СС 1,150 снят 2026-10-08 по решению владельца); позиций без СС: {bstats.get('positions_without_cost', 0)}. "
                     "Источник себестоимости каждой строки — колонка «СС источник» листов «Данные Ozon выкупы» и «Данные заказы» (дата снимка или «после последнего снимка»). "
                     + (unit_cost.history.note() if getattr(unit_cost, "history", None) is not None else f"Снимок {args.snapshot}."),
                     "«Прочее» включает подписку (у владельца отдельной статьи нет); эквайринг — тип 1 по строке товара; компенсации 25 / 10 — не статья формы, в лист не входят. "

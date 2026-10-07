@@ -277,7 +277,9 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
         if share is None:
             share = commission_share.get("все")
             said.add(f"у площадки «{platform}» нет выкупов в окне комиссии — взята общая доля")
-        uc = unit_cost(r["marketplace_sku"], d)                # снимок по дате заказа (сорок шестая §3)
+        uc = unit_cost(r["marketplace_sku"], d)                # снимок по дате заказа (сорок шестая §3), уже по курсу 1С (сорок восьмая)
+        base_fn = getattr(unit_cost, "base", None)             # СС снимка без поправки по курсу — справочная колонка «по снимку»; у заглушек — та же СС
+        uc_base = base_fn(r["marketplace_sku"], d) if base_fn is not None else uc
         vat = vat_for(d)
         for key in (schema, "all", pkey):
             a = blocks[key][d]
@@ -302,6 +304,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
             a["commission"] += fc_a * share
             a["revenue"] += fc_a * (1 - share) / vat
             a["cogs"] += fc_q * (uc or Z)
+            a["cogs_base"] += fc_q * (uc_base or Z)
     out = {}
     dup_days = []
     for key, per_day in blocks.items():
@@ -317,7 +320,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
                    "created_q": a["created_q"], "created_a": a["created_a"], "conf_q": a["conf_q"], "conf_a": a["conf_a"],
                    "canc_q": a["canc_q"], "canc_a": a["canc_a"], "no_cost_q": a["no_cost_q"], "cogs_created": a["cogs_created"],
                    "created_buyer_a": None if a["buyer_unknown"] or all_dup else a["created_buyer_a"]}
-            for k in ("fc_q", "fc_a", "commission", "revenue", "cogs"):
+            for k in ("fc_q", "fc_a", "commission", "revenue", "cogs", "cogs_base"):
                 row[k] = a[k] if ok else None
             row["expected_cancels_a"] = (a["conf_a"] - a["fc_a"]) if ok else None
             row["margin"] = (row["revenue"] - row["cogs"]) if ok else None
@@ -342,7 +345,7 @@ def build_orders_daily(days, orders, curve, obs_date, commission_share, other_sh
 
 
 ORDER_MONEY = ("created_q", "created_a", "conf_q", "conf_a", "canc_q", "canc_a", "fc_q", "fc_a", "expected_cancels_a", "commission", "revenue",
-               "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "cogs_index", "fin_result_index",
+               "cogs", "margin", "ads", "ads_manual", "other", "fin_result", "cogs_base", "cogs_snapshot", "fin_result_snapshot",
                "owner_revenue", "owner_margin", "owner_fin_result", "no_cost_q", "cogs_created", "created_buyer_a")
 
 

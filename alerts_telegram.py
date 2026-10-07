@@ -1092,7 +1092,11 @@ def finrez_book_line(payload, now=None):
     size = f"{int(payload.get('bytes') or 0):,}".replace(",", " ")
     sha = str(payload.get("sha256") or "")[:12]
     copy = f"копия {payload['copied']}" if payload.get("copied") else "копия не делалась"
-    return f"книга Фин рез: собрана {fresh.strftime('%H:%M')} UTC за {int(payload.get('seconds') or 0) // 60} мин, {size} байт, sha256 {sha}…; {copy}"
+    line = f"книга Фин рез: собрана {fresh.strftime('%H:%M')} UTC за {int(payload.get('seconds') or 0) // 60} мин, {size} байт, sha256 {sha}…; {copy}"
+    caveats = [str(c) for c in (payload.get("caveats") or []) if c]
+    if caveats:   # WB-16 §1: в сборке был отказ чтения (finrez_nightly_status.caveats_from_log) — книга есть, но с оговоркой
+        return "⚠️ " + line + "; с оговоркой: " + "; ".join(c[:120] for c in caveats[:3])
+    return line
 
 
 def fbo_buyer_line(payload, now=None):

@@ -33,8 +33,11 @@ DEDUCTION_PREFIXES = (
 )
 # Виды «прочих» удержаний, уже виденные в отчёте (апрель … сентябрь 2026): считаются в «Прочее» молча; остальные — вслух.
 KNOWN_OTHER_PREFIXES = ("Предоставление услуг по подписке «Джем»", "Витрина Магазина", "Списание за отзыв")
-# Фильтр PostgREST для строк аванса и возврата (вся история читается отдельно: аванс июня нужен окну июля).
+# Фильтр PostgREST для строк аванса и возврата. С WB-16 §1 вся история НЕ читается (seq scan ~330 тыс. строк флапал 57014 на
+# границе 8 с, книга 10-01 вышла без нетто): аванс и возврат берутся из строк отчёта, которые лист уже прочитал; возврат в окне
+# без аванса (нетто < 0) — аванс лежит раньше окна, его дочитывают по индексу rr_date не глубже ADVANCE_LOOKBACK_DAYS до окна.
 REVIEW_POINTS_LIKE = "*Баллы за отзывы*"
+ADVANCE_LOOKBACK_DAYS = 120   # договор WB-16 §1: единственная пара в истории — аванс 30.06 → возврат 22.07 (22 дня); квартал с запасом
 
 PACKAGING_SUBJECTS = frozenset({"Упаковки для украшений"})
 BALANCE_PAYMENT = "Баланс"
@@ -105,6 +108,20 @@ class DeductionTally:
         unknown = "; незнакомые виды «прочего»: " + (", ".join(f"«{n}» {v:,.2f}" for n, v in sorted(self.unknown.items(), key=lambda kv: -abs(kv[1])))
                                                      if self.unknown else "нет")
         return "удержания по видам: " + ", ".join(parts) + unknown
+
+
+def is_review_points_row(row):
+    return classify_deduction(row.get("bonus_type_name")) in (REVIEW_ADVANCE, REVIEW_REFUND)
+
+
+def review_points_rows(rows):
+    """Строки аванса «Баллы за отзывы» и его возврата среди строк отчёта (bonus_type_name есть в SELECT обоих читателей с WB-14)."""
+    return [r for r in rows if is_review_points_row(r)]
+
+
+def refunds_without_advance(net):
+    """Дни возврата, где нетто < 0: возврат больше известных авансов — аванс лежит раньше прочитанных строк."""
+    return {d: v for d, v in net.items() if v < Z}
 
 
 def review_advance_net(rows, day_fn):

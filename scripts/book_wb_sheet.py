@@ -47,11 +47,12 @@ def build_wb_daily(month, date_to, sb=None, snapshot=None, today=None):
         ads_note = f"реклама не получена: {error}"
     cost_fn = lambda code, size: wb_report.unit_cost_for(exact, uniform, code, size, "base")  # noqa: E731
     outside, excluded = {}, {}
-    try:   # WB-14: нетто аванса «Баллы за отзывы» в день возврата — одна строка чтения; нет — лист без нетто, сказано в заметках
-        advance_net, _open = wb_report.advance_net_by_day(sb)
-        advance_note = ""
-    except Exception as error:  # noqa: BLE001
-        advance_net, advance_note = {}, f"аванс «Баллы за отзывы» не прочитан: {str(error)[:120]}"
+    ainfo = {}
+    try:   # WB-16 §1: нетто аванса «Баллы за отзывы» — из тех же строк окна; аванс раньше окна дочитывается по индексу rr_date
+        advance_net, _open = wb_report.advance_net_by_day(sb, rows, d1, info=ainfo)
+        advance_note = wb_report.advance_info_text(ainfo)
+    except Exception as error:  # noqa: BLE001 — упала только дочитка; лист без нетто, сказано в заметках
+        advance_net, advance_note = {}, f"аванс «Баллы за отзывы» не прочитан: {str(error)[:120]} — нетто аванса в «Прочее» не добавлено"
     daily = wb_report.build_daily(rows, days, cost_fn, ads_by_day, today, ads_known, outside, advance_net=advance_net, excluded=excluded)
     total = wb_report.total_row(daily)
     young = [r["date"] for r in daily if r.get("young")]

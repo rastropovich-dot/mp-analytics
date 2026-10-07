@@ -482,14 +482,20 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
         if not a["brand"] and r.get("brand_name"):
             a["brand"] = r["brand_name"]
         _add_report_row(a, r, exact, uniform)
-    # аванс «Баллы за отзывы»: нетто — в день возврата, строкой «(без товара)» (аванс и возврат сами в «прочее» не идут)
-    if advance_rows is None and hasattr(sb, "table"):
-        try:
-            advance_rows = wbm.load_review_advance_rows(sb)
-        except Exception as error:  # noqa: BLE001 — без нетто «Прочее» дня возврата занижено; сказано вслух
-            print(f"аванс «Баллы за отзывы» не прочитан: {str(error)[:160]} — нетто аванса в «Прочее» не добавлено", flush=True)
-            advance_rows = []
-    advance_net, advance_open = rules.review_advance_net(advance_rows or [], wbm.row_day)
+    # аванс «Баллы за отзывы»: нетто — в день возврата, строкой «(без товара)» (аванс и возврат сами в «прочее» не идут).
+    # WB-16 §1: строки аванса/возврата — из тех же rows (отдельного чтения всей истории нет); аванс раньше окна — дочитка по
+    # индексу rr_date (advance_net_by_day); advance_rows — для тестов
+    ainfo = {}
+    if advance_rows is None:
+        advance_rows = rules.review_points_rows(rows)
+        lookback_sb = sb if hasattr(sb, "table") else None
+    else:
+        lookback_sb = None
+    try:
+        advance_net, advance_open = wbm.advance_net_by_day(lookback_sb, advance_rows, d1, info=ainfo)
+    except Exception as error:  # noqa: BLE001 — упала только дочитка аванса раньше окна; нетто без неё, сказано вслух
+        print(f"аванс «Баллы за отзывы» не прочитан (дочитка раньше окна): {str(error)[:160]} — нетто аванса в «Прочее» не добавлено", flush=True)
+        advance_net, advance_open = wbm.advance_net_by_day(None, advance_rows, d1, info=ainfo)
     advance_in_window = {d: v for d, v in advance_net.items() if d1 <= d <= d2}
     for day, v in advance_in_window.items():
         a = acc.get((day, None))
@@ -546,6 +552,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     cashback_total = sum((v for d, v in ads_cashback_by_day.items() if d1 <= d <= d2), Z)
     print(f"правила WB-14: {tally.text()}; нетто аванса «Баллы за отзывы» в окне {', '.join(f'{d} {v:,.2f}' for d, v in sorted(advance_in_window.items())) or 'нет'}"
           + (f", открытый аванс без возврата {advance_open:,.2f}" if advance_open else "")
+          + f"; {wbm.advance_info_text(ainfo)}"
           + f"; реклама за кэшбэк WB (справочно, не в форме) {cashback_total:,.2f}; упаковка исключена: строк {pack['rows']}, продажи {pack['sales']:,.2f}, "
           f"штук {pack['qty']}, nmId {sorted(pack['nm_ids']) or '—'}", flush=True)
     missing = sorted({nm for (_d, nm), a in acc.items() if nm is not None and not (a["subject"] or nm_subject.get(nm) or products.get(nm, {}).get("subject"))})
@@ -577,7 +584,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                       "unidentified": {k: (sorted(v) if isinstance(v, set) else v) for k, v in unidentified.items()},
                       "excluded": {"packaging": {k: (sorted(v) if isinstance(v, set) else v) for k, v in pack.items()},
                                    "deductions": dict(tally.by_kind), "deduction_rows": dict(tally.rows), "unknown_deductions": dict(tally.unknown),
-                                   "advance_net": advance_in_window, "advance_open": advance_open, "ads_cashback": cashback_total,
+                                   "advance_net": advance_in_window, "advance_open": advance_open, "advance_info": ainfo, "ads_cashback": cashback_total,
                                    "tally_text": tally.text()}})
     return out
 
@@ -1089,7 +1096,7 @@ def main(argv=None):
     nm_rows = load_ads_nm_rows(sb, d1, d2) if ads_by_day is not None else []
     ads_nm_by_day = nm_weights(nm_rows, split["advert_day"], "balance") if split else {}
     cashback_nm = nm_weights(nm_rows, split["advert_day"], "other") if split else {}
-    advance_rows = wbm.load_review_advance_rows(sb)
+    advance_rows = rules.review_points_rows(report_rows)   # WB-16 §1: из прочитанных строк окна, не отдельным чтением
     bstats = {}
     rows = build_rows(args.month_from, args.month_to, args.date_to, sb, rows=report_rows, costs=costs, ads_by_day=ads_by_day, products=products, ads_nm_by_day=ads_nm_by_day, stats=bstats,
                       ads_cashback_by_day=(split or {}).get("other", {}), cashback_nm_by_day=cashback_nm, advance_rows=advance_rows)
@@ -1140,7 +1147,7 @@ def main(argv=None):
                 print(f"  {m}: {d['numerator']:,.2f} / {d['denominator']:,.2f} = {d['rate']}" + ("" if d["mature"] else f" — незрелый, зрел с {d['mature_from']}"))
         print(f"строк отчёта для коэффициента {len(rate_rows)} (rr_date {args.month_from}-01 … {today}), месяцев заказов {len(obm)}")
     if args.check:
-        advance_net, _open = rules.review_advance_net(advance_rows, wbm.row_day)
+        advance_net, _open = wbm.advance_net_by_day(sb, advance_rows, d1)
         table, _m, (ppvz, rebill) = bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day, advance_net=advance_net)
         failures = print_bridge(table, d1, d2)
         failures += print_bridge_report(bridge_to_report(rows, report_rows, d1, d2, bstats["excluded"], split), d1, d2)

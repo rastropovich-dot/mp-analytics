@@ -145,6 +145,9 @@ def entry_points():
     named = {"run_daily_pipeline.py", "alerts_telegram.py", "scripts/report_finrez.py", "scripts/report_finrez_wb.py",
              "scripts/report_ozon_month.py", "scripts/report_wb_month.py", "scripts/send_ozon_month_report.py", "scripts/book_wb_sheet.py"}
     skip_dirs = {"venv", ".git", "tests", "cabinets", "data", "logs", "knowledge", "spec", "snapshots", "docs", "sql", "ops"}
+    # Эти два ходят в базу не клиентом PostgREST по SUPABASE_URL, а Management API по ref ПРОФИЛЯ (--cabinet явный, «all» без karatov,
+    # karatov только с --allow-karatov) — guard по SUPABASE_URL им не о чем: базу выбирает код кабинета, не окружение.
+    management_api_only = {"scripts/db_migrate.py", "scripts/db_schema_snapshot.py"}
     found = {}
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
@@ -152,6 +155,8 @@ def entry_points():
             if not fn.endswith(".py") or fn == "cabinet.py":
                 continue
             rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
+            if rel in management_api_only:
+                continue
             src = open(os.path.join(dirpath, fn), encoding="utf-8").read()
             reasons = []
             if re.search(r"create_client\(", src):
@@ -385,6 +390,82 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
         fp = self.mods["finrez_pivots"]
         for spec in fp.SPECS:
             self.assertIn(os.path.join("data", "rbh1", "owner_finrez_"), spec["owner"])
+
+
+class FakeTable:
+    def __init__(self, rows=None, error=None):
+        self.rows, self.error = rows, error
+
+    def select(self, *_a, **_k):
+        return self
+
+    order = limit = select
+
+    def execute(self):
+        if self.error:
+            raise RuntimeError(self.error)
+        return type("R", (), {"data": self.rows})()
+
+
+class FakeClient:
+    def __init__(self, rows=None, error=None):
+        self._t = FakeTable(rows, error)
+
+    def table(self, _name):
+        return self._t
+
+
+class SchemaGuardTests(unittest.TestCase):
+    """5.2б, поправка советника 1: guard версий молчит без таблицы schema_migrations, останавливает только при отставании базы."""
+
+    LIVE = env(SUPABASE_URL=KARATOV_URL)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        for fn in ("00000000_baseline.sql", "20260505_a.sql", "20260506_b.sql"):
+            open(os.path.join(self.tmp.name, fn), "w").write("select 1;")
+        self.prof = cabinet.profile("karatov")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_untracked_table_missing_is_silent(self):
+        state, msg, missing = cabinet.schema_status(FakeClient(error="PGRST205: Could not find the table 'public.schema_migrations'"), self.prof, self.tmp.name, self.LIVE)
+        self.assertEqual((state, missing), ("untracked", []))
+        self.assertIn("не отслеживаются", msg)
+        self.assertEqual(cabinet.assert_schema(FakeClient(error="42P01 relation does not exist"), self.prof, self.tmp.name, self.LIVE)[:5], "схема")
+
+    def test_behind_stops_pipeline_with_file_names(self):
+        client = FakeClient(rows=[{"filename": "00000000_baseline.sql"}, {"filename": "20260505_a.sql"}])
+        state, msg, missing = cabinet.schema_status(client, self.prof, self.tmp.name, self.LIVE)
+        self.assertEqual((state, missing), ("behind", ["20260506_b.sql"]))
+        self.assertIn("20260506_b.sql", msg)
+        self.assertIn("db_migrate.py --cabinet karatov --apply", msg)
+        with self.assertRaises(SystemExit) as cm:
+            cabinet.assert_schema(client, self.prof, self.tmp.name, self.LIVE)
+        self.assertIn("отстаёт от кода", str(cm.exception))
+
+    def test_ok_and_extra_rows_and_error_do_not_stop(self):
+        rows = [{"filename": f} for f in ("00000000_baseline.sql", "20260505_a.sql", "20260506_b.sql", "20260507_deleted.sql")]
+        state, msg, _ = cabinet.schema_status(FakeClient(rows=rows), self.prof, self.tmp.name, self.LIVE)
+        self.assertEqual(state, "ok")
+        self.assertIn("все 3 файлов", msg); self.assertIn("1 записей без файла", msg)
+        state, msg, _ = cabinet.schema_status(FakeClient(error="ConnectionError: boom"), self.prof, self.tmp.name, self.LIVE)
+        self.assertEqual(state, "error"); self.assertIn("продолжаю", msg)
+        self.assertEqual(cabinet.assert_schema(FakeClient(error="ConnectionError: boom"), self.prof, self.tmp.name, self.LIVE), msg)
+
+    def test_test_host_is_skipped_without_touching_the_client(self):
+        state, _msg, _ = cabinet.schema_status(FakeClient(error="must not be called"), self.prof, self.tmp.name, env(SUPABASE_URL="http://supabase.tests.invalid"))
+        self.assertEqual(state, "skipped")
+
+    def test_pipeline_and_alert_are_wired(self):
+        pipeline = open(os.path.join(ROOT, "run_daily_pipeline.py"), encoding="utf-8").read()
+        i_banner, i_schema, i_start = pipeline.find("print(cabinet.banner(CABINET))"), pipeline.find("cabinet.assert_schema("), pipeline.find("🚀 Запуск ежедневного пайплайна")
+        self.assertTrue(0 < i_banner < i_schema < i_start, (i_banner, i_schema, i_start))
+        alert = open(os.path.join(ROOT, "alerts_telegram.py"), encoding="utf-8").read()
+        i_def, i_status, i_kpi = alert.find("def build_message("), alert.find("cabinet.schema_status(supabase, CABINET)"), alert.find("kpi_rows = get_kpi_rows(days_back=30)")
+        self.assertTrue(0 < i_def < i_status < i_kpi, (i_def, i_status, i_kpi))
+        self.assertIn('if schema_state == "behind":', alert)
 
 
 class ShellExportsTests(unittest.TestCase):

@@ -79,10 +79,10 @@ def project_ref(prof):
     return host.split(".")[0]
 
 
-def management_runner(token, ref, timeout=120):
-    """Функция query → список строк (dict). Каждый запрос — read_only; ошибка API — именованная, тело ответа без токена."""
+def management_runner(token, ref, timeout=120, read_only=True):
+    """Функция query → список строк (dict). По умолчанию read_only (снимок); db_migrate зовёт с read_only=False. Ошибка API — именованная, без токена."""
     def run(query):
-        body = json.dumps({"query": query, "read_only": True}).encode("utf-8")
+        body = json.dumps({"query": query, "read_only": read_only}).encode("utf-8")
         req = urllib.request.Request(API.format(ref=ref), data=body, method="POST",
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"})
         try:
@@ -203,8 +203,8 @@ def baseline_sql(snap, created, title="базовый снимок схемы pu
         cons.setdefault(r["table_name"].replace("public.", "").strip('"'), []).append(r)
     con_names = constraint_name_set(snap)
     lines = [f"-- {title}: сгенерировано scripts/db_schema_snapshot.py из снимка {snap['meta'].get('cabinet')} {snap['meta'].get('taken_at')}",
-             "-- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных.",
-             "begin;", ""]
+             "-- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных;",
+             "-- транзакцию открывает scripts/db_migrate.py (файл за файлом вместе со строкой schema_migrations).", ""]
     tables = [t["table_name"] for t in snap["tables"] if t["table_type"] != "VIEW" and t["table_name"].lower() not in created["table"]]
     seqs = set()
     for t in tables:
@@ -263,13 +263,24 @@ def baseline_sql(snap, created, title="базовый снимок схемы pu
         for r in rows:
             vals = ", ".join("null" if r[c] is None else (str(r[c]) if isinstance(r[c], (int, float)) else "'" + str(r[c]).replace("'", "''") + "'") for c in cols)
             lines.append(f"insert into public.\"marketplaces\" ({', '.join(chr(34) + c + chr(34) for c in cols)}) values ({vals}) on conflict do nothing;")
-    lines += ["", "commit;", ""]
+    lines += [""]
     return "\n".join(lines)
 
 
 # ---------- сравнение снимков ----------
 
+IGNORE_TABLES = {"schema_migrations"}   # служебная таблица db_migrate: есть там, где применяли миграции, в сравнение схем не входит
+
+
+def _table_of(r):
+    for k in ("table_name", "tablename", "conrelid"):
+        if k in r:
+            return str(r[k]).replace("public.", "").strip('"')
+    return None
+
+
 def _key_rows(snap, kind):
+    snap = {k: ([r for r in v if _table_of(r) not in IGNORE_TABLES] if isinstance(v, list) else v) for k, v in snap.items()}
     if kind == "columns":
         return {(r["table_name"], r["column_name"]): (column_type(r), r["is_nullable"], r.get("column_default"), str(r.get("is_identity"))) for r in snap["columns"]}
     if kind == "tables":

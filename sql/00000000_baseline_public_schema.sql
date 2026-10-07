@@ -1,6 +1,6 @@
 -- базовый снимок схемы public: сгенерировано scripts/db_schema_snapshot.py из снимка karatov 2026-10-07T21:16:32+00:00
--- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных.
-begin;
+-- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных;
+-- транзакцию открывает scripts/db_migrate.py (файл за файлом вместе со строкой schema_migrations).
 
 create sequence if not exists public."ad_costs_id_seq";
 create sequence if not exists public."alerts_id_seq";
@@ -363,5 +363,3 @@ grant DELETE, INSERT, SELECT, UPDATE on public."stock_daily" to service_role;
 insert into public."marketplaces" ("id", "code", "name") values (1, 'ozon', 'Ozon') on conflict do nothing;
 insert into public."marketplaces" ("id", "code", "name") values (2, 'wb', 'Wildberries') on conflict do nothing;
 insert into public."marketplaces" ("id", "code", "name") values (3, 'yandex', 'Yandex Market') on conflict do nothing;
-
-commit;

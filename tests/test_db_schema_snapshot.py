@@ -113,7 +113,8 @@ class CoverageAndBaselineTests(unittest.TestCase):
         self.assertIn('alter table public."marketplaces" enable row level security;', text)
         self.assertIn('create policy "read_all" on public."marketplaces" as permissive for select to anon using (true);', text)
         self.assertIn('grant DELETE, INSERT, SELECT, UPDATE on public."marketplaces" to service_role;', text)
-        self.assertTrue(text.startswith("-- ") and text.rstrip().endswith("commit;"))
+        self.assertTrue(text.startswith("-- "))
+        self.assertNotRegex(text, r"(?im)^\s*(begin|commit)\s*;")        # транзакцию открывает db_migrate
         self.assertIn('insert into public."marketplaces" ("id", "code") values (1, \'ozon\') on conflict do nothing;', text)
         self.assertIn("values (2, 'wb')", text)
 

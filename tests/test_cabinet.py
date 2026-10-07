@@ -177,6 +177,37 @@ def entry_points():
     return found
 
 
+class ScriptsImportCabinetAsProcessTests(unittest.TestCase):
+    """Пайплайн и алерт зовут скрипты как `python3 scripts/<файл>.py`: sys.path[0] — scripts/, корня проекта там нет. Утро 10-07:
+    send_ozon_month_report.py упал на `import cabinet` (ModuleNotFoundError), книга в Telegram не ушла. Правило: перед module-level
+    `import cabinet` в scripts/ и loaders/ корень вставлен в sys.path (или стоит try/except ImportError с запасным путём)."""
+
+    ROOT_INSERT = re.compile(r"sys\.path\.(insert\(0,|append\()\s*(ROOT|str\(REPO_ROOT\)|REPO_ROOT|os\.path\.dirname\(os\.path\.dirname|\"\.\"|'\.')")
+
+    def test_root_on_sys_path_before_import_cabinet(self):
+        bad = []
+        for d in ("scripts", "loaders"):
+            for fn in sorted(os.listdir(os.path.join(ROOT, d))):
+                if not fn.endswith(".py"):
+                    continue
+                src = open(os.path.join(ROOT, d, fn), encoding="utf-8").read()
+                m = re.search(r"^import cabinet", src, re.M)
+                if not m:
+                    continue
+                if not (self.ROOT_INSERT.search(src[:m.start()]) or "except ImportError" in src[max(0, m.start() - 300):m.start() + 300]):
+                    bad.append(f"{d}/{fn}")
+        self.assertEqual(bad, [], "import cabinet без корня в sys.path:\n" + "\n".join(bad))
+
+    def test_send_script_starts_as_a_process_from_scripts_dir(self):
+        import subprocess
+        env = dict(os.environ, MP_CABINET="karatov", SUPABASE_URL="http://supabase.tests.invalid", SUPABASE_SERVICE_KEY="test",
+                   TELEGRAM_BOT_TOKEN="t", TELEGRAM_CHAT_ID="1")
+        r = subprocess.run([sys.executable, os.path.join("scripts", "send_ozon_month_report.py"), "--help"], cwd=ROOT, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+        self.assertNotIn("No module named", r.stderr)
+
+
 class EntryPointsHaveGuardTests(unittest.TestCase):
     def test_every_entry_point_calls_assert_env_before_creating_a_client(self):
         found = entry_points()

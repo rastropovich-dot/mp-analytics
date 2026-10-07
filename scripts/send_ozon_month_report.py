@@ -36,6 +36,7 @@ import requests
 from dotenv import load_dotenv
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)   # алерт зовёт скрипт как `python3 scripts/…` — корня проекта в sys.path нет (утро 10-07: ModuleNotFoundError cabinet)
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента

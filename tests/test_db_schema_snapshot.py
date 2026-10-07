@@ -114,6 +114,8 @@ class CoverageAndBaselineTests(unittest.TestCase):
         self.assertIn('create policy "read_all" on public."marketplaces" as permissive for select to anon using (true);', text)
         self.assertIn('grant DELETE, INSERT, SELECT, UPDATE on public."marketplaces" to service_role;', text)
         self.assertTrue(text.startswith("-- ") and text.rstrip().endswith("commit;"))
+        self.assertIn('insert into public."marketplaces" ("id", "code") values (1, \'ozon\') on conflict do nothing;', text)
+        self.assertIn("values (2, 'wb')", text)
 
     def test_identity_column(self):
         c = [c for c in snap()["columns"] if c["column_name"] == "sku"][0]

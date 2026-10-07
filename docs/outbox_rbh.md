@@ -7,6 +7,126 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-08 (ночь), §5.2а ВЫПОЛНЕН по слову: снимок схемы KARATOV снят (17 `select` к каталогу, данные не читались, db_writes 0) — 40 таблиц и вьюх, 636 колонок, 58 ограничений, 91 индекс, 17 последовательностей; датированные файлы `sql/` не создают 15 таблиц + 1 вьюху (ждали 11: ещё 4 таблицы панели без единого обращения в коде); базовый DDL — `sql/00000000_baseline_public_schema.sql` (367 строк) в ветке; дальше §5.2 — шаги владельца списком; **по процессу: в `main` отныне только мержем по слову, прямых push нет** — всё ниже лежит в ветке `multi-cabinet`
+
+**Про токен — не там, где сказано, файлы не правил.** Общий `~/mp-analytics-rbh/.env` не менялся с 30.09 22:45 (в нём только пустые
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`; TextEdit открыт — похоже, буфер с токеном не сохранён). Токен нашёлся в `.env.rbh1` и `.env.rbh2`
+(оба изменены 08.10 00:13) **под именем `SUPABASE_SERVICE_KEY`**: 44 символа, формат `sbp_…` — это персональный токен Management API, а не
+`service_role` проекта (тот — JWT `eyJ…`). Снимок снял, передав значение из `.env.rbh1` в окружение дочернего процесса (не печаталось, не
+сохранялось). **Просьба:** перенести его строкой `SUPABASE_ACCESS_TOKEN=…` в общий `.env` и сохранить файл, а `SUPABASE_SERVICE_KEY=` в
+`.env.rbh1` / `.env.rbh2` очистить — туда позже лягут `service_role` ключи проектов РБХ (с `sbp_` в этом поле клиент PostgREST кабинета не
+заработает, guard этого не поймает — он сверяет только хост).
+
+**Запросов 17, не 16:** 15 по видам объектов + справочник `marketplaces` (3 строки: ozon, wb, yandex) + повтор запроса грантов: первый вариант
+через `information_schema.role_table_grants` вернул 0 строк (она показывает только гранты ролям, в которые входит текущая роль), заменён на
+`has_table_privilege` по трём ролям — 120 строк. Снимок: `data/schema/karatov_20261007T211658Z.json` (вне git, `data/schema/` добавлен в
+`.gitignore`). Проект: `mp-analytics`, регион **eu-central-1**, Postgres 17.6, создан 2026-04-25 (метаданные `GET /v1/projects/{ref}`).
+
+### Сводка по видам объектов (схема `public`)
+
+| вид | всего | создают датированные файлы | не создают (→ базовый файл) |
+|---|---:|---:|---|
+| таблицы | 38 | 23 | **15**: `ad_costs`, `alerts`, `daily_marketplace_kpi`, `daily_sku_kpi`, `intraday_snapshots`, `marketplace_buyouts`, `marketplace_expenses`, `marketplace_orders`, `marketplace_orders_analytics`, `marketplace_returns`, `marketplaces`, `prices_daily`, `sku_catalog`, `sku_costs`, `stock_daily` |
+| представления | 2 | 1 (`wb_funnel_products_latest`) | **1**: `v_ozon_orders_daily_by_schema` |
+| материализованные | 0 | — | — |
+| функции | 1 | 1 (`ozon_statistics_json_usage_quota_windows`) | 0 |
+| колонки | 636 | — | 206 (у 15 таблиц + 4 у вьюхи) |
+| ограничения | 58 (PK 38, unique 19, check 1; **FK 0**) | — | 30 у таблиц панели — внутри их `create table` |
+| индексы | 91 | 33 | 58 индексов ограничений идут с таблицами; **3** отдельных: `intraday_snapshots_unique_idx`, `marketplace_expenses_unique_idx`, `marketplace_orders_unique_idx` |
+| последовательности | 17 | 2 (serial в `ozon_performance_statistics_json_usage`, `ozon_search_promo_selected_cpo_orders`) | **15** (`<таблица>_id_seq` у таблиц панели) |
+| триггеры / политики RLS | 0 / 0 | — | — |
+| RLS включён | 13 таблиц (все — панели, без политик) | 0 | 13 строк `enable row level security` |
+| гранты | 120 (3 роли × 40 объектов, у всех `DELETE, INSERT, SELECT, UPDATE`) | — | 45 строк для 15 таблиц; у остальных — умолчания Supabase при создании |
+| расширения | 5: `pg_stat_statements`, `pgcrypto`, `plpgsql`, `supabase_vault`, `uuid-ossp` | — | все — штатный набор нового проекта, в файл не входят |
+| строки справочника | `marketplaces` — 3 | — | 3 `insert … on conflict do nothing` |
+
+**Пять таблиц сверх ожидаемых одиннадцати:** `ad_costs`, `alerts`, `marketplace_returns`, `prices_daily`, `sku_costs` — grep по `*.py` вне `tests/`
+не находит ни одного обращения (`alerts` — одно совпадение слова, не таблицы); `reltuples` у них не смотрел отдельно. Это наследие панели
+апреля. В базовый файл включены как есть — чтобы `--compare` с KARATOV дал 0; **решение владельцу:** оставить (копия 1:1, умолчание) или
+выбросить из базового файла (тогда сравнение их игнорирует и у РБХ их не будет — отдельная правка `--compare`).
+
+**Замечание по безопасности (не чинил, обоих кабинетов касается):** роли `anon` и `authenticated` имеют полные права DML на всех 40 объектах
+(умолчания Supabase), RLS включён только на 13 таблицах панели и без политик (там `anon` ничего не видит), **на 27 таблицах из `sql/` RLS
+выключен** — публичный `anon`-ключ даёт на них чтение и запись через PostgREST. Наш код ходит `service_role`, которому RLS не помеха.
+Предложение на отдельное решение: `revoke all on all tables in schema public from anon, authenticated` (и default privileges) в обеих базах —
+на ночь и книги не влияет.
+
+### Объект → датированный файл `sql/` (все 40)
+
+| объект | вид | колонок | датированный файл `sql/` |
+|---|---|---:|---|
+| `ad_costs` | таблица | 14 | **—** (базовый файл) |
+| `alerts` | таблица | 13 | **—** (базовый файл) |
+| `article_unit_costs` | таблица | 18 | `20260914_create_article_unit_costs.sql` |
+| `daily_marketplace_kpi` | таблица | 26 | **—** (базовый файл) |
+| `daily_sku_kpi` | таблица | 30 | **—** (базовый файл) |
+| `intraday_snapshots` | таблица | 11 | **—** (базовый файл) |
+| `marketplace_buyouts` | таблица | 16 | **—** (базовый файл) |
+| `marketplace_expenses` | таблица | 8 | **—** (базовый файл) |
+| `marketplace_orders` | таблица | 15 | **—** (базовый файл) |
+| `marketplace_orders_analytics` | таблица | 8 | **—** (базовый файл) |
+| `marketplace_returns` | таблица | 10 | **—** (базовый файл) |
+| `marketplaces` | таблица | 3 | **—** (базовый файл) |
+| `ozon_accrual_daily_types` | таблица | 6 | `20260921_create_ozon_accrual_daily_types.sql` |
+| `ozon_daily_sku_ad_attribution` | таблица | 20 | `20260506_create_ozon_daily_sku_organic.sql` |
+| `ozon_daily_sku_organic` | таблица | 16 | `20260506_create_ozon_daily_sku_organic.sql` |
+| `ozon_daily_sku_total_orders` | таблица | 9 | `20260506_create_ozon_daily_sku_total_orders.sql` |
+| `ozon_organic_reconciliation_issues` | таблица | 20 | `20260506_create_ozon_organic_reconciliation_issues.sql` |
+| `ozon_performance_daily_load_status` | таблица | 24 | `20260506_create_ozon_performance_daily_load_status.sql` |
+| `ozon_performance_statistics_json_usage` | таблица | 20 | `20260526_create_ozon_statistics_json_usage.sql` |
+| `ozon_posting_status_log` | таблица | 13 | `20260916_create_ozon_posting_status_log.sql` |
+| `ozon_product_identity` | таблица | 18 | `20260506_create_ozon_product_identity.sql` |
+| `ozon_products` | таблица | 16 | `20260924_create_ozon_products.sql` |
+| `ozon_realization_by_day` | таблица | 26 | `20260915_create_ozon_realization_by_day.sql` |
+| `ozon_search_promo_selected_cpo_orders` | таблица | 27 | `20260511_create_ozon_search_promo_selected_cpo_orders.sql` |
+| `pipeline_runtime_state` | таблица | 6 | `20260505_create_pipeline_runtime_state.sql` |
+| `prices_daily` | таблица | 12 | **—** (базовый файл) |
+| `sku_catalog` | таблица | 12 | **—** (базовый файл) |
+| `sku_costs` | таблица | 8 | **—** (базовый файл) |
+| `sku_decision_daily_input` | таблица | 34 | `20260506_create_sku_decision_daily_input.sql` |
+| `stock_daily` | таблица | 15 | **—** (базовый файл) |
+| `stock_data_quality_issues` | таблица | 18 | `20260506_create_stock_data_quality_issues.sql` |
+| `v_ozon_orders_daily_by_schema` | вьюха | 4 | **—** (базовый файл) |
+| `wb_ad_spend_daily` | таблица | 12 | `20260923_create_wb_ad_spend_daily.sql` |
+| `wb_ad_spend_nm_daily` | таблица | 18 | `20260924_create_wb_ad_spend_nm_daily.sql` |
+| `wb_buyout_cohort_daily` | таблица | 13 | `20260926_create_wb_buyout_cohort.sql` |
+| `wb_buyout_cohort_sku_daily` | таблица | 12 | `20260926_create_wb_buyout_cohort.sql` |
+| `wb_funnel_products_current` | таблица | 8 | `20260928_create_wb_funnel_products_current.sql` |
+| `wb_funnel_products_daily` | таблица | 24 | `20260924_create_wb_funnel_products_daily.sql` |
+| `wb_funnel_products_latest` | вьюха | 8 | `20260926_create_wb_funnel_products_latest.sql` |
+| `wb_sales_report_rows` | таблица | 45 | `20260923_create_wb_sales_report_rows.sql` |
+
+### Базовый файл `sql/00000000_baseline_public_schema.sql` (в ветке, 367 строк)
+
+Порядок: 15 `create sequence` → 15 `create table if not exists` (колонки с типами, умолчаниями, `not null`; PK / unique / check как именованные
+ограничения внутри) → 3 `create unique index if not exists` → 1 `create or replace view` → 13 `alter table … enable row level security` → 45
+`grant` → 3 `insert into marketplaces … on conflict do nothing`; всё в одной транзакции. Внешних ключей, триггеров, функций, политик у объектов
+панели нет. Префикс `00000000_` датированным файлом не считается (`DATED_SQL`, тест: 27 / 1 / 1 как было) — `db_migrate` применит его первым.
+Правильность DDL проверяется только §5.2: базовый + 42 датированных на пустой `rbh1` → снимок → `--compare` = 0.
+
+### §5.2 — что создать владельцу и в каком порядке (каждый шаг — по слову, между шагами мой отчёт)
+
+1. **Токен и ключи (без создания):** `SUPABASE_ACCESS_TOKEN=` в общий `.env` (сохранить файл), `SUPABASE_SERVICE_KEY=` в `.env.rbh1` /
+   `.env.rbh2` очистить — см. выше.
+2. **Два проекта Supabase** (панель → New project): организация та же, что у `mp-analytics`; имена `mp-analytics-rbh1` и `mp-analytics-rbh2`;
+   регион **eu-central-1** (как у KARATOV); пароль базы — любой, нам не нужен (ходим через PostgREST и Management API); план — как у KARATOV.
+   После создания из Settings → API в `.env.rbh1` / `.env.rbh2`: `SUPABASE_URL=` (Project URL) и `SUPABASE_SERVICE_KEY=` (service_role,
+   `eyJ…`). Сказать «проекты есть» — дальше моё: хосты в `cabinets/rbh1.py` / `rbh2.py` (`SUPABASE_HOST`), проверка `cabinet.assert_env` под
+   `MP_CABINET=rbh1` / `rbh2`, одно чтение `select 1`-уровня через Management API на каждый проект (пустая схема — 0 таблиц) → отчёт.
+3. **Мой код до записи (слова не требует):** `scripts/db_migrate.py` по плану 5.2б — таблица `schema_migrations`, план «базовый + датированные
+   минус применённые», `--apply` через Management API файл за файлом в транзакции; тесты на fixtures; `cabinet.assert_schema` — guard версий
+   (молчит без таблицы — поправка советника 1).
+4. **Слово на `db_migrate --cabinet rbh1 --apply`:** 1 + 42 файла на пустую базу `rbh1` (≈ 43 запроса DDL + 43 строки `schema_migrations`);
+   затем `db_schema_snapshot --cabinet rbh1` и `--compare` с снимком KARATOV — **расхождений 0** (или список и правка базового файла) → отчёт.
+5. **Слово на то же для `rbh2`.**
+6. **Отдельно, позже:** засев `schema_migrations` в KARATOV (43 строки + маркер базового) и мерж guard версий — поправка советника 1;
+   чаты Telegram, ключи, Render — 5.7 (3) … (5) как в плане 09-30.
+
+Готово к мержу по слову в составе ветки: скрипт снимка (10-07, уже в `main` — прямым push, это последний такой), сегодняшние правки
+(`has_table_privilege`, строки `marketplaces` в базовом файле, префикс `00000000_`), базовый файл, `.gitignore`; набор 1 278 OK. `git log main..HEAD` — ниже
+после коммита.
+
+---
 ## 2026-10-07 (ночь), §5.2а — скрипт снимка схемы написан и покрыт тестами (`scripts/db_schema_snapshot.py`, 15 тестов, набор 1 278 OK); к базе KARATOV НЕ ходил — ждёт `SUPABASE_ACCESS_TOKEN` в общем `.env` и слова
 
 По плану 10-06 (ночь): код — следующим шагом, запуск против базы — по слову. Код есть, запуска не было: без токена скрипт выходит со строкой

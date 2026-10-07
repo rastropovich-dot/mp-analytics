@@ -31,7 +31,8 @@ import cabinet  # noqa: E402  — только профиль (ref и катал
 
 API = "https://api.supabase.com/v1/projects/{ref}/database/query"
 SQL_DIR = os.path.join(ROOT, "sql")
-DATED_SQL = re.compile(r"^\d{8}_.*\.sql$")
+BASELINE_PREFIX = "00000000_"                       # базовый файл применяется первым и датированным не считается
+DATED_SQL = re.compile(r"^(?!00000000_)\d{8}_.*\.sql$")
 ROLES = ("anon", "authenticated", "service_role")
 
 QUERIES = {
@@ -54,8 +55,13 @@ QUERIES = {
             "join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' order by 1"),
     "policies": ("select tablename as table_name, policyname, cmd, permissive, roles::text as roles, qual, with_check "
                  "from pg_policies where schemaname = 'public' order by 1, 2"),
-    "grants": ("select table_name, grantee, string_agg(privilege_type, ',' order by privilege_type) as privileges "
-               "from information_schema.role_table_grants where table_schema = 'public' and grantee in ('anon', 'authenticated', 'service_role') "
+    # information_schema.role_table_grants показывает только гранты ролям, в которые входит текущая роль, — через Management API вышло пусто
+    # (снимок KARATOV 10-07); has_table_privilege видит всё
+    "grants": ("select c.relname as table_name, r.rolname as grantee, string_agg(p.priv, ',' order by p.priv) as privileges "
+               "from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+               "cross join (values ('anon'), ('authenticated'), ('service_role')) r(rolname) "
+               "cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p(priv) "
+               "where n.nspname = 'public' and c.relkind in ('r', 'v', 'm') and has_table_privilege(r.rolname, c.oid, p.priv) "
                "group by 1, 2 order by 1, 2"),
     "extensions": "select extname, extversion from pg_extension order by 1",
     "row_estimates": ("select c.relname as table_name, c.reltuples::bigint as rows_estimate from pg_class c "
@@ -250,6 +256,13 @@ def baseline_sql(snap, created, title="базовый снимок схемы pu
     for g in snap["grants"]:
         if g["table_name"] in tables:
             lines.append(f"grant {g['privileges'].replace(',', ', ')} on public.\"{g['table_name']}\" to {g['grantee']};")
+    rows = snap.get("marketplaces_rows") or []
+    if rows and "marketplaces" in tables:   # справочник площадок — строки тоже часть базы (test_connection.py читает его)
+        cols = list(rows[0].keys())
+        lines.append("")
+        for r in rows:
+            vals = ", ".join("null" if r[c] is None else (str(r[c]) if isinstance(r[c], (int, float)) else "'" + str(r[c]).replace("'", "''") + "'") for c in cols)
+            lines.append(f"insert into public.\"marketplaces\" ({', '.join(chr(34) + c + chr(34) for c in cols)}) values ({vals}) on conflict do nothing;")
     lines += ["", "commit;", ""]
     return "\n".join(lines)
 

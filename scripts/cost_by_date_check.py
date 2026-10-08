@@ -98,7 +98,7 @@ def main(argv=None):
     load_dotenv(os.path.join(ROOT, ".env"))
     cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-    sku2art, _uc, _f, _n, _orders = rep.load_costs(sb, rep.SNAP)
+    sku2art, _uc, _f, _n, _orders = rep.load_costs(sb, rep.SNAP, rates=False)   # приёмка сорок шестой — правило снимка без курса
     buyouts = rep.fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_units",
                         [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", args.date_from), ("lte", "buyout_date", args.date_to)],
                         ["buyout_date", "marketplace_sku"])

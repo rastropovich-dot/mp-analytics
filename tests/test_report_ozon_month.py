@@ -240,7 +240,7 @@ class CheckTests(unittest.TestCase):
         by = {t["title"]: t for t in table}
         self.assertEqual(by["Л + П по образцу − Компенсации = их Логистика + Прочее"]["diff"], D("0.00"))   # 110 − 50 против 95 − 35
         self.assertEqual(by["   то же без компенсаций: Л + П по образцу = их Л + П"]["diff"], D("50.00"))
-        self.assertEqual(by["Себестоимость (наш снимок 1С против их цен)"]["diff"], D("-50.00"))
+        self.assertEqual(by["Себестоимость (наш снимок 1С по курсу против их цен)"]["diff"], D("-50.00"))
         self.assertEqual(by["Логистика (наша статья против их строки)"]["diff"], D("5.00"))               # границу не повторяем — не провал
 
     def test_a_kopeck_off_in_an_exact_column_fails(self):

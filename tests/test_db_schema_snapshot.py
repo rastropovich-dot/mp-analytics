@@ -77,7 +77,7 @@ class SqlDirTests(unittest.TestCase):
 
     def test_real_sql_dir_matches_the_known_counts(self):
         got = dss.sql_dir_objects()
-        self.assertEqual((len(got["table"]), len(got["view"]), len(got["function"])), (27, 1, 1))   # outbox RBH 09-30: 27 таблиц, 1 вьюха, 1 функция
+        self.assertEqual((len(got["table"]), len(got["view"]), len(got["function"])), (28, 1, 1))   # outbox RBH 09-30: 27 таблиц, 1 вьюха, 1 функция; + metal_rates_1c (сорок восьмая, 10-08)
         self.assertIn("article_unit_costs", got["table"])
         self.assertNotIn("marketplace_orders", got["table"])                                       # один из 11 объектов панели
 

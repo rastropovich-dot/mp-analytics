@@ -116,6 +116,25 @@ def rate_on(series, day):
     return vs[i] if i >= 0 else None
 
 
+def k_profile_text(kcat, kfin, by_cat, by_fin, snap, digits, min_rows=0):
+    """COST_RATE_K для cabinets/<код>.py: по пробе — «*» (медиана пробы) и каждый вид изделия снимка (медиана вида, n строк в комментарии).
+    Проба → металл курса: 585 и 375 — золото, 925 — серебро (loaders/unit_cost_history.METAL_OF_FINENESS)."""
+    fmt = (lambda v: f"Decimal('{v}')")
+    lines = [f"# k по пробам и видам изделия: scripts/cost_gold_rate_check.py --k-profile --k-digits {digits} --k-min-rows {min_rows} (снимок {snap};",
+             "# k = (металл + потери) / СС, медиана). Не править руками — пересчитывать скриптом по новому снимку 1С. «*» — медиана пробы: запасной k",
+             f"# для вида, которого в снимке не было или у которого строк меньше {min_rows}.",
+             "COST_RATE_K = {"]
+    for fin in sorted(by_fin):
+        lines.append(f"    \"{fin}\": {{  # строк {len(by_fin[fin])}")
+        lines.append(f"        \"*\": {fmt(kfin[fin])},")
+        for (f, kind), v in sorted(by_cat.items(), key=lambda kv: (-len(kv[1]), kv[0][1])):
+            if f == fin and (f, kind) in kcat:
+                lines.append(f"        \"{kind}\": {fmt(kcat[(f, kind)])},  # n={len(v)}")
+        lines.append("    },")
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dir", required=True)
@@ -126,6 +145,9 @@ def main(argv=None):
     ap.add_argument("--date-from", default="2026-06-01")
     ap.add_argument("--date-to", default="2026-10-05")
     ap.add_argument("--no-db", action="store_true", help="только §2 (без базы)")
+    ap.add_argument("--k-profile", action="store_true", help="напечатать k по пробам и видам изделия последнего снимка как COST_RATE_K для профиля кабинета (сорок восьмая §2)")
+    ap.add_argument("--k-digits", type=int, default=None, help="округлить k до N знаков и в §3 тоже (как в профиле); без флага — k без округления, как в сорок седьмой")
+    ap.add_argument("--k-min-rows", type=int, default=0, help="вид изделия с меньшим числом строк в снимке k не получает (берётся «*» пробы) — и в профиле, и в §3; 0 — все виды, как в сорок седьмой")
     args = ap.parse_args(argv)
     directory = os.path.expanduser(args.dir)
     specs = [tuple(x.rsplit("=", 1)) for x in args.snapshots.split(",")]
@@ -174,6 +196,14 @@ def main(argv=None):
         by_fin[r["fineness"]].append(k)
     kcat = {key: median([x[0] for x in v]) for key, v in by_cat.items()}
     kfin = {f: median(v) for f, v in by_fin.items()}
+    if args.k_min_rows:
+        kcat = {key: v for key, v in kcat.items() if len(by_cat[key]) >= args.k_min_rows}
+    if args.k_digits is not None:
+        qk = D(1).scaleb(-args.k_digits)
+        kcat = {key: v.quantize(qk) for key, v in kcat.items()}
+        kfin = {f: v.quantize(qk) for f, v in kfin.items()}
+    if args.k_profile:
+        print(k_profile_text(kcat, kfin, by_cat, by_fin, last, args.k_digits, args.k_min_rows))
     print(f"\n§2в k_metal = (металл + потери) / СС, снимок {last}: на 1 % курса 1С металла СС меняется на k %")
     for fin in sorted(by_fin):
         q1, med, q3 = quart(by_fin[fin])
@@ -223,7 +253,7 @@ def main(argv=None):
     load_dotenv(os.path.join(ROOT, ".env"))
     cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-    sku2art, _uc, _f, _n, _orders = rep.load_costs(sb, rep.SNAP)
+    sku2art, _uc, _f, _n, _orders = rep.load_costs(sb, rep.SNAP, rates=False)   # здесь курс считается своими руками по csv, читатель — без поправки
     buyouts = rep.fetch(sb, "marketplace_buyouts", "id,buyout_date,marketplace_sku,buyouts_qty,buyouts_units",
                         [("eq", "marketplace_code", "ozon"), ("gte", "buyout_date", args.date_from), ("lte", "buyout_date", args.date_to)],
                         ["buyout_date", "marketplace_sku"])
@@ -275,6 +305,7 @@ def main(argv=None):
             tag = "no_comp"
         for P in periods:
             mon[P]["was"] += units * c; mon[P]["cat"] += units * new_cat; mon[P]["row"] += units * new_row; cnt[P][tag] += 1
+            mon[P][f"{tag}_was"] += units * c; mon[P][f"{tag}_cat"] += units * new_cat
     book = cbc.book_by_month(os.path.expanduser(args.book)) if os.path.exists(os.path.expanduser(args.book)) else {}
     manual = cbc.manual_by_month(os.path.expanduser(args.manual)) if os.path.exists(os.path.expanduser(args.manual)) else {}
     print("\nпериод | строк | СС было (правило читателей) | СС стало (k кат. × Δзолота) | Δ % | СС стало (построчно +доллар) | Δ % | фин.рез книги → стало | СС владельца: расх. было → стало | фин.рез владельца: расх. было → стало")
@@ -292,7 +323,8 @@ def main(argv=None):
         print(line)
         if b_cogs is not None and abs(b_cogs - w) > D("0.5"):
             print(f"      книга: СС {b_cogs:,.2f} ≠ «было» {w:,.2f} — книга / было = {b_cogs / w:.4f} (индекс СС 1,150 с 09-01); фин. рез. «стало» считан от СС книги")
-        print(f"      счётчики: {dict(cnt[P])}")
+        print(f"      счётчики: {dict(cnt[P])}; with_comp (F в файле {last}): {mon[P]['with_comp_was']:,.2f} → {mon[P]['with_comp_cat']:,.2f}; "
+              f"no_comp (k пробы 585 × Δзолота): {mon[P]['no_comp_was']:,.2f} → {mon[P]['no_comp_cat']:,.2f}")
     g_0901, g_1006 = rate_on(G, "2026-09-01"), rate_on(G, "2026-10-06")
     import datetime as dt
     sept = [(dt.date(2026, 9, 1) + dt.timedelta(i)).isoformat() for i in range(30)]

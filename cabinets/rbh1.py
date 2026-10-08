@@ -34,7 +34,7 @@ OWNER_AFTER_COMMISSION = ()
 OWNER_ORDERS_AFTER_COMMISSION_WB = None
 OWNER_COEF = {}
 OVERHEAD_PER_DAY = {}
-COST_INDEX = ()
+COST_RATE_K = {}                                    # k по пробам и видам (поправка СС по курсу 1С): косметика — не задано, СС снимка без поправки
 
 COST_SNAPSHOT_DATE = None
 COST_SNAPSHOT_FILE = None

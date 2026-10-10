@@ -79,17 +79,35 @@ def project_ref(prof):
     return host.split(".")[0]
 
 
-def management_runner(token, ref, timeout=120, read_only=True):
-    """Функция query → список строк (dict). По умолчанию read_only (снимок); db_migrate зовёт с read_only=False. Ошибка API — именованная, без токена."""
+# отказы СОЕДИНЕНИЯ (туннель прокси 503, DNS, обрыв до ответа) — запрос до сервера не дошёл, повтор безопасен; 10-11 прокси песочницы / VPN
+# на Mac отваливался на минуты посреди --apply. Переопределение на прогон: MP_MGMT_CONNECT_RETRIES / MP_MGMT_CONNECT_PAUSE_S.
+CONNECT_RETRIES = int(os.environ.get("MP_MGMT_CONNECT_RETRIES") or 4)
+CONNECT_RETRY_PAUSE_S = int(os.environ.get("MP_MGMT_CONNECT_PAUSE_S") or 15)
+
+
+def management_runner(token, ref, timeout=120, read_only=True, sleep=None, opener=None, log=print):
+    """Функция query → список строк (dict). По умолчанию read_only (снимок); db_migrate зовёт с read_only=False. Ошибка API — именованная, без токена.
+    URLError без HTTP-ответа (соединение не установилось) — до CONNECT_RETRIES попыток с паузой; HTTPError (сервер ответил) — не повторяется."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    opener = opener or urllib.request.urlopen
+
     def run(query):
         body = json.dumps({"query": query, "read_only": read_only}).encode("utf-8")
         req = urllib.request.Request(API.format(ref=ref), data=body, method="POST",
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.load(r)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Management API HTTP {e.code} на запросе «{query[:60]}…»: {e.read()[:300]!r}") from None
+        for attempt in range(1, CONNECT_RETRIES + 1):
+            try:
+                with opener(req, timeout=timeout) as r:
+                    data = json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f"Management API HTTP {e.code} на запросе «{query[:60]}…»: {e.read()[:300]!r}") from None
+            except (urllib.error.URLError, OSError) as e:
+                if attempt == CONNECT_RETRIES:
+                    raise RuntimeError(f"соединение с Management API не установилось за {CONNECT_RETRIES} попыток ({type(e).__name__}: {str(e)[:120]}) — запрос «{query[:60]}…» до сервера не дошёл") from None
+                log(f"  соединение: {type(e).__name__}: {str(e)[:100]} — повтор {attempt + 1} из {CONNECT_RETRIES} через {CONNECT_RETRY_PAUSE_S} с")
+                sleep(CONNECT_RETRY_PAUSE_S)
         if isinstance(data, dict) and "error" in data:
             raise RuntimeError(f"Management API: {str(data['error'])[:300]} на запросе «{query[:60]}…»")
         return data if isinstance(data, list) else data.get("rows", data.get("result", []))

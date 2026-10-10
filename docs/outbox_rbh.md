@@ -7,6 +7,48 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-11 (ночь), `db_migrate --cabinet rbh1 --apply` по слову — ВЫПОЛНЕН: 43 файла из 43 применены (3 прогона из-за сети), снимок `rbh1` снят, `--compare` с KARATOV — **210 различий, не 0**, все трёх родов и все объяснены; `rbh2` не тронут; два новых файла `sql/` лежат в ветке (не применены), три вопроса владельцу
+
+**Как шло (база `rbh1`, Management API).** Первая попытка 21:26 UTC — прокси песочницы 503 на туннеле ещё на чтении, записей 0; причина глубже:
+DNS на Mac отдавал `198.18.1.21` (fake-IP VPN-клиента), не ходил даже `github.com`. Сеть вернулась 21:32, запуск: таблица `schema_migrations`
+создана, 4 файла применены, пятый не дошёл до сервера (туннель 503) — стоп. В `management_runner` добавлен повтор **только отказов
+соединения** (запрос до сервера не дошёл — повтор безопасен; `HTTPError` не повторяется), по умолчанию 4 × 15 с, на прогон `MP_MGMT_CONNECT_RETRIES`
+/ `MP_MGMT_CONNECT_PAUSE_S` (тесты). Второй запуск: 17 файлов, затем **настоящий отказ** `20260831_add_quota_window_snapshot.sql` — HTTP 400
+`42703 column "request_count" does not exist`: функция читает колонку, которую добавляет `…add_request_kind…`, стоящий по алфавиту ПОСЛЕ;
+транзакция откатилась, записано 21. Статическая проверка порядка нашла ещё три: `20260506_add_*` (ad_attribution, perf_daily_load_status,
+quality_fields) с `alter table if exists` идут раньше своих `create` той же даты и **молча пропускались** (в `rbh1` уже стояли как
+применённые). Четыре файла переименованы с меткой порядка `_z_` (дата сохранена, в заголовке каждого — почему), соглашение — в docstring
+`db_migrate`; тест `test_real_sql_dir_order_creates_tables_before_altering_them` (цель `alter` / `index` существует к моменту файла + пара 20260831).
+Три строки пустых применений удалены из `schema_migrations` (`delete … returning` — 1 запрос), план: применено 18, ждут 25. Третий запуск
+(цикл до кода 0, повторы 12 × 20 с): **25 из 25 за 1 прогон, 21:40 UTC**. Итого запросов на запись в `rbh1`: create table 1 + 43 файла + 1 delete
+= **45**; строк `schema_migrations` **43** (`applied_by db_migrate@<Mac>`, sha256 репозитория). Отказов файлов после переименования — 0.
+
+**Снимок `rbh1`** (`data/rbh1/schema/rbh1_20261010T214037Z.json`, 15 запросов + `marketplaces`): таблиц 43 + вьюх 2 (с `schema_migrations`),
+колонок 746, ограничений 64, индексов 106, функций 1, последовательностей 20, триггеров 0, политик 0, расширений 5 (те же), грантов 45,
+`marketplaces` 3 строки. `--compare karatov_20261007T211658Z.json rbh1_…` (`schema_migrations` игнорируется): **210**, `differ` по всем видам —
+**0** (ни один общий объект не отличается); разница только «есть / нет»:
+
+| род | что | сколько | причина | что делать |
+|---|---|---:|---|---|
+| 1 | таблицы только в `rbh1`: `daily_sku_order_forecast_economics` (55 колонок), `ozon_finance_advertising_reconciliation_raw` (13), `ozon_performance_campaign_metadata` (19), `ozon_selected_cpo_xlsx_raw` (17) + колонка `article_unit_costs.analytics_group`; их PK, индексы (14), последовательности (3), RLS (4) | 4 + 1 + 5 + 14 + 3 + 4 = **131** | файлы `20260523`, `20260506_create_ozon_finance_advertising_reconciliation_raw`, `20260518`, `20260506_create_ozon_selected_cpo_xlsx_raw`, `20260916_add_analytics_group` лежат в `sql/`, но **к KARATOV никогда не применялись** (в коде вне тестов их объекты не читает никто, кроме `ozon_performance_campaign_metadata` в `ozon_performance_ads_loader.py` и `analytics_group` в `load_article_unit_costs.py` — ночь KARATOV без них проходит, пути необязательные) | **вопрос 1:** применить эти 5 файлов к KARATOV (все идемпотентны, `create table if not exists` / `add column if not exists`; это ровно случай «база отстаёт от sql/», для которого guard) — тогда 0; либо удалить объекты из `rbh1` и файлы из репозитория (переписывать историю не предлагаю) |
+| 2 | гранты только в KARATOV: 25 таблиц/вьюх из датированных файлов × `anon` / `authenticated` / `service_role` | **75** | **умолчания нового проекта Supabase другие**: в KARATOV (апрель) `alter default privileges` роли `postgres` в `public` даёт трём ролям `arwdDxtm` (полный DML), в `rbh1` (октябрь, Postgres 17.11) — только `Dxtm` (truncate / references / trigger / maintain). DDL через Management API идёт от `postgres` (проверено `current_user` в write-режиме; чтение — `supabase_read_only_user`), таблицы принадлежат `postgres` в обеих базах. Следствие серьёзнее сравнения: **`service_role` в `rbh1` не может читать и писать 29 таблиц** из датированных файлов — ночь кабинета упала бы на первом `insert` | файл `sql/20261011_grants_api_roles_public.sql` (в ветке): `grant select, insert, update, delete on all tables`, `usage, select on all sequences`, `execute on all functions` трём ролям + `alter default privileges for role postgres` на будущее — в KARATOV все операторы пустые. Revoke у `anon` / `authenticated` — следующим датированным файлом в обеих базах, по слову, как решено 10-10 |
+| 3 | unique `ozon_performance_daily_load_status_load_target_marketplace_mode_key` (+ его индекс) только в `rbh1` | **4** (constraint, index, и те же по 2 в разрезе) | `20260531` создаёт unique на (load_date, target_date, marketplace_code, mode), `20260602` ставит на те же колонки PK и снимает constraint **с другим именем** (`…_mode_unique`, `if exists`); в KARATOV `…_mode_key` сняли руками, в `rbh1` он остался | файл `sql/20261011_drop_load_status_mode_key.sql` (в ветке): `drop constraint if exists` — в KARATOV пустой |
+
+Итого 131 + 75 + 4 = 210. План `db_migrate --cabinet rbh1` теперь: применено 43, ждут 2 (новые файлы), sha256 0 расхождений. Набор **1 297 OK**.
+
+**Вопросы владельцу (задача не закончена):**
+1. Род 1: применить к KARATOV 5 файлов (`20260506_create_ozon_finance_advertising_reconciliation_raw`, `20260506_create_ozon_selected_cpo_xlsx_raw`,
+   `20260518_create_ozon_performance_campaign_metadata`, `20260523_create_daily_sku_order_forecast_economics`, `20260916_add_analytics_group_to_article_unit_costs`)
+   — 5 запросов DDL в базу KARATOV через `db_migrate --cabinet karatov --allow-karatov --apply`? Это первая запись в схему KARATOV из кода и одновременно
+   создание `schema_migrations` там (с ней — засев 43 + 2 строк `--mark-applied`); до этого guard в KARATOV молчит. Либо: оставить разницу и
+   считать 131 «известной», тогда «0» не будет.
+2. Слово на `db_migrate --cabinet rbh1 --apply` для двух новых файлов (2 запроса; снимок и `--compare` сразу после — ожидаю 131 при решении
+   «оставить» или 0 после п. 1).
+3. Revoke `anon` / `authenticated` в обеих базах — план с числами подготовлю после п. 1–2 (45 + 75 грантов × 2 роли в каждой базе).
+
+Сеть: Mac рвёт соединения минутами (VPN-клиент, fake-IP); повторы в runner это закрывают, но `rbh2` лучше гнать тем же циклом «до кода 0».
+
+---
 ## 2026-10-10 (ночь), §5.2 — проекты РБХ подключены: `service_role` сняты через Management API в `.env.rbh1` / `.env.rbh2`, хосты в профилях, guard и PostgREST отвечают у обоих, план `db_migrate` для `rbh1` и `rbh2` показан (43 файла, 0 применено, таблицы версий нет); новый токен проверен — старый можно отзывать; `--apply` — ждёт слова; всё в ветке (3 коммита над `main`)
 
 Слово владельца (10-10): проекты `mp-analytics-rbh1` (`jqagcdlquazojdcsewva`) и `mp-analytics-rbh2` (`rmeikipzaplqcglhwcue`) созданы, `SUPABASE_URL` вписаны,

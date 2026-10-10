@@ -133,10 +133,30 @@ class MainGuardsTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             dm.main(["--cabinet", "rbh1", "--apply", "--mark-applied"])
 
+    def test_real_sql_dir_order_creates_tables_before_altering_them(self):
+        """Пустая база rbh1 10-11: три `alter table if exists` 20260506 шли раньше своих create и молча пропускались, функция 20260831
+        читала колонку из файла, стоящего позже по алфавиту. Проверка по всем файлам: цель alter / index существует к этому моменту."""
+        import re
+        created = set()
+        bad = []
+        for fn in cabinet.sql_files():
+            low = re.sub(r"--[^\n]*", "", open(os.path.join(ROOT, "sql", fn), encoding="utf-8").read()).lower()
+            new_tables = set(re.findall(r"create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?\"?([a-z_]+)", low))
+            for m in re.finditer(r"alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:public\.)?\"?([a-z_]+)", low):
+                if m.group(1) not in created | new_tables:
+                    bad.append(f"{fn}: alter {m.group(1)} раньше create")
+            for m in re.finditer(r"create\s+(?:unique\s+)?index\s+(?:if\s+not\s+exists\s+)?\S+\s+on\s+(?:public\.)?\"?([a-z_]+)", low):
+                if m.group(1) not in created | new_tables:
+                    bad.append(f"{fn}: index on {m.group(1)} раньше create")
+            created |= new_tables
+        self.assertEqual(bad, [], "\n".join(bad))
+        files = cabinet.sql_files()
+        self.assertLess(files.index("20260831_add_request_kind_to_ozon_statistics_json_usage.sql"), files.index("20260831_z_add_quota_window_snapshot.sql"))
+
     def test_real_sql_dir_has_baseline_first_and_no_top_level_transactions(self):
         files = cabinet.sql_files()
         self.assertEqual(files[0], "00000000_baseline_public_schema.sql")
-        self.assertEqual(len(files), 43)                                     # базовый + 42 датированных
+        self.assertEqual(len(files), 45)                                     # базовый + 44 датированных (10-11: гранты API-ролей, снятие unique)
         for fn in files:
             text = open(os.path.join(ROOT, "sql", fn), encoding="utf-8").read()
             self.assertIsNone(dm.TXN_RE.search(text), fn)                   # BEGIN в 20260531 — внутри DO $$, без «;»

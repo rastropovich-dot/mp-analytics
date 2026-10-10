@@ -139,6 +139,46 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(dss.compare_total(diff), 3)
 
 
+class RunnerRetryTests(unittest.TestCase):
+    """Отказ соединения (туннель прокси 503 — 10-11 посреди --apply) повторяется с паузой; HTTP-ошибка сервера — нет."""
+
+    def test_connection_error_is_retried_then_succeeds(self):
+        import io
+        import urllib.error
+        calls, slept, logs = [], [], []
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def opener(req, timeout):
+            calls.append(req)
+            if len(calls) < 3:
+                raise urllib.error.URLError("Tunnel connection failed: 503 Service Unavailable")
+            return Resp(b'[{"x": 1}]')
+        run = dss.management_runner("t", "ref", sleep=slept.append, opener=opener, log=logs.append)
+        self.assertEqual(run("select 1"), [{"x": 1}])
+        self.assertEqual((len(calls), slept), (3, [dss.CONNECT_RETRY_PAUSE_S] * 2))
+        self.assertEqual(len(logs), 2)
+
+    def test_gives_up_after_retries_and_never_retries_http_errors(self):
+        import urllib.error
+        n = []
+        def dead(req, timeout):
+            n.append(1); raise urllib.error.URLError("boom")
+        run = dss.management_runner("t", "ref", sleep=lambda s: None, opener=dead, log=lambda m: None)
+        with self.assertRaises(RuntimeError) as cm:
+            run("select 1")
+        self.assertIn("до сервера не дошёл", str(cm.exception)); self.assertEqual(len(n), dss.CONNECT_RETRIES)
+        m = []
+        def http400(req, timeout):
+            m.append(1); raise urllib.error.HTTPError("u", 400, "bad", {}, __import__("io").BytesIO(b"syntax error"))
+        run = dss.management_runner("t", "ref", sleep=lambda s: None, opener=http400, log=lambda m: None)
+        with self.assertRaises(RuntimeError) as cm:
+            run("create x")
+        self.assertIn("HTTP 400", str(cm.exception)); self.assertEqual(len(m), 1)
+
+
 class SnapshotRunnerTests(unittest.TestCase):
     def test_take_snapshot_runs_every_query_and_marketplaces_only_if_present(self):
         seen = []

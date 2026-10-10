@@ -98,11 +98,20 @@ class GuardTests(unittest.TestCase):
         self.assertIn("SUPABASE_URL не задан", str(cm.exception))
 
     def test_rbh_profile_without_host_refuses_any_real_base(self):
-        with self.assertRaises(SystemExit) as cm:
-            cabinet.assert_env(env(MP_CABINET="rbh1", SUPABASE_URL=KARATOV_URL), root=self.root)
+        with mock.patch.object(cabinet.profile("rbh1"), "SUPABASE_HOST", None):   # так было до §5.2 (хосты вписаны 10-10)
+            with self.assertRaises(SystemExit) as cm:
+                cabinet.assert_env(env(MP_CABINET="rbh1", SUPABASE_URL=KARATOV_URL), root=self.root)
         msg = str(cm.exception)
         self.assertIn("cabinets/rbh1.py", msg)
         self.assertIn("pkrsrwjrlurlfpdyixei.supabase.co", msg)   # на что указывало окружение — видно
+
+    def test_rbh_profiles_point_at_their_own_projects(self):
+        self.assertEqual(cabinet.profile("rbh1").SUPABASE_HOST, "jqagcdlquazojdcsewva.supabase.co")   # mp-analytics-rbh1 (10-08)
+        self.assertEqual(cabinet.profile("rbh2").SUPABASE_HOST, "rmeikipzaplqcglhwcue.supabase.co")   # mp-analytics-rbh2
+        hosts = {cabinet.profile(c).SUPABASE_HOST for c in cabinet.KNOWN_CODES}
+        self.assertEqual(len(hosts), 3)                                                                # три разные базы
+        with self.assertRaises(SystemExit):                                                            # ключ KARATOV под MP_CABINET=rbh1 — стоп
+            cabinet.assert_env(env(MP_CABINET="rbh1", SUPABASE_URL=KARATOV_URL), root=self.root)
 
     def test_rbh_profile_with_host_accepts_only_its_base(self):
         with mock.patch.object(cabinet.profile("rbh2"), "SUPABASE_HOST", "rbh2-ref.supabase.co"):

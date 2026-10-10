@@ -7,6 +7,91 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-10 (ночь), §5.2 — проекты РБХ подключены: `service_role` сняты через Management API в `.env.rbh1` / `.env.rbh2`, хосты в профилях, guard и PostgREST отвечают у обоих, план `db_migrate` для `rbh1` и `rbh2` показан (43 файла, 0 применено, таблицы версий нет); новый токен проверен — старый можно отзывать; `--apply` — ждёт слова; всё в ветке (3 коммита над `main`)
+
+Слово владельца (10-10): проекты `mp-analytics-rbh1` (`jqagcdlquazojdcsewva`) и `mp-analytics-rbh2` (`rmeikipzaplqcglhwcue`) созданы, `SUPABASE_URL` вписаны,
+токен в общем `.env` заменён (scope — три проекта, `/v1/projects` закрыт); `service_role` забрать самому; пять таблиц панели — оставить 1:1; revoke
+у `anon` / `authenticated` — отдельным шагом по слову после §5.2, сначала план с числами; план `db_migrate --cabinet rbh1` показать, `--apply` — по слову.
+
+**Сделано (Management API — 5 обращений, PostgREST — 2 чтения, db_writes 0, значения ключей не печатались):**
+- `GET /v1/projects/{ref}` новым токеном по трём ref: KARATOV `mp-analytics` eu-central-1 ACTIVE_HEALTHY Postgres 17.6.1.105 (2026-04-25);
+  `mp-analytics-rbh1` и `mp-analytics-rbh2` — eu-central-1, ACTIVE_HEALTHY, **Postgres 17.11.0.003**, созданы 2026-10-08. Версии minor разные
+  (17.6 против 17.11) — для DDL из `sql/` разницы нет; при `--compare` снимков это не объект схемы.
+- `GET /v1/projects/{ref}/api-keys?reveal=true` для обоих проектов: в ответе 4 ключа (`anon`, `service_role`, два `default` нового формата);
+  `service_role` (JWT, 219 символов) записан в `SUPABASE_SERVICE_KEY=` своего файла, права 600, в git не попало.
+- `cabinets/rbh1.py` / `rbh2.py`: `SUPABASE_HOST` = `jqagcdlquazojdcsewva.supabase.co` / `rmeikipzaplqcglhwcue.supabase.co`.
+- Проверка: `MP_CABINET=rbh1 venv/bin/python3 cabinet.py` → «кабинет РБХ-1: база jqagcdlquazojdcsewva.supabase.co», `rbh2` — аналогично, код 0;
+  затем клиент PostgREST ключом `service_role` → `cabinet.schema_status` — у обоих `untracked` («таблицы schema_migrations … нет»): ключ принят
+  (иначе был бы 401, а не PGRST205). Тесты: `test_rbh_profiles_point_at_their_own_projects` (три разных хоста, ключ KARATOV под `MP_CABINET=rbh1`
+  — стоп), прежний тест «профиль без хоста» переведён на `mock`; набор **1 294 OK**.
+- **Новый токен проверен на всём, что нужно: метаданные трёх проектов, ключи двух, `select` к базам через `db_migrate` (план). Старый токен можно
+  отзывать.**
+
+**План `db_migrate --cabinet all` (= rbh1 + rbh2, без `--apply`; по одному чтению `schema_migrations` на проект — таблицы НЕТ):** у обоих
+применено 0, ждут **43** файла (базовый + 42 датированных, 106 913 байт), расхождений sha256 0. При `--apply`: сначала `create table
+schema_migrations`, затем 43 запроса `begin; <файл>; insert into schema_migrations …; commit;` — итого **44 запроса на запись** на кабинет,
+43 строки в `schema_migrations` (`filename`, `sha256`, `applied_at`, `applied_by = db_migrate@<хост Mac>`, `note null`). Ожидаемый итог в
+базе: 38 таблиц + 2 вьюхи + 1 функция + 17 последовательностей + индексы и ограничения как у KARATOV, плюс `schema_migrations`; проверка —
+`db_schema_snapshot --cabinet rbh1` и `--compare` с снимком KARATOV (`schema_migrations` в сравнении игнорируется) = 0.
+
+| файл (порядок применения) | байт | что создаёт / меняет |
+|---|---:|---|
+| `00000000_baseline_public_schema.sql` | 18227 | table 15 (ad_costs, alerts, daily_marketplace_kpi…); index 3; view 1 (v_ozon_orders_daily_by_schema); alter table 13; insert 3 |
+| `20260505_create_pipeline_runtime_state.sql` | 556 | table 1 (pipeline_runtime_state); index 2 |
+| `20260506_add_ozon_ad_attribution_sku_columns.sql` | 299 | alter table 1 |
+| `20260506_add_ozon_perf_daily_load_status_accounting_fields.sql` | 732 | alter table 1 |
+| `20260506_add_quality_fields_to_sku_decision_daily_input.sql` | 415 | alter table 4 |
+| `20260506_add_stock_identity_columns.sql` | 254 | alter table 1 |
+| `20260506_create_ozon_daily_sku_organic.sql` | 2696 | table 2 (ozon_daily_sku_ad_attribution, ozon_daily_sku_organic); index 2; alter table 2 |
+| `20260506_create_ozon_daily_sku_total_orders.sql` | 661 | table 1 (ozon_daily_sku_total_orders); index 1 |
+| `20260506_create_ozon_finance_advertising_reconciliation_raw.sql` | 1005 | table 1 (ozon_finance_advertising_reconciliation_raw); index 3 |
+| `20260506_create_ozon_organic_reconciliation_issues.sql` | 797 | table 1 (ozon_organic_reconciliation_issues) |
+| `20260506_create_ozon_performance_daily_load_status.sql` | 1122 | table 1 (ozon_performance_daily_load_status); index 2 |
+| `20260506_create_ozon_product_identity.sql` | 914 | table 1 (ozon_product_identity); index 3 |
+| `20260506_create_ozon_selected_cpo_xlsx_raw.sql` | 1009 | table 1 (ozon_selected_cpo_xlsx_raw); index 3 |
+| `20260506_create_sku_decision_daily_input.sql` | 1353 | table 1 (sku_decision_daily_input); index 1 |
+| `20260506_create_stock_data_quality_issues.sql` | 687 | table 1 (stock_data_quality_issues) |
+| `20260511_create_ozon_search_promo_selected_cpo_orders.sql` | 2195 | table 1 (ozon_search_promo_selected_cpo_orders); index 7 |
+| `20260518_create_ozon_performance_campaign_metadata.sql` | 897 | table 1 (ozon_performance_campaign_metadata); index 1 |
+| `20260523_create_daily_sku_order_forecast_economics.sql` | 2467 | table 1 (daily_sku_order_forecast_economics); index 2 |
+| `20260526_create_ozon_statistics_json_usage.sql` | 529 | table 1 (ozon_performance_statistics_json_usage) |
+| `20260531_add_mode_to_daily_load_status_unique.sql` | 1573 | alter table 1; do-блок 1 |
+| `20260602_add_mode_to_daily_load_status_pkey.sql` | 912 | alter table 3; drop 2 |
+| `20260831_add_quota_window_snapshot.sql` | 2241 | function 1 (ozon_statistics_json_usage_quota_windows); alter table 1 |
+| `20260831_add_request_kind_to_ozon_statistics_json_usage.sql` | 1721 | index 2; alter table 2 |
+| `20260914_create_article_unit_costs.sql` | 3714 | table 1 (article_unit_costs); index 2 |
+| `20260915_create_ozon_realization_by_day.sql` | 5514 | table 1 (ozon_realization_by_day); index 2 |
+| `20260916_add_analytics_group_to_article_unit_costs.sql` | 691 | alter table 1 |
+| `20260916_create_ozon_posting_status_log.sql` | 3701 | table 1 (ozon_posting_status_log); index 2 |
+| `20260916_marketplace_orders_cancelled_columns.sql` | 3607 | alter table 2; drop 1 |
+| `20260921_add_buyouts_units.sql` | 2052 | alter table 1 |
+| `20260921_create_ozon_accrual_daily_types.sql` | 3642 | table 1 (ozon_accrual_daily_types); index 1 |
+| `20260923_create_wb_ad_spend_daily.sql` | 3437 | table 1 (wb_ad_spend_daily); index 2 |
+| `20260923_create_wb_sales_report_rows.sql` | 7933 | table 1 (wb_sales_report_rows); index 3 |
+| `20260924_add_buyouts_bonus_coinvestment.sql` | 2135 | alter table 1 |
+| `20260924_add_wb_sales_report_subject_brand.sql` | 1826 | alter table 1 |
+| `20260924_create_ozon_products.sql` | 3390 | table 1 (ozon_products); index 2 |
+| `20260924_create_wb_ad_spend_nm_daily.sql` | 3697 | table 1 (wb_ad_spend_nm_daily); index 2 |
+| `20260924_create_wb_funnel_products_daily.sql` | 5223 | table 1 (wb_funnel_products_daily); index 2 |
+| `20260924_orders_buyer_nullable.sql` | 2410 | alter table 1 |
+| `20260926_create_wb_buyout_cohort.sql` | 4185 | table 2 (wb_buyout_cohort_sku_daily, wb_buyout_cohort_daily); index 1 |
+| `20260926_create_wb_funnel_products_latest.sql` | 1510 | view 1 (wb_funnel_products_latest) |
+| `20260926_index_wb_funnel_products_nm_day.sql` | 998 | index 1 |
+| `20260927_add_buyout_rate_source.sql` | 1313 | alter table 2 |
+| `20260928_create_wb_funnel_products_current.sql` | 2673 | table 1 (wb_funnel_products_current); insert 1 |
+
+**Риск `--apply` — проверен статически:** датированные файлы, меняющие таблицы базового файла (`stock_daily`, `daily_sku_kpi`,
+`daily_marketplace_kpi`, `marketplace_orders`, `marketplace_buyouts`), после базового файла встретят уже итоговые колонки — все их операторы
+идемпотентны (`add column if not exists`, `drop constraint if exists` + `add constraint`, `drop not null`, `comment on`; 7 файлов, 0 операторов
+без защиты). Не идемпотентные операторы есть только у файлов, работающих с таблицами из самих датированных файлов (`20260531` / `20260602` —
+пересборка PK у `ozon_performance_daily_load_status`, `20260916_marketplace_orders_cancelled_columns` — `drop` + `add constraint`,
+`20260924_orders_buyer_nullable`) — на пустой базе они идут один раз в историческом порядке, как и шли у KARATOV. Если какой-то файл всё же
+откажет — стоп на нём с текстом ошибки, предыдущие уже записаны, следующие не тронуты; правка — новым файлом, не историей.
+
+**Ждёт:** слово на `db_migrate --cabinet rbh1 --apply` (44 запроса на запись в базу `rbh1`, KARATOV не участвует) → снимок `rbh1` → `--compare`
+→ отчёт; затем `rbh2`. Revoke `anon` / `authenticated` — план с числами после §5.2, по слову. Telegram (`TELEGRAM_*` в общем `.env`) по-прежнему пуст.
+
+---
 ## 2026-10-08 (ночь), п. 1 — `.env` поправлены; п. 3 — `scripts/db_migrate.py` + guard версий схемы (`cabinet.schema_status` / `assert_schema`) в пайплайне и алерте, 15 новых тестов, набор 1 293 OK; всё в ветке `multi-cabinet` (3 коммита над `main`), к базам не ходил; п. 2 — жду «проекты есть»
 
 Слово «поправить .env по п. 1, решения по п. 2 и 3, и дальше создание проектов» прочитал так: п. 1 делаю сам; п. 2 — проекты создаёте вы; п. 3 —

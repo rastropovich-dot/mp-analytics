@@ -166,7 +166,9 @@ class SnapshotRunnerTests(unittest.TestCase):
     def test_project_ref_from_profile_host(self):
         import cabinet
         self.assertEqual(dss.project_ref(cabinet.profile("karatov")), "pkrsrwjrlurlfpdyixei")
-        with self.assertRaises(SystemExit):
+        self.assertEqual((dss.project_ref(cabinet.profile("rbh1")), dss.project_ref(cabinet.profile("rbh2"))), ("jqagcdlquazojdcsewva", "rmeikipzaplqcglhwcue"))
+        from unittest import mock
+        with mock.patch.object(cabinet.profile("rbh1"), "SUPABASE_HOST", None), self.assertRaises(SystemExit):
             dss.project_ref(cabinet.profile("rbh1"))
 
     def test_main_compare_and_from_file_need_no_network(self):

@@ -7,6 +7,62 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-11 (утро), п. 1–2 выполнены: файл грантов переписан на `service_role`, два файла применены к `rbh1` (2 запроса), снимок, `--compare` с KARATOV — **187, не 181**: отклонение +6 объяснено (моя арифметика в прошлом отчёте: род 1 был 133, не 131; и +4 гранта `service_role` на 4 лишние таблицы) — **п. 3 (`rbh2`) не начинал**; п. 4 — план засева KARATOV против снимка показан офлайн: применить 5, записать без выполнения 40, строк 45; п. 5 — план revoke с числами; всё в ветке
+
+**п. 1.** `sql/20261011_grants_api_roles_public.sql` переписан: `grant select, insert, update, delete on all tables`, `usage, select on all sequences`,
+`execute on all functions` и три `alter default privileges for role postgres` — **только `service_role`**; `anon` / `authenticated` не упомянуты.
+`20261011_drop_load_status_mode_key.sql` — как был.
+
+**п. 2 — по слову:** `db_migrate --cabinet rbh1 --apply` 05:48 UTC — 2 файла за 1,7 + 1,7 с, 2 запроса на запись; `schema_migrations` в `rbh1` —
+45 строк. Снимок `data/rbh1/schema/rbh1_20261011T054924Z.json` (15 запросов + `marketplaces`): таблиц 43 + вьюх 2, колонок 746, ограничений 63,
+индексов 105, последовательностей 20, грантов 75. `--compare` с `karatov_20261007T211658Z.json`: **187** при ожидании 181; `differ` по всем видам
+— 0 (общие объекты одинаковы):
+
+| род | в чём разница | 10-11 ночь (210) | ожидание владельца | факт сейчас | почему не 181 |
+|---|---|---:|---:|---:|---|
+| 1 | 4 таблицы + колонка `analytics_group`, которых нет в KARATOV: tables 4, columns 105, constraints 4 (PK), indexes 13, sequences 3, rls 4 | 133 (в отчёте я написал «131» — сумма «4 + 1 + 5 + 14 + 3 + 4» была сложена неверно; верно 4 + 105 + 4 + 13 + 3 + 4 = 133) | 131 | **133 + 4 = 137** | +2 — ошибка счёта в прошлом отчёте; +4 — после файла грантов у четырёх лишних таблиц появились гранты `service_role`, которых в KARATOV нет вместе с таблицами («grants только в B: 4») |
+| 2 | `anon` / `authenticated` на 25 таблицах из датированных файлов — есть в KARATOV, нет в `rbh1` | 75 (с `service_role`) | 50 | **50** | = ожиданию: `service_role` теперь есть у всех 29 таблиц `rbh1` |
+| 3 | дубль unique `…_load_target_marketplace_mode_key` | 2 (constraint + index; в прошлом отчёте «4» — считал дважды) | 0 | **0** | снят файлом `drop_load_status_mode_key` |
+
+Итого 137 + 50 + 0 = 187. После п. 4 (5 файлов в KARATOV) род 1 уйдёт целиком, включая 4 гранта `service_role` (в KARATOV их дадут умолчания
+`arwdDxtm`), останется род 2 = 50 до revoke в KARATOV. `rbh2` по п. 3 не трогал — отклонение, как условлено.
+
+**п. 4 — план засева KARATOV.** В `db_migrate` добавлено: `--against <снимок.json>` классифицирует ожидающие файлы против снимка схемы (объекты
+`create table / view / function / index` и `add column`; имена сравниваются усечёнными до 63 символов — индекс из `20260511` в файле 64 символа,
+в обеих базах хранится усечённым, без этого он ложно шёл «применить»); `--offline` — план без обращения к базе; `--against … --apply` — выполнить
+только файлы «применить», остальные записать как применённые без выполнения (тест). Команда `db_migrate --cabinet karatov --allow-karatov
+--against data/schema/karatov_20261007T211658Z.json --offline` (к базе не ходил; живой план добавит одно чтение `schema_migrations` — таблицы в
+KARATOV нет):
+
+| файл | операторов | вердикт | чего нет в KARATOV |
+|---|---:|---|---|
+| `20260506_create_ozon_finance_advertising_reconciliation_raw.sql` | 4 | применить | таблица + 3 индекса |
+| `20260506_create_ozon_selected_cpo_xlsx_raw.sql` | 4 | применить | таблица + 3 индекса |
+| `20260518_create_ozon_performance_campaign_metadata.sql` | 2 | применить | таблица + индекс |
+| `20260523_create_daily_sku_order_forecast_economics.sql` | 3 | применить | таблица + 2 индекса |
+| `20260916_add_analytics_group_to_article_unit_costs.sql` | 2 | применить | колонка `article_unit_costs.analytics_group` (+ `comment`) |
+| остальные 40 (базовый 95 операторов, 37 датированных, `20261011_drop…` 1, `20261011_grants…` 6) | — | пустой → запись без выполнения | — |
+
+Итого при слове: `create table schema_migrations` 1 + 5 файлов (15 операторов DDL, каждый файл одной транзакцией со строкой версии) + 40 строк
+засева = **46 запросов на запись в базу KARATOV**, `schema_migrations` — **45 строк** (38 исторических + 2 от 10-11 + 5 применённых). Все 5 файлов
+идемпотентны (`create table if not exists`, `add column if not exists`). Их объекты читают только `ozon_performance_ads_loader.py`
+(`ozon_performance_campaign_metadata`) и `load_article_unit_costs.py` (`analytics_group`) — необязательные пути, ночь KARATOV без них проходила.
+После засева guard KARATOV перестаёт молчать: вторая строка ночи — «схема: применены все 45 файлов sql/». Снимок KARATOV после — и `--compare`
+с `rbh1` ожидаю 50 (род 2). **Ждёт отдельного слова:** `db_migrate --cabinet karatov --allow-karatov --against data/schema/karatov_20261007T211658Z.json --apply`.
+
+**п. 5 — revoke `anon` / `authenticated`, только KARATOV, план с числами (по снимку 10-07, код не писался).** Сейчас у каждой из трёх ролей DML на
+40 таблицах и вьюхах, умолчания `postgres` в `public` дают им `arwdDxtm` на таблицы, `rwU` на последовательности (17), `X` на функции (1).
+Файл `sql/20261012_revoke_anon_authenticated_public.sql` (6 операторов): `revoke all on all tables in schema public from anon, authenticated`;
+то же `on all sequences`, `on all functions`; три `alter default privileges for role postgres in schema public revoke all … from anon,
+authenticated`. Снимет в KARATOV **80 табличных грантов** (40 × 2 роли), 34 на последовательностях, 2 на функции; у `service_role` и `postgres`
+ничего не меняется; RLS не трогается. PostgREST с `anon`-ключом после этого получит 42501 на любой запрос к `public` — у нас таких клиентов нет
+(весь код — `service_role`, проверено в §1 инвентаризации: 38 `create_client` на `SUPABASE_SERVICE_KEY`). Это датированный файл: в `rbh1` /
+`rbh2` он снимет 30 грантов, которые базовый файл дал 15 таблицам панели (копия KARATOV), — после него `--compare` всех трёх баз по грантам = 0.
+Применение — после п. 4, по слову.
+
+Набор **1 301 OK**. В ветке 5 коммитов над `main`. db_writes: `rbh1` 2 (по слову); KARATOV, `rbh2` — 0.
+
+---
 ## 2026-10-11 (ночь), `db_migrate --cabinet rbh1 --apply` по слову — ВЫПОЛНЕН: 43 файла из 43 применены (3 прогона из-за сети), снимок `rbh1` снят, `--compare` с KARATOV — **210 различий, не 0**, все трёх родов и все объяснены; `rbh2` не тронут; два новых файла `sql/` лежат в ветке (не применены), три вопроса владельцу
 
 **Как шло (база `rbh1`, Management API).** Первая попытка 21:26 UTC — прокси песочницы 503 на туннеле ещё на чтении, записей 0; причина глубже:

@@ -115,6 +115,18 @@ class ApplyTests(unittest.TestCase):
             self.assertFalse(any("create table if not exists t_" in q for q in db.queries))
             self.assertTrue(all("засев" in q for q in db.queries if q.startswith("insert")))
 
+    def test_apply_only_executes_listed_files_and_marks_the_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_sql_dir(d, ["00000000_baseline.sql", "20260505_a.sql", "20260506_b.sql"])
+            db = FakeDb(False)
+            res = dm.migrate("karatov", db, d, apply=True, applied_by="seed", out=lambda *_: None, apply_only={"20260506_b.sql"})
+            self.assertEqual((res["done"], res["writes"]), (3, 4))
+            ddl = [q for q in db.queries if "create table if not exists t_" in q]
+            self.assertEqual(len(ddl), 1); self.assertIn("t_20260506", ddl[0])
+            self.assertEqual(sorted(db.rows), ["00000000_baseline.sql", "20260505_a.sql", "20260506_b.sql"])
+            seeds = [q for q in db.queries if q.startswith("insert") and "засев" in q]
+            self.assertEqual(len(seeds), 2)
+
     def test_second_run_is_idle(self):
         with tempfile.TemporaryDirectory() as d:
             make_sql_dir(d, ["20260505_a.sql"])
@@ -122,6 +134,38 @@ class ApplyTests(unittest.TestCase):
             dm.migrate("rbh1", db, d, apply=True, out=lambda *_: None)
             res = dm.migrate("rbh1", db, d, apply=True, out=lambda *_: None)
             self.assertEqual((res["applied_before"], res["pending"], res["done"], res["writes"]), (1, 0, 0, 0))
+
+
+class ClassifyAgainstSnapshotTests(unittest.TestCase):
+    """План засева KARATOV: файл, чьи объекты уже в базе, — «пустой» (--mark-applied); файл с новым объектом — «применить»."""
+
+    def test_file_objects_and_classification(self):
+        objs = dm.file_objects("create table if not exists public.t1 (id int);\nalter table public.t2 add column if not exists c1 text, add column c2 int;\n"
+                               "create index if not exists i1 on t1 (id);\ncreate or replace function public.f1() returns int language sql as $$ select 1 $$;")
+        self.assertEqual(objs["table"], {"t1"}); self.assertEqual(objs["column"], {("t2", "c1"), ("t2", "c2")})
+        self.assertEqual((objs["index"], objs["function"]), ({"i1"}, {"f1"}))
+        snap = {"meta": {}, "tables": [{"table_name": "t2", "table_type": "BASE TABLE"}], "functions": [], "indexes": [],
+                "columns": [{"table_name": "t2", "column_name": "c1"}, {"table_name": "t2", "column_name": "c2"}]}
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "20260101_a.sql"), "w").write("alter table t2 add column if not exists c1 text;\n-- x\nalter table t2 add column if not exists c2 int;")
+            open(os.path.join(d, "20260102_b.sql"), "w").write("create table if not exists t1 (id int);")
+            rows = dm.classify_against(snap, [("20260101_a.sql", "x"), ("20260102_b.sql", "y")], d)
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows], [("20260101_a.sql", 2, "пустой"), ("20260102_b.sql", 1, "применить")])
+        self.assertEqual(rows[1][3], ["table t1"])
+
+    def test_identifiers_compared_truncated_to_63(self):
+        long_name = "idx_" + "a" * 70
+        snap = {"meta": {}, "tables": [{"table_name": "t", "table_type": "BASE TABLE"}], "functions": [], "indexes": [{"indexname": long_name[:63]}], "columns": []}
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "20260101_i.sql"), "w").write(f"create index if not exists {long_name} on t (id);")
+            rows = dm.classify_against(snap, [("20260101_i.sql", "x")], d)
+        self.assertEqual(rows[0][2], "пустой")
+
+    def test_offline_plan_needs_against_and_no_apply(self):
+        with self.assertRaises(SystemExit):
+            dm.main(["--cabinet", "rbh1", "--offline"])
+        with self.assertRaises(SystemExit):
+            dm.main(["--cabinet", "rbh1", "--offline", "--against", "x.json", "--apply"])
 
 
 class MainGuardsTests(unittest.TestCase):

@@ -181,6 +181,14 @@ python3 run_daily_pipeline.py --skip-recovery --skip-organic --skip-telegram --s
 «кабинет: KARATOV». Зашитых значений KARATOV в коде нет (тест), пути `data/…` / `logs/…` — только через
 `cabinet.data_path` / `logs_path` (тест). Задачи и отчёты потока — `docs/inbox_rbh.md` / `docs/outbox_rbh.md`.
 
+**Схема базы — только через `scripts/db_migrate.py` (правило владельца 2026-10-11, для всех сессий — Ozon и WB включительно).**
+С 10-11 в каждой базе (KARATOV, rbh1, rbh2) есть таблица `schema_migrations`, а в пайплайне и алерте — guard `cabinet.assert_schema`:
+файл `sql/`, которого нет в таблице, останавливает ночь кабинета второй строкой лога «база кабинета … отстаёт от кода». Поэтому
+новый файл `sql/` применяется так: положить в `sql/` (имя `YYYYMMDD_…sql`; внутри даты порядок по имени, «после соседей» — `_z_`),
+`venv/bin/python3 scripts/db_migrate.py --cabinet karatov --allow-karatov` (план) → по слову `--apply` (файл и строка версии — одной
+транзакцией) → `--cabinet all --apply` для РБХ. **Через MCP / панель DDL больше не делать:** объект появится, а строки версии не
+будет — guard остановит первую ночь после мержа. Снимок и сравнение схем — `scripts/db_schema_snapshot.py` (`--compare`).
+
 > **Сверять команду с Render, а не с этим файлом.** Файл отставал дважды: не
 > заметил `--skip-recovery` (09-03) и `--skip-organic` (снят через API 2026-09-14).
 > Живое значение — панель или `GET /v1/services/{id}` →
@@ -1003,6 +1011,9 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 ```
 run_daily_pipeline.py    alerts_telegram.py    loaders/http_retry.py
 cabinet.py  cabinets/{karatov,rbh1,rbh2}.py   профиль кабинета (MP_CABINET), guard по хосту Supabase, data_path / logs_path; `cabinet.py --shell` — export-строки для finrez_nightly.sh
+scripts/db_migrate.py                     миграции sql/ по кабинетам с таблицей schema_migrations (план без --apply; --against снимок — засев); DDL в базы — только им
+scripts/db_schema_snapshot.py             снимок схемы public через Management API (read_only) → data/<кабинет>/schema/, базовый DDL, --compare двух снимков
+sql/00000000_baseline_public_schema.sql   объекты, которых датированные файлы не создают (15 таблиц панели + вьюха); применяется первым
 loaders/ozon_performance_ads_loader.py    scripts/ozon_performance_recovery_worker.py
 scripts/ozon_cpc_data_gap_report.py    export_management_excel.py ← OOM risk
 sql/20260914_create_article_unit_costs.sql ← применён 2026-09-14 через MCP, таблица пуста; 20260518_* удалён (другая модель)

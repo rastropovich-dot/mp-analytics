@@ -200,7 +200,7 @@ class MainGuardsTests(unittest.TestCase):
     def test_real_sql_dir_has_baseline_first_and_no_top_level_transactions(self):
         files = cabinet.sql_files()
         self.assertEqual(files[0], "00000000_baseline_public_schema.sql")
-        self.assertEqual(len(files), 45)                                     # базовый + 44 датированных (10-11: гранты API-ролей, снятие unique)
+        self.assertEqual(len(files), 46)                                     # базовый + 45 датированных (10-11: гранты API-ролей, снятие unique; 48-я: metal_rates_1c)
         for fn in files:
             text = open(os.path.join(ROOT, "sql", fn), encoding="utf-8").read()
             self.assertIsNone(dm.TXN_RE.search(text), fn)                   # BEGIN в 20260531 — внутри DO $$, без «;»

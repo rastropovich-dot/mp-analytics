@@ -1008,6 +1008,19 @@ Selected CPO — суммы **по этому SKU**, не по дате (за 05
 
 ## 10. Ключевые файлы и документы
 
+**Три базы и `db_migrate` (с 2026-10-11).** Кабинетов три, у каждого свой проект Supabase: KARATOV `pkrsrwjrlurlfpdyixei`
+(eu-central-1, Postgres 17.6, апрель 2026), `rbh1` `jqagcdlquazojdcsewva` и `rbh2` `rmeikipzaplqcglhwcue` (eu-central-1, Postgres 17.11,
+2026-10-08). Схема `public` во всех трёх одинакова — `db_schema_snapshot.py --compare` = 0 по 12 видам объектов (10-11 06:22 UTC); источник
+схемы — `sql/`: базовый файл `00000000_…` (15 таблиц панели + вьюха, созданы до первого датированного файла) и датированные файлы по
+имени (внутри даты — по имени, «после соседей» — `_z_`). В каждой базе таблица `schema_migrations` (filename, sha256, applied_at,
+applied_by, note) — по 47 строк; у KARATOV 41 строка — засев без выполнения (схема уже была), 6 выполнены `db_migrate`. Guard
+`cabinet.assert_schema` в пайплайне и алерте: файл `sql/` без строки версии → ночь кабинета стоит на второй строке лога. Отсюда правило
+§1: DDL — только `scripts/db_migrate.py` (план → `--apply` по слову → `--cabinet all` для РБХ; KARATOV — с `--allow-karatov`),
+не через MCP; файл, уже лежащий в базе руками, записывается засевом `--against <снимок> --apply`. Права: `service_role` — полный DML на всём
+`public` (у новых проектов Supabase умолчание без DML — файл `20261011_grants_api_roles_public.sql`), `anon` / `authenticated` отозваны во
+всех трёх (`20261012_revoke_…`); RLS включён на 13 таблицах панели без политик. Снимки схем — `data/<кабинет>/schema/` (вне git);
+токен Management API `SUPABASE_ACCESS_TOKEN` — в общем `.env` RBH-worktree, только для схем.
+
 ```
 run_daily_pipeline.py    alerts_telegram.py    loaders/http_retry.py
 cabinet.py  cabinets/{karatov,rbh1,rbh2}.py   профиль кабинета (MP_CABINET), guard по хосту Supabase, data_path / logs_path; `cabinet.py --shell` — export-строки для finrez_nightly.sh

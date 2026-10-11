@@ -7,6 +7,55 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-11 (день), без обращений к API и базам: (1) `render.yaml` для четырёх сервисов РБХ — в ветке, генератор `scripts/render_blueprint.py` + 5 тестов на состав; (2) список шагов владельца для §5.7 (Telegram, Render) с точными именами переменных; (3) CLAUDE.md §10 — как живут три базы и `db_migrate`; набор 1 326 OK; мерж — после WB-17
+
+**(1) `render.yaml`** (157 строк) генерируется из `scripts/render_blueprint.py` (`--write` / `--check`; PyYAML в окружении нет, поэтому источник
+правды — Python-структура, а тест сверяет файл с генератором). Четыре cron-сервиса из `main`, `autoDeployTrigger: commit`, `runtime: python`,
+`buildCommand: pip install -r requirements.txt`:
+
+| сервис | расписание (UTC) | команда | `MP_CABINET` | группа |
+|---|---|---|---|---|
+| `mp-analytics-rbh1` | `20 0 * * *` | команда ночи KARATOV дословно (`run_daily_pipeline.py --skip-recovery --skip-organic --skip-telegram --skip-excel --skip-decision --ozon-campaign-selection smart_recent_active …`, тест сверяет с §1 CLAUDE.md) | `rbh1` | `rbh1` |
+| `mp-analytics-rbh1-telegram-report` | `35 7 * * *` | `python3 alerts_telegram.py` | `rbh1` | `rbh1` |
+| `mp-analytics-rbh2` | `25 0 * * *` | та же команда ночи | `rbh2` | `rbh2` |
+| `mp-analytics-rbh2-telegram-report` | `40 7 * * *` | `python3 alerts_telegram.py` | `rbh2` | `rbh2` |
+
+Сдвиг +5 / +10 минут от KARATOV (00:15 / 07:30), чтобы три ночи не стартовали в одну секунду и утренние сообщения шли по порядку. `region:
+frankfurt` (ближе к eu-central-1), `plan: starter` — оба **сверить с панелью KARATOV перед созданием** (по API не ходил; если у KARATOV иное —
+правка в генераторе одной строкой). Группы `envVarGroups` `rbh1` / `rbh2` одинакового состава — 9 секретов `sync: false` (вводятся в Dashboard
+при создании Blueprint, в git значений нет): `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `OZON_CLIENT_ID`, `OZON_API_KEY`, `OZON_PERFORMANCE_CLIENT_ID`,
+`OZON_PERFORMANCE_CLIENT_SECRET`, `WB_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; `PYTHON_VERSION` тоже `sync: false` (как у KARATOV —
+снять с панели); 12 несекретных значений как у KARATOV / `.env.example` (`APP_TIMEZONE=Europe/Moscow`, девять `OZON_PERFORMANCE_*`) и
+**`ENABLE_OZON_SELECTED_CPO_DAILY=false`, `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE=false`** — у нового кабинета Selected CPO выключен до отдельного
+решения (ENABLE без APPROVE жёг бы квоту Performance впустую). Сервисов KARATOV в файле нет (поправка советника 2). Тесты
+(`test_render_blueprint`, 5): 4 cron-сервиса с нужными именами и расписаниями, команды = KARATOV, группы содержат все имена из `.env.example`
+кроме `OPENAI_API_KEY` и `OZON_ADS_CLICK_CAMPAIGNS` (decision layer выключен; список кампаний пуст и у KARATOV), ни одного значения секрета
+(`eyJ…` / `sbp_…`), KARATOV-сервисов нет, файл = генератору. Blueprint-экземпляр создаёт владелец после мержа `render.yaml` в `main` (§5.7).
+**Не проверено:** сам формат `fromGroup` / `envVarGroups` живым Render — только по спеке Blueprint; первое создание покажет.
+
+**(2) §5.7 — что нужно от владельца, по порядку, каждый шаг по слову.** Имена переменных — ровно как в коде (`os.getenv`):
+
+| шаг | кто | что | куда | имя переменной |
+|---|---|---|---|---|
+| 1 | владелец | **Telegram — решение:** бот **один общий** (тот же `mp_analytics_karatov_bot`, его токен уже у KARATOV) и **одна группа РБХ** на оба кабинета — кабинет стоит первой строкой каждого сообщения («кабинет: РБХ-1»), заголовок «MP Analytics Alerts · РБХ-1 / -2» (так решено 09-28 / 09-30, подтвердить); альтернатива — две группы (по кабинету), тогда `TELEGRAM_CHAT_ID` разные | — | — |
+| 2 | владелец | создать группу РБХ, добавить бота; узнать `chat_id` — переслать любое сообщение группы боту-`getUpdates`, либо скажите «группа есть» — я прочитаю `getUpdates` одним обращением (по слову; бот должен быть в группе, privacy mode у бота для групп — выключен, как у KARATOV) | общий `~/mp-analytics-rbh/.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| 3 | я, по слову | проверка Telegram без отправки в группу: `getMe` (имя бота) + `getChat(chat_id)` (имя группы, бот её видит) — 2 обращения; `alerts_telegram.py --dry-run --no-send` под `MP_CABINET=rbh1` — первая строка «кабинет: РБХ-1» (база пуста — блок данных «нет строк», это норма) | — | — |
+| 4 | владелец | **Render, перед Blueprint:** снять с панели KARATOV значения `region`, `plan`, `PYTHON_VERSION` (сервис `mp-analytics` → Settings / Environment) и сказать — я поправлю генератор и `render.yaml` (одна строка каждое) | генератор | — |
+| 5 | владелец | после мержа `multi-cabinet` в `main` (после WB-17): Render Dashboard → New → Blueprint → этот репозиторий, ветка `main` → Render прочитает `render.yaml`, покажет 4 сервиса и 2 группы и попросит значения `sync: false`: в группу `rbh1` — 9 секретов из `.env.rbh1` + `PYTHON_VERSION`, в `rbh2` — из `.env.rbh2` (общий `.env` даёт `TELEGRAM_*` обоим). Сервисы создаются выключенными? — нет: cron с расписанием начнёт идти со следующего слота; если первая ночь нужна позже — поставить сервисы на паузу (Settings → Suspend) до слова на §5.4 | Dashboard | те же 9 + `PYTHON_VERSION` |
+| 6 | я, по слову | проверка по API (`RENDER_API_KEY` — только чтение): 4 сервиса, их `startCommand` = `render.yaml`, у каждого `MP_CABINET`, хост `SUPABASE_URL` в группе = профилю (значения не печатаются, как 10-06 для KARATOV); ref сервисов — в `cabinets/rbh1.py` / `rbh2.py` (`RENDER["pipeline"]`, `RENDER["alert"]`) — тогда `fetch_render_logs.py` и утренняя проверка работают по кабинету | профили | — |
+| 7 | владелец / я | §5.3 сухие прогоны загрузчиков РБХ (по слову, db_writes 0) → §5.4 первая запись 60 дней (по слову, с планом) → снять паузу с сервисов → первая ночь по чек-листу | — | — |
+
+Токен `SUPABASE_ACCESS_TOKEN` сервисам Render не нужен — только Mac, для схем; после §5 владелец отзывает. Ключи WB у РБХ — с правом записи
+(10-07): перевыпустить «только чтение» можно в любой момент, код не меняется.
+
+**(3) CLAUDE.md §10** — абзац «Три базы и `db_migrate`»: три проекта с ref и версиями Postgres, схема = `sql/` (базовый + датированные, `_z_`),
+`schema_migrations` по 47 строк (у KARATOV 41 засев + 6 выполнено), guard, правило «DDL только через `db_migrate`», права ролей после 10-11,
+где лежат снимки и токен; в списке файлов — `db_migrate.py`, `db_schema_snapshot.py`, базовый файл (добавлены утром). Старые строки
+«← применён через MCP» у файлов 2026-09 оставлены как история.
+
+Набор **1 326 OK**; ветка — 10 коммитов над `main`. Обращений к API и базам — 0, db_writes 0.
+
+---
 ## 2026-10-11 (утро, 06:17–06:22 UTC), слово (а)(б)(в) выполнено целиком: `origin/main` влит без конфликтов, `metal_rates_1c` в `rbh1` / `rbh2` и засев в KARATOV, revoke `anon` / `authenticated` во всех трёх базах — **KARATOV = `rbh1` = `rbh2`, 0 различий по 12 видам объектов**, `schema_migrations` по 47 строк; правило «DDL только через `db_migrate`» — в CLAUDE.md; набор 1 321 OK; мерж — после WB-17
 
 **(а)** `origin/main` (8 коммитов: сорок восьмая `97af457` + её закрытие, с `sql/20261008_create_metal_rates_1c.sql`) влит в `multi-cabinet`

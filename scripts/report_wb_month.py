@@ -42,10 +42,12 @@ saleDt в московском времени (у строки без saleDt —
 """
 import argparse
 import glob
+import inspect
 import json
+import re
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -59,11 +61,12 @@ import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import stale_keys  # noqa: E402
+from loaders import unit_cost_history as uch  # noqa: E402  — снимки 1С по дате продажи (сорок шестая), ключи WB — WB-17 §2
 from loaders import wb_money_rules as rules  # noqa: E402  — удержания по виду, реклама «Баланс», упаковка (WB-14)
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 import loaders.wb_ads_loader as ads_loader  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet  # noqa: E402
-from report_ozon_month import MONTHS, VAT_RATES, vat_for  # noqa: E402,F401  — тот же НДС, что у Ozon
+from report_ozon_month import COST_RATE_K, MONTHS, VAT_RATES, load_rates_for, vat_for  # noqa: E402,F401  — тот же НДС, что у Ozon; k и курс 1С — сорок восьмая
 
 Z = Decimal(0)
 C = Decimal("0.01")
@@ -166,8 +169,15 @@ def load_rows_files(raw_dir, d1, d2):
     return rows
 
 
+class SnapshotMaps(tuple):
+    """Пара карт (exact, uniform) ОДНОГО снимка, прочитанная из базы (load_costs). Читатели WB-17 §2 при живом клиенте заменяют её
+    историей снимков по дате продажи; обычная пара (тесты, файлы) остаётся одним снимком."""
+    snapshot = None
+
+
 def load_costs(sb, snapshot=SNAP):
-    """Снимок 1С целиком (offer_id_norm, unit_cost, unit_cost_uniform): точные строки и «единая» по базовому артикулу."""
+    """Снимок 1С целиком (offer_id_norm, unit_cost, unit_cost_uniform): точные строки и «единая» по базовому артикулу.
+    Возвращает SnapshotMaps (кортеж exact, uniform с пометкой снимка)."""
     rows = stale_keys.read_window_rows(sb, "article_unit_costs", "offer_id_norm,unit_cost,unit_cost_uniform",
                                        [("eq", "snapshot_date", snapshot)], ["offer_id_norm"])
     exact, uniform = {}, {}
@@ -176,7 +186,9 @@ def load_costs(sb, snapshot=SNAP):
         base = r["offer_id_norm"].split("-", 1)[0]
         if r.get("unit_cost_uniform") is not None and base not in uniform:
             uniform[base] = D(r["unit_cost_uniform"])
-    return exact, uniform
+    out = SnapshotMaps((exact, uniform))
+    out.snapshot = snapshot
+    return out
 
 
 COST_BATCH = 80   # баз артикулов в одном запросе (два условия на базу: eq и like) — URL ≈ 4–5 КБ
@@ -230,6 +242,235 @@ def load_costs_for(sb, vendor_codes, snapshot=SNAP, batch=COST_BATCH, page=1000,
     if stats is not None:
         stats.update({"bases": len(bases), "rows": rows_n, "requests": requests, "mode": "narrow"})
     return exact, uniform
+
+
+# ---------- себестоимость по дате продажи (WB-17 §2) ----------
+#
+# Таблица article_unit_costs держит Ozon-ключи шести снимков (F/S/T с размером внутри: «f000078698-23,5», «f007753194-16,5-жм»).
+# WB-ключ отчёта — идентификатор без размера («f007753194-жм») плюс tech_size, и это ТА ЖЕ строка файла 1С: вставив размер
+# (с запятой) после базы, получаем Ozon-ключ строки — на шести файлах так выводится 99,6–99,8 % строк, продажи окна
+# 04-01 … 09-30 покрыты на 99,97 % ₽ без единой новой строки в таблице (WB-17 §1, logs/wb17_measure_keys4.out).
+# Лестница ключа: exact (WB-ключ = Ozon-ключ) → size (база-размер,-суффикс) → size_nosuffix (база-размер,) →
+# uniform_id («единая» строк того же безразмерного ключа) → uniform_base («единая» базы). Снимок — по дате продажи
+# (unit_cost_history: ≤ D, иначе ближайший более поздний, после последнего — последний).
+
+SIZE_SEGMENT = re.compile(r"^\d+(,\d+)?$")
+COST_STEPS = ("exact", "size", "size_nosuffix", "uniform_id", "uniform_base", "none")
+COST_STEP_TEXT = {"exact": "точная строка", "size": "строка по размеру", "size_nosuffix": "строка по размеру без суффикса",
+                  "uniform_id": "«единая» по идентификатору", "uniform_base": "«единая» по базе", "none": "нет"}
+
+
+def wb_size_key(code, size, keep_suffix=True):
+    """Ozon-ключ строки по WB-ключу и размеру: база-размер,-суффикс (размер с запятой, как в 1С); без размера — сам код."""
+    size = str(size or "").strip().replace(".", ",")
+    if not size or size == "0":
+        return code
+    base, _sep, rest = code.partition("-")
+    return f"{base}-{size}" + (f"-{rest}" if rest and keep_suffix else "")
+
+
+def sizeless_key(key):
+    """Ozon-ключ без сегмента размера: «f000078698-23,5» → «f000078698», «f007753194-16,5-жм» → «f007753194-жм»."""
+    parts = str(key).split("-")
+    if len(parts) >= 2 and SIZE_SEGMENT.match(parts[1]):
+        return "-".join([parts[0]] + parts[2:])
+    return str(key)
+
+
+class WbCostHistory:
+    """Снимки 1С по датам для ключей WB: exact — CostHistory по Ozon-ключам (unit_cost), uniform_id — «единая» по
+    безразмерному ключу, uniform_base — «единая» по базе. lookup → (себестоимость, дата снимка, kind, ступень).
+    Курс 1С (сорок восьмая, договор с Ozon-сессией): meta {дата: {ключ: (проба, вид)}} той строки 1С, rates — MetalRates,
+    k_table — COST_RATE_K профиля; СС = снимок × (1 + k × Δ курса металла с даты снимка до дня продажи) через
+    CostHistory.lookup_by_rate каждой из трёх историй; без rates / k — СС снимка, как в WB-17 §2."""
+
+    def __init__(self, costs, uniform_id=None, uniform_base=None, meta=None, meta_id=None, meta_base=None, rates=None, k_table=None):
+        self.exact = uch.CostHistory(costs, meta=meta, rates=rates, k_table=k_table)
+        self.uniform_id = uch.CostHistory(uniform_id or {}, meta=meta_id, rates=rates, k_table=k_table)
+        self.uniform_base = uch.CostHistory(uniform_base or {}, meta=meta_base, rates=rates, k_table=k_table)
+        self.dates = sorted(set(self.exact.dates) | set(self.uniform_id.dates) | set(self.uniform_base.dates))
+        self.rates, self.k_table = rates, (k_table or {})
+        self.counters = Counter()
+        self.kinds = Counter()
+        self.rubles = defaultdict(Decimal)
+        self.rate_counters = Counter()
+        self.rate_rubles = Decimal(0)
+        self.base_rubles = Decimal(0)
+        self.stale_days_seen = set()
+
+    def lookup_full(self, vendor_code, tech_size, day=None):
+        """(СС по курсу | None, СС снимка | None, дата снимка | None, kind, ступень, info курса) — без учёта в счётчиках."""
+        none = (None, None, None, "none", "none", {"applied": False, "reason": "none", "snapshot_date": None})
+        code = str(vendor_code or "").strip().lower()
+        if not code:
+            return none
+        base = code.partition("-")[0]
+        size = str(tech_size or "").strip()
+        ladder = [("exact", self.exact, code)]
+        if size and size != "0":
+            ladder += [("size", self.exact, wb_size_key(code, size)), ("size_nosuffix", self.exact, wb_size_key(code, size, keep_suffix=False))]
+        ladder += [("uniform_id", self.uniform_id, code), ("uniform_base", self.uniform_base, base)]
+        for step, hist, key in ladder:
+            adjusted, base_cost, d, kind, info = hist.lookup_by_rate(key, day)
+            if adjusted is not None:
+                return adjusted, base_cost, d, kind, step, info
+        return none
+
+    def lookup(self, vendor_code, tech_size, day=None):
+        """(себестоимость по курсу | None, дата снимка | None, kind, ступень) — без учёта в счётчиках."""
+        adjusted, _base, d, kind, step, _info = self.lookup_full(vendor_code, tech_size, day)
+        return adjusted, d, kind, step
+
+    def cost_source(self, vendor_code, tech_size, day=None, qty=None):
+        """(себестоимость | None, источник для строки книги, ступень) с учётом в счётчиках: строки по ступени и kind, ₽ = СС × qty,
+        поправка по курсу (СС по курсу − СС снимка) × qty, причины поправки."""
+        adjusted, base_cost, d, kind, step, info = self.lookup_full(vendor_code, tech_size, day)
+        self.counters[step] += 1
+        self.kinds[kind] += 1
+        if adjusted is not None:
+            self.rate_counters[info.get("reason") or "none"] += 1
+            if info.get("stale_days"):
+                self.stale_days_seen.add((info.get("last_picture"), info["stale_days"]))
+            if qty is not None:
+                q = Decimal(str(qty))
+                self.rubles[step] += adjusted * q
+                self.base_rubles += base_cost * q
+                self.rate_rubles += (adjusted - base_cost) * q
+            label = uch.source_label(d, kind) + uch.rate_source_label(info) + " · " + COST_STEP_TEXT[step]
+        else:
+            label = "нет снимка"
+        return adjusted, label, step
+
+    def cost_fn(self, vendor_code, tech_size, day=None):
+        """(себестоимость, ступень) — договор cost_fn читателей (build_daily, build_orders_daily, мост)."""
+        c, _label, step = self.cost_source(vendor_code, tech_size, day)
+        return c, step
+
+    def rate_note(self):
+        if not self.rates:
+            return "Курсов 1С нет — себестоимость по снимкам без поправки."
+        if not self.k_table:
+            return f"Курс 1С: {self.rates.describe()}; k кабинета не заданы — себестоимость по снимкам без поправки."
+        parts = [f"{uch.RATE_REASON_TEXT[r]}: {self.rate_counters[r]} строк" for r in uch.RATE_REASONS if self.rate_counters.get(r)]
+        text = (f"Курс 1С ({self.rates.describe()}): СС = снимок × (1 + k × Δ курса металла с даты снимка); " + ("; ".join(parts) if parts else "обращений не было")
+                + (f"; поправка по курсу {self.rate_rubles:+,.2f} ₽ к {self.base_rubles:,.2f} ₽ снимка" if self.base_rubles else "") + ".")
+        if self.stale_days_seen:
+            worst = max(self.stale_days_seen, key=lambda x: x[1])
+            text += f" ВНИМАНИЕ: курс устарел — последняя картинка {worst[0]}, до {worst[1]} дней к датам книги."
+        return text
+
+    def note(self):
+        parts = [f"{COST_STEP_TEXT[s]}: {self.counters[s]} строк" + (f", {self.rubles[s]:,.2f} ₽" if self.rubles.get(s) else "")
+                 for s in COST_STEPS if self.counters.get(s)]
+        kinds = [f"{uch.KIND_TEXT[k]}: {self.kinds[k]}" for k in uch.KINDS if self.kinds.get(k)]
+        return ("Себестоимость по дате продажи (WB-17 §2) — снимки " + (", ".join(self.dates) or "нет") + "; ключ WB → Ozon-ключ строки 1С: "
+                + ("; ".join(parts) if parts else "обращений не было") + ("; снимок: " + "; ".join(kinds) if kinds else "") + ". " + self.rate_note())
+
+
+def cost_history_from_maps(exact, uniform, snapshot=None):
+    """История из карт одного снимка (exact, uniform) — для тестов и старых вызовов с парой карт; дата — snapshot или SNAP."""
+    d = str(snapshot or SNAP or "2026-05-20")
+    uniform_id = {sizeless_key(k): v for k, v in (uniform or {}).items()}
+    return WbCostHistory({d: dict(exact or {})}, {d: uniform_id}, {d: dict(uniform or {})})
+
+
+def as_cost_history(costs, snapshot=None):
+    """WbCostHistory из того, что передали: сама история, пара карт (exact, uniform) или None."""
+    if isinstance(costs, WbCostHistory):
+        return costs
+    if costs is None:
+        return WbCostHistory({})
+    exact, uniform = costs
+    return cost_history_from_maps(exact, uniform, snapshot)
+
+
+def _cost_call(cost_fn, code, size, day):
+    """cost_fn(code, size, day) у истории; cost_fn(code, size) у старых читателей и заглушек тестов."""
+    try:
+        n = len(inspect.signature(cost_fn).parameters)
+    except (TypeError, ValueError):
+        n = 2
+    return cost_fn(code, size, day) if n >= 3 else cost_fn(code, size)
+
+
+def snapshot_dates(sb, table="article_unit_costs"):
+    """Даты снимков таблицы: по одной на запрос (min snapshot_date > предыдущей, order + limit 1) — PostgREST без distinct;
+    запросов = снимков + 1 (шесть снимков — 7 запросов)."""
+    dates, last = [], None
+    while True:
+        qb = sb.table(table).select("snapshot_date").order("snapshot_date").limit(1)
+        if last is not None:
+            qb = qb.gt("snapshot_date", last)
+        data = qb.execute().data or []
+        if not data:
+            return dates
+        last = str(data[0]["snapshot_date"])
+        dates.append(last)
+
+
+def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES, dates=None,
+                          rates=None, k_table=None):
+    """Все снимки article_unit_costs по базам артикулов из vendor_codes — ПО ОДНОМУ СНИМКУ ЗА ЗАПРОС (eq snapshot_date + or_ по
+    базам, страницы по ключу offer_id_norm — ровно шаблон load_costs_for, ≈ 0,9 с на пачку из 80 баз; один or_-запрос по всем
+    снимкам разом на 461 тыс. строк упирался в statement_timeout 8 с — сборка 10-08 01:39 МСК, WB-17 §3). Баз больше max_bases —
+    снимки целиком, тоже по одному. Возвращает WbCostHistory: costs {дата: {ключ: unit_cost}}, uniform_id {дата: {безразмерный
+    ключ: unit_cost_uniform}} (первая строка ключа побеждает), uniform_base {дата: {база: unit_cost_uniform}} (первая по ключу).
+    stats: bases, rows, requests, mode, snapshots, rates. Курс 1С (сорок восьмая): rates — MetalRates (None → load_rates_for(sb) —
+    таблица metal_rates_1c, если у кабинета задан COST_RATE_K; False → без курса), k_table — None → COST_RATE_K профиля; проба и вид
+    изделия каждой строки 1С — meta трёх историй, по ним считается поправка. Таблица курсов не прочиталась — вслух, СС по снимкам."""
+    bases = sorted(cost_bases(vendor_codes))
+    select = "offer_id_norm,snapshot_date,unit_cost,unit_cost_uniform,metal_fineness,product_kind"
+    k_table = COST_RATE_K if k_table is None else k_table
+    rates_note = ""
+    if rates is None:
+        try:
+            rates = load_rates_for(sb)
+        except RuntimeError as error:
+            rates, rates_note = None, f"курс 1С не прочитан: {str(error)[:160]} — себестоимость по снимкам без поправки"
+            print(rates_note, flush=True)
+    elif rates is False:
+        rates = None
+    dates = list(dates) if dates is not None else snapshot_dates(sb)
+    requests = 0 if dates is not None and stats is None else len(dates) + 1
+    rows_all = []
+    mode = "full" if len(bases) > max_bases else "narrow"
+    for d in dates:
+        if mode == "full":
+            got = stale_keys.read_window_rows(sb, "article_unit_costs", select, [("eq", "snapshot_date", d)], ["offer_id_norm"], page=page)
+            rows_all.extend(got)
+            requests += (len(got) + page - 1) // page + 1
+            continue
+        for i in range(0, len(bases), batch):
+            chunk = bases[i:i + batch]
+            expr = ",".join(f'offer_id_norm.eq."{b}",offer_id_norm.like."{b}-*"' for b in chunk)
+            last = None
+            while True:
+                qb = (sb.table("article_unit_costs").select(select).eq("snapshot_date", d).or_(expr).order("offer_id_norm").limit(page))
+                if last is not None:
+                    qb = qb.gt("offer_id_norm", last)
+                data = qb.execute().data or []
+                requests += 1
+                rows_all.extend(data)
+                if len(data) < page:
+                    break
+                last = data[-1]["offer_id_norm"]
+    costs, uniform_id, uniform_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
+    meta, meta_id, meta_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
+    for r in rows_all:
+        d, key = str(r["snapshot_date"]), str(r["offer_id_norm"])
+        costs[d][key] = D(r["unit_cost"])
+        fk = (r.get("metal_fineness"), r.get("product_kind"))
+        meta[d][key] = fk
+        if r.get("unit_cost_uniform") is not None:
+            if uniform_id[d].setdefault(sizeless_key(key), D(r["unit_cost_uniform"])) == D(r["unit_cost_uniform"]):
+                meta_id[d].setdefault(sizeless_key(key), fk)
+            if uniform_base[d].setdefault(key.split("-", 1)[0], D(r["unit_cost_uniform"])) == D(r["unit_cost_uniform"]):
+                meta_base[d].setdefault(key.split("-", 1)[0], fk)
+    if stats is not None:
+        stats.update({"bases": len(bases), "rows": len(rows_all), "requests": requests, "mode": mode, "snapshots": sorted(costs),
+                      "rates": (rates.describe() if rates else "нет") + (f" ({rates_note})" if rates_note else "")})
+    return WbCostHistory(dict(costs), dict(uniform_id), dict(uniform_base), meta=dict(meta), meta_id=dict(meta_id), meta_base=dict(meta_base),
+                         rates=rates, k_table=k_table)
 
 
 def unit_cost_for(exact, uniform, vendor_code, tech_size, mode="base"):
@@ -394,7 +635,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
             s["commission"] += sign * price * D(pct) / 100
             s["acquiring_raw"] += sign * D(r["acquiring_fee"])
             qty = int(r.get("quantity") or 1)
-            cost, source = cost_fn(r.get("vendor_code"), r.get("tech_size"))
+            cost, source = _cost_call(cost_fn, r.get("vendor_code"), r.get("tech_size"), d)   # WB-17 §2: снимок по дню строки
             cnt[d]["positions"] += sign * qty
             cnt[d]["cost_" + source] += qty
             if cost is None:
@@ -551,7 +792,7 @@ def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, 
         c["funnel_buyouts_qty"] += int(r.get("buyout_count") or 0); c["funnel_cancel_qty"] += int(r.get("cancel_count") or 0)
         c["cards"] += 1
         if qty:
-            cost, source = cost_fn(r.get("vendor_code"), None)
+            cost, source = _cost_call(cost_fn, r.get("vendor_code"), None, d)   # WB-17 §2: снимок по дню заказа
             c["cost_" + source] += qty
             if cost is None:
                 c["no_cost_qty"] += qty; s["no_cost_sum"] += D(r.get("order_sum"))
@@ -890,10 +1131,10 @@ def main(argv=None):
     print(f"строк отчёта по rrDate за {d1} … {window_end(days[-1])} (запас {LAG_DAYS} дн. под дату продажи): {len(rows)} ("
           + ("файлы " + args.rows_from_files if args.rows_from_files else loader.TABLE) + ")")
     cstats = {}
-    exact, uniform = load_costs_for(sb, (r.get("vendor_code") for r in rows), args.snapshot, stats=cstats)
-    print(f"снимок 1С {args.snapshot} {'адресно' if cstats['mode'] == 'narrow' else 'целиком (баз больше ' + str(COST_NARROW_MAX_BASES) + ')'} (WB-12 §4): "
-          f"баз артикулов {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений; "
-          f"точных строк {len(exact)}, базовых артикулов с единой СС {len(uniform)}; стыковка — {args.cogs_by}")
+    hist = load_cost_history_for(sb, (r.get("vendor_code") for r in rows), stats=cstats)   # WB-17 §2: все снимки, СС по дате продажи
+    print(f"снимки 1С {', '.join(cstats['snapshots']) or 'нет'} {'адресно' if cstats['mode'] == 'narrow' else 'целиком (баз больше ' + str(COST_NARROW_MAX_BASES) + ')'}: "
+          f"баз артикулов {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений; ключ WB → Ozon-ключ строки 1С по размеру (--cogs-by {args.cogs_by} — справочно, лестница одна); "
+          f"курс 1С: {cstats.get('rates', 'нет')}")
     ads_by_day, ads_known, ads_note = {}, False, "реклама не запрашивалась (--ads none)"
     if args.ads != "none":
         try:
@@ -904,7 +1145,7 @@ def main(argv=None):
         except Exception as error:  # реклама не обязана останавливать лист; пусто — не ноль
             ads_note = f"реклама не получена: {error}"
     print(ads_note)
-    cost_fn = lambda code, size: unit_cost_for(exact, uniform, code, size, args.cogs_by)  # noqa: E731
+    cost_fn = hist.cost_fn
     outside, excluded = {}, {}
     ainfo = {}   # WB-16 §1: аванс/возврат — из прочитанных строк окна; аванс раньше окна дочитывается по индексу (из файлов — без дочитки)
     advance_net, advance_open = advance_net_by_day(None if args.rows_from_files else sb, rows, d1, info=ainfo)

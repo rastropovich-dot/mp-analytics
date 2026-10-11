@@ -67,7 +67,7 @@ class BuyoutRows(unittest.TestCase):
         by = {r["sku"]: r for r in rows}
         r11 = by["11"]
         self.assertEqual((r11["turnover"], r11["commission"], r11["logistics"], r11["ads"]), (D(1000), D(-400), D(-8), D(-100)))
-        self.assertEqual((r11["cogs"], r11["coinvest"], r11["units"], r11["brand"], r11["category"]), (D(100) * fr.cogs_index("2026-09-01"), D(11), D(1), "KARATOV", "кольца"))
+        self.assertEqual((r11["cogs"], r11["coinvest"], r11["units"], r11["brand"], r11["category"]), (D(100), D(11), D(1), "KARATOV", "кольца"))
         self.assertEqual(by["22"]["cogs"], D(0))                      # СС нет — ноль в строке и счётчик
         self.assertEqual(stats["positions_without_cost"], 1)
         res = by[fr.NO_SKU]
@@ -102,7 +102,7 @@ class BuyoutRows(unittest.TestCase):
     def test_check_against_month_is_zero_on_shared_inputs(self):
         rows, _ = self.rows()
         d = daily("2026-09-01")
-        d.update({"turnover": D(1500), "commission": D(600), "revenue": (D(1500) - D(600)) / D("1.22"), "cogs": D(100), "cogs_index": D(100) * fr.cogs_index("2026-09-01")})
+        d.update({"turnover": D(1500), "commission": D(600), "revenue": (D(1500) - D(600)) / D("1.22"), "cogs": D(100), "cogs_snapshot": D(100)})
         table = fr.check_against_month(rows, [d], ["2026-09-01"])
         self.assertEqual([t[3] for t in table], [D(0)] * len(table), table)
 
@@ -128,7 +128,7 @@ class Orders(unittest.TestCase):
         self.assertIsNone(by[("2026-09-01", "22")]["buyer_a"])                        # цены нет — пусто
         self.assertIsNone(by[("2026-08-01", "11")]["buyer_a"])                        # дубль цены продавца — не измерено
         self.assertEqual(by[("2026-09-01", fr.NO_SKU)]["ads"], D("48.84"))            # 148,84 леджера − 100 по SKU
-        self.assertEqual(r["cogs_created"], D(2) * D(100) * fr.cogs_index("2026-09-01"))
+        self.assertEqual(r["cogs_created"], D(2) * D(100))
         self.assertEqual(stats["qty_without_cost"], 1)
 
     def test_coefficients_and_svod(self):
@@ -152,7 +152,7 @@ class Orders(unittest.TestCase):
         self.assertEqual(s["coinvest_pct"], D("0.4"))                                     # по измеренным строкам: (1500 − 900) / 1500 без НДС — та же доля
         self.assertEqual(s["coinvest_cover"], D(1500) / D(1900))
         self.assertIsNone(piv["авг"]["coinvest_pct"])
-        cogs = D(2) * D(100) * fr.cogs_index("2026-09-01")
+        cogs = D(2) * D(100)
         self.assertEqual(s["cogs"], cogs)
         self.assertEqual(s["margin"], s["revenue"] - cogs)
         self.assertEqual(rep.q(s["gross_fin"]), rep.q(s["buyout_rub"] - cogs * D("0.8") - D(122)))   # = 0,8 × (Выручка − СС) − Реклама, как прежняя формула
@@ -192,7 +192,7 @@ def daily_for_raw(d=RAW_DAY):
     vat = D("1.22")
     row = {"date": d, "vat": vat, "turnover": D(500), "commission": D(200), "revenue": (D(500) - D(200)) / vat, "cogs": D(200),
            "logistics": D(50) / vat, "acquiring": D(20) / vat, "subscription": D(100) / vat, "other": D(0), "ads": D(300) / vat}
-    row["cogs_index"] = D(200) * fr.cogs_index(d)
+    row["cogs_snapshot"] = D(200)
     return row
 
 
@@ -210,7 +210,7 @@ class LongRows(unittest.TestCase):
         by = {(r.accrual_id, r.sku, r.kind): r for r in rows}
         self.assertEqual(len(rows), 9, [(r.accrual_id, r.sku, r.kind, r.amount) for r in rows])
         t11 = by[(1, "11", "Товарооборот")]
-        self.assertEqual((t11.amount, t11.qty, t11.coinvest, t11.cogs), (D(1000), D(2), D(11), D(2) * D(100) * fr.cogs_index(RAW_DAY)))   # штуки 2 измерены → на строку продажи
+        self.assertEqual((t11.amount, t11.qty, t11.coinvest, t11.cogs), (D(1000), D(2), D(11), D(2) * D(100)))   # штуки 2 измерены → на строку продажи
         self.assertEqual((t11.article, t11.brand, t11.brand_cc, t11.category, t11.month, t11.day_num, t11.month_num, t11.platform), ("F1", "KARATOV", "KARATOV", "кольца", "сен", 1, 9, "Ozon"))
         self.assertEqual(by[(1, "11", "Комиссия")].amount, D(-400))
         self.assertEqual((by[(1, "22", "Товарооборот")].amount, by[(1, "22", "Товарооборот")].qty, by[(1, "22", "Комиссия")].amount), (D(-500), D(-1), D(200)))

@@ -115,3 +115,94 @@ class LoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RateRuleTests(unittest.TestCase):
+    """Сорок восьмая §2: СС по курсу 1С = снимок × (1 + k × Δ); Δ = 0 → снимок; 925 — по серебру; без пробы / k / курсов — без поправки; устаревший курс — пометка."""
+
+    RATES = uch.MetalRates([{"metal": "gold585", "set_date": "2026-05-20", "rate": "6000.00", "seen_to": "2026-05-22"},
+                            {"metal": "gold585", "set_date": "2026-09-01", "rate": "6600.00", "seen_to": "2026-09-30"},
+                            {"metal": "silver925", "set_date": "2026-05-20", "rate": "160.00", "seen_to": "2026-05-22"},
+                            {"metal": "silver925", "set_date": "2026-09-01", "rate": "200.00", "seen_to": "2026-09-30"},
+                            {"metal": "usd", "set_date": "2026-05-20", "rate": "74.00", "seen_to": "2026-09-30"}])
+    K = {"585": {"*": D("0.95"), "Цепь": D("0.99")}, "375": {"*": D("0.93")}, "925": {"*": D("0.45")}}
+    META = {"2026-05-20": {"f1": ("585", "Кольцо"), "f2": ("925", "Серьги"), "f3": ("585", "Цепь"), "f4": (None, None), "f5": ("750", "Кольцо"), "f6": ("375", "Серьги")},
+            "2026-04-20": {"f1": ("585", "Кольцо")}}
+    SNAPS = {"2026-04-20": {"f1": D("100")}, "2026-05-20": {"f1": D("1000"), "f2": D("1000"), "f3": D("1000"), "f4": D("1000"), "f5": D("1000"), "f6": D("1000")}}
+
+    def hist(self, **kw):
+        return uch.CostHistory(self.SNAPS, meta=self.META, rates=self.RATES, k_table=self.K, **kw)
+
+    def test_rate_unchanged_since_snapshot_gives_snapshot_cost_and_plain_source(self):
+        h = self.hist()
+        self.assertEqual(h.cost_source("f1", "2026-06-10", 1), (D("1000"), "после последнего снимка 2026-05-20"))
+        self.assertEqual(h.rate_counters["rate_same"], 1)
+
+    def test_gold_plus_ten_percent_with_k_095_gives_plus_nine_and_half(self):
+        h = self.hist()
+        cost, src = h.cost_source("f1", "2026-09-10", 2)
+        self.assertEqual(cost, D("1095.00"))                                         # 1000 × (1 + 0,95 × 0,10)
+        self.assertEqual(src, "после последнего снимка 2026-05-20; по курсу 1С 2026-09-01 от снимка 2026-05-20, k=0,95")
+        self.assertEqual((h.rate_counters["by_rate"], h.rate_rubles, h.base_rubles), (1, D("190.00"), D("2000")))
+        self.assertEqual(h.rubles["after"], D("2190.00"))
+
+    def test_kind_k_beats_fineness_default(self):
+        self.assertEqual(self.hist().cost("f3", "2026-09-10"), D("1099.00"))          # цепь: k 0,99
+
+    def test_silver_925_follows_the_silver_rate(self):
+        self.assertEqual(self.hist().cost("f2", "2026-09-10"), D("1112.50"))          # 1000 × (1 + 0,45 × 0,25)
+
+    def test_375_follows_gold(self):
+        self.assertEqual(self.hist().cost("f6", "2026-09-10"), D("1093.00"))          # 1000 × (1 + 0,93 × 0,10)
+
+    def test_without_fineness_or_unknown_fineness_no_adjustment(self):
+        h = self.hist()
+        self.assertEqual(h.cost_source("f4", "2026-09-10"), (D("1000"), "после последнего снимка 2026-05-20"))
+        self.assertEqual(h.cost_source("f5", "2026-09-10"), (D("1000"), "после последнего снимка 2026-05-20"))
+        self.assertEqual((h.rate_counters["no_meta"], h.rate_counters["unknown_fineness"]), (1, 1))
+
+    def test_delta_is_measured_from_the_snapshot_that_was_chosen(self):
+        h = self.hist()
+        # 20.04 снимок: курса на 20.04 нет (первая установка 20.05) → без поправки, причина no_rate
+        self.assertEqual(h.cost_source("f1", "2026-04-25"), (D("100"), "2026-04-20"))
+        self.assertEqual(h.rate_counters["no_rate"], 1)
+
+    def test_no_rates_or_empty_k_table_means_snapshot_cost(self):
+        h1 = uch.CostHistory(self.SNAPS, meta=self.META, rates=None, k_table=self.K)
+        h2 = uch.CostHistory(self.SNAPS, meta=self.META, rates=self.RATES, k_table={})      # rbh: «не задано»
+        self.assertEqual(h1.cost("f1", "2026-09-10"), D("1000")); self.assertEqual(h2.cost("f1", "2026-09-10"), D("1000"))
+        self.assertEqual((h1.rate_counters["no_rates"], h2.rate_counters["no_k_table"]), (1, 1))
+        self.assertIn("без поправки", h1.rate_note()); self.assertIn("k кабинета не заданы", h2.rate_note())
+
+    def test_day_none_latest_snapshot_without_adjustment(self):
+        self.assertEqual(self.hist().cost_source("f1"), (D("1000"), "2026-05-20 (дата не задана)"))
+
+    def test_stale_rate_is_named_in_source_and_note(self):
+        h = self.hist()
+        cost, src = h.cost_source("f1", "2026-10-08", 1)                             # последняя картинка 09-30 → 8 дней
+        self.assertEqual(cost, D("1095.00"))
+        self.assertTrue(src.endswith("k=0,95 (курс на 2026-09-30, устарел на 8 дней)"), src)
+        self.assertEqual(h.rate_stale_days("2026-10-08"), 8); self.assertEqual(h.rate_stale_days("2026-10-06"), 0)
+        self.assertIn("ВНИМАНИЕ: курс устарел — последняя картинка 2026-09-30, до 8 дней", h.note())
+
+    def test_lookup_stays_unadjusted_and_base_is_exposed(self):
+        h = self.hist()
+        self.assertEqual(h.lookup("f1", "2026-09-10"), (D("1000"), "2026-05-20", "after"))
+        adjusted, base, d, kind, info = h.lookup_by_rate("f1", "2026-09-10")
+        self.assertEqual((adjusted, base, d, kind, info["reason"], info["delta"]), (D("1095.00"), D("1000"), "2026-05-20", "after", "by_rate", D("0.1")))
+        fn = uch.unit_cost_fn(h, {"11": "F1"})
+        self.assertEqual((fn("11", "2026-09-10"), fn.base("11", "2026-09-10")), (D("1095.00"), D("1000")))
+        self.assertEqual(uch.with_base(fn, "11", "2026-09-10", 1), (D("1095.00"), D("1000"), "после последнего снимка 2026-05-20; по курсу 1С 2026-09-01 от снимка 2026-05-20, k=0,95"))
+        stub = lambda sku, day=None, qty=None: D(7)  # noqa: E731
+        self.assertEqual(uch.with_base(stub, "11", "2026-09-10"), (D(7), D(7), ""))
+
+    def test_rate_adjust_is_usable_with_a_foreign_key(self):
+        cost, info = self.hist().rate_adjust(D("500"), "2026-05-20", "2026-09-10", "925", "Серьги")
+        self.assertEqual((cost, info["applied"], info["metal"], info["rate_day"], info["rate_snap"]), (D("556.25"), True, "silver925", D("200.00"), D("160.00")))
+
+    def test_rates_rate_on_takes_last_setting_not_later_than_day(self):
+        r = self.RATES
+        self.assertEqual(r.rate_on("gold585", "2026-08-31"), (D("6000.00"), "2026-05-20"))
+        self.assertEqual(r.rate_on("gold585", "2026-09-01"), (D("6600.00"), "2026-09-01"))
+        self.assertEqual(r.rate_on("gold585", "2026-05-19"), (None, None))
+        self.assertEqual(r.last_picture, "2026-09-30")

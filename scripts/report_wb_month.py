@@ -66,7 +66,7 @@ from loaders import wb_money_rules as rules  # noqa: E402  — удержани�
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 import loaders.wb_ads_loader as ads_loader  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet  # noqa: E402
-from report_ozon_month import MONTHS, VAT_RATES, vat_for  # noqa: E402,F401  — тот же НДС, что у Ozon
+from report_ozon_month import COST_RATE_K, MONTHS, VAT_RATES, load_rates_for, vat_for  # noqa: E402,F401  — тот же НДС, что у Ozon; k и курс 1С — сорок восьмая
 
 Z = Decimal(0)
 C = Decimal("0.01")
@@ -279,22 +279,31 @@ def sizeless_key(key):
 
 class WbCostHistory:
     """Снимки 1С по датам для ключей WB: exact — CostHistory по Ozon-ключам (unit_cost), uniform_id — «единая» по
-    безразмерному ключу, uniform_base — «единая» по базе. lookup → (себестоимость, источник-строка, ступень)."""
+    безразмерному ключу, uniform_base — «единая» по базе. lookup → (себестоимость, дата снимка, kind, ступень).
+    Курс 1С (сорок восьмая, договор с Ozon-сессией): meta {дата: {ключ: (проба, вид)}} той строки 1С, rates — MetalRates,
+    k_table — COST_RATE_K профиля; СС = снимок × (1 + k × Δ курса металла с даты снимка до дня продажи) через
+    CostHistory.lookup_by_rate каждой из трёх историй; без rates / k — СС снимка, как в WB-17 §2."""
 
-    def __init__(self, costs, uniform_id=None, uniform_base=None):
-        self.exact = uch.CostHistory(costs)
-        self.uniform_id = uch.CostHistory(uniform_id or {})
-        self.uniform_base = uch.CostHistory(uniform_base or {})
+    def __init__(self, costs, uniform_id=None, uniform_base=None, meta=None, meta_id=None, meta_base=None, rates=None, k_table=None):
+        self.exact = uch.CostHistory(costs, meta=meta, rates=rates, k_table=k_table)
+        self.uniform_id = uch.CostHistory(uniform_id or {}, meta=meta_id, rates=rates, k_table=k_table)
+        self.uniform_base = uch.CostHistory(uniform_base or {}, meta=meta_base, rates=rates, k_table=k_table)
         self.dates = sorted(set(self.exact.dates) | set(self.uniform_id.dates) | set(self.uniform_base.dates))
+        self.rates, self.k_table = rates, (k_table or {})
         self.counters = Counter()
         self.kinds = Counter()
         self.rubles = defaultdict(Decimal)
+        self.rate_counters = Counter()
+        self.rate_rubles = Decimal(0)
+        self.base_rubles = Decimal(0)
+        self.stale_days_seen = set()
 
-    def lookup(self, vendor_code, tech_size, day=None):
-        """(себестоимость | None, дата снимка | None, kind unit_cost_history, ступень) — без учёта в счётчиках."""
+    def lookup_full(self, vendor_code, tech_size, day=None):
+        """(СС по курсу | None, СС снимка | None, дата снимка | None, kind, ступень, info курса) — без учёта в счётчиках."""
+        none = (None, None, None, "none", "none", {"applied": False, "reason": "none", "snapshot_date": None})
         code = str(vendor_code or "").strip().lower()
         if not code:
-            return None, None, "none", "none"
+            return none
         base = code.partition("-")[0]
         size = str(tech_size or "").strip()
         ladder = [("exact", self.exact, code)]
@@ -302,32 +311,60 @@ class WbCostHistory:
             ladder += [("size", self.exact, wb_size_key(code, size)), ("size_nosuffix", self.exact, wb_size_key(code, size, keep_suffix=False))]
         ladder += [("uniform_id", self.uniform_id, code), ("uniform_base", self.uniform_base, base)]
         for step, hist, key in ladder:
-            c, d, kind = hist.lookup(key, day)
-            if c is not None:
-                return c, d, kind, step
-        return None, None, "none", "none"
+            adjusted, base_cost, d, kind, info = hist.lookup_by_rate(key, day)
+            if adjusted is not None:
+                return adjusted, base_cost, d, kind, step, info
+        return none
+
+    def lookup(self, vendor_code, tech_size, day=None):
+        """(себестоимость по курсу | None, дата снимка | None, kind, ступень) — без учёта в счётчиках."""
+        adjusted, _base, d, kind, step, _info = self.lookup_full(vendor_code, tech_size, day)
+        return adjusted, d, kind, step
 
     def cost_source(self, vendor_code, tech_size, day=None, qty=None):
-        """(себестоимость | None, источник для строки книги, ступень) с учётом в счётчиках (строки по ступени и kind, ₽ = СС × qty)."""
-        c, d, kind, step = self.lookup(vendor_code, tech_size, day)
+        """(себестоимость | None, источник для строки книги, ступень) с учётом в счётчиках: строки по ступени и kind, ₽ = СС × qty,
+        поправка по курсу (СС по курсу − СС снимка) × qty, причины поправки."""
+        adjusted, base_cost, d, kind, step, info = self.lookup_full(vendor_code, tech_size, day)
         self.counters[step] += 1
         self.kinds[kind] += 1
-        if c is not None and qty is not None:
-            self.rubles[step] += c * Decimal(str(qty))
-        label = (uch.source_label(d, kind) + " · " + COST_STEP_TEXT[step]) if c is not None else "нет снимка"
-        return c, label, step
+        if adjusted is not None:
+            self.rate_counters[info.get("reason") or "none"] += 1
+            if info.get("stale_days"):
+                self.stale_days_seen.add((info.get("last_picture"), info["stale_days"]))
+            if qty is not None:
+                q = Decimal(str(qty))
+                self.rubles[step] += adjusted * q
+                self.base_rubles += base_cost * q
+                self.rate_rubles += (adjusted - base_cost) * q
+            label = uch.source_label(d, kind) + uch.rate_source_label(info) + " · " + COST_STEP_TEXT[step]
+        else:
+            label = "нет снимка"
+        return adjusted, label, step
 
     def cost_fn(self, vendor_code, tech_size, day=None):
         """(себестоимость, ступень) — договор cost_fn читателей (build_daily, build_orders_daily, мост)."""
         c, _label, step = self.cost_source(vendor_code, tech_size, day)
         return c, step
 
+    def rate_note(self):
+        if not self.rates:
+            return "Курсов 1С нет — себестоимость по снимкам без поправки."
+        if not self.k_table:
+            return f"Курс 1С: {self.rates.describe()}; k кабинета не заданы — себестоимость по снимкам без поправки."
+        parts = [f"{uch.RATE_REASON_TEXT[r]}: {self.rate_counters[r]} строк" for r in uch.RATE_REASONS if self.rate_counters.get(r)]
+        text = (f"Курс 1С ({self.rates.describe()}): СС = снимок × (1 + k × Δ курса металла с даты снимка); " + ("; ".join(parts) if parts else "обращений не было")
+                + (f"; поправка по курсу {self.rate_rubles:+,.2f} ₽ к {self.base_rubles:,.2f} ₽ снимка" if self.base_rubles else "") + ".")
+        if self.stale_days_seen:
+            worst = max(self.stale_days_seen, key=lambda x: x[1])
+            text += f" ВНИМАНИЕ: курс устарел — последняя картинка {worst[0]}, до {worst[1]} дней к датам книги."
+        return text
+
     def note(self):
         parts = [f"{COST_STEP_TEXT[s]}: {self.counters[s]} строк" + (f", {self.rubles[s]:,.2f} ₽" if self.rubles.get(s) else "")
                  for s in COST_STEPS if self.counters.get(s)]
         kinds = [f"{uch.KIND_TEXT[k]}: {self.kinds[k]}" for k in uch.KINDS if self.kinds.get(k)]
         return ("Себестоимость по дате продажи (WB-17 §2) — снимки " + (", ".join(self.dates) or "нет") + "; ключ WB → Ozon-ключ строки 1С: "
-                + ("; ".join(parts) if parts else "обращений не было") + ("; снимок: " + "; ".join(kinds) if kinds else "") + ".")
+                + ("; ".join(parts) if parts else "обращений не было") + ("; снимок: " + "; ".join(kinds) if kinds else "") + ". " + self.rate_note())
 
 
 def cost_history_from_maps(exact, uniform, snapshot=None):
@@ -371,15 +408,28 @@ def snapshot_dates(sb, table="article_unit_costs"):
         dates.append(last)
 
 
-def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES, dates=None):
+def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES, dates=None,
+                          rates=None, k_table=None):
     """Все снимки article_unit_costs по базам артикулов из vendor_codes — ПО ОДНОМУ СНИМКУ ЗА ЗАПРОС (eq snapshot_date + or_ по
     базам, страницы по ключу offer_id_norm — ровно шаблон load_costs_for, ≈ 0,9 с на пачку из 80 баз; один or_-запрос по всем
     снимкам разом на 461 тыс. строк упирался в statement_timeout 8 с — сборка 10-08 01:39 МСК, WB-17 §3). Баз больше max_bases —
     снимки целиком, тоже по одному. Возвращает WbCostHistory: costs {дата: {ключ: unit_cost}}, uniform_id {дата: {безразмерный
     ключ: unit_cost_uniform}} (первая строка ключа побеждает), uniform_base {дата: {база: unit_cost_uniform}} (первая по ключу).
-    stats: bases, rows, requests, mode, snapshots."""
+    stats: bases, rows, requests, mode, snapshots, rates. Курс 1С (сорок восьмая): rates — MetalRates (None → load_rates_for(sb) —
+    таблица metal_rates_1c, если у кабинета задан COST_RATE_K; False → без курса), k_table — None → COST_RATE_K профиля; проба и вид
+    изделия каждой строки 1С — meta трёх историй, по ним считается поправка. Таблица курсов не прочиталась — вслух, СС по снимкам."""
     bases = sorted(cost_bases(vendor_codes))
-    select = "offer_id_norm,snapshot_date,unit_cost,unit_cost_uniform"
+    select = "offer_id_norm,snapshot_date,unit_cost,unit_cost_uniform,metal_fineness,product_kind"
+    k_table = COST_RATE_K if k_table is None else k_table
+    rates_note = ""
+    if rates is None:
+        try:
+            rates = load_rates_for(sb)
+        except RuntimeError as error:
+            rates, rates_note = None, f"курс 1С не прочитан: {str(error)[:160]} — себестоимость по снимкам без поправки"
+            print(rates_note, flush=True)
+    elif rates is False:
+        rates = None
     dates = list(dates) if dates is not None else snapshot_dates(sb)
     requests = 0 if dates is not None and stats is None else len(dates) + 1
     rows_all = []
@@ -405,15 +455,22 @@ def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=N
                     break
                 last = data[-1]["offer_id_norm"]
     costs, uniform_id, uniform_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
+    meta, meta_id, meta_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
     for r in rows_all:
         d, key = str(r["snapshot_date"]), str(r["offer_id_norm"])
         costs[d][key] = D(r["unit_cost"])
+        fk = (r.get("metal_fineness"), r.get("product_kind"))
+        meta[d][key] = fk
         if r.get("unit_cost_uniform") is not None:
-            uniform_id[d].setdefault(sizeless_key(key), D(r["unit_cost_uniform"]))
-            uniform_base[d].setdefault(key.split("-", 1)[0], D(r["unit_cost_uniform"]))
+            if uniform_id[d].setdefault(sizeless_key(key), D(r["unit_cost_uniform"])) == D(r["unit_cost_uniform"]):
+                meta_id[d].setdefault(sizeless_key(key), fk)
+            if uniform_base[d].setdefault(key.split("-", 1)[0], D(r["unit_cost_uniform"])) == D(r["unit_cost_uniform"]):
+                meta_base[d].setdefault(key.split("-", 1)[0], fk)
     if stats is not None:
-        stats.update({"bases": len(bases), "rows": len(rows_all), "requests": requests, "mode": mode, "snapshots": sorted(costs)})
-    return WbCostHistory(dict(costs), dict(uniform_id), dict(uniform_base))
+        stats.update({"bases": len(bases), "rows": len(rows_all), "requests": requests, "mode": mode, "snapshots": sorted(costs),
+                      "rates": (rates.describe() if rates else "нет") + (f" ({rates_note})" if rates_note else "")})
+    return WbCostHistory(dict(costs), dict(uniform_id), dict(uniform_base), meta=dict(meta), meta_id=dict(meta_id), meta_base=dict(meta_base),
+                         rates=rates, k_table=k_table)
 
 
 def unit_cost_for(exact, uniform, vendor_code, tech_size, mode="base"):
@@ -1076,7 +1133,8 @@ def main(argv=None):
     cstats = {}
     hist = load_cost_history_for(sb, (r.get("vendor_code") for r in rows), stats=cstats)   # WB-17 §2: все снимки, СС по дате продажи
     print(f"снимки 1С {', '.join(cstats['snapshots']) or 'нет'} {'адресно' if cstats['mode'] == 'narrow' else 'целиком (баз больше ' + str(COST_NARROW_MAX_BASES) + ')'}: "
-          f"баз артикулов {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений; ключ WB → Ozon-ключ строки 1С по размеру (--cogs-by {args.cogs_by} — справочно, лестница одна)")
+          f"баз артикулов {cstats['bases']}, строк {cstats['rows']} за {cstats['requests']} обращений; ключ WB → Ozon-ключ строки 1С по размеру (--cogs-by {args.cogs_by} — справочно, лестница одна); "
+          f"курс 1С: {cstats.get('rates', 'нет')}")
     ads_by_day, ads_known, ads_note = {}, False, "реклама не запрашивалась (--ads none)"
     if args.ads != "none":
         try:

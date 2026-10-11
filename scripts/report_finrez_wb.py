@@ -353,7 +353,8 @@ def costs_for_codes(sb, vendor_codes, what="строк"):
     hist = wbm.load_cost_history_for(sb, vendor_codes, stats=cstats)
     how = "адресно" if cstats.get("mode") == "narrow" else f"целиком (баз больше {wbm.COST_NARROW_MAX_BASES} — так дешевле)"
     print(f"себестоимость: снимки 1С {', '.join(cstats['snapshots']) or 'нет'} {how} по кодам {what} — баз {cstats['bases']}, строк {cstats['rows']} "
-          f"за {cstats['requests']} обращений, {(datetime.now(timezone.utc) - started).total_seconds():.1f} с; СС по дате продажи, ключ WB → Ozon-ключ строки", flush=True)
+          f"за {cstats['requests']} обращений, {(datetime.now(timezone.utc) - started).total_seconds():.1f} с; СС по дате продажи, ключ WB → Ozon-ключ строки; "
+          f"курс 1С: {cstats.get('rates', 'нет')}", flush=True)
     return hist
 
 

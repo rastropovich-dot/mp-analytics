@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from decimal import Decimal
 
 import scripts.report_finrez_wb as fr
+from loaders import unit_cost_history as uch
 from tests.test_report_finrez_wb import ADS, COSTS, PRODUCTS, ROWS
 
 wbm = fr.wbm
@@ -102,8 +103,9 @@ class FakeCosts:
         self.rows, self.calls = rows, []
 
     def table(self, name):
-        assert name == "article_unit_costs", name
+        assert name in ("article_unit_costs", "metal_rates_1c"), name
         sb = self
+        rates_table = name == "metal_rates_1c"      # курсов у фальшивого клиента нет — пустой ответ, история без поправки
 
         class Q:
             def __init__(self):
@@ -118,6 +120,8 @@ class FakeCosts:
             def range(self, a, b): self.rng = (a, b); return self
 
             def execute(self):
+                if rates_table:
+                    return type("R", (), {"data": []})()
                 sb.calls.append({"select": self.sel, "eq": list(self.eqs), "or": self.expr, "gt": list(self.gts), "limit": self.lim, "order": list(self.orders)})
                 rows = [r for r in sb.rows if all(str(r.get(c)) == str(v) for c, v in self.eqs) and all(str(r.get(c)) > str(v) for c, v in self.gts)]
                 if self.expr is not None:
@@ -207,6 +211,55 @@ class ModuleRowsTests(unittest.TestCase):
         self.assertEqual(rows[0]["cogs"], D("500"))                                                  # история из базы: «единая» 250 × 2
         self.assertIn("заменены историей снимков", out.getvalue())
         self.assertEqual(rows[0]["cost_source"], "после последнего снимка 2026-08-01 · «единая» по идентификатору")
+
+
+class RateTests(unittest.TestCase):
+    """Курс 1С (сорок восьмая) в трёх историях WB: СС = снимок × (1 + k × Δ курса металла с даты снимка до дня продажи)."""
+    RATES = uch.MetalRates([{"metal": "gold585", "set_date": "2026-05-20", "rate": "6000.00", "seen_to": "2026-05-22"},
+                            {"metal": "gold585", "set_date": "2026-06-10", "rate": "6600.00", "seen_to": "2026-06-11"},
+                            {"metal": "silver925", "set_date": "2026-05-20", "rate": "100.00", "seen_to": "2026-05-22"}])
+    K = {"585": {"*": D("0.9"), "Кольцо": D("0.8")}, "925": {"*": D("0.5")}}
+    META = {"2026-05-20": {"f000078698-23,5": ("585", "Кольцо"), "f000009483": ("925", "Подвеска"), "f000041046": (None, None)}}
+    META_ID = {"2026-05-20": {"f000078698": ("585", "Кольцо")}}
+    META_BASE = {"2026-05-20": {"f000078698": ("585", "Кольцо")}}
+
+    def history(self, **kw):
+        return wbm.WbCostHistory({"2026-05-20": SNAPS["2026-05-20"]}, {"2026-05-20": UNI_ID["2026-05-20"]}, {"2026-05-20": UNI_BASE["2026-05-20"]},
+                                 meta=self.META, meta_id=self.META_ID, meta_base=self.META_BASE, rates=self.RATES, k_table=self.K, **kw)
+
+    def test_cost_follows_the_rate_on_every_ladder_step(self):
+        h = self.history()
+        c, label, step = h.cost_source("f000078698", "23.5", "2026-06-15", qty=2)         # строка по размеру, кольцо: 5500 × (1 + 0,8 × 0,1)
+        self.assertEqual((c, step), (D("5940.00"), "size"))
+        self.assertEqual(label, "после последнего снимка 2026-05-20; по курсу 1С 2026-06-10 от снимка 2026-05-20, k=0,8 · строка по размеру")
+        c, label, step = h.cost_source("f000078698", "17", "2026-06-15", qty=1)           # «единая» по идентификатору — meta_id
+        self.assertEqual((c, step), (D("5616.00"), "uniform_id"))                          # 5200 × 1,08
+        c, label, step = h.cost_source("f000009483", "0", "2026-06-15")                   # серебро — курс не менялся
+        self.assertEqual((c, step), (D("45"), "exact"))
+        self.assertIn("· точная строка", label); self.assertNotIn("по курсу", label)
+        c, _label, step = h.cost_source("f000041046", None, "2026-06-15")                 # без пробы в строке 1С — СС снимка
+        self.assertEqual((c, step), (D("700"), "exact"))
+        self.assertEqual(h.rate_counters, {"by_rate": 2, "rate_same": 1, "no_meta": 1})      # (None, None) в meta — «no_meta» у модуля
+        self.assertEqual(h.rate_rubles, D("880.00") + D("416.00"))                          # (5940−5500)×2 + (5616−5200)×1
+        self.assertIn("поправка по курсу +1,296.00 ₽", h.rate_note())
+
+    def test_before_the_rate_change_and_without_rates_the_snapshot_cost_stays(self):
+        h = self.history()
+        self.assertEqual(h.lookup("f000078698", "23.5", "2026-06-01")[0], D("5500"))      # курс до 10.06 тот же
+        h2 = wbm.WbCostHistory({"2026-05-20": SNAPS["2026-05-20"]}, meta=self.META, rates=None, k_table=self.K)
+        self.assertEqual(h2.lookup("f000078698", "23.5", "2026-06-15")[0], D("5500"))
+        self.assertEqual(h2.rate_note(), "Курсов 1С нет — себестоимость по снимкам без поправки.")
+        h3 = wbm.WbCostHistory({"2026-05-20": SNAPS["2026-05-20"]}, meta=self.META, rates=self.RATES, k_table={})   # rbh: k не заданы
+        self.assertEqual(h3.lookup("f000078698", "23.5", "2026-06-15")[0], D("5500"))
+
+    def test_loader_reads_fineness_and_kind_and_passes_rates(self):
+        rows = [dict(r, metal_fineness="585", product_kind="Кольцо") for r in ROWS_DB]
+        h = wbm.load_cost_history_for(FakeCosts(rows), ["f000078698"], rates=self.RATES, k_table=self.K)
+        self.assertEqual(h.exact.meta["2026-05-20"]["f000078698-23,5"], ("585", "Кольцо"))
+        self.assertEqual(h.uniform_id.meta["2026-05-20"]["f000078698"], ("585", "Кольцо"))
+        self.assertEqual(h.lookup("f000078698", "23.5", "2026-06-15")[0], D("5940.00"))
+        h0 = wbm.load_cost_history_for(FakeCosts(rows), ["f000078698"], rates=False, k_table=self.K)     # без курса — снимок
+        self.assertEqual(h0.lookup("f000078698", "23.5", "2026-06-15")[0], D("5500"))
 
 
 if __name__ == "__main__":

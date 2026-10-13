@@ -7,6 +7,36 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-13 (вечер), слово: `origin/main` (WB-17 `44b2c1d`) влит в ветку без конфликтов, новых файлов `sql/` в `main` нет (47 = 47 строкам `schema_migrations` в KARATOV, проверено одним чтением), набор 1 341 OK → **мерж `multi-cabinet` в `main` `--no-ff` `f33779d`, push 20:14:56 UTC, Render live 20:15:38 / 20:15:40 UTC на обоих сервисах, `~/mp-analytics` на `f33779d`**; первая ночь KARATOV на новом коде — 10-14
+
+**Проверки до мержа.** `git diff --name-status HEAD...origin/main -- sql/` — пусто; 12 коммитов `main` (WB-17 и её закрытие) влиты `ort`, конфликтов
+0; `cabinet.sql_files()` — 47; KARATOV `select count(*) from schema_migrations` — **47** (1 чтение через Management API, db_writes 0); набор
+**1 341 OK (skipped 3)**; `~/mp-analytics` стоял на `44b2c1d` (`main`), в нём незакоммиченный `docs/inbox.md` советника — не трогался, pull его не
+задел; сессии соседей («Сорок девятая» в `~/mp-analytics`, «ВБ», «Озон») не работали.
+
+**Мерж.** Временный worktree от `origin/main` → `git merge --no-ff multi-cabinet` → дерево мержа = дереву ветки (`rev-parse ^{tree}`) →
+push `f33779d:refs/heads/main` 20:14:56 UTC → worktree и временная ветка сняты → `~/mp-analytics` `pull --ff-only` → `f33779d`; ветка
+`multi-cabinet` fast-forward на `f33779d` (`git log main..HEAD` пуст). Render: `mp-analytics` live 20:15:40 UTC, `mp-analytics-telegram-report`
+live 20:15:38 UTC (4 обращения к Render API, только статусы).
+
+**Что ушло в прод (16 коммитов ветки с 10-08):** `scripts/db_migrate.py` (миграции `sql/` по кабинетам с `schema_migrations`, базовый файл первым,
+метка порядка `_z_`, засев `--against`, повторы отказов соединения), `scripts/db_schema_snapshot.py` (снимок схемы, базовый DDL, `--compare`),
+`sql/00000000_baseline_public_schema.sql`, четыре переименованных файла `sql/` (`20260506_z_*` × 3, `20260831_z_*`), три новых
+(`20261011_drop_load_status_mode_key`, `20261011_grants_api_roles_public` — только `service_role`, `20261012_revoke_anon_authenticated_public`),
+guard версий `cabinet.schema_status` / `assert_schema` в `run_daily_pipeline.py` (вторая строка лога) и `alerts_telegram.py` (строка ⛔ без
+блоков данных при отставании), профили `rbh1` / `rbh2` с хостами Supabase, `render.yaml` + `scripts/render_blueprint.py`, CLAUDE.md §1
+(правило «DDL только через `db_migrate`») и §10 («три базы»). **Поведение KARATOV ночью не меняется**: команды Render те же, `MP_CABINET` не
+задан → `karatov`, данные и запросы к API прежние; единственное новое — одно чтение `schema_migrations` (PostgREST, ≤ 1 000 строк) в начале
+ночи и алерта.
+
+**Утром 10-14 смотреть:** лог `mp-analytics` 00:15 UTC — первая строка «кабинет: KARATOV», **вторая — «схема: применены все 47 файлов sql/»**,
+затем «🚀 Запуск ежедневного пайплайна» и обычный чек-лист; если вторая строка — «схема: версии не отслеживаются …» — в прод ушёл не тот
+код (невозможно при 47 строках) или таблицу удалили; «база кабинета KARATOV отстаёт от кода: не применены N файлов sql/: …» — кто-то
+добавил файл в `sql/` мимо `db_migrate` (ночь остановится на этой строке, код 1, Telegram «Пайплайн упал»); «проверка версий не удалась …
+— продолжаю» — сеть/PostgREST, ночь идёт. Алерт 07:30 — текст прежний (первая строка «кабинет: KARATOV», строки ⛔ нет).
+Сервисов РБХ на Render ещё нет — `render.yaml` лежит в `main`, Blueprint создаёт владелец по §5.7 (список в блоке 10-11 (день)).
+
+---
 ## 2026-10-11 (день), без обращений к API и базам: (1) `render.yaml` для четырёх сервисов РБХ — в ветке, генератор `scripts/render_blueprint.py` + 5 тестов на состав; (2) список шагов владельца для §5.7 (Telegram, Render) с точными именами переменных; (3) CLAUDE.md §10 — как живут три базы и `db_migrate`; набор 1 326 OK; мерж — после WB-17
 
 **(1) `render.yaml`** (157 строк) генерируется из `scripts/render_blueprint.py` (`--write` / `--check`; PyYAML в окружении нет, поэтому источник

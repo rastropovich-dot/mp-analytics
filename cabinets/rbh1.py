@@ -10,7 +10,7 @@ GROUP = "РБХ"
 OZON_LEGAL_NAME = "Попова"                       # юрлицо кабинета Ozon
 WB_LEGAL_NAME = "ИП Рафикова"                      # юрлицо кабинета WB
 SHOP = "РБХ-1"                                     # колонка «Магазин» книги = имя кабинета (вопрос о SHOP снят владельцем 09-30)
-SUPABASE_HOST = None                                # хост проекта Supabase кабинета — впишет сессия по §5.1; до этого запуск невозможен
+SUPABASE_HOST = "jqagcdlquazojdcsewva.supabase.co"  # проект mp-analytics-rbh1 (eu-central-1, создан владельцем 2026-10-08…10); cabinet.assert_env сверяет с окружением
 DATA_DIR = "data/rbh1"
 LOGS_DIR = "logs/rbh1"
 PROJECT_START = None                                # первая запись — окно 60 дней назад по умолчанию (§5.4)

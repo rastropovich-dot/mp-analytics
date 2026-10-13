@@ -1141,6 +1141,10 @@ def pipeline_run_line(run, now=None):
 
 
 def build_message(target_date=None, skip_snapshot=False):
+    schema_state, schema_message, _ = cabinet.schema_status(supabase, CABINET)
+    if schema_state == "behind":   # поправка советника 1 (5.2б): алерт не падает, а шлёт одну строку без блоков данных — иначе о поломке никто не узнает
+        return "\n".join([cabinet.banner(CABINET), f"📊 <b>{CABINET.ALERT_TITLE}</b>", f"Дата: {today_local().isoformat()}", "",
+                          f"⛔ {schema_message}", "", "Блоки данных не собраны: сначала применить файлы sql/ к базе кабинета."])
     kpi_rows = get_kpi_rows(days_back=30)
     kpi_rows = overlay_wb_orders_from_sales_funnel(kpi_rows)
     current_snapshots = [] if skip_snapshot else save_today_snapshot(kpi_rows)

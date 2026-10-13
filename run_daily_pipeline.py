@@ -587,6 +587,8 @@ def main():
     args = parse_args()
     steps = build_steps(args)
     print(cabinet.banner(CABINET))   # первая строка лога: какой кабинет
+    from loaders.ozon_performance_ads_loader import supabase as _schema_client
+    print(cabinet.assert_schema(_schema_client, CABINET))   # вторая строка: версия схемы; база отстаёт от кода — SystemExit здесь, не в середине ночи
     print("\n🚀 Запуск ежедневного пайплайна MP Analytics")
     print(f"Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 

@@ -166,7 +166,7 @@ def main(argv=None, fetch=None, save=None, today=None):
     items = (fetch or get_wb_orders)(days_back=args.days_back, today=run_date)
     print(f"Получено строк WB orders: {len(items)}")
     if args.dry_run:
-        rows = aggregate_orders(items)
+        rows = list(aggregate_orders(items).values())   # агрегат — словарь по (дата, площадка, sku)
         print(f"dry-run: окно {args.days_back} дн. с {write_window_start(args.days_back, run_date)}, строк агрегата {len(rows)}, "
               f"дат {len({r['order_date'] for r in rows})}; db_writes = 0")
         return 0

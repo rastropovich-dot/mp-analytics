@@ -485,7 +485,7 @@ class DryRunFlagsForOrderStepsTests(unittest.TestCase):
         wb = importlib.import_module("loaders.wb_orders_loader")
         saved = []
         items = [{"date": "2026-10-13T10:00:00", "nmId": 1}]
-        with mock.patch.object(wb, "aggregate_orders", lambda items, observed_at=None: [{"order_date": "2026-10-13"}]):
+        with mock.patch.object(wb, "aggregate_orders", lambda items, observed_at=None: {("2026-10-13", "wb", "1"): {"order_date": "2026-10-13"}}):
             rc = wb.main(["--dry-run", "--days-back", "2"], fetch=lambda days_back, today: items, save=lambda *a, **k: saved.append(1))
             self.assertEqual((rc, saved), (0, []))
             rc = wb.main(["--days-back", "2"], fetch=lambda days_back, today: items, save=lambda *a, **k: saved.append(1))

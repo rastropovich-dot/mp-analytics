@@ -31,7 +31,8 @@ import cabinet  # noqa: E402  — только профиль (ref и катал
 
 API = "https://api.supabase.com/v1/projects/{ref}/database/query"
 SQL_DIR = os.path.join(ROOT, "sql")
-DATED_SQL = re.compile(r"^\d{8}_.*\.sql$")
+BASELINE_PREFIX = "00000000_"                       # базовый файл применяется первым и датированным не считается
+DATED_SQL = re.compile(r"^(?!00000000_)\d{8}_.*\.sql$")
 ROLES = ("anon", "authenticated", "service_role")
 
 QUERIES = {
@@ -54,8 +55,13 @@ QUERIES = {
             "join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' order by 1"),
     "policies": ("select tablename as table_name, policyname, cmd, permissive, roles::text as roles, qual, with_check "
                  "from pg_policies where schemaname = 'public' order by 1, 2"),
-    "grants": ("select table_name, grantee, string_agg(privilege_type, ',' order by privilege_type) as privileges "
-               "from information_schema.role_table_grants where table_schema = 'public' and grantee in ('anon', 'authenticated', 'service_role') "
+    # information_schema.role_table_grants показывает только гранты ролям, в которые входит текущая роль, — через Management API вышло пусто
+    # (снимок KARATOV 10-07); has_table_privilege видит всё
+    "grants": ("select c.relname as table_name, r.rolname as grantee, string_agg(p.priv, ',' order by p.priv) as privileges "
+               "from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+               "cross join (values ('anon'), ('authenticated'), ('service_role')) r(rolname) "
+               "cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) p(priv) "
+               "where n.nspname = 'public' and c.relkind in ('r', 'v', 'm') and has_table_privilege(r.rolname, c.oid, p.priv) "
                "group by 1, 2 order by 1, 2"),
     "extensions": "select extname, extversion from pg_extension order by 1",
     "row_estimates": ("select c.relname as table_name, c.reltuples::bigint as rows_estimate from pg_class c "
@@ -73,17 +79,35 @@ def project_ref(prof):
     return host.split(".")[0]
 
 
-def management_runner(token, ref, timeout=120):
-    """Функция query → список строк (dict). Каждый запрос — read_only; ошибка API — именованная, тело ответа без токена."""
+# отказы СОЕДИНЕНИЯ (туннель прокси 503, DNS, обрыв до ответа) — запрос до сервера не дошёл, повтор безопасен; 10-11 прокси песочницы / VPN
+# на Mac отваливался на минуты посреди --apply. Переопределение на прогон: MP_MGMT_CONNECT_RETRIES / MP_MGMT_CONNECT_PAUSE_S.
+CONNECT_RETRIES = int(os.environ.get("MP_MGMT_CONNECT_RETRIES") or 4)
+CONNECT_RETRY_PAUSE_S = int(os.environ.get("MP_MGMT_CONNECT_PAUSE_S") or 15)
+
+
+def management_runner(token, ref, timeout=120, read_only=True, sleep=None, opener=None, log=print):
+    """Функция query → список строк (dict). По умолчанию read_only (снимок); db_migrate зовёт с read_only=False. Ошибка API — именованная, без токена.
+    URLError без HTTP-ответа (соединение не установилось) — до CONNECT_RETRIES попыток с паузой; HTTPError (сервер ответил) — не повторяется."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    opener = opener or urllib.request.urlopen
+
     def run(query):
-        body = json.dumps({"query": query, "read_only": True}).encode("utf-8")
+        body = json.dumps({"query": query, "read_only": read_only}).encode("utf-8")
         req = urllib.request.Request(API.format(ref=ref), data=body, method="POST",
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.load(r)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Management API HTTP {e.code} на запросе «{query[:60]}…»: {e.read()[:300]!r}") from None
+        for attempt in range(1, CONNECT_RETRIES + 1):
+            try:
+                with opener(req, timeout=timeout) as r:
+                    data = json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f"Management API HTTP {e.code} на запросе «{query[:60]}…»: {e.read()[:300]!r}") from None
+            except (urllib.error.URLError, OSError) as e:
+                if attempt == CONNECT_RETRIES:
+                    raise RuntimeError(f"соединение с Management API не установилось за {CONNECT_RETRIES} попыток ({type(e).__name__}: {str(e)[:120]}) — запрос «{query[:60]}…» до сервера не дошёл") from None
+                log(f"  соединение: {type(e).__name__}: {str(e)[:100]} — повтор {attempt + 1} из {CONNECT_RETRIES} через {CONNECT_RETRY_PAUSE_S} с")
+                sleep(CONNECT_RETRY_PAUSE_S)
         if isinstance(data, dict) and "error" in data:
             raise RuntimeError(f"Management API: {str(data['error'])[:300]} на запросе «{query[:60]}…»")
         return data if isinstance(data, list) else data.get("rows", data.get("result", []))
@@ -197,8 +221,8 @@ def baseline_sql(snap, created, title="базовый снимок схемы pu
         cons.setdefault(r["table_name"].replace("public.", "").strip('"'), []).append(r)
     con_names = constraint_name_set(snap)
     lines = [f"-- {title}: сгенерировано scripts/db_schema_snapshot.py из снимка {snap['meta'].get('cabinet')} {snap['meta'].get('taken_at')}",
-             "-- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных.",
-             "begin;", ""]
+             "-- Объекты, которых датированные файлы sql/ не создают (созданы в панели до 2026-05-05 + дрейф). Применять ПЕРВЫМ, до датированных;",
+             "-- транзакцию открывает scripts/db_migrate.py (файл за файлом вместе со строкой schema_migrations).", ""]
     tables = [t["table_name"] for t in snap["tables"] if t["table_type"] != "VIEW" and t["table_name"].lower() not in created["table"]]
     seqs = set()
     for t in tables:
@@ -250,13 +274,31 @@ def baseline_sql(snap, created, title="базовый снимок схемы pu
     for g in snap["grants"]:
         if g["table_name"] in tables:
             lines.append(f"grant {g['privileges'].replace(',', ', ')} on public.\"{g['table_name']}\" to {g['grantee']};")
-    lines += ["", "commit;", ""]
+    rows = snap.get("marketplaces_rows") or []
+    if rows and "marketplaces" in tables:   # справочник площадок — строки тоже часть базы (test_connection.py читает его)
+        cols = list(rows[0].keys())
+        lines.append("")
+        for r in rows:
+            vals = ", ".join("null" if r[c] is None else (str(r[c]) if isinstance(r[c], (int, float)) else "'" + str(r[c]).replace("'", "''") + "'") for c in cols)
+            lines.append(f"insert into public.\"marketplaces\" ({', '.join(chr(34) + c + chr(34) for c in cols)}) values ({vals}) on conflict do nothing;")
+    lines += [""]
     return "\n".join(lines)
 
 
 # ---------- сравнение снимков ----------
 
+IGNORE_TABLES = {"schema_migrations"}   # служебная таблица db_migrate: есть там, где применяли миграции, в сравнение схем не входит
+
+
+def _table_of(r):
+    for k in ("table_name", "tablename", "conrelid"):
+        if k in r:
+            return str(r[k]).replace("public.", "").strip('"')
+    return None
+
+
 def _key_rows(snap, kind):
+    snap = {k: ([r for r in v if _table_of(r) not in IGNORE_TABLES] if isinstance(v, list) else v) for k, v in snap.items()}
     if kind == "columns":
         return {(r["table_name"], r["column_name"]): (column_type(r), r["is_nullable"], r.get("column_default"), str(r.get("is_identity"))) for r in snap["columns"]}
     if kind == "tables":

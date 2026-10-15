@@ -113,7 +113,10 @@ class CoverageAndBaselineTests(unittest.TestCase):
         self.assertIn('alter table public."marketplaces" enable row level security;', text)
         self.assertIn('create policy "read_all" on public."marketplaces" as permissive for select to anon using (true);', text)
         self.assertIn('grant DELETE, INSERT, SELECT, UPDATE on public."marketplaces" to service_role;', text)
-        self.assertTrue(text.startswith("-- ") and text.rstrip().endswith("commit;"))
+        self.assertTrue(text.startswith("-- "))
+        self.assertNotRegex(text, r"(?im)^\s*(begin|commit)\s*;")        # транзакцию открывает db_migrate
+        self.assertIn('insert into public."marketplaces" ("id", "code") values (1, \'ozon\') on conflict do nothing;', text)
+        self.assertIn("values (2, 'wb')", text)
 
     def test_identity_column(self):
         c = [c for c in snap()["columns"] if c["column_name"] == "sku"][0]
@@ -134,6 +137,46 @@ class CompareTests(unittest.TestCase):
         self.assertEqual([k for k, _a, _b in diff["columns"]["differ"]], [("marketplaces", "code")])
         self.assertEqual(diff["indexes"]["only_b"], [("ozon_products", "extra_idx")])
         self.assertEqual(dss.compare_total(diff), 3)
+
+
+class RunnerRetryTests(unittest.TestCase):
+    """Отказ соединения (туннель прокси 503 — 10-11 посреди --apply) повторяется с паузой; HTTP-ошибка сервера — нет."""
+
+    def test_connection_error_is_retried_then_succeeds(self):
+        import io
+        import urllib.error
+        calls, slept, logs = [], [], []
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def opener(req, timeout):
+            calls.append(req)
+            if len(calls) < 3:
+                raise urllib.error.URLError("Tunnel connection failed: 503 Service Unavailable")
+            return Resp(b'[{"x": 1}]')
+        run = dss.management_runner("t", "ref", sleep=slept.append, opener=opener, log=logs.append)
+        self.assertEqual(run("select 1"), [{"x": 1}])
+        self.assertEqual((len(calls), slept), (3, [dss.CONNECT_RETRY_PAUSE_S] * 2))
+        self.assertEqual(len(logs), 2)
+
+    def test_gives_up_after_retries_and_never_retries_http_errors(self):
+        import urllib.error
+        n = []
+        def dead(req, timeout):
+            n.append(1); raise urllib.error.URLError("boom")
+        run = dss.management_runner("t", "ref", sleep=lambda s: None, opener=dead, log=lambda m: None)
+        with self.assertRaises(RuntimeError) as cm:
+            run("select 1")
+        self.assertIn("до сервера не дошёл", str(cm.exception)); self.assertEqual(len(n), dss.CONNECT_RETRIES)
+        m = []
+        def http400(req, timeout):
+            m.append(1); raise urllib.error.HTTPError("u", 400, "bad", {}, __import__("io").BytesIO(b"syntax error"))
+        run = dss.management_runner("t", "ref", sleep=lambda s: None, opener=http400, log=lambda m: None)
+        with self.assertRaises(RuntimeError) as cm:
+            run("create x")
+        self.assertIn("HTTP 400", str(cm.exception)); self.assertEqual(len(m), 1)
 
 
 class SnapshotRunnerTests(unittest.TestCase):
@@ -163,7 +206,9 @@ class SnapshotRunnerTests(unittest.TestCase):
     def test_project_ref_from_profile_host(self):
         import cabinet
         self.assertEqual(dss.project_ref(cabinet.profile("karatov")), "pkrsrwjrlurlfpdyixei")
-        with self.assertRaises(SystemExit):
+        self.assertEqual((dss.project_ref(cabinet.profile("rbh1")), dss.project_ref(cabinet.profile("rbh2"))), ("jqagcdlquazojdcsewva", "rmeikipzaplqcglhwcue"))
+        from unittest import mock
+        with mock.patch.object(cabinet.profile("rbh1"), "SUPABASE_HOST", None), self.assertRaises(SystemExit):
             dss.project_ref(cabinet.profile("rbh1"))
 
     def test_main_compare_and_from_file_need_no_network(self):

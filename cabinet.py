@@ -24,6 +24,7 @@ MP_CABINET_NAME, MP_DATA_DIR, MP_LOGS_DIR, MP_REPORT_PREFIX, MP_BOOK_MONTH_FROM;
 """
 import importlib
 import os
+import re
 import sys
 from urllib.parse import urlsplit
 
@@ -152,6 +153,61 @@ def logs_path(*parts, prof=None, root=ROOT):
 def data_path(*parts, prof=None, root=ROOT):
     """Путь внутри каталога данных кабинета: data_path('reports', 'x.xlsx') → <root>/<DATA_DIR>/reports/x.xlsx."""
     return os.path.join(data_dir(prof, root), *parts)
+
+
+MIGRATIONS_TABLE = "schema_migrations"
+SQL_FILE_RE = re.compile(r"^\d{8}_.*\.sql$")          # базовый 00000000_… и датированные; сортировка по имени = порядок применения
+
+
+def sql_files(sql_dir=None):
+    """Имена файлов sql/ в порядке применения (базовый первым)."""
+    sql_dir = sql_dir or os.path.join(ROOT, "sql")
+    return sorted(fn for fn in os.listdir(sql_dir) if SQL_FILE_RE.match(fn))
+
+
+def file_sha256(path):
+    import hashlib
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def schema_status(client, prof=None, sql_dir=None, environ=None):
+    """Версия схемы базы кабинета против файлов sql/ репозитория (5.2б): одно чтение schema_migrations через PostgREST.
+    Возвращает (state, message, missing):
+      skipped   — тестовый хост (.invalid), к базе не ходили;
+      untracked — таблицы schema_migrations нет: версии не отслеживаются, НЕ останавливать (поправка советника 1: пока KARATOV не засеян);
+      ok        — все файлы sql/ применены;
+      behind    — не применены файлы (список в missing) — пайплайн останавливается, алерт шлёт только эту строку;
+      error     — чтение не удалось по другой причине (сеть, права): сказать вслух, не останавливать.
+    Никогда не бросает."""
+    prof = prof or profile()
+    environ = os.environ if environ is None else environ
+    name = prof.DISPLAY_NAME
+    if supabase_host(environ.get("SUPABASE_URL")).endswith(TEST_HOST_SUFFIX):
+        return "skipped", f"схема: проверка версий пропущена (тестовый хост)", []
+    try:
+        rows = client.table(MIGRATIONS_TABLE).select("filename").order("filename").limit(1000).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        text = str(exc)
+        if "PGRST205" in text or "42P01" in text or MIGRATIONS_TABLE in text:
+            return "untracked", f"схема: версии не отслеживаются (таблицы {MIGRATIONS_TABLE} в базе {name} нет)", []
+        return "error", f"схема: проверка версий не удалась ({type(exc).__name__}: {text[:160]}) — продолжаю", []
+    applied = {r["filename"] for r in rows}
+    files = sql_files(sql_dir)
+    missing = [f for f in files if f not in applied]
+    if missing:
+        shown = ", ".join(missing[:5]) + (" …" if len(missing) > 5 else "")
+        return "behind", f"база кабинета {name} отстаёт от кода: не применены {len(missing)} файлов sql/: {shown} — scripts/db_migrate.py --cabinet {prof.CODE} --apply", missing
+    extra = sorted(applied - set(files))
+    note = f"; в базе {len(extra)} записей без файла в репозитории" if extra else ""
+    return "ok", f"схема: применены все {len(files)} файлов sql/{note}", []
+
+
+def assert_schema(client, prof=None, sql_dir=None, environ=None):
+    """Для пайплайна: строка состояния схемы; отстаёт — SystemExit с той же строкой (код 1). untracked / error — только строка."""
+    state, message, _missing = schema_status(client, prof, sql_dir, environ)
+    if state == "behind":
+        raise SystemExit(message)
+    return message
 
 
 def shell_exports(prof, root=ROOT):

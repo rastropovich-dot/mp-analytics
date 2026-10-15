@@ -25,6 +25,8 @@ data/manual_report_*.xlsx
 
 # снимки строк перед необратимыми перезаписями
 data/snapshots/
+# снимки схемы базы кабинета (scripts/db_schema_snapshot.py), вне git
+data/schema/
 
 # готовые листы отчётов (scripts/report_ozon_month.py) — данные, в git не кладём
 data/reports/

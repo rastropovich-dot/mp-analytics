@@ -7,6 +7,70 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-15 (вечер), §0 — две ночи KARATOV на слитом коде чистые, guard печатает «схема: применены все 47 файлов sql/»; план §5.3 — сухие прогоны загрузчиков под `MP_CABINET=rbh1` / `rbh2` одним словом (три шага заказов получили `--dry-run` / `--days-back` — код в ветке, 1 343 OK); к API и базам не ходил, кроме логов Render для §0
+
+### §0 — ночи 14.10 и 15.10 (лог Render постранично, 16 обращений; launchd — локальные логи)
+
+| ночь | guard (2-я строка лога) | старт → финиш пайплайна | «Шаг не выполнен» / Traceback | 429 (строк) | алерт 07:31 | книга месяца в Telegram | launchd «Фин рез» |
+|---|---|---|---|---:|---|---|---|
+| 14.10 | «кабинет: KARATOV» · **«схема: применены все 47 файлов sql/»** | 00:16:03 → 02:28:32 UTC «✅ Весь пайплайн успешно завершен» | 0 / 0 | 21 | первая строка «кабинет: KARATOV», ⛔ нет | `ozon_2026-10_to_2026-10-13.xlsx` доставлена | 03:31:06 UTC, код 0 |
+| 15.10 | то же | 00:15:57 → 02:24:15 UTC «✅ …» | 0 / 0 | 22 | то же | `ozon_2026-10_to_2026-10-14.xlsx` доставлена | 03:34:39 UTC, код 0 |
+
+429 — порядок прежних ночей (accrual/postings с Retry-After 1 с, см. CLAUDE.md §4), «Пайплайн упал» 0. Guard работает как задумано: одно чтение
+`schema_migrations` в начале ночи, строка в логе, дальше без изменений.
+
+### §5.3 — план сухих прогонов РБХ (для слова одним текстом)
+
+**Условия.** Запуск с Mac из `~/mp-analytics-rbh`, `MP_CABINET=rbh1` (затем `rbh2`): `cabinet.assert_env` берёт `.env.rbh<N>` (ключи Ozon / WB
+вписаны, `SUPABASE_URL` / `service_role` вписаны 10-10), сверяет хост; каждый шаг печатает первой строкой «кабинет: РБХ-N» через guard
+загрузчика. Базы РБХ пустые — читаются (пустые ответы), **не пишутся**: у каждого шага `--dry-run` / `--plan` / без `--apply`, `db_writes = 0`
+(у трёх шагов заказов флаг добавлен сегодня: `loaders/wb_orders_loader.py`, `scripts/ozon_fbs_orders_step.py`, `scripts/ozon_fbo_orders_step.py` —
+снимают окно, печатают счётчики, сырьё кладут в `data/rbh<N>/postings_raw/`, в базу не пишут; тесты `DryRunFlagsForOrderStepsTests`). Окна —
+2 дня там, где есть `--days-back`; у `wb_sales_loader`, `ozon_finance_transactions_loader`, `ozon_expenses_loader` окно зашито (30 дней by-day) —
+это ~31 обращение `accrual/by-day` каждое, квота by-day ~49/мин (CLAUDE.md §4), допустимо. Шаги — последовательно, `rbh1` целиком, потом `rbh2`
+(~15–20 мин на кабинет, бо́льшая часть — отчёт ЛК FBO до 7 мин и паузы by-day 1,5 с). Performance: **выгрузок 0** — только токен + список
+кампаний отдельной пробой (леджер и состояние сборщика при `--dry-run` с `STATE_BACKEND=db` не проверялись на «пишет ли» — не рискую);
+полный сбор рекламы — только первой ночью §5.4 по квоте организации РБХ. Шаги KPI / Decision / Excel / Telegram в §5.3 не идут (считают
+из базы — она пуста; Telegram — `--dry-run --no-send` после появления `TELEGRAM_CHAT_ID`).
+
+| # | шаг | команда (после `MP_CABINET=rbh<N> venv/bin/python3`) | API и ожидаемые обращения на кабинет | что печатает | db_writes |
+|---|---|---|---|---|---|
+| 1 | WB: заказы | `loaders/wb_orders_loader.py --days-back 2 --dry-run` | statistics-api `supplier/orders` flag=0, dateFrom = сегодня − 2: 1–2 | «Получено строк WB orders: N», «dry-run: окно 2 дн. с …, строк агрегата, дат» | 0 |
+| 2 | WB: воронка | `loaders/wb_sales_funnel_orders_loader.py --days-back 2 --dry-run` | analytics `sales-funnel/products` по дням, страницы по 1 000: 2–4 (429 возможен, как у KARATOV 0–1 за ночь) | строк по дням, nmId | 0 |
+| 3 | WB: продажи | `loaders/wb_sales_loader.py --dry-run` | `supplier/sales` flag=0, окно 30 (зашито): 1–2 | строк, окно | 0 |
+| 4 | WB: отчёт реализации | `loaders/wb_sales_report_loader.py --days-back 2 --dry-run` | `reportDetailByPeriod`, rrdid-пагинация, лимит 1/мин: 1–3 (+ паузы) | строк, отчёты, недели | 0 |
+| 5 | WB: когорта выкупа | `scripts/wb_buyout_cohort_step.py --days-back 60 --plan` | API 0 (только база: воронка пуста) | «строк 0» | 0 |
+| 6 | WB: реклама | `loaders/wb_ads_loader.py --days-back 2 --dry-run` | `adv/v1/upd` за 2 дня: 1 (лимит 1/с) | списаний, кампаний | 0 |
+| 7 | WB: остатки | `loaders/wb_stocks_loader.py --dry-run --max-pages 2` | `stocks-report/wb-warehouses`: ≤ 2 | строк, складов | 0 |
+| 8 | Ozon: FBS заказы | `scripts/ozon_fbs_orders_step.py --days-back 2 --dry-run` | Seller `/v4/posting/fbs/list` 2 дня: 1–2 страницы | «dry-run: FBS отправлений N», «Сырой ответ FBS сохранён: data/rbh<N>/postings_raw/…» | 0 |
+| 9 | Ozon: FBO заказы | `scripts/ozon_fbo_orders_step.py --days-back 2 --dry-run` | `/v3/posting/fbo/list` 1–2 + отчёт ЛК `report/postings/create` 1, `report/info` опрос раз в 5 с до 420 с, скачивание 1 | «dry-run: FBO отправлений N, строк, с ценой покупателя; отчёт ЛК: ок/отказ», сырьё | 0 |
+| 10 | Ozon: каталог | `scripts/ozon_catalog_topup_step.py --dry-run` | вселенная SKU из базы пуста → карточек 0; дерево категорий `description-category/tree` 1 (файла в `data/rbh<N>/ozon_products/` нет) | «SKU без карточки: 0» | 0 |
+| 11 | Ozon: лог статусов | `scripts/ozon_posting_status_log.py` (без `--apply`) | API 0 — читает сырьё шагов 8–9 | переходы, «план, без --apply не пишется» | 0 |
+| 12 | Ozon: финоперации | `loaders/ozon_finance_transactions_loader.py --dry-run` | `accrual/by-day` окно 30 (зашито): ~31 | дни, строки, суммы по типам | 0 |
+| 13 | Ozon: штуки выкупов | `scripts/ozon_buyout_units_step.py --days-back 2 --dry-run` | by-day 2–3 + `accrual/postings` пачками по дням продаж: 0–10 (429 с Retry-After 1 с снимаются повтором) | «оценка обращений / факт», штуки | 0 |
+| 14 | Ozon: расходы | `loaders/ozon_expenses_loader.py --dry-run` | `accrual/by-day` окно 30: ~31 (тот же метод, что 12) | классификация типов, незнакомые — вслух, леджер типов | 0 |
+| 15 | Ozon: аналитика по SKU | `loaders/ozon_sku_total_analytics_loader.py --days-back 2 --dry-run` | `analytics/data` по дням: 2 (429 с большим Retry-After возможен — см. §4) | строк по SKU | 0 |
+| 16 | Ozon: остатки | `loaders/ozon_stocks_loader.py --plan-only` | каталог из базы пуст → API 0 | план пагинации, «products 0» | 0 |
+| 17 | Ozon Performance | отдельная проба (как 09-29): `POST /api/client/token` + `GET /api/client/campaign` | 2 обращения, **выгрузок 0**, леджер не трогается | число кампаний по статусам | 0 |
+
+**Итого на кабинет (оценка; факт печатается в логе каждого шага и считается по строкам `http_retry`):** WB 6–12 обращений; Seller Ozon ~70–80
+(из них by-day ~64, остальное — отправления, отчёт ЛК, дерево, аналитика); Performance 2; Telegram 0; чтений базы РБХ — по одному-двум на
+шаг (пустые таблицы), **записей 0**. Два кабинета — вдвое; KARATOV — 0 обращений, его база не читается. Отчёт после прогона: таблица
+«шаг → обращений / 429 / строк / время» по кабинету, незнакомые типы начислений (у косметики могут быть типы, которых нет в
+`TYPE_TO_EXPENSE` — они напечатаются как `unknown_*`, это ожидаемо и станет первым вопросом классификации для РБХ), отказы шагов — с текстом.
+
+**Риски и что они покажут.** Пустой `postings[]` при чужом ключе (CLAUDE.md §6, «известный риск») — здесь виден сразу: 0 отправлений у
+живого кабинета; отчёт ЛК FBO может не успеть за 420 с (шаг печатает «отказ», это не стоп); `analytics/data` может ответить 429 с
+`Retry-After` в сотни секунд — тогда шаг 15 подождёт или пропустится вслух; у WB `reportDetailByPeriod` за 2 дня может быть пусто (отчёт за
+неделю выходит по понедельникам) — норма.
+
+**Слово нужно одно:** «§5.3 по плану, rbh1 затем rbh2» — все 17 шагов на оба кабинета, без записей. Что не делаю без отдельного слова: любой
+`--apply` / запись (§5.4), выгрузки Performance, отправка в Telegram.
+
+Код сегодня: `--dry-run` / `--days-back` у трёх шагов заказов (`main()` с argparse, тесты), набор **1 343 OK**; ветка — коммиты над `main`
+`f33779d`, в `main` не пушил.
+
+---
 ## 2026-10-13 (вечер), слово: `origin/main` (WB-17 `44b2c1d`) влит в ветку без конфликтов, новых файлов `sql/` в `main` нет (47 = 47 строкам `schema_migrations` в KARATOV, проверено одним чтением), набор 1 341 OK → **мерж `multi-cabinet` в `main` `--no-ff` `f33779d`, push 20:14:56 UTC, Render live 20:15:38 / 20:15:40 UTC на обоих сервисах, `~/mp-analytics` на `f33779d`**; первая ночь KARATOV на новом коде — 10-14
 
 **Проверки до мержа.** `git diff --name-status HEAD...origin/main -- sql/` — пусто; 12 коммитов `main` (WB-17 и её закрытие) влиты `ort`, конфликтов

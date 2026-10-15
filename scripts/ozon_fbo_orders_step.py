@@ -80,12 +80,22 @@ def write_state(sb, payload):
         on_conflict="state_key").execute()
 
 
-def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=None, now=None, existing_fn=existing_buyer_keys, state_fn=write_state):
+def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=None, now=None, existing_fn=existing_buyer_keys, state_fn=write_state, dry_run=False):
     now = now or datetime.now(timezone.utc)
     postings = fbo_module.get_fbo_postings(days_back=days_back)
     buyer_prices, info = fetch_fbo_buyer_prices(days_back, report_module)
     rows = fbo_module.build_order_rows(postings, buyer_prices=buyer_prices or {})
     info.update({"date": now.date().isoformat(), "started_at": now.isoformat(timespec="seconds"), "rows": len(rows)})
+    if dry_run:   # §5.3 RBH: снять список и отчёт ЛК, посчитать строки, сырьё сохранить; заказы и итог в базу не писать
+        with_price = sum(1 for r in rows if r.get("orders_amount_buyer") is not None)
+        print(f"dry-run: FBO отправлений {len(postings)} за {days_back} дн., строк {len(rows)}, с ценой покупателя {with_price}; "
+              f"отчёт ЛК: {'ок' if info.get('ok') else 'отказ: ' + str(info.get('error'))}; db_writes = 0", flush=True)
+        try:
+            path = log_module.dump_raw(postings, "fbo")
+            print(f"Сырой ответ FBO сохранён: {path} ({len(postings)} отправлений)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  сырой ответ FBO НЕ сохранён: {type(exc).__name__}: {exc}", flush=True)
+        return postings
     if buyer_prices is None and rows:
         client = sb or getattr(fbo_module, "supabase", None)
         try:
@@ -112,5 +122,15 @@ def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=N
     return postings
 
 
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Ozon: загрузка FBO заказов (/v3/posting/fbo/list + отчёт ЛК) + сырьё для лога статусов")
+    ap.add_argument("--days-back", type=int, default=30)
+    ap.add_argument("--dry-run", action="store_true", help="снять окно и отчёт ЛК, сохранить сырьё, в базу не писать; db_writes = 0")
+    args = ap.parse_args(argv)
+    run(days_back=args.days_back, dry_run=args.dry_run)
+    return 0
+
+
 if __name__ == "__main__":
-    run()
+    raise SystemExit(main())

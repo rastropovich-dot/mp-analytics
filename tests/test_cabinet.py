@@ -477,6 +477,57 @@ class SchemaGuardTests(unittest.TestCase):
         self.assertIn('if schema_state == "behind":', alert)
 
 
+class DryRunFlagsForOrderStepsTests(unittest.TestCase):
+    """§5.3 RBH: у трёх шагов заказов появился --dry-run — снять и посчитать, в базу не писать (остальные загрузчики ночи его уже имели)."""
+
+    def test_wb_orders_loader_dry_run_fetches_but_never_saves(self):
+        import importlib
+        wb = importlib.import_module("loaders.wb_orders_loader")
+        saved = []
+        items = [{"date": "2026-10-13T10:00:00", "nmId": 1}]
+        with mock.patch.object(wb, "aggregate_orders", lambda items, observed_at=None: [{"order_date": "2026-10-13"}]):
+            rc = wb.main(["--dry-run", "--days-back", "2"], fetch=lambda days_back, today: items, save=lambda *a, **k: saved.append(1))
+            self.assertEqual((rc, saved), (0, []))
+            rc = wb.main(["--days-back", "2"], fetch=lambda days_back, today: items, save=lambda *a, **k: saved.append(1))
+            self.assertEqual((rc, saved), (0, [1]))
+
+    def test_fbs_and_fbo_steps_dry_run_skip_db_writes(self):
+        import importlib
+        fbs_step = importlib.import_module("ozon_fbs_orders_step")
+        fbo_step = importlib.import_module("ozon_fbo_orders_step")
+
+        class FakeFbs:
+            DEFAULT_DAYS_BACK = 30
+            def __init__(self): self.saved = []
+            def get_ozon_fbs_postings(self, days_back): return [{"posting_number": "1"}]
+            def save_ozon_orders(self, postings): self.saved.append(len(postings))
+
+        class FakeLog:
+            def __init__(self): self.dumped = []
+            def dump_raw(self, postings, schema): self.dumped.append(schema); return f"/tmp/{schema}.json"
+
+        fbs, log = FakeFbs(), FakeLog()
+        fbs_step.run(fbs_module=fbs, log_module=log, days_back=2, dry_run=True)
+        self.assertEqual((fbs.saved, log.dumped), ([], ["fbs"]))
+
+        class FakeFbo:
+            supabase = None
+            def __init__(self): self.saved = []
+            def get_fbo_postings(self, days_back): return [{"posting_number": "2"}]
+            def build_order_rows(self, postings, buyer_prices=None): return [{"order_date": "2026-10-13", "orders_amount_buyer": None}]
+            def save_orders(self, rows): self.saved.append(len(rows))
+
+        class FakeReport:
+            pass
+
+        states = []
+        fbo, log2 = FakeFbo(), FakeLog()
+        with mock.patch.object(fbo_step, "fetch_fbo_buyer_prices", lambda days_back, report_module: ({}, {"ok": True, "error": None})):
+            fbo_step.run(fbo_module=fbo, log_module=log2, days_back=2, report_module=FakeReport(), sb=None, existing_fn=lambda c, d: {},
+                         state_fn=lambda c, i: states.append(i), dry_run=True)
+        self.assertEqual((fbo.saved, states, log2.dumped), ([], [], ["fbo"]))
+
+
 class ShellExportsTests(unittest.TestCase):
     def test_exports_for_karatov_and_rbh(self):
         text = cabinet.shell_exports(cabinet.profile("karatov"), root="/r")

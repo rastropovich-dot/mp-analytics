@@ -400,8 +400,9 @@ def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_page
             print("Остановлено по max_pages")
             break
 
-        if total_rows_reported is not None and len(all_rows) >= total_rows_reported:
-            break
+        # «total» в ответе analytics/data равен размеру страницы (проверено 2026-10-21 на РБХ-1: при 60-дневном окне
+        # offset 1000 и 2000 отдают по 1 000 строк при total = 1000) — на нём останавливаться нельзя, иначе всё, что
+        # больше одной страницы, молча теряется. Конец — короткая страница (выше) или max_pages; total — справочно.
 
         print(
             "Ozon Seller Analytics paging progress: "

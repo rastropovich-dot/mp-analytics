@@ -93,13 +93,17 @@ def plan(attr_rows, exp_rows):
     exp = {(str(r["expense_date"])[:10], str(r["marketplace_sku"])): r for r in exp_rows}
     update, delete, errors = [], [], []
     by_day = defaultdict(lambda: {"bonus": Decimal(0), "update": 0, "delete": 0, "flag": 0})
+    unflagged_keys = {(str(r["sale_date"])[:10], str(r["marketplace_sku"])) for r in to_flag}
     for key, b in sorted(bonus.items()):
         by_day[key[0]]["bonus"] += b
         r = exp.get(key)
         if r is None:
-            if b > 0:
+            # строки расходов нет: до записи это ошибка (бонус не из чего вычесть), после записи — норма (чисто бонусная строка удалена)
+            if b > 0 and key in unflagged_keys:
                 errors.append(f"{key}: бонус {b} есть в атрибуции, строки advertising_clicks нет")
             continue
+        if key not in unflagged_keys:
+            continue   # строки уже помечены — их бонус из расходов уже вычтен, повторно не вычитаем
         was = Decimal(str(r["expense_amount"]))
         new = (was - b).quantize(Decimal("0.01"))
         if new < -EPS:

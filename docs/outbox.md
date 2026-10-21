@@ -21,7 +21,7 @@
 
 **Коммиты (`git log main..HEAD`, worktree `~/mp-analytics-wt/53`):** `807b5cd` (чат 10-14 в `knowledge/`), `544e666` (отчёт §1 / §3 / сверка), **`8859ba0` — код §2**, `b40a3f9` — мерж `main` (`e4d1063`) в ветку (конфликт только в outbox, оба блока сверху оставлены); полный набор **1 363 OK**.
 
-**49-я слита по слову 21.10:** `git merge --no-ff ll-rates-update` → `e4d1063` (origin/main до мержа = f33779d, конфликтов 0, 1 353 теста OK), push 20:02:33 UTC, Render: `mp-analytics` live `e4d1063` 20:03:16 UTC, `mp-analytics-telegram-report` — см. строку ниже. В прод на Render уехали `ll_rates_ocr.py` / `load_metal_rates_1c.py` / `unit_cost_history._last_seen_by_rate` (ночной код курс берёт из таблицы — поведение ночи не меняется). «main обновлён» — сказано остальным сессиям (ниже).
+**49-я слита по слову 21.10:** `git merge --no-ff ll-rates-update` → `e4d1063` (origin/main до мержа = f33779d, конфликтов 0, 1 353 теста OK), push 20:02:33 UTC, Render: `mp-analytics` live `e4d1063` 20:03:16 UTC, `mp-analytics-telegram-report` live `e4d1063` 20:03:15 UTC. В прод на Render уехали `ll_rates_ocr.py` / `load_metal_rates_1c.py` / `unit_cost_history._last_seen_by_rate` (ночной код курс берёт из таблицы — поведение ночи не меняется). «main обновлён» — сказано остальным сессиям (ниже).
 
 ### Что сделано в коде (`8859ba0`)
 

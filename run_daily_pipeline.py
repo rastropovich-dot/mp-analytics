@@ -238,6 +238,9 @@ def build_steps(args=None):
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
         ("Ozon: штуки выкупов", "python3 scripts/ozon_buyout_units_step.py"),
         ("Ozon: расходы и комиссии", "python3 loaders/ozon_expenses_loader.py"),
+        # Хранение по товарам (52-я): один отчёт ЛК placement/by-products за вчера (лимит 5 в сутки), таблица ozon_placement_by_product_daily;
+        # нефатален по правилу FATAL_STEPS: витрина берёт storage_cost, которого до таблицы не было; дыру дня закрывает отчёт за период (§3).
+        ("Ozon: хранение по товарам", "python3 loaders/ozon_placement_report.py --apply"),
         ("Ozon: реклама Performance API", build_ozon_performance_daily_command(args)),
         (
             "Ozon Performance: CPC recovery after daily",

@@ -1085,6 +1085,173 @@ def write_xlsx(path, data_rows, month_rows, split_brand, split_category, notes):
     wb.save(path)
 
 
+# ---------- WB-18: лист «Хранение WB по артикулам» (из wb_paid_storage_daily) ----------
+# Форма принята владельцем 22.10 (с добавлением «Хранение / продажи, %»): строка = (месяц, nmId); свод по месяцам = строке
+# «Хранение» формы «Выкупы WB» того же месяца (тождество печатается); блоки × бренд / × категория; продажи — из тех же строк
+# «Данных WB выкупы» (Продажа − Возврат по retailPriceWithDisc) за тот же месяц; без продаж — пусто, не 0.
+
+STORAGE_TABLE = "wb_paid_storage_daily"
+STORAGE_SELECT = "day,nm_id,chrt_id,calc_type,barcode,warehouse_price,barcodes_count,vendor_code,subject,brand"
+STORAGE_STORNO = "Сторнирование хранения по складу"   # calcType сторно (WB-18 §1): warehouse_price со знаком минус, штук-дней не считаем
+STORAGE_COLS = [
+    ("Месяц", "month", None), ("nmId", "nm_id", "int"), ("Артикул", "article", None), ("Предмет", "subject", None), ("Бренд", "brand", None),
+    ("Категория", "category", None), ("Дней с хранением", "days", "int"), ("Штук-дней", "unit_days", "int"),
+    ("Хранение, ₽ (с НДС)", "storage", "money"), ("Хранение без НДС, ₽", "storage_net", "money"), ("в т. ч. сторно, ₽", "storno", "money"),
+    ("Продажи, ₽", "sales", "money"), ("Хранение / продажи, %", "storage_pct", "pct"),
+]
+STORAGE_MONTH_COLS = [
+    ("Названия строк", "label", None), ("Дней с хранением в таблице", "days", "int"), ("nmId", "nm_count", "int"), ("Штук-дней", "unit_days", "int"),
+    ("Хранение, ₽ (с НДС)", "storage", "money"), ("Хранение без НДС, ₽", "storage_net", "money"), ("в т. ч. сторно, ₽", "storno", "money"),
+    ("«Хранение» формы «Выкупы WB» за те же дни, ₽", "form_storage", "money"), ("разница, ₽", "diff", "money"),
+    ("«Хранение» формы за весь период строки, ₽", "form_storage_all", "money"), ("дней с хранением в форме", "form_days", "int"),
+    ("Продажи, ₽", "sales", "money"), ("Хранение / продажи, %", "storage_pct", "pct"),
+]
+
+
+def read_storage_rows(sb, d1, d2, page=None):
+    """Строки wb_paid_storage_daily за d1 … d2 — только индексными запросами по первичному ключу (day, nm_id, …): диапазон
+    day ≥ X AND day ≤ d2 ORDER BY day, nm_id LIMIT n находит ближайший день с данными; полная страница одного дня продолжается
+    запросом day = D AND nm_id ≥ последнего nmId страницы (у nmId несколько строк — размеры и способы расчёта, поэтому ≥, а
+    строки последнего nmId полной страницы отбрасываются и читаются заново). Пустые дни запросов не стоят."""
+    page = page or DICT_PAGE
+    out, day_lo = [], d1
+    while day_lo <= d2:
+        data = (sb.table(STORAGE_TABLE).select(STORAGE_SELECT).gte("day", day_lo).lte("day", d2)
+                .order("day").order("nm_id").order("chrt_id").order("calc_type").order("barcode").limit(page).execute().data or [])
+        if not data:
+            return out
+        day = str(data[0]["day"])[:10]
+        rows = [r for r in data if str(r["day"])[:10] == day]
+        if len(data) < page or len(rows) < len(data):
+            out.extend(rows)                                   # день целиком в странице (страница неполная или перешла на следующий день)
+            day_lo = keyset._after(day)
+            continue
+        last_nm = int(rows[-1]["nm_id"])
+        out.extend(r for r in rows if int(r["nm_id"]) != last_nm)
+        while True:
+            data = (sb.table(STORAGE_TABLE).select(STORAGE_SELECT).eq("day", day).gte("nm_id", last_nm)
+                    .order("nm_id").order("chrt_id").order("calc_type").order("barcode").limit(page).execute().data or [])
+            if len(data) < page:
+                out.extend(data)
+                break
+            nm_end = int(data[-1]["nm_id"])
+            if nm_end == last_nm:
+                raise RuntimeError(f"{STORAGE_TABLE}: у nmId {last_nm} за {day} строк не меньше страницы ({page}) — читатель не продвигается")
+            out.extend(r for r in data if int(r["nm_id"]) != nm_end)
+            last_nm = nm_end
+        day_lo = keyset._after(day)
+    return out
+
+
+def _storage_acc():
+    return {"days": set(), "unit_days": 0, "storage": Z, "storage_net": Z, "storno": Z, "rows": 0}
+
+
+def _storage_add(a, r):
+    day = str(r["day"])[:10]
+    price = D(r.get("warehouse_price"))
+    a["days"].add(day); a["rows"] += 1
+    a["storage"] += price
+    a["storage_net"] += price / wbm.vat_for(day)
+    if str(r.get("calc_type") or "") == STORAGE_STORNO:
+        a["storno"] += price
+    else:
+        a["unit_days"] += int(r.get("barcodes_count") or 0)
+
+
+def _storage_out(a, sales):
+    """Строка листа из накопителя; продажи None/≤ 0 → процент пуст (без продаж — пусто, не 0)."""
+    return {"days": len(a["days"]), "unit_days": a["unit_days"], "storage": a["storage"], "storage_net": a["storage_net"], "storno": a["storno"],
+            "sales": sales, "storage_pct": ratio(a["storage"], sales) if sales is not None and sales > 0 else None}
+
+
+def build_storage(storage_rows, data_rows, days=None):
+    """Лист «Хранение WB по артикулам» из строк wb_paid_storage_daily (storage_rows) и строк «Данных WB выкупы» (data_rows — ярлыки
+    артикула / бренда / категории владельца, продажи и «Хранение» формы по дням). Возвращает:
+      articles — строки (месяц, nmId) по STORAGE_COLS; months — {YYYY-MM: строка STORAGE_MONTH_COLS}; by_day — {день: строка};
+      total — «Общий итог»; by_brand / by_category — {группа: {YYYY-MM: строка, "Итого": строка}}; check — список по месяцам
+      (ym, days, storage, form_storage, diff) — тождество Σ таблицы = «Хранение» формы за те же дни; nm_without_labels — nmId,
+      которых нет в «Данных» (ярлыки — из строки таблицы)."""
+    labels, sales_by, form_by_day = {}, defaultdict(Decimal), defaultdict(Decimal)
+    for r in data_rows:
+        nm = r.get("nm_id")
+        day = str(r["date"])[:10]
+        form_by_day[day] += D(r.get("storage"))
+        if nm is None:
+            continue
+        nm = int(nm)
+        sales_by[(day[:7], nm)] += D(r.get("sales"))
+        if nm not in labels:
+            labels[nm] = {"article": r.get("article"), "brand": r.get("brand"), "category": r.get("category"), "title": r.get("title")}
+    per_key, per_month, per_day, per_group, total = {}, {}, {}, {"brand": {}, "category": {}}, _storage_acc()
+    info, no_labels = {}, set()
+    for r in storage_rows:
+        nm, day = int(r["nm_id"]), str(r["day"])[:10]
+        ym = day[:7]
+        if nm not in info:
+            lab = labels.get(nm)
+            vendor = str(r.get("vendor_code") or "")
+            if lab is None:
+                no_labels.add(nm)
+                lab = {"article": vendor.upper() or None, "brand": brand_of(vendor, r.get("brand")), "category": category_of(r.get("subject")), "title": None}
+            info[nm] = dict(lab, subject=r.get("subject"))
+        a = per_key.setdefault((ym, nm), _storage_acc()); _storage_add(a, r)
+        _storage_add(per_month.setdefault(ym, _storage_acc()), r)
+        _storage_add(per_day.setdefault(day, _storage_acc()), r)
+        _storage_add(total, r)
+        for by in ("brand", "category"):
+            g = per_group[by].setdefault(info[nm][by] or "—", {})
+            _storage_add(g.setdefault(ym, _storage_acc()), r)
+            _storage_add(g.setdefault("Итого", _storage_acc()), r)
+    articles = []
+    for (ym, nm), a in sorted(per_key.items(), key=lambda kv: (kv[0][0], -kv[1]["storage"], kv[0][1])):
+        row = {"month": month_label(f"{ym}-01"), "ym": ym, "nm_id": nm, "article": info[nm]["article"], "subject": info[nm]["subject"], "brand": info[nm]["brand"],
+               "category": info[nm]["category"], "title": info[nm].get("title")}
+        row.update(_storage_out(a, sales_by.get((ym, nm))))
+        articles.append(row)
+    sales_month, sales_group = defaultdict(Decimal), {"brand": defaultdict(lambda: defaultdict(Decimal)), "category": defaultdict(lambda: defaultdict(Decimal))}
+    for (ym, nm), v in sales_by.items():
+        sales_month[ym] += v
+        lab = labels.get(nm) or info.get(nm) or {}
+        for by in ("brand", "category"):
+            sales_group[by][lab.get(by) or "—"][ym] += v
+
+    def month_row(ym, a, label, sales, form_days=None):
+        row = {"label": label, "nm_count": len({nm for (m, nm) in per_key if m == ym}) if ym else len({nm for _m, nm in per_key})}
+        row.update(_storage_out(a, sales))
+        fd = form_days if form_days is not None else [d for d in form_by_day if d[:7] == ym] if ym else list(form_by_day)
+        row["form_storage"] = sum((form_by_day.get(d, Z) for d in a["days"]), Z)
+        row["diff"] = row["storage"] - row["form_storage"]
+        row["form_storage_all"] = sum((form_by_day[d] for d in fd), Z)
+        row["form_days"] = sum(1 for d in fd if form_by_day[d] != 0)
+        return row
+
+    months = {ym: month_row(ym, a, month_label(f"{ym}-01"), sales_month.get(ym)) for ym, a in per_month.items()}
+    by_day = {}
+    for day, a in per_day.items():
+        row = {"label": day, "nm_count": None}
+        row.update(_storage_out(a, None))
+        row["form_storage"] = form_by_day.get(day, Z); row["diff"] = row["storage"] - row["form_storage"]
+        row["form_storage_all"] = row["form_storage"]; row["form_days"] = 1 if form_by_day.get(day) else 0
+        row["sales"] = row["storage_pct"] = None
+        by_day[day] = row
+    total_row = month_row(None, total, "Общий итог", sum(sales_month.values(), Z) if sales_month else None)
+    groups = {}
+    for by in ("brand", "category"):
+        groups[by] = {}
+        for g, per in per_group[by].items():
+            groups[by][g] = {}
+            for ym, a in per.items():
+                sales = (sum(sales_group[by][g].values(), Z) if ym == "Итого" else sales_group[by][g].get(ym)) if g in sales_group[by] else None
+                row = {"label": ym if ym == "Итого" else month_label(f"{ym}-01"), "nm_count": len({nm for (m, nm) in per_key if (ym == "Итого" or m == ym) and (info[nm][by] or "—") == g})}
+                row.update(_storage_out(a, sales))
+                groups[by][g][ym] = row
+    check = [(ym, len(per_month[ym]["days"]), q(months[ym]["storage"]), q(months[ym]["form_storage"]), q(months[ym]["diff"]), q(months[ym]["form_storage_all"]), months[ym]["form_days"])
+             for ym in sorted(per_month)]
+    return {"articles": articles, "months": months, "by_day": by_day, "total": total_row, "by_brand": groups["brand"], "by_category": groups["category"],
+            "check": check, "nm_without_labels": sorted(no_labels), "rows": len(storage_rows), "nm_count": len(info)}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--month-from", required=True); ap.add_argument("--month-to", required=True)

@@ -8,6 +8,67 @@
 
 ---
 
+## 2026-10-21, восемнадцатая задача WB — по слову советника (дополнение 21.10 в inbox): **миграция применена на трёх базах** (`db_migrate --apply` KARATOV 20:10:38 → 20:10:45 UTC, rbh1 / rbh2 20:10:50 → 20:11:03 UTC; контроль — 48 применено / 0 ждут / 0 расхождений по sha256 на всех трёх); **первая запись выполнена** — `wb_paid_storage_daily` 34 164 строки за 10-07 … 10-14 из сырья (`--from-file`, 20:11:38 → 20:13:18 UTC, обращений к WB 0), **контроль SQL: Σ дня = `paid_storage` отчёта реализации 8 из 8, расхождение 0,00**; `origin/main` `e4d1063` (49-я Ozon) влит без конфликтов (`286eeec`), 1 367 тестов OK. **История с 28.04 (§3.2) НЕ снята: WB-токен протух и на Render (20.10, по inbox), и в локальном `.env` (`/ping` → 401 «token is expired», `exp` 2026-10-20 06:32 UTC)** — ждёт нового токена от владельца; мерж — по отдельному слову. db_writes по слову: 3 DDL + 34 164 upsert.
+
+### Миграция (п. 1 плана) — выполнена
+
+- План перед записью (read-only): KARATOV «применено 47, ждут 1, расходятся по sha256 0»; `--apply` — `20261015_create_wb_paid_storage_daily.sql` применён за 2,4 с, «применено / записано 1 из 1; запросов на запись 1» (20:10:45 UTC).
+- `--cabinet all --apply`: РБХ-1 за 2,7 с, РБХ-2 за 2,6 с (20:11:03 UTC). Повторный план по трём кабинетам — «применено 48, ждут 0, расходятся 0». Файл в `main` ещё не ушёл — guard ночи теперь при любом порядке мержа не сработает.
+- Токен Management API брался из `~/mp-analytics-rbh/.env` на время команды, никуда не копировался.
+- Попутно о среде: прокси песочницы не пускает к `api.supabase.com` — `db_migrate` ходил вне песочницы; сеть на машине в 23:05–23:08 МСК мигала (VPN с fake-IP, DNS 198.18.0.2: все хосты по кругу 000 на 5 с, потом норма) — переждал, команды с записью шли на устойчивом окне (12 пингов подряд 401 = доступ есть).
+
+### Первая запись (п. 2 плана) — выполнена, контроль 8 из 8
+
+`loaders/wb_paid_storage_loader.py --from-file data/wb_paid_storage_raw/2026-10-07_2026-10-14.json` (сначала `--dry-run`, db_writes 0, затем запись): строк сырья 35 021 → 34 164 по ключу, nmId 1 348, Σ 31 370,64 ₽, upsert 34 164 строк за 100 с.
+
+| день | строк в таблице | строк сырья (`rows_count`) | nmId | Σ `warehouse_price` | `paid_storage` отчёта реализации | разница |
+|---|---|---|---|---|---|---|
+| 10-07 | 5 833 | 6 228 | 1 341 | 4 043,31 | 4 043,31 | 0,00 |
+| 10-08 | 5 834 | 6 229 | 1 342 | 4 047,92 | 4 047,92 | 0,00 |
+| 10-09 | 3 831 | 3 842 | 1 214 | 3 995,56 | 3 995,56 | 0,00 |
+| 10-10 | 3 827 | 3 838 | 1 212 | 3 982,62 | 3 982,62 | 0,00 |
+| 10-11 | 3 810 | 3 821 | 1 205 | 3 957,88 | 3 957,88 | 0,00 |
+| 10-12 | 3 759 | 3 770 | 1 199 | 3 879,57 | 3 879,57 | 0,00 |
+| 10-13 | 3 576 | 3 586 | 1 152 | 3 699,87 | 3 699,87 | 0,00 |
+| 10-14 | 3 694 | 3 707 | 1 183 | 3 763,90 | 3 763,90 | 0,00 |
+
+SQL контроля — `sum(warehouse_price)` по `day` против `sum(paid_storage)` из `wb_sales_report_rows` по `rr_date`, обе в numeric. Σ `rows_count` = 35 021 = строкам сырья. Это те же числа, что в таблице §1 от 15.10.
+
+Правка попутно (`627a520`, `loaders/wb_paid_storage_loader.py`): строка «окно …» при `--from-file` печатала календарное окно (10-13 … 10-20), а не окно файла — печать перенесена после чтения файла; на строки и запись не влияло (окно берётся из файла, проверка дат — по нему), в логе первой записи неверное окно стояло только в заголовке.
+
+### История с 28.04 (п. 3 плана) — НЕ снята: токен протух
+
+- `GET /ping` на `seller-analytics-api` с ключом из `.env` → 401 «invalid API access token: token has invalid claims: token is expired», дважды; в claims токена `exp` = 1792521134 = 2026-10-20 06:32 UTC. Это тот же срок, что у Render (inbox: «протух 20.10»).
+- Значит, с ночи 10-20 на Render все шаги WB получают 401 — вывод из срока токена, по логам Render не проверял (§3.1 — после мержа, не руками).
+- Когда владелец вставит новый токен (в Render и в `.env` worktree / `~/mp-analytics`): 22 задания по 8 дней с 28.04 по 10-06 (~50 мин: создание 1/мин, статусы, скачивание 1/мин), сверка по неделям против `paid_storage`, глубина метода — в отчёт. Код готов (`--date-from --date-to`), к API без токена не ходил.
+- После «вставил» — сверить, что ночные шаги WB снова 200 (строка inbox).
+
+### Мерж `origin/main` (п. 4, подготовка) и набор
+
+`origin/main` `e4d1063` (49-я, `ll_rates_update`; схему базы не трогала — подтверждено сообщением Ozon-сессии и `db_migrate`: датированных файлов `sql/` 48) влит в `wb-fixes` мерж-коммитом `286eeec`, 7 файлов, конфликтов 0. Полный набор на слитой голове: **1 367 тестов OK** (3,8 с). Сторожа `sql/` 48 файлов / 29 таблиц — без правок. Ozon-сессия предупредила: 53-я добавит `sql/20261021_add_ad_attribution_is_bonus.sql` — уйдёт в `main` только после миграции трёх баз; нас не касается до её мержа.
+
+### Ждёт
+
+1. **Новый WB-токен** — история с 28.04 (22 задания) и проверка ночных шагов WB (200) — после «вставил».
+2. **Мерж `wb-fixes` → `main`** — по отдельному слову: миграции на трёх базах уже стоят, guard не сработает; §3.1 — три ночи на Render после мержа, не руками.
+3. Лист «Хранение WB по артикулам» — форма предложена 15.10, код после слова о форме.
+
+### `git log origin/main..HEAD`
+
+```
+627a520 Eighteenth WB by the word (addendum 21.10): migration applied on three bases via db_migrate --apply (KARATOV 20:10:45 UTC, rbh1/rbh2 20:11:03 UTC; 48 applied / 0 waiting / 0 sha256 mismatches); first write from raw — wb_paid_storage_daily 34 164 rows for 10-07 … 10-14, SQL control Σ day = paid_storage of the realisation report 8 of 8, diff 0,00; origin/main e4d1063 merged (286eeec), 1 367 tests OK; history from 28.04 not fetched — WB token expired locally too (/ping 401, exp 2026-10-20 06:32 UTC); loader prints the window of the file under --from-file; outbox block on top
+286eeec Merge remote-tracking branch 'origin/main' into wb-fixes
+2883785 Eighteenth WB: advisor's addendum 2026-10-21 received in inbox — the word on the plan (migration → first write from raw → history from 28.04 → merge by a separate word after origin/main is merged in; §3.1 — three nights on Render after the merge; WB token on Render expired 20.10, owner replaces it by hand)
+f501207 Eighteenth WB §4 measured: cost-history cache — WB part 1 080,7 → 897,1 s (−183,6 s) on the same window, 0 numeric cell differences across 17 sheets (text differences in «СС источник» come from seen_to of metal_rates_1c updated between the builds, not from the cache)
+d294076 Eighteenth WB report §0–§2 and the plan awaiting the owner's word: §0 nights 10-12 … 10-15 clean (first night on RBH 10-14 — «схема: применены все 47 файлов sql/»), launchd books rc 0, WB part 1 012 → 1 233 s; §1 paid-storage probe by the word — 3 calls, 35 021 rows for 10-07 … 10-14, day sums equal paid_storage of the realisation report to the kopeck 8 of 8, no natural unique key (tariff parts and full duplicates); §2 loader, table, step, 12 tests, db_migrate plan 47 applied / 1 waiting on all three cabinets; sheet form proposed; §3 and §4 plans; plan block before the question in the window (rule 10-15)
+c08fd66 Eighteenth WB §2 + §4: loaders/wb_paid_storage_loader.py — WB paid storage by article and day from seller-analytics-api /api/v1/paid_storage (one task per night for the last 8 days, status polls every 20 s, one download, 429 → 65 s pause up to 3 attempts, 204 → 0 rows, raw file with 30-day retention, --from-file / --dry-run / explicit window ≤ 8 days); rows rolled up by (day, nm_id, chrt_id, office_id, gi_id, calc_type, barcode) with Σ warehouse_price / barcodes_count / loyalty_discount and rows_count — the report has no natural unique key (823 keys with tariff parts, 261 full duplicates) and the day sum equals paid_storage of the realisation report only with them; sql/20261015_create_wb_paid_storage_daily.sql (via db_migrate by the owner's word); nightly non-fatal step «WB: платное хранение» after the ads step; cost-history cache per process in report_wb_month (full read from 1 000 bases, second call mode «cache»); sql/ guard counters 47 → 48 files, 28 → 29 tables; 12 + 2 tests, 1 355 OK
+c806c6b Merge remote-tracking branch 'origin/main' into wb-fixes
+6a63049 Eighteenth WB task received in inbox (paid storage by article and day via /api/v1/paid_storage, reconciliation with paid_storage of the realisation report, cost-history read caching); the advisor's file, git left to the session
+03b9e12 WB outbox: seventeenth merged into main by the owner's word — 44b2c1d --no-ff (push 10:07:18 UTC), Render live on both services 10:07:55 / 10:08:00 UTC, ~/mp-analytics pulled; no sql/ files in the branch; what went live — WB cost by sale date and 1C rate in the nightly book and the morning WB sheet, WB module ~5 min longer, read-history caching is the next task
+```
+
+---
+
 ## 2026-10-15, восемнадцатая задача WB — §0 сделан (ночи 10-12 … 10-15 чистые, первая на RBH 10-14 — «схема: применены все 47 файлов sql/»; книга launchd 29–34 мин, WB-часть 1 012 → 1 233 с, «Выкупы WB» по курсу); §1 разведка по слову: 3 обращения, 35 021 строка за 10-07 … 10-14, **Σ по дням = `paid_storage` отчёта реализации до копейки 8 из 8**, зерно без естественного ключа; §2 код готов — загрузчик, таблица `sql/20261015_create_wb_paid_storage_daily.sql` (план `db_migrate`: 47 применено, ждёт 1 на всех трёх кабинетах), ночной шаг, 12 тестов; §4 кэш истории снимков — готов: WB-часть 1 080,7 → 897,1 с (−183,6 с), числовых ячеек с разницей 0. **ПЛАН, ждущий слова — ниже (§2: миграция `--apply` karatov → all, затем первая запись окна; §3.1 / §3.2 — по слову); ветка `wb-fixes` поверх `main f33779d`, 1 355 тестов OK, db_writes = 0**
 
 Ветка `wb-fixes` = `origin/main` `f33779d` (RBH слита) + мерж `c806c6b` (32 файла, конфликтов 0) + `c08fd66` (§2 + §4). **К WB API — 3 обращения

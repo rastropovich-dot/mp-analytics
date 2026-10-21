@@ -4388,12 +4388,40 @@ def load_catalog():
     return {str(row.get("marketplace_sku")): row for row in rows}
 
 
+def is_bonus_campaign(campaign):
+    """Кампания, которую Ozon завёл сам на бонусы продвижения (пятьдесят третья §1): поле `isAutocreated` списка кампаний
+    (`extcampaignCampaignInList`, «true, если кампания создана автоматически»). По живому списку 2026-10-15 — 9 из 4 635, все
+    бонусные по названию («Кешбэк за продвижение …», «Бонусы на продвижение …»); у них `budget` = сумма бонуса, `expenseStrategy ASAP`.
+    Их трата в статистике Performance — не деньги продавца (тип 41 её не содержит): в marketplace_expenses не пишется, в атрибуции
+    помечается is_bonus. Метаданных нет (архивная кампания при бэкфилле) — не бонусная."""
+    if not campaign:
+        return False
+    value = campaign.get("isAutocreated")
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
+
+def bonus_campaigns_summary(campaigns):
+    """Автосозданные (бонусные) кампании списка — для строки лога и предупреждения о новых."""
+    out = []
+    for campaign in campaigns or []:
+        if is_bonus_campaign(campaign):
+            out.append({"id": str(campaign.get("id") or campaign.get("campaignId") or ""), "title": str(campaign.get("title") or ""),
+                        "state": str(campaign.get("state") or ""), "created_at": str(campaign.get("createdAt") or "")[:10],
+                        "budget": str(campaign.get("budget") or "")})
+    return sorted(out, key=lambda c: c["created_at"], reverse=True)
+
+
 def build_rows(report_data, campaigns_by_id, date_from, source_expense_type=None):
     """source_expense_type — тип, известный вызывающему из источника данных.
 
     На CPC-пути это CPC_SOURCE_EXPENSE_TYPE: statistics/json тянется только по
     CPC-кампаниям. Без него классификация падает на текст названия кампании и
     при отсутствующих метаданных даёт advertising_other — см. resolve_expense_type.
+
+    Строки бонусных кампаний (is_bonus_campaign) в расходы не идут: это трата бонусов Ozon, не деньги продавца; считаются
+    в counters["bonus_rows_skipped"] / ["bonus_spend_skipped"] (пятьдесят третья §2).
     """
     grouped = {}
     counters = defaultdict(int)
@@ -4412,6 +4440,10 @@ def build_rows(report_data, campaigns_by_id, date_from, source_expense_type=None
 
         campaign_id = extract_campaign_id(raw_row)
         campaign = campaigns_by_id.get(campaign_id, {})
+        if is_bonus_campaign(campaign):
+            counters["bonus_rows_skipped"] += 1
+            counters["bonus_spend_skipped"] = round(float(counters.get("bonus_spend_skipped") or 0) + float(spend), 2)
+            continue
         expense_type = resolve_expense_type(
             raw_row,
             campaign,
@@ -4456,9 +4488,12 @@ def build_rows(report_data, campaigns_by_id, date_from, source_expense_type=None
     return list(grouped.values()), counters
 
 
-def build_cpc_attribution_rows(report_data, date_from):
+def build_cpc_attribution_rows(report_data, date_from, campaigns_by_id=None):
+    """campaigns_by_id — метаданные кампаний: строки бонусных (is_bonus_campaign) получают is_bonus = True (пятьдесят третья §2);
+    без метаданных — False."""
     grouped = {}
     counters = defaultdict(int)
+    campaigns_by_id = campaigns_by_id or {}
 
     for raw_row in flatten_report_rows(report_data):
         sale_date = normalize_date(value_by_keys(raw_row, DATE_KEYS), fallback=date_from)
@@ -4483,6 +4518,9 @@ def build_cpc_attribution_rows(report_data, date_from):
             continue
 
         campaign_id = extract_campaign_id(raw_row)
+        is_bonus = is_bonus_campaign(campaigns_by_id.get(campaign_id, {}))
+        if is_bonus:
+            counters["bonus_rows"] += 1
         key = (sale_date, sku, "cpc", campaign_id)
         if key not in grouped:
             grouped[key] = {
@@ -4497,6 +4535,7 @@ def build_cpc_attribution_rows(report_data, date_from):
                 "ad_source": "cpc",
                 "attribution_type": "direct",
                 "campaign_id": campaign_id,
+                "is_bonus": is_bonus,
                 "article": extract_article(raw_row),
                 "product_name": extract_product_name(raw_row),
                 "ad_orders_qty": 0.0,
@@ -4752,6 +4791,7 @@ def aggregate_ad_attribution_rows(rows):
                 "ad_source": row.get("ad_source"),
                 "attribution_type": row.get("attribution_type") or "direct",
                 "campaign_id": row.get("campaign_id") or "",
+                "is_bonus": bool(row.get("is_bonus")),
                 "article": row.get("article") or "",
                 "product_name": row.get("product_name") or "",
                 "ad_orders_qty": 0.0,
@@ -6057,7 +6097,7 @@ def run_cpc_recovery_mode(
             target_date,
             source_expense_type=CPC_SOURCE_EXPENSE_TYPE,
         )
-        attribution_rows, _ = build_cpc_attribution_rows(report_data, target_date)
+        attribution_rows, _ = build_cpc_attribution_rows(report_data, target_date, campaigns_by_id=plan["campaigns_by_id"])
 
         for row in rows:
             if str(row.get("expense_type") or "") not in {"advertising_clicks", "advertising_other"}:
@@ -7561,6 +7601,12 @@ def run():
     }
     print(f"Ozon Performance period campaigns for CPO/context: {len(campaigns_by_id)}")
     print(f"Ozon Performance CPC campaigns for statistics/json: {len(cpc_campaign_ids)}")
+    bonus_campaigns = bonus_campaigns_summary(campaigns_by_id.values())
+    print(
+        f"Ozon Performance бонусные (автосозданные, isAutocreated) кампании в периоде: {len(bonus_campaigns)} — "
+        "их трата в marketplace_expenses не пишется, в атрибуции is_bonus: "
+        + json.dumps(bonus_campaigns, ensure_ascii=False)
+    )
     if cpc_activity_sample:
         print("Ozon Performance CPC activity markers sample:")
         print(json.dumps(cpc_activity_sample, ensure_ascii=False))
@@ -8343,7 +8389,7 @@ def run():
                 date_from,
                 source_expense_type=CPC_SOURCE_EXPENSE_TYPE,
             )
-            attribution_rows, attribution_counters = build_cpc_attribution_rows(report_data, date_from)
+            attribution_rows, attribution_counters = build_cpc_attribution_rows(report_data, date_from, campaigns_by_id=campaigns_by_id)
             cpc_current_run_expense_rows_count += sum(
                 1
                 for row in rows

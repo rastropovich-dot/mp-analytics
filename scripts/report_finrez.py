@@ -48,6 +48,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 import report_ozon_month as rep  # noqa: E402
+from loaders import ozon_ad_bonus  # noqa: E402
 from loaders import ozon_finance_accrual as accrual_mod  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402
 import ozon_product_catalog as catalog_rules  # noqa: E402
@@ -1594,6 +1595,18 @@ def main(argv=None):
     from loaders.ozon_fbo_orders_loader import supabase as sb
     flt = lambda col: [("eq", "marketplace_code", "ozon"), ("gte", col, d1), ("lte", col, d2)]  # noqa: E731
     buyout_cols = "id,buyout_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount"
+    # пятьдесят третья: трата бонусных кампаний Ozon — справочно в примечании (в «Реклама», ДРР и фин. рез. не входит)
+    try:
+        _bonus_rows = ozon_ad_bonus.read_bonus_rows(sb, d1, d2)
+        _bonus_by_month = {}
+        for _d, _v in ozon_ad_bonus.spend_by_day(_bonus_rows).items():
+            _bonus_by_month[_d[:7]] = _bonus_by_month.get(_d[:7], Decimal(0)) + _v
+        ads_bonus_note = ("Реклама за счёт бонусов Ozon (не расход, в «Реклама» и ДРР не входит; с НДС, как в статистике Performance): "
+                          + (", ".join(f"{m} {v:,.2f}" for m, v in sorted(_bonus_by_month.items())) if _bonus_by_month else "0,00")
+                          + f"; кампаний {len({str(x['campaign_id']) for x in _bonus_rows})} — автосозданные Ozon (isAutocreated), пятьдесят третья.")
+    except Exception as exc:  # noqa: BLE001
+        ads_bonus_note = f"Реклама за счёт бонусов Ozon не прочитана ({type(exc).__name__}: {str(exc)[:100]})."
+    print(ads_bonus_note)
     optional = ["buyouts_units", "bonus_amount", "coinvestment_amount"]
     while True:
         try:
@@ -1643,6 +1656,7 @@ def main(argv=None):
                     + (unit_cost.history.note() if getattr(unit_cost, "history", None) is not None else f"Снимок {args.snapshot}."),
                     "«Прочее» включает подписку (у владельца отдельной статьи нет); эквайринг — тип 1 по строке товара; компенсации 25 / 10 — не статья формы, в лист не входят. "
                     "«Ст-ть продаж в себ-ти» — только под Товарооборотом, как в образце.",
+                    ads_bonus_note,
                     "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
                     ("Дни моложе двух суток (" + ", ".join(young_days) + "): реклама 41 + 54 в леджере появляется следующей ночью — в этих строках реклама занижена; утренняя книга берёт их живым ответом."
                      if young_days else "Дней моложе двух суток в книге нет."),

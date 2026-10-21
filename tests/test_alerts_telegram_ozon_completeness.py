@@ -324,11 +324,13 @@ class OzonCompletenessGateTests(unittest.TestCase):
                 "sum_organic_orders_revenue": 20000,
                 "status_counts": {"ok": 1},
                 "warning_count": 0,
-            }):
+            }), \
+            mock.patch.object(alerts, "get_ozon_ad_bonus_lines", return_value=["Реклама за счёт бонусов Ozon (не расход): 17 440.54 руб. — кампаний 2"]):
             lines = alerts.build_executive_summary(kpi_rows)
         text = "\n".join(lines)
         self.assertIn("🔵 <b>Ozon вчера</b>", text)
         self.assertIn("Реклама: клики", text)
+        self.assertIn("Реклама за счёт бонусов Ozon (не расход): 17 440.54 руб.", text)   # 53-я: строкой после рекламы
         self.assertIn("Атрибуция:", text)
         self.assertNotIn("данные неполные", text)
 

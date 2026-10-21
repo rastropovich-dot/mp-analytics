@@ -408,9 +408,23 @@ def snapshot_dates(sb, table="article_unit_costs"):
         dates.append(last)
 
 
+COST_HISTORY_FULL_MIN_BASES = 1_000   # от стольких баз снимки целиком дешевле адресного чтения (476 запросов / ~150 с против 151 / ~165 с на 1 918 базах)
+_COST_HISTORY_CACHE = {}              # {ключ клиента: (sb, rows_all, dates)} — снимки целиком один раз на процесс (WB-18 §4)
+
+
+def clear_cost_history_cache():
+    _COST_HISTORY_CACHE.clear()
+
+
+def _cache_key(sb):
+    return getattr(sb, "supabase_url", None) or getattr(sb, "rest_url", None) or id(sb)
+
+
 def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=None, max_bases=COST_NARROW_MAX_BASES, dates=None,
-                          rates=None, k_table=None):
+                          rates=None, k_table=None, full_min_bases=COST_HISTORY_FULL_MIN_BASES, use_cache=True):
     """Все снимки article_unit_costs по базам артикулов из vendor_codes — ПО ОДНОМУ СНИМКУ ЗА ЗАПРОС (eq snapshot_date + or_ по
+    базам; WB-18 §4: от full_min_bases баз — снимки целиком и кэш на процесс (_COST_HISTORY_CACHE): второй вызов того же процесса
+    (заказы после строк отчёта в книге «Фин рез») к базе не ходит, mode «cache», requests 0; use_cache=False — как прежде)
     базам, страницы по ключу offer_id_norm — ровно шаблон load_costs_for, ≈ 0,9 с на пачку из 80 баз; один or_-запрос по всем
     снимкам разом на 461 тыс. строк упирался в statement_timeout 8 с — сборка 10-08 01:39 МСК, WB-17 §3). Баз больше max_bases —
     снимки целиком, тоже по одному. Возвращает WbCostHistory: costs {дата: {ключ: unit_cost}}, uniform_id {дата: {безразмерный
@@ -430,11 +444,16 @@ def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=N
             print(rates_note, flush=True)
     elif rates is False:
         rates = None
-    dates = list(dates) if dates is not None else snapshot_dates(sb)
-    requests = 0 if dates is not None and stats is None else len(dates) + 1
     rows_all = []
-    mode = "full" if len(bases) > max_bases else "narrow"
-    for d in dates:
+    cache = _COST_HISTORY_CACHE.get(_cache_key(sb)) if use_cache else None
+    if cache is not None:                                   # WB-18 §4: снимки целиком уже прочитаны этим процессом — к базе не ходим
+        _sb, rows_all, dates = cache
+        mode, requests = "cache", 0
+    else:
+        dates = list(dates) if dates is not None else snapshot_dates(sb)
+        requests = len(dates) + 1 if dates else 0
+        mode = "full" if len(bases) >= full_min_bases else "narrow"
+    for d in (dates if cache is None else ()):
         if mode == "full":
             got = stale_keys.read_window_rows(sb, "article_unit_costs", select, [("eq", "snapshot_date", d)], ["offer_id_norm"], page=page)
             rows_all.extend(got)
@@ -454,6 +473,8 @@ def load_cost_history_for(sb, vendor_codes, batch=COST_BATCH, page=1000, stats=N
                 if len(data) < page:
                     break
                 last = data[-1]["offer_id_norm"]
+    if mode == "full" and use_cache:
+        _COST_HISTORY_CACHE[_cache_key(sb)] = (sb, rows_all, list(dates))   # sb держим, чтобы id() не переиспользовался
     costs, uniform_id, uniform_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
     meta, meta_id, meta_base = defaultdict(dict), defaultdict(dict), defaultdict(dict)
     for r in rows_all:

@@ -10,6 +10,7 @@ from supabase import create_client
 
 load_dotenv()
 import cabinet  # noqa: E402
+from loaders import ozon_ad_bonus  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -273,6 +274,11 @@ def get_ozon_report_completeness(target_date):
         "performance_cpc_status": (performance_status or {}).get("cpc_status"),
         "performance_cpo_status": (performance_status or {}).get("cpo_status"),
     }
+
+
+def get_ozon_ad_bonus_lines(target_date):
+    """Строки «реклама за счёт бонусов Ozon (не расход)» и предупреждение о новой бонусной кампании — из атрибуции по is_bonus (53-я)."""
+    return ozon_ad_bonus.alert_lines(supabase, target_date, fmt_money)
 
 
 def get_ozon_ads_breakdown(expense_date):
@@ -885,6 +891,8 @@ def build_executive_summary(kpi_rows, target_date=None):
                 ad_share_revenue,
                 organic_reconciliation,
             )
+            # пятьдесят третья: трата бонусных (автосозданных) кампаний — не расход; строкой отдельно, из атрибуции по is_bonus
+            bonus_lines = get_ozon_ad_bonus_lines(target_date)
 
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"
@@ -892,6 +900,7 @@ def build_executive_summary(kpi_rows, target_date=None):
                 f"Реализация: {buyouts:.0f} шт / {fmt_money(buyouts_amount)} руб.\n"
                 f"{attribution_line}\n"
                 f"{ads_line}\n"
+                + "\n".join(bonus_lines) + "\n"
                 f"Комиссии: {fmt_money(commission)}, логистика: {fmt_money(logistics)}, прочие: {fmt_money(other)}.\n"
                 f"После расходов Ozon: {fmt_money(net_after_expenses)} руб.\n"
                 f"Отклонение заказов к 7дн: {fmt_pct(orders_delta)}."

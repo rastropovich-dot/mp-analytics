@@ -68,3 +68,8 @@ data/ozon_cpo_raw/
 
 # сорок седьмая: курсы с картинок чата «LL Курсы» — csv, сырьё OCR и бинарники Vision; вне git
 data/ll_rates/
+
+# отчёты ЛК «Детализация расходов бонусами» (53-я), вне git
+data/ozon_bonus_reports
+# сырой список кампаний Performance (53-я §1/§3), вне git
+data/ozon_performance_campaigns

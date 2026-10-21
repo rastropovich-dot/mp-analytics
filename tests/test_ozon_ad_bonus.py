@@ -134,6 +134,14 @@ class RewritePlanTests(unittest.TestCase):
         _f, _u, _d, errors, _b = R.plan(attr, exp)
         self.assertEqual(len(errors), 2); self.assertIn("больше строки", errors[0]); self.assertIn("строки advertising_clicks нет", errors[1])
 
+    def test_plan_after_apply_is_clean_flagged_rows_without_expense_row_are_not_errors(self):
+        attr = [{"sale_date": "2026-10-13", "marketplace_sku": "A", "campaign_id": "45128869", "ad_spend": "396.73", "is_bonus": True},
+                {"sale_date": "2026-10-13", "marketplace_sku": "B", "campaign_id": "45369620", "ad_spend": "50.00", "is_bonus": True}]
+        exp = [{"id": 2, "expense_date": "2026-10-13", "marketplace_sku": "B", "expense_type": "advertising_clicks", "expense_amount": 100.00}]
+        to_flag, update, delete, errors, by_day = R.plan(attr, exp)
+        self.assertEqual((to_flag, update, delete, errors), ([], [], [], []), "после записи: строка A удалена, строка B уже уменьшена — всё чисто")
+        self.assertEqual(by_day["2026-10-13"]["bonus"], D("446.73"))
+
     def test_bonus_campaign_ids_from_the_raw_list(self):
         import json, tempfile
         p = tempfile.mktemp(suffix=".json")

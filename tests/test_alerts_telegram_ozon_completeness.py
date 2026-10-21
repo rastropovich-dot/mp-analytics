@@ -3,6 +3,17 @@ from unittest import mock
 
 import alerts_telegram as alerts
 
+_BONUS_STUB = mock.patch.object(alerts, "get_ozon_ad_bonus_lines", return_value=[])   # 53-я: строки бонусов читают базу — в тестах заглушка
+
+
+def setUpModule():
+    _BONUS_STUB.start()
+
+
+def tearDownModule():
+    _BONUS_STUB.stop()
+
+
 
 def _kpi_row(marketplace_code, kpi_date="2026-05-20", orders_qty=10, orders_amount=100000, buyouts_qty=8, buyouts_amount=80000):
     return {
@@ -211,10 +222,12 @@ class OzonCompletenessGateTests(unittest.TestCase):
             mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
                 "complete": False,
                 "blockers": ["ozon_daily_sku_organic_missing", "ozon_ads_layer_missing"],
-            }):
+            }), \
+            mock.patch.object(alerts, "get_ozon_ad_bonus_lines", return_value=["Реклама за счёт бонусов Ozon (не расход): 7 712.23 руб. — кампаний 2"]):
             lines = alerts.build_executive_summary(kpi_rows)
         text = "\n".join(lines)
         self.assertIn("Ozon вчера: данные неполные, управленческий вывод не строим", text)
+        self.assertIn("Реклама за счёт бонусов Ozon (не расход): 7 712.23 руб.", text)   # 53-я: строка бонусов и при неполных данных
         self.assertNotIn("Реклама: клики", text)
         self.assertNotIn("Атрибуция: реклама", text)
 

@@ -546,6 +546,18 @@ def main(argv=None):
         else load_progress(args.progress_path)
 
     per_date = stored_dates(cutoff, args.date_from, args.date_to)
+    if args.from_files and args.date_from and args.date_to:
+        # Первая запись кабинета (РБХ §5.4, 21.10): в базе дат нет вовсе — очередь строится из файлов сырья диапазона,
+        # дате без строк в базе даётся нулевая ячейка (прирост = всё созданное из файла). Без диапазона поведение прежнее.
+        cur, end, added = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to), []
+        while cur <= end:
+            day = cur.isoformat()
+            if day < cutoff and day not in per_date and os.path.exists(os.path.join(args.from_files, f"orders_flag1_{day}.json")):
+                per_date[day] = {"qty": Decimal(0), "amount": Decimal(0), "rows": 0, "skus": set()}
+                added.append(day)
+            cur += timedelta(days=1)
+        if added:
+            print(f"Дат с файлом сырья, но без единой строки в базе (первая запись): {len(added)} ({added[0]} … {added[-1]})")
     oldest_allowed = (date.today() - timedelta(days=KNOWN_GOOD_DEPTH_DAYS)).isoformat()
     before_start = [d for d in per_date if d < WB_COLLECTION_START]
     too_deep = [d for d in before_start if d < oldest_allowed]

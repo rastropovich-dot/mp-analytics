@@ -57,6 +57,8 @@ cd ~/mp-analytics-rbh && venv/bin/python3 scripts/db_migrate.py --cabinet all --
 cd ~/mp-analytics && git merge --no-ff ozon-ad-bonus && git push origin main          # после миграции во всех трёх базах
 cd ~/mp-analytics-wt/53 && venv/bin/python3 scripts/ozon_ad_bonus_rewrite.py --from 2026-10-09 --to 2026-10-21 --apply
 ```
+**Дополнение 21.10 20:15 UTC (от сессии ВБ):** WB-18 применила `sql/20261015_create_wb_paid_storage_daily.sql` через `db_migrate --apply` во всех трёх базах (KARATOV 20:10:45, rbh1 / rbh2 20:11:03 UTC) — план `db_migrate` для KARATOV теперь «применено 48, ждёт 1 — 20261021_add_ad_attribution_is_bonus.sql»; порядок по имени сохраняется, мой файл ляжет 49-м. Тест `test_db_migrate` считает файлы `sql/` (у меня 48): кто мержится вторым — `wb-fixes` или `ozon-ad-bonus` — поднимает число до 49. WB-токен протух 20.10 (их строка) — у 53-й шагов WB нет.
+
 После мержа — ночь на новом коде: в логе шага рекламы строки «бонусные (автосозданные) кампании в периоде: 2» и `bonus_rows_skipped`, утром арбитр perf − тип 41 за D−1 ≤ 32 ₽, в алерте строка бонусов. **Не сделано:** колонка `ad_spend_bonus` витрины (в ответе 21.10 не просится; строка читается из атрибуции); сверка 14 … 20.10 с отчётом ЛК — отчёт у владельца только по 13.10.
 
 ---

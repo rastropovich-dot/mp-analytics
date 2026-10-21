@@ -181,7 +181,7 @@ def _last_seen_by_rate(pictures_csv):
     with open(pictures_csv, newline="") as fh:
         for r in csv.DictReader(fh):
             img = str(r.get("img_date") or "")[:10]
-            if not img:
+            if not img or (r.get("check") or "").strip():     # провал формул на картинке — не свидетельство курса (сорок девятая §2)
                 continue
             for metal, (dcol, vcol) in cols.items():
                 d, v = (r.get(dcol) or "").strip(), (r.get(vcol) or "").strip()

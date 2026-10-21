@@ -262,5 +262,41 @@ class RateTests(unittest.TestCase):
         self.assertEqual(h0.lookup("f000078698", "23.5", "2026-06-15")[0], D("5500"))
 
 
+class CacheTests(unittest.TestCase):
+    """WB-18 §4: от full_min_bases баз — снимки целиком и кэш на процесс; второй вызов того же клиента к базе не ходит."""
+
+    def setUp(self):
+        wbm.clear_cost_history_cache()
+
+    def test_full_read_is_cached_per_process_and_per_client(self):
+        sb = FakeCosts(ROWS_DB)
+        s1 = {}
+        h1 = wbm.load_cost_history_for(sb, ["f000078698", "f007753194-жм"], stats=s1, full_min_bases=2, rates=False)
+        self.assertEqual(s1["mode"], "full")
+        n = len(sb.calls)
+        s2 = {}
+        h2 = wbm.load_cost_history_for(sb, ["f009999999"], stats=s2, full_min_bases=2, rates=False)
+        self.assertEqual((s2["mode"], s2["requests"]), ("cache", 0))
+        self.assertEqual(len(sb.calls), n)                                              # к базе не ходили
+        self.assertEqual(h2.lookup("f009999999", None, "2026-06-01")[0], D("1"))        # кэш целиком — чужая база тоже есть
+        self.assertEqual(h1.lookup("f000078698", "23.5", "2026-06-01")[0], h2.lookup("f000078698", "23.5", "2026-06-01")[0])
+        other = FakeCosts(ROWS_DB)
+        s3 = {}
+        wbm.load_cost_history_for(other, ["f000078698", "f007753194-жм"], stats=s3, full_min_bases=2, rates=False)
+        self.assertEqual(s3["mode"], "full")                                            # другой клиент — свой кэш
+        s4 = {}
+        wbm.load_cost_history_for(sb, ["f000078698", "f007753194-жм"], stats=s4, full_min_bases=2, rates=False, use_cache=False)
+        self.assertEqual(s4["mode"], "full")                                            # use_cache=False — читает заново
+
+    def test_small_sets_stay_narrow_and_uncached(self):
+        sb = FakeCosts(ROWS_DB)
+        s1 = {}
+        wbm.load_cost_history_for(sb, ["f000078698"], stats=s1, full_min_bases=5, rates=False)
+        self.assertEqual(s1["mode"], "narrow")
+        s2 = {}
+        wbm.load_cost_history_for(sb, ["f000078698"], stats=s2, full_min_bases=5, rates=False)
+        self.assertEqual(s2["mode"], "narrow")
+
+
 if __name__ == "__main__":
     unittest.main()

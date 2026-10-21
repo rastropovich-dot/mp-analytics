@@ -58,6 +58,7 @@ def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", produ
         "roas": 0,
         "commission_amount": 0,
         "logistics_amount": 0,
+        "storage_cost": 0,
         "other_expenses_amount": 0,
     }
 
@@ -134,6 +135,22 @@ def load_expenses():
     all_rows = read_all_by_id("marketplace_expenses")
     print(f"Загружено расходов: {len(all_rows)}")
     return all_rows
+
+
+PLACEMENT_TABLE = "ozon_placement_by_product_daily"
+
+
+def load_placement():
+    """Хранение Ozon по товарам (52-я): строки (day, sku, warehouse) с amount со знаком леджера; таблицы нет или не прочиталась —
+    источник помечается непрочитанным (чистка витрины не удаляет), колонка остаётся 0."""
+    try:
+        rows = read_all_by_key(PLACEMENT_TABLE, ["day", "sku", "warehouse"])
+    except Exception as exc:  # noqa: BLE001
+        SOURCE_READ_FAILURES.append(PLACEMENT_TABLE)
+        print(f"⚠️ {PLACEMENT_TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost витрины за этот прогон не считается")
+        return []
+    print(f"Загружено строк хранения: {len(rows)}")
+    return rows
 
 
 def load_ozon_organic():
@@ -235,6 +252,7 @@ def build_kpi(wb_cohort=None, with_source=False):
     buyouts = load_buyouts()
     expenses = load_expenses()
     ozon_organic = load_ozon_organic()
+    placement = load_placement()
 
     grouped = {}
 
@@ -308,6 +326,12 @@ def build_kpi(wb_cohort=None, with_source=False):
             unknown_expense_types[expense_type] += amount
             bucket = "other_expenses_amount"
         grouped[key][bucket] += amount
+
+    for row in placement:      # 52-я: хранение по SKU за день = Σ по складам, положительно (в таблице знак леджера)
+        key = (str(row["day"])[:10], "ozon", str(row["sku"]))
+        if key not in grouped:
+            grouped[key] = empty_kpi_row(key[0], "ozon", key[2], row.get("offer_id") or "", None)
+        grouped[key]["storage_cost"] += -float(row.get("amount") or 0)
 
     for row in ozon_organic:
         key = (

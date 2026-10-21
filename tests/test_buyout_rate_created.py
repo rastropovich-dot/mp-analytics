@@ -23,7 +23,7 @@ def buyout(sku, qty, amount, market="ozon", day=DAY):
 
 def build(orders, buyouts, expenses=()):
     with mock.patch.object(kpi, "load_orders", return_value=list(orders)), mock.patch.object(kpi, "load_buyouts", return_value=list(buyouts)), \
-            mock.patch.object(kpi, "load_expenses", return_value=list(expenses)), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), \
+            mock.patch.object(kpi, "load_expenses", return_value=list(expenses)), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), mock.patch.object(kpi, "load_placement", return_value=[]), mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), \
             mock.patch("builtins.print"):
         return {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi()}
 
@@ -45,7 +45,7 @@ class SkuShowcase(unittest.TestCase):
         daily = {DAY: {"mature": True, "rate": 0.45, "forecast": None}, "2026-09-24": {"mature": False, "rate": None, "forecast": 0.4151}}
         sku = {(DAY, "w"): 0.5}
         with mock.patch.object(kpi, "load_orders", return_value=orders), mock.patch.object(kpi, "load_buyouts", return_value=buyouts), \
-                mock.patch.object(kpi, "load_expenses", return_value=[]), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), mock.patch("builtins.print"):
+                mock.patch.object(kpi, "load_expenses", return_value=[]), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), mock.patch.object(kpi, "load_placement", return_value=[]), mock.patch("builtins.print"):
             rows = {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi(wb_cohort=(daily, sku), with_source=True)}
             rows2 = {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi(wb_cohort=(daily, {}), with_source=False)}
         self.assertEqual((rows[(DAY, "wb", "w")]["buyout_rate"], rows[(DAY, "wb", "w")]["buyout_rate_source"]), (0.5, "cohort"))       # ставка ключа когорты, не 2 / 4

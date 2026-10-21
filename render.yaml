@@ -1,13 +1,14 @@
 # render.yaml — четыре cron-сервиса РБХ (RBH §5.5). Файл генерируется scripts/render_blueprint.py — править там, затем --write.
 # Сервисы основного кабинета (mp-analytics, mp-analytics-telegram-report) в Blueprint не входят: их конфигурация — в панели Render.
-# Секреты (sync: false) владелец вводит в Dashboard при создании Blueprint; в git значений нет.
+# Параметры (region, plan, runtime, состав переменных) = сервисам основного кабинета по Render API 2026-10-21. Секреты (sync: false) в git не лежат;
+# сервисы создаёт scripts/render_services_sync.py через API по этому же составу (Blueprint руками не нужен).
 services:
   - type: cron
     name: mp-analytics-rbh1
     # РБХ-1: ночной прогон; расписание со сдвигом +5 / +10 мин от основного кабинета (00:15 UTC)
     runtime: python
-    region: frankfurt
-    plan: starter
+    region: oregon
+    plan: standard
     branch: main
     autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
@@ -16,12 +17,16 @@ services:
     envVars:
       - key: MP_CABINET
         value: rbh1
+      - key: ENABLE_OZON_SELECTED_CPO_DAILY
+        value: false
+      - key: APPROVE_OZON_SELECTED_CPO_DAILY_WRITE
+        value: false
       - fromGroup: rbh1
   - type: cron
     name: mp-analytics-rbh1-telegram-report
     # РБХ-1: утренний алерт в Telegram (+ книга месяца); расписание со сдвигом +5 / +10 мин от основного кабинета (07:30 UTC)
     runtime: python
-    region: frankfurt
+    region: oregon
     plan: starter
     branch: main
     autoDeployTrigger: commit
@@ -36,8 +41,8 @@ services:
     name: mp-analytics-rbh2
     # РБХ-2: ночной прогон; расписание со сдвигом +5 / +10 мин от основного кабинета (00:15 UTC)
     runtime: python
-    region: frankfurt
-    plan: starter
+    region: oregon
+    plan: standard
     branch: main
     autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
@@ -46,12 +51,16 @@ services:
     envVars:
       - key: MP_CABINET
         value: rbh2
+      - key: ENABLE_OZON_SELECTED_CPO_DAILY
+        value: false
+      - key: APPROVE_OZON_SELECTED_CPO_DAILY_WRITE
+        value: false
       - fromGroup: rbh2
   - type: cron
     name: mp-analytics-rbh2-telegram-report
     # РБХ-2: утренний алерт в Telegram (+ книга месяца); расписание со сдвигом +5 / +10 мин от основного кабинета (07:30 UTC)
     runtime: python
-    region: frankfurt
+    region: oregon
     plan: starter
     branch: main
     autoDeployTrigger: commit
@@ -83,32 +92,10 @@ envVarGroups:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: PYTHON_VERSION
-        sync: false   # как у основного кабинета (снять с панели Render)
-      - key: APP_TIMEZONE
-        value: "Europe/Moscow"
+      - key: OPENAI_API_KEY
+        sync: false
       - key: OZON_PERFORMANCE_STATE_BACKEND
         value: "db"
-      - key: OZON_PERFORMANCE_DAILY_TARGET_MODE
-        value: "yesterday"
-      - key: OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE
-        value: "complete"
-      - key: OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE
-        value: "10"
-      - key: OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN
-        value: "5"
-      - key: OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT
-        value: "2000"
-      - key: OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE
-        value: "200"
-      - key: OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN
-        value: "1800"
-      - key: OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM
-        value: "03:05"
-      - key: ENABLE_OZON_SELECTED_CPO_DAILY
-        value: "false"
-      - key: APPROVE_OZON_SELECTED_CPO_DAILY_WRITE
-        value: "false"
   - name: rbh2
     envVars:
       - key: SUPABASE_URL
@@ -129,29 +116,7 @@ envVarGroups:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: PYTHON_VERSION
-        sync: false   # как у основного кабинета (снять с панели Render)
-      - key: APP_TIMEZONE
-        value: "Europe/Moscow"
+      - key: OPENAI_API_KEY
+        sync: false
       - key: OZON_PERFORMANCE_STATE_BACKEND
         value: "db"
-      - key: OZON_PERFORMANCE_DAILY_TARGET_MODE
-        value: "yesterday"
-      - key: OZON_PERFORMANCE_DAILY_CPC_SELECTION_MODE
-        value: "complete"
-      - key: OZON_PERFORMANCE_CAMPAIGN_BATCH_SIZE
-        value: "10"
-      - key: OZON_PERFORMANCE_MAX_CPC_BATCHES_PER_RUN
-        value: "5"
-      - key: OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_LIMIT
-        value: "2000"
-      - key: OZON_PERFORMANCE_STATS_DAILY_CAMPAIGN_RESERVE
-        value: "200"
-      - key: OZON_PERFORMANCE_MAX_STATS_CAMPAIGNS_PER_DAILY_RUN
-        value: "1800"
-      - key: OZON_PERFORMANCE_CPC_BACKFILL_START_HHMM
-        value: "03:05"
-      - key: ENABLE_OZON_SELECTED_CPO_DAILY
-        value: "false"
-      - key: APPROVE_OZON_SELECTED_CPO_DAILY_WRITE
-        value: "false"

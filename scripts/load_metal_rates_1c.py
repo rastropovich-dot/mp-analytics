@@ -10,8 +10,9 @@
 `scripts/ll_rates_ocr.py --export "<папка ChatExport_…>"`. Грузятся gold → gold585, silver → silver925, usd → usd; kzt и scrap в таблицу не идут.
 Две строки одной даты установки (правка задним числом, доллар 20.05.2026 75 → 74) — последняя по картинке, прежняя — в примечании плана.
 
-Обновление дальше: владелец снимает экспорт чата раз в неделю → `ll_rates_ocr.py --export <папка> --since <дата>` дописывает csv →
-этот скрипт --apply по слову. Таблицу создаёт sql/20261008_create_metal_rates_1c.sql (по слову через MCP).
+Обновление дальше — одной командой: владелец снимает экспорт чата → `scripts/ll_rates_update.py --export <папка>` (since из последней картинки csv,
+OCR новых картинок, план по таблице; `--apply` по слову пишет csv, историю и upsert изменившихся строк). Этот скрипт остаётся для посева и `--check`.
+Таблицу создаёт sql/20261008_create_metal_rates_1c.sql (по слову через MCP).
 """
 import argparse
 import os
@@ -83,6 +84,35 @@ def read_table(sb):
         for d, v in zip(ds, vs):
             out[(metal, d)] = v
     return out, rates
+
+
+def read_table_rows(sb, page_cap=1000):
+    """Все строки metal_rates_1c как {(metal, set_date): {rate, source, seen_from, seen_to}} — страницами по ключу (сорок девятая:
+    ll_rates_update.py сравнивает и seen_to, не только курс)."""
+    out, last = {}, None
+    while True:
+        q = sb.table(TABLE).select("metal,set_date,rate,source,seen_from,seen_to").order("metal").order("set_date")
+        if last is not None:
+            q = q.or_(f"metal.gt.{last[0]},and(metal.eq.{last[0]},set_date.gt.{last[1]})")
+        data = q.limit(page_cap).execute().data or []
+        for r in data:
+            out[(r["metal"], str(r["set_date"])[:10])] = {"rate": Decimal(str(r["rate"])), "source": r.get("source"),
+                                                          "seen_from": (str(r["seen_from"])[:10] if r.get("seen_from") else None),
+                                                          "seen_to": (str(r["seen_to"])[:10] if r.get("seen_to") else None)}
+        if len(data) < page_cap:
+            break
+        last = (data[-1]["metal"], str(data[-1]["set_date"])[:10])
+    return out
+
+
+def changed_rows(rows, table_rows):
+    """Строки плана, которых в таблице нет или у которых отличается rate / seen_from / seen_to / source — только их и писать (upsert)."""
+    out = []
+    for r in rows:
+        t = table_rows.get((r["metal"], r["set_date"]))
+        if t is None or t["rate"] != r["rate"] or t["seen_from"] != r["seen_from"] or t["seen_to"] != r["seen_to"] or t["source"] != r["source"]:
+            out.append(r)
+    return out
 
 
 def compare(rows, table):

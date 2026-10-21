@@ -90,7 +90,8 @@ PAGE_SLEEP_SECONDS = 21
 # (ReadTimeout 60 с), исключение никто не ловил, шаг упал с кодом 1 и, будучи
 # фатальным, унёс весь прогон до KPI обеих площадок. Сетевой отказ — такой же
 # транзиентный, как 429: те же попытки, та же пауза, по исчерпании — RuntimeError.
-TRANSIENT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+TRANSIENT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError)   # обрыв тела ответа (IncompleteRead) — повторяем как обрыв соединения (21.10, РБХ-1)
 
 HEADERS = {
     "Authorization": WB_API_KEY,

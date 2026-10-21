@@ -156,7 +156,8 @@ def entry_points():
     skip_dirs = {"venv", ".git", "tests", "cabinets", "data", "logs", "knowledge", "spec", "snapshots", "docs", "sql", "ops"}
     # Эти два ходят в базу не клиентом PostgREST по SUPABASE_URL, а Management API по ref ПРОФИЛЯ (--cabinet явный, «all» без karatov,
     # karatov только с --allow-karatov) — guard по SUPABASE_URL им не о чем: базу выбирает код кабинета, не окружение.
-    management_api_only = {"scripts/db_migrate.py", "scripts/db_schema_snapshot.py"}
+    management_api_only = {"scripts/db_migrate.py", "scripts/db_schema_snapshot.py",
+                           "scripts/render_services_sync.py"}   # Render API: сервисы РБХ по блюпринту, в базу не ходит вовсе
     found = {}
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]

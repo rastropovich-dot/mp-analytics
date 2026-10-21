@@ -3,6 +3,14 @@
 
     venv/bin/python3 scripts/ll_rates_ocr.py --export "~/Downloads/Telegram Desktop/ChatExport_2026-10-06"            разбор всех картинок
     venv/bin/python3 scripts/ll_rates_ocr.py --export … --sample 20 --seed 47                                           список картинок для ручной сверки
+    venv/bin/python3 scripts/ll_rates_ocr.py --export … --since 2026-10-06                                              дописать csv картинками с этой даты (сорок девятая §4.3)
+
+Два режима записи. Без --since — csv и история переписываются целиком по экспорту (как в сорок седьмой). С --since — разбираются только
+фото с датой сообщения ≥ since, строки ДОПИСЫВАЮТСЯ в ll_rates.csv (ключ — имя файла, повтор не дописывается), история курса 1С пересобирается
+из всего csv. Те же функции (`recognize_files`, `parse_pictures`, `append_rows`, `rebuild_history`) зовёт scripts/ll_rates_update.py — обновление
+одной командой (сорок девятая, ручной путь): since берёт сам из последней картинки csv, печатает план по таблице, запись — по слову владельца. Логика
+«картинка → строка csv → история» одна. Строка с провалом формул (колонка `check` непустая) в историю курса не идёт: картинка, где числа не
+сошлись, — не свидетельство курса; её надо ПРОВЕРИТЬ ГЛАЗАМИ.
 
 Что на картинке (формат один с 03.06.2023, меняется только размер — 1097×1954 до 27.10.2025, 1046×1863 после): шапка «Актуально на
 <дата время>», в строке заголовка золота — курс доллара $ и фиксинг золота в $; пять блоков (золото 585, серебро 925, доллар, тенге,
@@ -331,9 +339,12 @@ def parse_with_fallback(rec, crop_exe, tmp):
 # ---------------------------------------------------------------- история курса 1С
 
 def history_1c(rows, key):
-    """[(дата установки, курс 1С, первая картинка, где виден)] без повторов подряд; дребезг (возврат к старой паре) остаётся как есть."""
+    """[(дата установки, курс 1С, первая картинка, где виден)] без повторов подряд; дребезг (возврат к старой паре) остаётся как есть.
+    Строки с непустым check (провал формул) пропускаются."""
     hist = []
     for x in rows:
+        if x.get("check"):                      # формулы не сошлись — строка в историю не идёт (проверить глазами)
+            continue
         v, d = x.get(f"{key}_c1"), x.get(f"{key}_date_1c")
         if v is None or d is None:
             continue
@@ -344,6 +355,196 @@ def history_1c(rows, key):
 
 def ddmmyyyy_to_iso(s):
     return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
+
+
+# ---------------------------------------------------------------- картинка → строка csv → история (общее с ll_rates_bot_fetch.py)
+
+CSV_COLS = ["img_date", "img_time", "msg_date", "file", "usd_header", "fixing_usd"]
+for _k, _ in BLOCKS:
+    CSV_COLS += [f"{_k}_{_f}" for _f in FIELDS]
+CSV_COLS += ["fallback", "derived", "check"]
+HISTORY_COLS = ["rate", "set_date", "value_1c", "first_seen_img"]
+HISTORY_KEYS = ("gold", "silver", "usd", "kzt", "scrap")
+FILE_DATE_RE = re.compile(r"@(\d{2})-(\d{2})-(\d{4})_(\d{2})-(\d{2})")
+DEC_COLS = {f"{_k}_{_f}" for _k, _ in BLOCKS for _f in ("cur", "c1", "dev", "devp")} | {"usd_header", "fixing_usd"}
+
+
+def ocr_dir(out_dir=None):
+    d = os.path.join(out_dir or OUT_DIR, "ocr")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def load_ocr_cache(cache_path):
+    recs = {}
+    if os.path.exists(cache_path):
+        with open(cache_path) as fh:
+            for line in fh:
+                r = json.loads(line)
+                recs[r["file"]] = r
+    return recs
+
+
+def recognize_files(files, exes, ocr_path, reocr=False, parallel=4, cache_name="full.jsonl", log=print):
+    """OCR всей картинки (Vision) для files, которых нет в кэше ocr/full.jsonl; кэш дополняется. → {путь: запись OCR}."""
+    cache = os.path.join(ocr_path, cache_name)
+    recs = {} if reocr else load_ocr_cache(cache)
+    todo = [f for f in files if f not in recs]
+    if todo:
+        n = max(1, min(parallel, len(todo)))
+        log(f"OCR всей картинки: {len(todo)} файлов (Vision, параллельно в {n} процесс{'а' if 1 < n < 5 else ''}) …")
+        k = (len(todo) + n - 1) // n
+        procs = []
+        for i in range(n):
+            part = todo[i * k:(i + 1) * k]
+            if not part:
+                continue
+            outp = os.path.join(ocr_path, f"part_{i}.jsonl")
+            procs.append((outp, subprocess.Popen([exes["vision_ocr"], outp] + part, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)))
+        for outp, p in procs:
+            _, err = p.communicate()
+            if err:
+                log(err.decode()[:500])
+            for f, r in load_ocr_cache(outp).items():
+                recs[f] = r
+        with open(cache, "w") as fh:
+            for f, r in recs.items():
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return recs
+
+
+def finalize_result(o):
+    """Дата сообщения из имени файла photo_N@DD-MM-YYYY_hh-mm-ss; нет даты в шапке — берётся она (помечается в derived)."""
+    m = FILE_DATE_RE.search(o["file"])
+    o["msg_date"] = f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
+    if not o.get("img_date"):
+        o["img_date"] = o["msg_date"]
+        o["derived"].append("img_date←имя файла")
+    return o
+
+
+def parse_pictures(files, recs, exes, ocr_path):
+    """Записи OCR → разобранные строки (с кропом-добором и формулами) и список пропущенных (не бота / без OCR)."""
+    tmp = os.path.join(ocr_path, "crop_tmp.jsonl")
+    results, skipped = [], []
+    for f in files:
+        r = recs.get(f)
+        if r is None:
+            skipped.append((os.path.basename(f), "OCR не вернул запись"))
+            continue
+        if r["w"] < MIN_BOT_WIDTH:
+            skipped.append((os.path.basename(f), f"{r['w']}×{r['h']} — не картинка бота"))
+            continue
+        results.append(finalize_result(parse_with_fallback(r, exes["vision_crop"], tmp)))
+    results.sort(key=lambda o: (o["img_date"] or "", o["file"]))
+    return results, skipped
+
+
+def parse_picture(path, exes=None, ocr_path=None, log=print):
+    """Одна картинка → (строка-результат | None, причина пропуска | None). Vision зовётся здесь; бинарники собираются при первом вызове."""
+    exes = exes or ensure_binaries(OUT_DIR)
+    ocr_path = ocr_path or ocr_dir()
+    recs = recognize_files([path], exes, ocr_path, log=log)
+    results, skipped = parse_pictures([path], recs, exes, ocr_path)
+    if results:
+        return results[0], None
+    return None, (skipped[0][1] if skipped else "OCR не вернул запись")
+
+
+def row_values(o):
+    return [("; ".join(o[c]) if isinstance(o.get(c), list) else ("" if o.get(c) is None else str(o[c]))) for c in CSV_COLS]
+
+
+def row_summary(o):
+    """Короткая строка для лога: что распозналось на картинке."""
+    return (f"{o['file']} | {o['img_date']} {o.get('img_time') or ''} | золото {o.get('gold_cur')} / 1С {o.get('gold_c1')} от {o.get('gold_date_1c')} | "
+            f"серебро {o.get('silver_cur')} / 1С {o.get('silver_c1')} от {o.get('silver_date_1c')} | доллар {o.get('usd_cur')} / 1С {o.get('usd_c1')} "
+            f"от {o.get('usd_date_1c')} | формулы: {'OK' if not o.get('check') else o['check']}")
+
+
+def write_csv(csv_path, results):
+    with open(csv_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(CSV_COLS)
+        for o in results:
+            w.writerow(row_values(o))
+
+
+def read_rows(csv_path):
+    """Строки ll_rates.csv как dict: числа → Decimal, пустое → None, check — строка ('' = сошлось); отсортированы по (img_date, file)."""
+    rows = []
+    if not os.path.exists(csv_path):
+        return rows
+    with open(csv_path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            x = {}
+            for k, v in r.items():
+                v = (v or "").strip()
+                if k in DEC_COLS:
+                    x[k] = D(v) if v else None
+                else:
+                    x[k] = v if v else None
+            x["check"] = x.get("check") or ""
+            rows.append(x)
+    rows.sort(key=lambda x: (x.get("img_date") or "", x.get("file") or ""))
+    return rows
+
+
+def existing_files(csv_path):
+    return {x["file"] for x in read_rows(csv_path) if x.get("file")}
+
+
+def append_rows(csv_path, results):
+    """Дописать строки картинок, которых в csv ещё нет (ключ — имя файла). → (дописано, повторов). Нет файла — создаётся с шапкой."""
+    have = existing_files(csv_path)
+    new = [o for o in results if o["file"] not in have]
+    dup = len(results) - len(new)
+    if new:
+        fresh = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as fh:
+            w = csv.writer(fh)
+            if fresh:
+                w.writerow(CSV_COLS)
+            for o in new:
+                w.writerow(row_values(o))
+    return len(new), dup
+
+
+def history_rows(rows):
+    """Строки ll_rates_1c_history.csv (rate, set_date, value_1c, first_seen_img) из строк картинок — без строк с провалом формул."""
+    rows = [x for x in rows if x.get("img_date")]
+    out = []
+    for key in HISTORY_KEYS:
+        for d, v, seen in history_1c(rows, key):
+            out.append([key, ddmmyyyy_to_iso(d), str(v), seen])
+    return out
+
+
+def write_history(hist_path, hrows):
+    with open(hist_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(HISTORY_COLS)
+        for r in hrows:
+            w.writerow(r)
+
+
+def read_history(hist_path):
+    if not os.path.exists(hist_path):
+        return []
+    with open(hist_path, newline="") as fh:
+        rd = csv.reader(fh)
+        next(rd, None)
+        return [r for r in rd if r]
+
+
+def rebuild_history(csv_path, hist_path, write=True):
+    """История курса 1С из всего ll_rates.csv; → (новые установки (rate, set_date, value), пропавшие, строк). write=False — только посчитать."""
+    before = {tuple(r[:3]) for r in read_history(hist_path)}
+    hrows = history_rows(read_rows(csv_path))
+    after = {tuple(r[:3]) for r in hrows}
+    if write:
+        write_history(hist_path, hrows)
+    return sorted(after - before), sorted(before - after), len(hrows)
 
 
 # ---------------------------------------------------------------- main
@@ -359,17 +560,20 @@ def load_export(export_dir):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--export", required=True, help="корень экспорта чата «LL Курсы» (result.json + photos/)")
+    ap.add_argument("--since", help="YYYY-MM-DD: разобрать только фото с датой сообщения ≥ since и ДОПИСАТЬ в csv (история пересобирается из всего csv)")
     ap.add_argument("--sample", type=int, default=0, help="выдать N случайных картинок для сверки глазами (приёмка б)")
     ap.add_argument("--seed", type=int, default=47)
     ap.add_argument("--reocr", action="store_true", help="не брать кэш OCR из data/ll_rates/ocr/, распознать заново")
     args = ap.parse_args(argv)
     export = os.path.expanduser(args.export)
     os.makedirs(OUT_DIR, exist_ok=True)
-    ocr_dir = os.path.join(OUT_DIR, "ocr")
-    os.makedirs(ocr_dir, exist_ok=True)
+    ocr_path = ocr_dir(OUT_DIR)
     chat, msgs, photo_msgs = load_export(export)
     print(f"чат «{chat.get('name')}» id {chat.get('id')}: сообщений {len(msgs)}, с фото {len(photo_msgs)}, "
           f"{msgs[0]['date'][:10]} … {msgs[-1]['date'][:10]}")
+    if args.since:
+        photo_msgs = [m for m in photo_msgs if m["date"][:10] >= args.since]
+        print(f"--since {args.since}: фото с этой даты {len(photo_msgs)}; режим дописывания")
     files = []
     absent = []
     for m in photo_msgs:
@@ -378,69 +582,17 @@ def main(argv=None):
     if absent:
         print(f"фото из result.json нет на диске: {len(absent)} — {absent[:5]}")
     exes = ensure_binaries(OUT_DIR)
-    cache = os.path.join(ocr_dir, "full.jsonl")
-    recs = {}
-    if os.path.exists(cache) and not args.reocr:
-        with open(cache) as fh:
-            for line in fh:
-                r = json.loads(line)
-                recs[r["file"]] = r
-    todo = [f for f in files if f not in recs]
-    if todo:
-        print(f"OCR всей картинки: {len(todo)} файлов (Vision, параллельно в 4 процесса) …", flush=True)
-        n = 4
-        k = (len(todo) + n - 1) // n
-        procs = []
-        for i in range(n):
-            part = todo[i * k:(i + 1) * k]
-            if not part:
-                continue
-            outp = os.path.join(ocr_dir, f"part_{i}.jsonl")
-            procs.append((outp, subprocess.Popen([exes["vision_ocr"], outp] + part, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)))
-        for outp, p in procs:
-            _, err = p.communicate()
-            if err:
-                print(err.decode()[:500])
-            with open(outp) as fh:
-                for line in fh:
-                    r = json.loads(line)
-                    recs[r["file"]] = r
-        with open(cache, "w") as fh:
-            for f in files:
-                if f in recs:
-                    fh.write(json.dumps(recs[f], ensure_ascii=False) + "\n")
-    tmp = os.path.join(ocr_dir, "crop_tmp.jsonl")
-    results, skipped = [], []
-    for f in files:
-        r = recs.get(f)
-        if r is None:
-            skipped.append((os.path.basename(f), "OCR не вернул запись"))
-            continue
-        if r["w"] < MIN_BOT_WIDTH:
-            skipped.append((os.path.basename(f), f"{r['w']}×{r['h']} — не картинка бота"))
-            continue
-        results.append(parse_with_fallback(r, exes["vision_crop"], tmp))
-
-    # дата картинки: из шапки, иначе из имени файла photo_N@DD-MM-YYYY_hh-mm-ss
-    for o in results:
-        m = re.search(r"@(\d{2})-(\d{2})-(\d{4})_(\d{2})-(\d{2})", o["file"])
-        o["msg_date"] = f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
-        if not o.get("img_date"):
-            o["img_date"] = o["msg_date"]
-            o["derived"].append("img_date←имя файла")
-    results.sort(key=lambda o: (o["img_date"] or "", o["file"]))
+    recs = recognize_files(files, exes, ocr_path, reocr=args.reocr)
+    results, skipped = parse_pictures(files, recs, exes, ocr_path)
 
     # ---- csv
-    cols = ["img_date", "img_time", "msg_date", "file", "usd_header", "fixing_usd"]
-    for k, _ in BLOCKS:
-        cols += [f"{k}_{f}" for f in FIELDS]
-    cols += ["fallback", "derived", "check"]
     csv_path = os.path.join(OUT_DIR, "ll_rates.csv")
-    with open(csv_path, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(cols)
-        for o in results:
-            w.writerow([("; ".join(o[c]) if isinstance(o.get(c), list) else ("" if o.get(c) is None else str(o[c]))) for c in cols])
+    hist_path = os.path.join(OUT_DIR, "ll_rates_1c_history.csv")
+    if args.since:
+        added, dup = append_rows(csv_path, results)
+        print(f"дописано строк в {csv_path}: {added}, повторов (файл уже в csv): {dup}")
+    else:
+        write_csv(csv_path, results)
 
     # ---- приёмка (а): формулы
     bad = [o for o in results if o["check"]]
@@ -452,7 +604,7 @@ def main(argv=None):
           f"({Counter(d for o in results for d in o['derived'])})")
     print(f"приёмка (а) формулы: промахов {len(bad)} из {len(results)}")
     for o in bad:
-        print(f"  {o['file']} {o['img_date']}: {o['check']}")
+        print(f"  {o['file']} {o['img_date']}: {o['check']} — ПРОВЕРИТЬ ГЛАЗАМИ, в историю курса строка не идёт")
     sizes = Counter()
     for f in files:
         r = recs.get(f)
@@ -460,36 +612,35 @@ def main(argv=None):
             sizes[(r["w"], r["h"])] += 1
     print("размеры картинок:", dict(sizes.most_common()))
 
-    # ---- приёмка (в): полнота по месяцам
+    # ---- приёмка (в): полнота по месяцам (по всем строкам csv — в режиме --since разобранные плюс прежние)
+    all_rows = read_rows(csv_path) if args.since else results
     by_month_json = Counter(m["date"][:7] for m in photo_msgs)
-    by_month_ok = Counter(o["img_date"][:7] for o in results if not o["check"])
-    by_month_bot = Counter(o["img_date"][:7] for o in results)
+    by_month_ok = Counter(o["img_date"][:7] for o in all_rows if not o["check"] and o.get("img_date"))
+    by_month_bot = Counter(o["img_date"][:7] for o in all_rows if o.get("img_date"))
     print("\nприёмка (в) полнота: месяц | фото в result.json | картинок бота | разобрано без промахов | рабочих дней без картинки")
     import calendar
     from datetime import date
-    days_with = {o["img_date"] for o in results}
+    days_with = {o["img_date"] for o in all_rows if o.get("img_date")}
     gaps_all = []
-    for ym in sorted(by_month_json):
-        y, mo = int(ym[:4]), int(ym[5:7])
-        first_img = min(o["img_date"] for o in results)
-        last_img = max(o["img_date"] for o in results)
-        wd = [date(y, mo, d) for d in range(1, calendar.monthrange(y, mo)[1] + 1) if date(y, mo, d).weekday() < 5]
-        wd = [d for d in wd if first_img <= d.isoformat() <= last_img]
-        gaps = [d.isoformat() for d in wd if d.isoformat() not in days_with]
-        gaps_all += gaps
-        print(f"  {ym} | {by_month_json[ym]:3} | {by_month_bot.get(ym, 0):3} | {by_month_ok.get(ym, 0):3} | {len(gaps):2}"
-              + (f"  ({', '.join(g[5:] for g in gaps)})" if 0 < len(gaps) <= 8 else (f"  ({len(gaps)} дат)" if gaps else "")))
+    if days_with:
+        first_img, last_img = min(days_with), max(days_with)
+        for ym in sorted(by_month_json):
+            y, mo = int(ym[:4]), int(ym[5:7])
+            wd = [date(y, mo, d) for d in range(1, calendar.monthrange(y, mo)[1] + 1) if date(y, mo, d).weekday() < 5]
+            wd = [d for d in wd if first_img <= d.isoformat() <= last_img]
+            gaps = [d.isoformat() for d in wd if d.isoformat() not in days_with]
+            gaps_all += gaps
+            print(f"  {ym} | {by_month_json[ym]:3} | {by_month_bot.get(ym, 0):3} | {by_month_ok.get(ym, 0):3} | {len(gaps):2}"
+                  + (f"  ({', '.join(g[5:] for g in gaps)})" if 0 < len(gaps) <= 8 else (f"  ({len(gaps)} дат)" if gaps else "")))
     print(f"итого рабочих дней без картинки: {len(gaps_all)} (праздники РФ сюда тоже входят)")
 
-    # ---- история курса 1С
-    rows = [o for o in results if o.get("img_date")]
-    hist_path = os.path.join(OUT_DIR, "ll_rates_1c_history.csv")
-    with open(hist_path, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["rate", "set_date", "value_1c", "first_seen_img"])
-        for key in ("gold", "silver", "usd", "kzt", "scrap"):
-            for d, v, seen in history_1c(rows, key):
-                w.writerow([key, ddmmyyyy_to_iso(d), str(v), seen])
+    # ---- история курса 1С (из всего csv)
+    new_set, gone_set, n_hist = rebuild_history(csv_path, hist_path)
+    if args.since:
+        print(f"история курса 1С пересобрана из csv: строк {n_hist}; новых установок {len(new_set)}"
+              + (" — " + ", ".join(f"{r} {d} {v}" for r, d, v in new_set) if new_set else "")
+              + (f"; пропавших {len(gone_set)} — {gone_set}" if gone_set else ""))
+    rows = read_rows(csv_path)
     for key in ("gold", "silver", "usd"):
         h = history_1c(rows, key)
         print(f"\nистория курса 1С «{key}»: установок {len(h)}")
@@ -503,17 +654,18 @@ def main(argv=None):
                   f"квартили {gaps_pos[len(gaps_pos) // 4]} / {gaps_pos[3 * len(gaps_pos) // 4]}; шагов назад по дате (дребезг) {sum(1 for g in gaps if g < 0)}")
         print("  первые 10:", [(d, str(v)) for d, v, _ in h[:10]])
         print("  последние 10:", [(d, str(v)) for d, v, _ in h[-10:]])
-    print(f"\nзаписано: {csv_path} ({len(results)} строк), {hist_path}; сырьё OCR — {ocr_dir}/ ; db_writes = 0, обращений к API 0")
+    print(f"\nзаписано: {csv_path} ({len(rows)} строк), {hist_path}; сырьё OCR — {ocr_path}/ ; db_writes = 0, обращений к API 0")
 
     if args.sample:
         rnd = random.Random(args.seed)
-        pick = rnd.sample([o for o in results], args.sample)
-        print(f"\nприёмка (б): {args.sample} случайных картинок (seed {args.seed}) — открыть и сверить с csv:")
+        pick = rnd.sample([o for o in results], min(args.sample, len(results)))
+        print(f"\nприёмка (б): {len(pick)} случайных картинок (seed {args.seed}) — открыть и сверить с csv:")
         for o in sorted(pick, key=lambda o: o["img_date"]):
             print(f"  {o['file']} | {o['img_date']} | золото {o['gold_cur']} / 1С {o['gold_c1']} от {o['gold_date_1c']} / {o['gold_dev']} / {o['gold_devp']} | "
                   f"серебро {o['silver_cur']} / {o['silver_c1']} от {o['silver_date_1c']} | доллар {o['usd_cur']} / {o['usd_c1']} от {o['usd_date_1c']} | "
                   f"тенге {o['kzt_cur']} / {o['kzt_c1']} | лом {o['scrap_cur']} / {o['scrap_c1']} | $ {o.get('usd_header')} фиксинг {o.get('fixing_usd')}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -861,11 +861,15 @@ def build_executive_summary(kpi_rows, target_date=None):
                 f"{get_wb_buyout_cohort_summary(target_date)}"
             )
         else:
+            # пятьдесят третья: трата бонусных (автосозданных) кампаний — не расход; строкой в обоих случаях (блокер органики горит
+            # каждое утро с 2026-05-22, и ветка «данные полные» в проде не печатается), из атрибуции по is_bonus
+            bonus_lines = get_ozon_ad_bonus_lines(target_date)
             if not ozon_completeness.get("complete"):
                 blockers = ", ".join(ozon_completeness.get("blockers") or []) or "unknown"
                 lines.append(
                     f"🔵 <b>Ozon вчера</b>\n"
                     f"⚠️ Ozon вчера: данные неполные, управленческий вывод не строим.\n"
+                    + "\n".join(bonus_lines) + "\n"
                     f"Причины: {blockers}."
                 )
                 continue
@@ -891,9 +895,6 @@ def build_executive_summary(kpi_rows, target_date=None):
                 ad_share_revenue,
                 organic_reconciliation,
             )
-            # пятьдесят третья: трата бонусных (автосозданных) кампаний — не расход; строкой отдельно, из атрибуции по is_bonus
-            bonus_lines = get_ozon_ad_bonus_lines(target_date)
-
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"
                 f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"

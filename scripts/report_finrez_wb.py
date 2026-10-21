@@ -1240,7 +1240,9 @@ def build_storage(storage_rows, data_rows, days=None):
         row["form_storage_all"] = row["form_storage"]; row["form_days"] = 1 if form_by_day.get(day) else 0
         row["sales"] = row["storage_pct"] = None
         by_day[day] = row
-    total_row = month_row(None, total, "Общий итог", sum(sales_month.values(), Z) if sales_month else None)
+    # «Общий итог»: продажи — только месяцев, у которых в таблице есть хранение (иначе 8 дней хранения делились бы на полгода продаж)
+    total_sales = [sales_month[ym] for ym in per_month if ym in sales_month]
+    total_row = month_row(None, total, "Общий итог", sum(total_sales, Z) if total_sales else None)
     groups = {}
     for by in ("brand", "category"):
         groups[by] = {}

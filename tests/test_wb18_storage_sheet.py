@@ -69,6 +69,9 @@ class BuildStorageTests(unittest.TestCase):
         self.assertEqual((m["sales"], m["storage_pct"]), (D("800"), D("0.0281")))
         self.assertEqual(st["check"][0], ("2026-09", 1, D("4.00"), D("4.00"), D("0.00"), D("104.00"), 2))
         self.assertEqual(st["total"]["storage"], D("26.50")); self.assertEqual(st["total"]["diff"], D("0.00"))
+        self.assertEqual(st["total"]["sales"], D("800"))                              # продажи месяцев с хранением (сентябрь без продаж, октябрь 800)
+        st2 = fr.build_storage([srow("2026-10-07", 1, "1.00")], [drow("2026-10-07", 1, sales="10"), drow("2026-08-01", 1, sales="1000")])
+        self.assertEqual(st2["total"]["sales"], D("10"))                              # август без хранения в таблице — в итог не входит
         self.assertEqual(st["by_day"]["2026-10-08"]["storage"], D("3.50")); self.assertIsNone(st["by_day"]["2026-10-08"]["storage_pct"])
 
     def test_groups_add_up_to_the_total(self):

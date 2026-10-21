@@ -65,6 +65,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
+from loaders import ozon_ad_bonus  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders import unit_cost_history  # noqa: E402
@@ -591,7 +592,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
             ("Выручка, руб.", "revenue", money), ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
             ("Логистика, руб.", "logistics", money), ("% Логистики", "logistics_pct", pct), ("Эквайринг, руб.", "acquiring", money), ("% Эквайринга", "acquiring_pct", pct),
             ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct),
-            ("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", pct), ("Прочее, руб.", "other", money),
+            ("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", pct),
+            ("справочно: Реклама за счёт бонусов Ozon (не расход), руб.", "ads_bonus", money), ("Прочее, руб.", "other", money),
             ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct),
             ("Накладные в день, руб.", "overhead", money), ("Ebitda, руб.", "ebitda", money), ("% Ebitda", "ebitda_pct", pct), (None, None, None),
             ("Компенсации Ozon (доход), руб.", "compensations", money), ("справочно: Фин. рез. с компенсациями", "fin_result_with_comp", money),
@@ -1465,6 +1467,15 @@ def main():
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
     kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
+    # пятьдесят третья: трата бонусных кампаний Ozon — из атрибуции по is_bonus, справочной колонкой (в расходы и ДРР не входит)
+    bonus_note = ""
+    try:
+        bonus_rows = ozon_ad_bonus.read_bonus_rows(sb, d1, d2)
+        bonus_by_day = ozon_ad_bonus.spend_by_day(bonus_rows)
+    except Exception as exc:  # noqa: BLE001
+        bonus_rows, bonus_by_day = [], {}
+        bonus_note = f"реклама за счёт бонусов Ozon не прочитана ({type(exc).__name__}: {str(exc)[:100]}) — колонка is_bonus атрибуции ещё не применена?"
+        print("⚠️ " + bonus_note)
     sku2art, unit_cost, cost_found, cost_asked, order_rows = load_costs(sb, args.snapshot, rates_from_arg(args.rates_csv))
     if getattr(unit_cost, "history", None) is not None and unit_cost.history.rates:
         print(f"курс 1С: {unit_cost.history.rates.describe()}" + (" (из csv, не из таблицы)" if args.rates_csv else " (таблица metal_rates_1c)"))
@@ -1608,6 +1619,15 @@ def main():
     cogs_note = (f"Себестоимость: по штукам — {total['rows_by_units']} строк выкупов, по позициям — {total['rows_by_positions']} строк"
                  + ("." if units_column else " (колонки marketplace_buyouts.buyouts_units ещё нет — миграция не применена)."))
     notes.insert(1, cogs_note)
+    for r in rows:
+        r["ads_bonus"] = bonus_by_day.get(r["date"], Z) / r["vat"]
+    total["ads_bonus"] = sum((r["ads_bonus"] for r in rows), Z)
+    bonus_camps = sorted({str(x["campaign_id"]) for x in bonus_rows})
+    print(f"реклама за счёт бонусов Ozon (не расход) за {d1} … {d2}: {total['ads_bonus']:,.2f} без НДС, кампаний {len(bonus_camps)}"
+          + (" — " + ", ".join(bonus_camps) if bonus_camps else ""))
+    notes.append(bonus_note or (f"Реклама за счёт бонусов Ozon (не расход): {total['ads_bonus']:,.2f} без НДС за окно, кампаний {len(bonus_camps)}"
+                                + (" (" + ", ".join(bonus_camps) + ")" if bonus_camps else "") + " — автосозданные кампании Ozon (isAutocreated), крутятся на "
+                                "начисленных бонусах продвижения; в «Реклама», ДРР и фин. рез. не входят, тип 41 их не содержит (пятьдесят третья)."))
     write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error, segments=metals, types_summary=types_summary)
     print("  " + cogs_note)
     print(f"\nплощадки (по первой букве артикула):")

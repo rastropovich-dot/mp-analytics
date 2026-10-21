@@ -7,6 +7,99 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-21 (вечер), дополнение советника 21.10: п. 1 типы РБХ в `TYPE_TO_EXPENSE` (1752638), п. 2 генератор `render.yaml` под параметры KARATOV с API (2c22eb0), п. 3 `scripts/render_services_sync.py` — сервисы через API, создаются на паузе (216ec4d); п. 4 — план §5.4 первой записи 60 дней ниже, слово — после плана; набор 1 356 OK; обращений на запись 0, db_writes 0
+
+### п. 1 — семь типов начислений РБХ (коммит `1752638`, одним коммитом, каждый с комментарием)
+
+`loaders/ozon_finance_accrual.py`, блок «Типы кабинетов РБХ» в конце карты: 12 CrossDock и 30 LastMilePickUpPoint → `logistics`; 19 ExternalPromotion →
+`external_promo` (как 23, префикса `advertising` нет — правило §2); 95 CustomerReviews → `subscription` (в комментарии — «слово владельца „как 127“ →
+`other` явной строкой», тест держит текущее решение); 50, 84, 116 → `other`. Карта 41 → 48 типов. Тест `tests/test_accrual_types_rbh.py` (3), раздел
+«Семь типов кабинетов РБХ» в `docs/ozon_finance_migration.md` с суммами по кабинетам. Для KARATOV нейтрально: ни один из семи в его начислениях не
+встречался (леджер 40 типов + 127). Первая ночь РБХ напечатает `unknown_*` = 0 — если нет, стоп и список.
+
+### п. 2 — генератор `render.yaml` = сервисам KARATOV по API (коммит `2c22eb0`, файл перегенерирован)
+
+Снял параметры сам тем же `GET /v1/services/{id}` (2 чтения, значения переменных не снимались): region `oregon`, runtime python, plan `standard` у ночного /
+`starter` у утреннего, `PYTHON_VERSION` не задан, переменных 13 / 11 — имена ровно как в дополнении. В генераторе: `MAIN_NIGHT_ENV_KEYS` /
+`MAIN_ALERT_ENV_KEYS` (13 / 11) как эталон, тест `env_keys(service) = эталон + MP_CABINET` для всех четырёх; `APP_TIMEZONE` и `OZON_PERFORMANCE_*`
+(кроме `STATE_BACKEND=db`) убраны — на Render их нет, код берёт умолчания; флаги Selected CPO — только у ночного, `false`; `OPENAI_API_KEY` — секрет
+группы (у KARATOV есть); `frankfurt` и `PYTHON_VERSION` в файле отсутствуют (тест). Попутно: имена констант без «KARATOV» — тест на литералы кабинета
+вне профилей ловит и имена переменных, переименовано в `MAIN_*`.
+
+### п. 3 — `scripts/render_services_sync.py` (коммит `216ec4d`, 8 тестов)
+
+| режим | обращений к Render | что делает |
+|---|---|---|
+| `--plan` | 0 | состав из `render_blueprint` (имена, расписания, команды, plan / region / runtime), по каждому сервису список переменных «ключ ← источник (длина)»: `MP_CABINET` и флаги — из блюпринта, остальное — из `.env.rbh<N>`, чего там нет или пусто — из общего `.env` (правило overlay: так `TELEGRAM_BOT_TOKEN`); значений не печатает |
+| `--check` | 1 (`GET /v1/services?type=cron_job&ownerId`) | + какие из четырёх уже есть у владельца (id, suspended) |
+| `--apply` | 1 + 2 на сервис | по слову: `POST /v1/services` (type `cron_job`, repo / branch main / `autoDeployTrigger: commit`, `serviceDetails {runtime, schedule, plan, region, envSpecificDetails {buildCommand, startCommand}}`, `envVars [{key, value}]`) → сразу `POST /v1/services/{id}/suspend`; существующий сервис не трогается; отказ на создании — стоп, дальше не идёт; **`resume` в скрипте нет нигде** (тест) — снятие паузы отдельным словом после §5.4 и мержа |
+
+Схема запроса прочитана с api-docs.render.com/reference/create-service (встроенный браузер, `cronJobDetailsPOST`: `runtime` обязателен, `env` deprecated,
+`schedule` обязателен, plan / region перечислениями). Отказ до первого обращения, если у сервиса нет значения секрета (имена в выводе). `OPENAI_API_KEY` —
+необязательная (`OPTIONAL_KEYS`): без значения переменная не создаётся и называется в плане; читает её только decision layer, выключенный `--skip-decision`
+(у РБХ ключа нет — в `.env.rbh*` пусто). Живой `--plan` сейчас: 4 сервиса, у ночных 13 из 14 переменных, у утренних 11 из 12 (без `OPENAI_API_KEY`),
+«✅ значения всех переменных на месте», обращений 0. `--check` / `--apply` не запускались. Тест точек входа: скрипт внесён в исключения guard-а по
+`SUPABASE_URL` рядом с `db_migrate` / `db_schema_snapshot` — в базу не ходит вовсе.
+
+### п. 4 — план §5.4: первая запись 60 дней в rbh1, затем rbh2 (для слова; ничего из этого не запускалось)
+
+**Окно.** `D0` — день запуска; окно `D0−60 … D0−1` (при старте 22.10 — 2026-08-23 … 2026-10-21), везде одно. Запуск с Mac из `~/mp-analytics-rbh` под
+`MP_CABINET=rbh<N>` (guard по хосту у каждого шага; сырьё — `data/rbh<N>/…`, вне git), днём, вне окна ночного прогона KARATOV 00:15 … 04:30 UTC
+(скрипты истории на него отказывают сами). Код — текущая ветка (типы РБХ уже в карте). **Каждый `--apply` — той же сессией сразу после своего плана в
+окне** (`how-we-work.md`); стоп без продолжения при: `unknown_*` ≠ 0, арбитр леджер ≠ расходы хоть на одной дате, антиспам-пауз 60 с > 3 на шаге,
+отказ не-200 после повторов, план «удалить» ≠ 0 (базы пустые — удалять нечему). Таблицы пустые, поэтому «перезапись» всюду = первая запись (delete 0).
+
+**Ozon (порядок обязателен: сырьё → выкупы → штуки; заказы → каталог → остатки).**
+
+| # | шаг | команда (`MP_CABINET=rbh<N> venv/bin/python3 …`) | API, обращений (оценка по плотности §5.3: rbh1 / rbh2) | что пишет / печатает |
+|---|---|---|---|---|
+| O1 | заказы FBO + FBS за окно | `scripts/rebuild_ozon_orders_history.py --estimate` → `--fetch --date-from --date-to` → `--plan` → `--apply` | `/v3/posting/fbo/list` + `/v4/posting/fbs/list` окнами по 30 дн, стр. 100, 2 с: **~55 / ~28** (`--estimate` снят сегодня без API: FBO ~4 719 / ~2 048 отправлений, FBS ~45 / ~47) | `marketplace_orders`: ≈ 18 000 / 12 700 строк (дата × sku), подтверждённые + отменённые + `observed_at`; цена покупателя у истории — null («не измерено»), ночь измерит своё окно 30 дн отчётом ЛК; снимок пустого окна, delete 0 |
+| O2 | лог статусов — посев первого наблюдения | `scripts/ozon_posting_status_log.py --raw data/rbh<N>/postings_raw/history_fbo_<от>_<до>.json --schema fbo --apply` и то же для fbs | 0 | `ozon_posting_status_log`: ≈ 4 760 / 2 095 строк («впервые»); кривая дозревания начнёт копиться с первой ночи |
+| O3 | сырьё начислений | `scripts/fetch_accrual_history_range.py --date-from --date-to` | `accrual/by-day` по дню страницами по `last_id`, пауза 1,5 с: 61 день × ~5,6 / ~4 стр = **~345 / ~245** (~9 / ~6 мин; квота by-day ~49/мин — укладывается; 429 ожидаю 0, как в §5.3) | файлы `data/rbh<N>/accrual_history/<день>.json`, db_writes 0 |
+| O4 | выкупы | `scripts/rewrite_buyouts_history.py --date-from --date-to` → `--apply` | 0 (из файлов O3) | `marketplace_buyouts`: ≈ 12 400 / 10 700 строк; план помесячно Σ оборот / позиции / комиссия |
+| O5 | расходы | `scripts/rebuild_ozon_expenses_from_raw.py --plan --date-from --date-to` → `--apply --approve-ozon-expenses-write` | 0 | `marketplace_expenses`: ≈ 67 000 / 58 000 строк по статьям текущей свёрткой; **`unknown_*` обязан быть 0** (п. 1) — иначе стоп |
+| O6 | леджер типов | `scripts/seed_ozon_accrual_daily_types.py --date-from --date-to` → `--apply` | 0 | `ozon_accrual_daily_types`: ≈ 1 350 / 1 200 строк; арбитр против O5 — 61 дата из 61 до копейки (даты моложе двух суток помечаются) |
+| O7 | штуки выкупов | `scripts/fetch_accrual_postings_raw.py --date-from --date-to` → `scripts/seed_buyout_units.py --date-from --date-to` → `--apply` | `accrual/postings` по дням продаж: в §5.3 10 обращений на 3 дня → **~200 / ~100** (`--max-requests 300` по умолчанию — хватает); 429 с `Retry-After` 1 с снимаются повтором, антиспам-пауз 60 с ждать 1–3 (в §5.3 одна на 10 обращений) → 20–30 / 10–15 мин | `buyouts_units` у строк O4; «не измерено» ожидаю 0 (в §5.3 468 из 468) |
+| O8 | каталог карточек | `scripts/ozon_product_catalog.py --collect` → `--from-file … --apply` | `product/info/list` пачками + дерево категорий: вселенная SKU из O1 ∪ O4 ≈ 1 000–1 500 → **~12–18** | `ozon_products`: бренд и тип карточки; **категория владельца у РБХ — «прочее» у всех** (словарь ювелирный, профиль «не задано»; категории косметики — отдельной задачей, решение 09-30 п. 2) — в плане это ожидаемо, не стоп |
+| O9 | аналитика заказов по SKU | `loaders/ozon_sku_total_analytics_loader.py --mode full --date-from --date-to` | `analytics/data` по дням, стр. 1 000: **~61–70** на кабинет; 429 с большим `Retry-After` — известный класс (6 попыток, паузы до 32 с) | `ozon_daily_sku_total_orders`; сторож выручки теперь сравнит с O1 |
+| O10 | остатки | `loaders/ozon_stocks_loader.py` | после O8: ≈ SKU / 100 → **~12–15** | текущие остатки на дату запуска (истории у метода нет) |
+| O11 | реклама Performance — **выгрузки впервые** | `loaders/ozon_performance_ads_loader.py --mode full --date-from --date-to --plan-only` (токен + список кампаний, выгрузок 0: печатает кампании периода и CPC-кампании) → по итогу: тот же без `--plan-only` (`--campaign-batch-size 10`, `--max-stats-campaigns 1800` по умолчанию) | **одна выгрузка = одна кампания** (CLAUDE.md §4): 61 день ≤ 62 — один отчёт по 10 кампаний на всё окно; кампаний периода ≤ 1 507 / 1 240 (архивные, закончившиеся до окна, отпадают), CPC-кампаний ожидаю ~900–1 100 / ~700–900 → **~100 / ~80 отчётов `statistics/json`** + CPO «Все» 1 отчёт за окно; одновременных 1, ~2 мин на отчёт с опросами → **3–4 ч / 2,5–3 ч**; запросов ≈ 7 на отчёт → ~750 / ~600. Квота 2 000 выгрузок в сутки **на организацию**: rbh1 — день 1, rbh2 — день 2 в любом случае (одна ли организация у РБХ-1 и РБХ-2 — узнаем по леджеру / отказу); `--max-stats-campaigns` 1 800 — предохранитель | `marketplace_expenses` (`advertising_clicks`, `advertising_order_5`), `ozon_daily_sku_ad_attribution`, леджер выгрузок и статусы в `pipeline_runtime_state`; Selected CPO не собираем (флаги `false`, решение блюпринта) |
+| O12 | витрины | `reports_daily_sku_kpi.py` → `reports_daily_marketplace_kpi.py` | 0 | `daily_sku_kpi`, `daily_marketplace_kpi` за все даты из таблиц заново (окон у них нет) |
+
+**WB (порядок: заказы → отчёт реализации → выкупы из отчёта → воронка → реклама → когорта).**
+
+| # | шаг | команда | API, обращений | что пишет |
+|---|---|---|---|---|
+| W1 | заказы по дням, flag=1 | `scripts/wb_flag1_raw_capture.py --date-from --date-to` (60 обращений, пауза 65 с ≈ **65 мин**) → `scripts/wb_orders_history_restore.py --from-files <каталог> --plan --date-from --date-to --days-back 1` → `--apply --approve-wb-orders-write --accept-out-of-corridor` | `supplier/orders` flag=1 по дню: **60**; горизонт метода ~190 дней — 60 внутри | `marketplace_orders` WB: по плотности §5.3 (369 агрегатов / 2 дня) ≈ 11 000 / 9 000 строк, правило Ozon (подтверждённые + отменённые, `observed_at`). `--days-back 1` — окно записи ночного загрузчика «с D0−1», все 60 дат старше него; `--accept-out-of-corridor` обязателен и назван: коридор плато (10 454 … 19 715 шт) — измерение KARATOV, к пустой базе РБХ не относится; снимок пустой таблицы скрипт делает сам. Более дешёвый путь — `loaders/wb_orders_loader.py --days-back 60` (flag=0, 1 обращение, в §5.3 уже ходил) — полноту по старым датам flag=0 не гарантирует (`wb_data_integrity.md` §1), поэтому не основной |
+| W2 | отчёт реализации | `scripts/wb_sales_report_backfill.py --fetch --date-from D0−60 --date-to D0−1` → `--plan` → `--apply --approve-wb-sales-report-write` | `reportDetailByPeriod` кусками по 14 дней, 65 с между: **5** (~6 мин) | `wb_sales_report_rows`: по плотности §5.3 (2 132 / 1 416 строк за 2 дня) ≈ 64 000 / 42 000; отчёт за D может отсутствовать на D+1 (WB-15) — последние 1–2 дня дозаберёт ночь |
+| W3 | выкупы из отчёта | `scripts/wb_buyouts_rebuild_from_report.py --plan --date-from --date-to` → `--apply --approve-wb-buyouts-write` | 0 | `marketplace_buyouts` WB: (день, nmId) из W2, Продажа − Возврат по saleDt МСК |
+| W4 | воронка по товарам | `scripts/wb_funnel_products_backfill.py --fetch --date-from --date-to` → `--plan` → `--apply --approve-wb-funnel-write` | `sales-funnel/products` ≤ 2 на день, 21 с между днями: **~120** (~25 мин) | `wb_funnel_products_daily` ≈ 1 085 / 1 110 карточек × 60 дней ≈ 65 000 / 67 000 строк + сводки дней; `wb_funnel_products_current` — первой ночью |
+| W5 | реклама: списания и по номенклатурам | `scripts/wb_ads_backfill.py --fetch --date-from --date-to` → `--plan` → `--apply --approve-wb-ads-write`; затем `scripts/wb_ads_nm_backfill.py --estimate` → `--fetch` → `--plan` → `--apply --approve-wb-ads-nm-write` | `adv/v1/upd` кусками ≤ 31 день: **2**; `adv/v3/fullstats` по месяцам, кампании со списаниями пачками по 50 (34 / 26 кампаний за 2 дня в §5.3): **~3–6** | `wb_ad_spend_daily` (65 / 53 строк за 2 дня → ≈ 2 000 / 1 600), `wb_ad_spend_nm_daily` |
+| W6 | выкуп по когорте | `scripts/wb_buyout_cohort_step.py --days-back 60 --plan` → `--apply --approve-wb-cohort-write` | 0 (читает W1, W2, W4) | `wb_buyout_cohort_sku_daily`, `wb_buyout_cohort_daily` |
+| W7 | остатки | `loaders/wb_stocks_loader.py` | **1** | текущие остатки (862 / 922 SKU в §5.3) |
+
+Не в §5.4: себестоимость РБХ (вторая задача, прайс владельца), платное хранение WB-18 (не в `main`), Selected CPO Ozon (флаги), реклама WB по
+номенклатурам старше окна (метод отдаёт ≤ 31 день за запрос — 3 месяца и так внутри).
+
+**Итого на кабинет (оценка).** Ozon: обращений ≈ 1 450 / 1 100 (из них Performance ≈ 750 / 600 запросов при ~100 / ~80 выгрузках-отчётах), время
+≈ 5 / 4 ч почти целиком Performance; WB: ≈ 190 обращений, ≈ 1 ч 40 мин (W1 — час на паузах лимита). Записей в базу: Ozon ≈ 130 000 / 105 000 строк,
+WB ≈ 145 000 / 120 000 строк. Порядок: сначала **rbh1 целиком** (Ozon O1–O10 → WB W1–W7 → O11 Performance → O12 витрины → `alerts_telegram.py
+--dry-run --no-send` — текст с данными, в группу не слать), по чистому итогу — **rbh2** тем же списком на следующий день (квота Performance).
+После обоих: `render_services_sync.py --check` → по слову `--apply` (сервисы на паузе) → мерж ветки после WB-18 → снятие паузы отдельным словом
+→ первая ночь: чек-лист (вторая строка лога «схема: применены все N файлов sql/», `unknown_*` 0, застрявших ключей 0, Selected CPO не ходит).
+**Что вернётся отчётом:** таблица «шаг → обращений / 429 / строк / время» по кабинету, арбитры (O6 против O5; O4 против O7 по штукам;
+W2 против W3 по обороту), `--plan-only` Performance с числом кампаний и выгрузок, снимки планов в `data/rbh<N>/snapshots/`.
+
+**Слово прошу одним текстом на rbh1 (O1–O12, W1–W7) — `--apply` каждого шага после его плана той же сессией; rbh2 — после отчёта по rbh1.**
+Если удобнее по фазам: (а) O1–O10 + W1–W7, (б) O11 Performance, (в) O12 + сервисы Render.
+
+**Попутно.** Сессия 49-й сообщила: `origin/main` = `e4d1063` (49-я слита, схема не менялась); 53-я (`ozon-ad-bonus`) добавит
+`sql/20261021_add_ad_attribution_is_bonus.sql` — применять через `db_migrate` (KARATOV → `--cabinet all`) до мержа, иначе guard остановит ночь
+кабинета без строки версии; ответил ей. Она же передала: сессия ВБ 21.10 применила `sql/20261015_create_wb_paid_storage_daily.sql` (WB-18) через `db_migrate --apply` во всех трёх базах (KARATOV 20:10:45, rbh1 / rbh2 20:11:03 UTC) — план `db_migrate --cabinet all` из этой ветки (чтение, 21:0x UTC) показывает 47 / 0 / 0, потому что считает по файлам `sql/` ветки, где файла WB-18 ещё нет; после вливания `main` с WB-18 ожидаю 48 / 0. **Позже вечером (сообщение той же сессии):** 53-я слита, `origin/main` = `2ce3810` (Render live 20:28 UTC); `sql/20261021_add_ad_attribution_is_bonus.sql` применён через `db_migrate` во всех трёх базах в 20:26 UTC до мержа, план у неё «применено 49, ждут 0, sha 0» (в её `sql/` был и файл WB-18) — то есть в rbh1 / rbh2 по 49 строк версий, из моей ветки план покажет 49 / 0 только после вливания `main`. Ещё позже: довесок 53-й слит, `origin/main` = `6077cf8` (Render live 20:49 UTC, `sql/` не менялся); следующая у неё 52-я (ozon-placement) принесёт новый файл `sql/` — тем же порядком через `db_migrate` до мержа, предупредит. Перед мержем `multi-cabinet` (после WB-18) влью `origin/main`. В рабочем дереве чужое: правка
+`docs/inbox_rbh.md` (вторая задача + дополнение 21.10) и `data/rbh_costs/` (прайс владельца; в `.gitignore` внесу первым коммитом второй задачи) — не
+коммичу. Ветка: 64d4b94 … ff98b97 + 1752638, 2c22eb0, 216ec4d и этот блок; в `main` не пушится.
+
+---
 ## 2026-10-21 (вечер), §5.7 шаги 2–3 выполнены по слову: группа «РБХ · mp-analytics» найдена одним `getUpdates`, `chat_id` записан в `.env.rbh1` / `.env.rbh2`, `getMe` + `getChat` — 2 обращения, `alerts_telegram.py --dry-run --no-send` под rbh1 и rbh2 — первая строка «кабинет: РБХ-N»; в группу ничего не слалось, db_writes 0
 
 **Решение владельца (21.10):** бот один общий (`mp_analytics_karatov_bot`), группа одна на оба кабинета, кабинет — первой строкой сообщения.

@@ -19,7 +19,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
-_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
+_PROFILE = cabinet.assert_env()   # кабинет (MP_CABINET): .env.<код> поверх общего .env и guard по хосту — ключи Ozon кабинета живут в файле кабинета (найдено 21.10: без overlay by-day отвечал 401 под rbh1)
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 

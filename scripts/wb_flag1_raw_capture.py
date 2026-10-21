@@ -40,6 +40,8 @@ sys.path.insert(0, ".")
 from loaders.pipeline_window import in_nightly_run_window, window_text  # noqa: E402
 
 load_dotenv()
+import cabinet  # noqa: E402
+CABINET = cabinet.assert_env()   # кабинет (MP_CABINET): .env.<код> поверх общего .env и guard по хосту — ключ WB кабинета живёт в файле кабинета (21.10)
 
 WB_API_KEY = os.getenv("WB_API_KEY")
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1/supplier"

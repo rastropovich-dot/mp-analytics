@@ -296,7 +296,10 @@ def main(argv=None):
                 content = fh.read()
             rows = parse_xlsx(content)
             stats = {"create": 0, "info": 0, "download": 0, "bytes": len(content), "rows": len(rows), "code": None, "file": args.file}
-            print(f"файл {args.file}: {len(content)} байт, строк {len(rows)}; Seller API — 0")
+            file_days = sorted({r["day"] for r in rows})
+            if file_days:
+                d1, d2 = file_days[0], file_days[-1]     # окно — по дням файла, не по «вчера»
+            print(f"файл {args.file}: {len(content)} байт, строк {len(rows)}, дни {d1} … {d2}; Seller API — 0")
         else:
             quota = read_quota(sb) if sb is not None else {}
             today_utc = datetime.now(timezone.utc).date().isoformat()

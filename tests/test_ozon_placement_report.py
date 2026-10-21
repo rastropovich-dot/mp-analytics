@@ -144,6 +144,22 @@ class KpiTests(unittest.TestCase):
         kpi.SOURCE_READ_FAILURES.remove(kpi.PLACEMENT_TABLE)
 
 
+class FileModeTests(unittest.TestCase):
+    def test_file_mode_takes_the_window_from_the_file_days_and_calls_no_api(self):
+        import tempfile
+        path = tempfile.mktemp(suffix=".xlsx")
+        with open(path, "wb") as fh:
+            fh.write(xlsx_bytes())
+        printed = []
+        with mock.patch.object(P.cabinet, "assert_env", return_value=P.cabinet.profile()), mock.patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))), \
+             mock.patch.object(P, "fetch_report", side_effect=AssertionError("API не должен зваться")):
+            rc = P.main(["--file", path, "--dry-run", "--no-state"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("дни 2026-10-20 … 2026-10-20" in l for l in printed), printed)
+        last = next(l for l in printed if l.startswith(P.STATE_KEY))
+        self.assertIn('"date_from": "2026-10-20", "date_to": "2026-10-20"', last); self.assertIn('"mode": "dry-run"', last)
+
+
 class PipelineStepTests(unittest.TestCase):
     def test_step_registered_after_expenses_and_non_fatal(self):
         titles = [t for t, _c in pipeline.STEPS]

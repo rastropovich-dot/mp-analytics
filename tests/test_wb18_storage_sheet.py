@@ -62,7 +62,7 @@ class BuildStorageTests(unittest.TestCase):
         st = fr.build_storage(*self.data())
         m = st["months"]["2026-10"]
         self.assertEqual((m["days"], m["nm_count"], m["unit_days"]), (3, 3, 7))                 # 3 + 3 + 1 (сторно не считается)
-        self.assertEqual((m["storage"], m["form_storage"], m["diff"]), (D("22.50"), D("22.50"), D("0.00")))
+        self.assertEqual((m["storage"], m["storage_rounded"], m["form_storage"], m["diff"]), (D("22.50"), D("22.50"), D("22.50"), D("0.00")))
         self.assertEqual((m["form_storage_all"], m["form_days"]), (D("22.50"), 3))
         s = st["months"]["2026-09"]                                                   # в таблице один день сентября, форма — два
         self.assertEqual((s["storage"], s["form_storage"], s["diff"], s["form_storage_all"], s["form_days"]), (D("4.00"), D("4.00"), D("0.00"), D("104.00"), 2))
@@ -78,6 +78,12 @@ class BuildStorageTests(unittest.TestCase):
             self.assertEqual(sum((g["Итого"]["unit_days"] for g in st[key].values()), 0), st["total"]["unit_days"])
         self.assertEqual(st["by_brand"]["SOKOLOV"]["2026-10"]["sales"], D("-200"))
         self.assertEqual(set(st["by_category"]), {"Серьги", "Кольца", fr.category_of("Упаковки для украшений")})
+
+    def test_identity_rounds_each_day_to_the_kopeck_like_the_realisation_report(self):
+        storage = [srow("2026-10-07", 1, "1.00400"), srow("2026-10-07", 2, "2.00300"), srow("2026-10-08", 1, "3.00400")]   # дни 3,007 и 3,004
+        data = [drow("2026-10-07", None, storage="3.01", article=fr.NO_PRODUCT), drow("2026-10-08", None, storage="3.00", article=fr.NO_PRODUCT)]
+        m = fr.build_storage(storage, data)["months"]["2026-10"]
+        self.assertEqual((m["storage"], m["storage_rounded"], m["form_storage"], m["diff"]), (D("6.01100"), D("6.01"), D("6.01"), D("0.00")))
 
     def test_empty_table_gives_empty_sheet_parts(self):
         st = fr.build_storage([], [drow("2026-10-07", 1, sales="10", storage="5")])
@@ -133,7 +139,7 @@ class BookSheetTests(unittest.TestCase):
                 self.assertEqual(cells[1][:3], tuple(h for h, _k, _f in fr.STORAGE_MONTH_COLS[:3]) if isinstance(cells[1], tuple) else list(h for h, _k, _f in fr.STORAGE_MONTH_COLS[:3]))
                 self.assertEqual(cells[2][0], "окт"); self.assertEqual(cells[3][0], "07.окт"); self.assertEqual(cells[5][0], "Общий итог")
                 self.assertAlmostEqual(cells[2][4], 15.5)                              # Σ октября за два дня: 10 + 2 − 1,5 + 5
-                self.assertAlmostEqual(cells[2][8], 0.0)                               # разница с формой
+                self.assertAlmostEqual(cells[2][9], 0.0)                               # разница с формой (колонка J)
                 flat = [c for row in cells for c in row]
                 self.assertIn("По брендам", flat); self.assertIn("По категориям", flat); self.assertIn("F000283615", flat)
             else:

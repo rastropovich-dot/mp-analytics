@@ -1808,7 +1808,7 @@ def main(argv=None):
             print(f"  хранение WB по артикулам: строк таблицы {st['rows']}, nmId {st['nm_count']}, строк (месяц × nmId) {len(st['articles'])}, "
                   f"без ярлыков из «Данных» {len(st['nm_without_labels'])}; Σ таблицы против «Хранение» формы за те же дни:")
             for ym, nd, tot, form, diff, form_all, form_days in st["check"]:
-                print(f"    {ym}: дней в таблице {nd} (в форме {form_days}), Σ {tot:,.2f}, форма за те же дни {form:,.2f}, разница {diff:,.2f}; форма за весь месяц {form_all:,.2f}")
+                print(f"    {ym}: дней в таблице {nd} (в форме {form_days}), Σ дней до копейки {tot:,.2f}, форма за те же дни {form:,.2f}, разница {diff:,.2f}; форма за весь месяц {form_all:,.2f}")
         notes["wb"] = [f"Лист «{WB_STORAGE_SHEET}» (WB-18): wb_paid_storage_daily — отчёт /api/v1/paid_storage по дням и nmId (с НДС, сторно со знаком минус), "
                        "свод по месяцам = «Хранение» формы «Выкупы WB» за дни, что есть в таблице; «Хранение / продажи, %» — к продажам «Данных WB выкупы» того же месяца, без продаж — пусто.",
                        f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "

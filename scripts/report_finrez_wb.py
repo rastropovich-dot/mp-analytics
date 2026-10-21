@@ -1102,6 +1102,7 @@ STORAGE_COLS = [
 STORAGE_MONTH_COLS = [
     ("Названия строк", "label", None), ("Дней с хранением в таблице", "days", "int"), ("nmId", "nm_count", "int"), ("Штук-дней", "unit_days", "int"),
     ("Хранение, ₽ (с НДС)", "storage", "money"), ("Хранение без НДС, ₽", "storage_net", "money"), ("в т. ч. сторно, ₽", "storno", "money"),
+    ("Σ дней, округлённых до копейки (как отчёт реализации), ₽", "storage_rounded", "money"),
     ("«Хранение» формы «Выкупы WB» за те же дни, ₽", "form_storage", "money"), ("разница, ₽", "diff", "money"),
     ("«Хранение» формы за весь период строки, ₽", "form_storage_all", "money"), ("дней с хранением в форме", "form_days", "int"),
     ("Продажи, ₽", "sales", "money"), ("Хранение / продажи, %", "storage_pct", "pct"),
@@ -1170,7 +1171,8 @@ def build_storage(storage_rows, data_rows, days=None):
     артикула / бренда / категории владельца, продажи и «Хранение» формы по дням). Возвращает:
       articles — строки (месяц, nmId) по STORAGE_COLS; months — {YYYY-MM: строка STORAGE_MONTH_COLS}; by_day — {день: строка};
       total — «Общий итог»; by_brand / by_category — {группа: {YYYY-MM: строка, "Итого": строка}}; check — список по месяцам
-      (ym, days, storage, form_storage, diff) — тождество Σ таблицы = «Хранение» формы за те же дни; nm_without_labels — nmId,
+      (ym, days, storage_rounded, form_storage, diff, form_storage_all, form_days) — тождество Σ дней таблицы (день — до копейки, как
+      paid_storage отчёта реализации) = «Хранение» формы за те же дни; nm_without_labels — nmId,
       которых нет в «Данных» (ярлыки — из строки таблицы)."""
     labels, sales_by, form_by_day = {}, defaultdict(Decimal), defaultdict(Decimal)
     for r in data_rows:
@@ -1221,7 +1223,10 @@ def build_storage(storage_rows, data_rows, days=None):
         row.update(_storage_out(a, sales))
         fd = form_days if form_days is not None else [d for d in form_by_day if d[:7] == ym] if ym else list(form_by_day)
         row["form_storage"] = sum((form_by_day.get(d, Z) for d in a["days"]), Z)
-        row["diff"] = row["storage"] - row["form_storage"]
+        # отчёт реализации несёт хранение дня копейками (paid_storage = Σ warehousePrice дня, округлённая); таблица — 5 знаков:
+        # тождество — по Σ дней, округлённых до копейки; остаток округления (storage − storage_rounded) ≤ 0,005 × дней
+        row["storage_rounded"] = sum((q(per_day[d]["storage"]) for d in a["days"]), Z)
+        row["diff"] = row["storage_rounded"] - row["form_storage"]
         row["form_storage_all"] = sum((form_by_day[d] for d in fd), Z)
         row["form_days"] = sum(1 for d in fd if form_by_day[d] != 0)
         return row
@@ -1231,7 +1236,7 @@ def build_storage(storage_rows, data_rows, days=None):
     for day, a in per_day.items():
         row = {"label": day, "nm_count": None}
         row.update(_storage_out(a, None))
-        row["form_storage"] = form_by_day.get(day, Z); row["diff"] = row["storage"] - row["form_storage"]
+        row["form_storage"] = form_by_day.get(day, Z); row["storage_rounded"] = q(row["storage"]); row["diff"] = row["storage_rounded"] - row["form_storage"]
         row["form_storage_all"] = row["form_storage"]; row["form_days"] = 1 if form_by_day.get(day) else 0
         row["sales"] = row["storage_pct"] = None
         by_day[day] = row
@@ -1246,7 +1251,7 @@ def build_storage(storage_rows, data_rows, days=None):
                 row = {"label": ym if ym == "Итого" else month_label(f"{ym}-01"), "nm_count": len({nm for (m, nm) in per_key if (ym == "Итого" or m == ym) and (info[nm][by] or "—") == g})}
                 row.update(_storage_out(a, sales))
                 groups[by][g][ym] = row
-    check = [(ym, len(per_month[ym]["days"]), q(months[ym]["storage"]), q(months[ym]["form_storage"]), q(months[ym]["diff"]), q(months[ym]["form_storage_all"]), months[ym]["form_days"])
+    check = [(ym, len(per_month[ym]["days"]), months[ym]["storage_rounded"], q(months[ym]["form_storage"]), q(months[ym]["diff"]), q(months[ym]["form_storage_all"]), months[ym]["form_days"])
              for ym in sorted(per_month)]
     return {"articles": articles, "months": months, "by_day": by_day, "total": total_row, "by_brand": groups["brand"], "by_category": groups["category"],
             "check": check, "nm_without_labels": sorted(no_labels), "rows": len(storage_rows), "nm_count": len(info)}

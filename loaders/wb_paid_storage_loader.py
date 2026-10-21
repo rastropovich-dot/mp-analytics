@@ -307,14 +307,14 @@ def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=tim
         raise RuntimeError(f"окно {d1} … {d2} длиннее {MAX_WINDOW_DAYS} дней — лимит метода")
     counters = {"requests": 0, "429": 0, "transient": 0}
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    print(f"WB платное хранение: окно {d1} … {d2} ({(date.fromisoformat(d2) - date.fromisoformat(d1)).days + 1} дн.), "
-          f"{'из файла ' + from_file if from_file else 'задание → статус → скачивание'}, {'dry-run' if dry_run else 'запись'}", flush=True)
     if from_file:
         raw = load_raw(from_file)
         task_id, items = raw.get("taskId"), raw["rows"]
-        d1, d2 = raw.get("dateFrom") or d1, raw.get("dateTo") or d2
+        d1, d2 = raw.get("dateFrom") or d1, raw.get("dateTo") or d2   # окно — из файла, не из календаря
         raw_file = from_file
-    else:
+    print(f"WB платное хранение: окно {d1} … {d2} ({(date.fromisoformat(d2) - date.fromisoformat(d1)).days + 1} дн.), "
+          f"{'из файла ' + from_file if from_file else 'задание → статус → скачивание'}, {'dry-run' if dry_run else 'запись'}", flush=True)
+    if not from_file:
         task_id, items = fetch_window(d1, d2, counters, sleep_fn)
         raw_file = save_raw(d1, d2, task_id, items, raw_dir)
         print(f"сырьё → {raw_file} ({os.path.getsize(raw_file):,} байт)", flush=True)

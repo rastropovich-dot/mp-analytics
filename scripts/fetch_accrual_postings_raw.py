@@ -21,6 +21,7 @@
 прогона (loaders/pipeline_window.py) не стартует.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -56,7 +57,17 @@ def post(path, body, label, counters, max_requests):
         # антиспам-пауза 60 с — только если не отпустило за MAX_ATTEMPTS. До 21.10 скрипт шёл на 60 с с первого 429,
         # и у крупного кабинета (РБХ-1) каждое обращение стоило минуту.
         stats = {}
-        r = http_retry.post(f"{accrual.BASE}{path}", label=label, headers=accrual.headers(), json=body, timeout=180, stats=stats)
+        try:
+            r = http_retry.post(f"{accrual.BASE}{path}", label=label, headers=accrual.headers(), json=body, timeout=180, stats=stats)
+        except http_retry.NETWORK_ERRORS as exc:
+            # прокси / TLS не отпустило за повторы http_retry (5 + 10 + 15 с): ждём минуту и пробуем снова — 22.10 обрыв
+            # прокси на ~1 мин стоил 100 обращений; последняя попытка — исключение наружу
+            counters["net"] = counters.get("net", 0) + 1
+            print(f"  {label}: сеть {type(exc).__name__}, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}", flush=True)
+            if attempt >= ANTISPAM_MAX_ATTEMPTS:
+                raise
+            time.sleep(ANTISPAM_PAUSE_SECONDS)
+            continue
         counters["retry_429"] = counters.get("retry_429", 0) + int(stats.get("retries", 0))
         if r.status_code == 429:
             counters["429"] += 1
@@ -140,14 +151,24 @@ def main():
         print(f"  {day}: начислений {len(accruals)}, отправлений с продажей {len(sold)} ({where})", flush=True)
         d += timedelta(days=1)
     print(f"by-day: дат {len(per_day)}, из файлов {src['file']}, из API {src['api']}; уникальных отправлений {len(numbers)}", flush=True)
-    result, rows = [], 0
+    result, rows, from_parts = [], 0, 0
+    parts_dir = os.path.join(POSTINGS_DIR, f"parts_{args.date_from}_{args.date_to}")
+    os.makedirs(parts_dir, exist_ok=True)
     for i in range(0, len(numbers), CHUNK):
         chunk = numbers[i:i + CHUNK]
-        data = post("/v1/finance/accrual/postings", {"posting_numbers": chunk},
-                    f"postings {i // CHUNK + 1}/{(len(numbers) + CHUNK - 1) // CHUNK}", counters, args.max_requests)
+        # кусок кэшируется на диске: оборвавшийся прогон при повторе снимает только недостающие (22.10, РБХ-1)
+        part = os.path.join(parts_dir, f"part_{i // CHUNK:04d}_{hashlib.sha1(','.join(chunk).encode()).hexdigest()[:10]}.json")
+        if os.path.exists(part):
+            data = json.load(open(part)); from_parts += 1
+        else:
+            data = post("/v1/finance/accrual/postings", {"posting_numbers": chunk},
+                        f"postings {i // CHUNK + 1}/{(len(numbers) + CHUNK - 1) // CHUNK}", counters, args.max_requests)
+            json.dump(data, open(part, "w"), ensure_ascii=False)
         items = data.get("posting_accruals") or []
         result.extend(items)
         rows += sum(len(it.get("accruals") or []) for it in items)
+    if from_parts:
+        print(f"accrual/postings: кусков из кэша {from_parts} из {(len(numbers) + CHUNK - 1) // CHUNK}")
     got = {it.get("posting_number") for it in result}
     missing = [pn for pn in numbers if pn not in got]
     os.makedirs(POSTINGS_DIR, exist_ok=True)

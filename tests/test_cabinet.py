@@ -157,6 +157,8 @@ def entry_points():
     # Эти два ходят в базу не клиентом PostgREST по SUPABASE_URL, а Management API по ref ПРОФИЛЯ (--cabinet явный, «all» без karatov,
     # karatov только с --allow-karatov) — guard по SUPABASE_URL им не о чем: базу выбирает код кабинета, не окружение.
     management_api_only = {"scripts/db_migrate.py", "scripts/db_schema_snapshot.py"}
+    # Render API, без базы вовсе: переменная окружения сервисов Render из локального .env (WB-18, 22.10) — guard по SUPABASE_URL не о чем
+    no_database = {"scripts/render_env_sync.py"}
     found = {}
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
@@ -164,7 +166,7 @@ def entry_points():
             if not fn.endswith(".py") or fn == "cabinet.py":
                 continue
             rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
-            if rel in management_api_only:
+            if rel in management_api_only or rel in no_database:
                 continue
             src = open(os.path.join(dirpath, fn), encoding="utf-8").read()
             reasons = []

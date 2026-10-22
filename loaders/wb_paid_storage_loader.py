@@ -56,7 +56,7 @@ MAX_ATTEMPTS = 3               # 429 / таймаут / сеть на одном
 TIMEOUT = 300
 RAW_DIR = cabinet.data_path("wb_paid_storage_raw", prof=CABINET)
 RAW_RETENTION_DAYS = 30
-TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError)   # обрыв тела ответа (IncompleteRead) — история 22.10: 6 окон из 21
 REQUIRED = ("date", "nmId", "chrtId")
 DONE, WAITING, FAILED = "done", ("new", "processing"), ("purged", "canceled")
 RAW_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")
@@ -296,7 +296,7 @@ def window(today, days_back=DEFAULT_DAYS_BACK):
 
 
 def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=time.sleep, raw_dir=RAW_DIR, from_file=None,
-        date_from=None, date_to=None):
+        date_from=None, date_to=None, keep_raw=False):
     """Сбор окна. Паспорт: window, task_id, items, rows, written, requests, 429, transient, by_day, total, raw."""
     today = today or date.today()
     if date_from and date_to:
@@ -318,7 +318,8 @@ def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=tim
         task_id, items = fetch_window(d1, d2, counters, sleep_fn)
         raw_file = save_raw(d1, d2, task_id, items, raw_dir)
         print(f"сырьё → {raw_file} ({os.path.getsize(raw_file):,} байт)", flush=True)
-        cleanup_raw(today, raw_dir)
+        if not keep_raw:
+            cleanup_raw(today, raw_dir)   # история по слову (--keep-raw): окна старше ретенции не стирать сразу после сохранения
     print(f"обращений {counters['requests']}, 429 — {counters['429']}, сетевых отказов {counters['transient']}", flush=True)
     rows = build_rows(items, observed_at, task_id, d1, d2)
     total = print_summary(rows, len(items))
@@ -339,11 +340,12 @@ def main(argv=None):
     ap.add_argument("--date-from"); ap.add_argument("--date-to", help="явное окно ≤ 8 дней (история по слову)")
     ap.add_argument("--from-file", help="строки из сохранённого сырья, к API не ходить")
     ap.add_argument("--dry-run", action="store_true", help="не писать в базу (db_writes = 0)")
+    ap.add_argument("--keep-raw", action="store_true", help="не чистить сырьё по ретенции (история по слову: окна старше 30 дней иначе стёрлись бы сразу)")
     args = ap.parse_args(argv)
     if not args.from_file and not WB_API_KEY:
         raise SystemExit("нет WB_API_KEY в окружении")
     sb = None if args.dry_run else _client()
-    passport = run(sb, days_back=args.days_back, dry_run=args.dry_run, from_file=args.from_file, date_from=args.date_from, date_to=args.date_to)
+    passport = run(sb, days_back=args.days_back, dry_run=args.dry_run, from_file=args.from_file, date_from=args.date_from, date_to=args.date_to, keep_raw=args.keep_raw)
     return 0 if passport["items"] >= 0 else 1
 
 

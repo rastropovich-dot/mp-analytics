@@ -912,7 +912,7 @@ def write_wb_storage_sheet(wb, st, days):
         _grid_sheet(wb, WB_STORAGE_SHEET, g)
         return 0
     g.set(1, 1, "Хранение WB по артикулам — таблица wb_paid_storage_daily (отчёт WB /api/v1/paid_storage, свёртка по дню × nmId, с НДС); свод по месяцам = "
-                "строке «Хранение» формы «Выкупы WB» за те же дни (разница печатается, 0,00 — тождество); продажи — «Данные WB выкупы» того же месяца, "
+                "строке «Хранение» формы «Выкупы WB» за те же дни с точностью до копейки на каждом дне (WB округляет день по-своему; «дней с |разницей| ≥ 0,01» должно быть 0); продажи — «Данные WB выкупы» того же месяца, "
                 "без продаж — пусто; дни каждого месяца — под ним, «+»", bold=True, note=True)
     mcols, acols = wbfin.STORAGE_MONTH_COLS, wbfin.STORAGE_COLS
 
@@ -1807,8 +1807,9 @@ def main(argv=None):
         else:
             print(f"  хранение WB по артикулам: строк таблицы {st['rows']}, nmId {st['nm_count']}, строк (месяц × nmId) {len(st['articles'])}, "
                   f"без ярлыков из «Данных» {len(st['nm_without_labels'])}; Σ таблицы против «Хранение» формы за те же дни:")
-            for ym, nd, tot, form, diff, form_all, form_days in st["check"]:
-                print(f"    {ym}: дней в таблице {nd} (в форме {form_days}), Σ дней до копейки {tot:,.2f}, форма за те же дни {form:,.2f}, разница {diff:,.2f}; форма за весь месяц {form_all:,.2f}")
+            for ym, nd, tot, form, diff, days_off, max_dd, form_all, form_days in st["check"]:
+                print(f"    {ym}: дней в таблице {nd} (в форме {form_days}), Σ {tot:,.2f}, форма за те же дни {form:,.2f}, разница {diff:,.2f} "
+                      f"(дней с |Δ| ≥ 0,01: {days_off}, max |Δ| дня {max_dd:.5f}); форма за весь месяц {form_all:,.2f}")
         notes["wb"] = [f"Лист «{WB_STORAGE_SHEET}» (WB-18): wb_paid_storage_daily — отчёт /api/v1/paid_storage по дням и nmId (с НДС, сторно со знаком минус), "
                        "свод по месяцам = «Хранение» формы «Выкупы WB» за дни, что есть в таблице; «Хранение / продажи, %» — к продажам «Данных WB выкупы» того же месяца, без продаж — пусто.",
                        f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "

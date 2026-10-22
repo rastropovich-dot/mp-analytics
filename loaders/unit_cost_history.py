@@ -29,6 +29,11 @@ STALE_DAYS и больше — источник помечается «курс 
 import csv
 from bisect import bisect_right
 from collections import Counter, defaultdict
+
+try:
+    from loaders import net_retry
+except ImportError:  # модуль импортируется из loaders/ напрямую
+    import net_retry
 from datetime import date
 from decimal import Decimal
 
@@ -202,7 +207,7 @@ def load_rates(sb, page_cap=1000):
         if last is not None:
             q = q.or_(f"metal.gt.{last[0]},and(metal.eq.{last[0]},set_date.gt.{last[1]})")
         try:
-            data = q.limit(page_cap).execute().data or []
+            data = net_retry.execute(q.limit(page_cap), f"{RATES_TABLE} страница").data or []   # 54-я: транзиентный отказ — повтор 3 × 20 с
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"{RATES_TABLE}: таблица курсов 1С не прочиталась ({type(exc).__name__}: {exc}) — миграция и посев по слову, "
                                f"scripts/load_metal_rates_1c.py") from exc

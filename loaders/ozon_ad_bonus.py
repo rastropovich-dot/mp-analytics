@@ -10,6 +10,11 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 
+try:
+    from loaders import net_retry
+except ImportError:
+    import net_retry
+
 TABLE = "ozon_daily_sku_ad_attribution"
 PAGE = 1000
 
@@ -24,7 +29,7 @@ def read_bonus_rows(sb, date_from, date_to, marketplace_code="ozon", page=PAGE):
         if last is not None:
             d, s, c = last
             q = q.or_(f"sale_date.gt.{d},and(sale_date.eq.{d},marketplace_sku.gt.{s}),and(sale_date.eq.{d},marketplace_sku.eq.{s},campaign_id.gt.{c})")
-        data = q.execute().data or []
+        data = net_retry.execute(q, f"{TABLE} is_bonus страница").data or []   # 54-я: прокси / обрыв — повтор 3 × 20 с
         rows += data
         if len(data) < page:
             break

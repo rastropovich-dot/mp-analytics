@@ -17,6 +17,17 @@
 
 ---
 
+## 2026-10-22 (ночь), пятьдесят четвёртая — довесок «ложные маркеры 503/502/504» СДЕЛАН в `night-book-net`, ПЛАН МЕРЖА, ЖДУ СЛОВО; db_writes 0, Seller / Performance / Render — 0
+
+**Дефект (подтверждён):** голые `"503" / "502" / "504"` в `TRANSIENT_MARKERS` и в `grep` скрипта ловили суммы («1 503,00», «−2 504,17», «rows=2504») в хвосте лога → ложный «отказ от сети», до трёх сборок книги и лишние повторы. **Починка (`git log origin/main..HEAD`):**
+```
+7c4729a Fifty-fourth addendum: false network markers — bare 503/502/504 no longer match amounts like «1 503,00»
+b99c23b Fifty-fourth outbox: merged 04da6f2 by the owner's word, Render live 19:41 UTC
+```
+(1) `net_retry.TRANSIENT_MARKERS` — без чисел; коды 502 / 503 / 504 только в форме статуса: регулярка `(HTTP[/ ]?(1.1 )?|status(_code)?[:= ]|code[:= ])50[234]` с границей «после кода — не цифра и не `,`/`.` + цифра» и `50[234] Service Unavailable | Bad Gateway | Gateway Time-?out` с границей «перед кодом не цифра»; 57014 — только как код Postgres, не сумма; текстовые маркеры (ProxyError, Server disconnected, reset by peer, ReadError, …) оставлены. В `finrez_nightly.sh` — те же формы в `grep -E` по хвосту лога попытки. (2) `httpx.HTTPStatusError` / `requests.HTTPError` — по `response.status_code in (502, 503, 504)`, текст не смотрится (404 / 500 / 401 — не транзиентны, даже если в тексте есть «503»). (3) Тесты (`tests/test_net_retry.py`, +4, всего 11): «разница 1 503,00», «rows=2504», «−2 504,17», «Оборот 10,502.5», «строк 57014,00» — не транзиентны; «ProxyError: 503 Service Unavailable», «HTTP 503», «HTTP/1.1 502 Bad Gateway», «status_code=504», «statement timeout», «SQLSTATE 57014» — транзиентны; `HTTPStatusError` 503 / 502 / 504 — да, 404 / 500 / 401 — нет; `requests.HTTPError` 400 с «503» в тексте — нет; **шаблон скрипта проверяется самим `grep -E`** на строках сумм из лога книги (не срабатывает) и на строках ошибок (срабатывает). Полный набор **1 419 OK** (1 415 + 4). `sql/` не менялся, баз не касалась. Мерж — `git merge --no-ff night-book-net` (ветка = `main 04da6f2` + 3 коммита), затем push, Render live (в прод уезжает `net_retry` для утреннего листа и алерта; на Mac — скрипт книги).
+
+---
+
 ## 2026-10-22 (вечер), пятьдесят четвёртая — СЛИТА по слову: мерж `04da6f2` --no-ff (origin/main был 810336e, 1 415 тестов OK), push 19:40:44 UTC, Render live `04da6f2` на обоих сервисах 19:41 UTC; сессиям ВБ и РБХ сказано «main обновлён»; повторная ручная сборка книги и §3.2 — по слову после нового ключа Ozon. Ниже — план, как был показан; загадка прокси launchd решена (только чтение); прямых проб сети больше не делаю (правило владельца принято); ключ Ozon Seller API всё ещё протухший (18:39 UTC: `report/info` → 403), §3.2 ждёт
 
 **`git log origin/main..HEAD` (origin/main = `810336e`, WB-18 + лист хранения WB; влит в ветку, конфликтов 0):**

@@ -67,7 +67,7 @@ class BuildStorageTests(unittest.TestCase):
         s = st["months"]["2026-09"]                                                   # в таблице один день сентября, форма — два
         self.assertEqual((s["storage"], s["form_storage"], s["diff"], s["form_storage_all"], s["form_days"]), (D("4.00"), D("4.00"), D("0.00"), D("104.00"), 2))
         self.assertEqual((m["sales"], m["storage_pct"]), (D("800"), D("0.0281")))
-        self.assertEqual(st["check"][0], ("2026-09", 1, D("4.00"), D("4.00"), D("0.00"), D("104.00"), 2))
+        self.assertEqual(st["check"][0], ("2026-09", 1, D("4.00"), D("4.00"), D("0.00"), 0, D("0.00"), D("104.00"), 2))
         self.assertEqual(st["total"]["storage"], D("26.50")); self.assertEqual(st["total"]["diff"], D("0.00"))
         self.assertEqual(st["total"]["sales"], D("800"))                              # продажи месяцев с хранением (сентябрь без продаж, октябрь 800)
         st2 = fr.build_storage([srow("2026-10-07", 1, "1.00")], [drow("2026-10-07", 1, sales="10"), drow("2026-08-01", 1, sales="1000")])

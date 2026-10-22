@@ -17,6 +17,25 @@
 
 ---
 
+## 2026-10-22 (вечер), пятьдесят четвёртая — ПЛАН МЕРЖА `night-book-net`, ЖДУ СЛОВО; загадка прокси launchd решена (только чтение); прямых проб сети больше не делаю (правило владельца принято); ключ Ozon Seller API всё ещё протухший (18:39 UTC: `report/info` → 403), §3.2 ждёт
+
+**`git log origin/main..HEAD` (origin/main = `810336e`, WB-18 + лист хранения WB; влит в ветку, конфликтов 0):**
+```
+21077a1 Merge origin/main (810336e, WB storage sheet) into night-book-net before the merge by the owner's word
+1664122 Fifty-fourth outbox: BLOCKER — Ozon Seller API key expired (403 code 7), same key on both Render services …
+1dcd327 Fifty-fourth outbox: §1а code, §1б network probe table (nothing changed), §2 — all 143 days … exactly 1 000 rows
+5083fe7 Fifty-fourth §1а: transient network failures of the night book are retried 3 × 20 s; reference readers never crash the book
+```
+Полный набор на голове `21077a1`: **1 415 тестов OK** (1 408 в `main` + 7 новых). Диф к `origin/main`: 9 файлов, +233 / −8 — `loaders/net_retry.py` (новый), `scripts/report_ozon_month.py` (повтор на каждой странице `fetch`; курс не роняет), `loaders/unit_cost_history.py` (повтор в `load_rates`), `loaders/ozon_ad_bonus.py` (повтор), `scripts/finrez_nightly_status.py` (повтор записи итога), `scripts/report_finrez.py` (WB-приёмка — перезапуск при транзиентном stderr), `scripts/finrez_nightly.sh` (до 3 запусков `report_finrez.py`), `tests/test_net_retry.py`, `docs/outbox.md`. `sql/` не менялся (50 / 30), баз не касалась.
+
+**Что уйдёт в прод после мержа.** На Render: `report_ozon_month.fetch` и `unit_cost_history.load_rates` зовёт утренний лист месяца (`send_ozon_month_report.py`, cron 07:30 UTC) — его чтения получают повтор 3 × 20 с при обрыве (поведение при успехе не меняется; при отказе курса лист теперь считает СС по снимку с пометкой вместо падения); ночной пайплайн эти модули не зовёт (`ozon_ad_bonus` читает только алерт — тоже с повтором). На Mac: `finrez_nightly.sh` + читатели книги — ночь 23.10 06:00 МСК первая на новом коде. **Прокси не трогается: `env -u` в скрипте нет** (тест). После мержа по слову — повторная ручная сборка книги за 21.10 (`launchctl kickstart`, среда та же): на новом коде WB-приёмка и чтения повторяются 3 × 20 с — должна дособрать WB-листы, если прокси отпустит в пределах минуты; если 503 держится дольше 60 с — книга снова выйдет без WB с той же строкой, и это будет видно в логе попыток.
+
+**§4 — загадка прокси у launchd, решена (только чтение):** переменных `*_proxy` нет ни в `.env`, ни в `finrez_nightly.sh` / `cabinet.py --shell`, ни в `/etc/zshenv` / `~/.zshenv` / `~/.zprofile` / `/etc/zprofile` / `/etc/zshrc`, ни в среде launchd (`launchctl print gui/<uid>` — пусто; у задачи `environment = {PATH, LANG, FINREZ_COPY_DIR, XPC_SERVICE_NAME}`). Источник — **системный прокси macOS**: `scutil --proxy` → HTTPEnable 1 / HTTPSEnable 1, порт 1082 (ставит VPN-клиент), а `httpx` 0.28 берёт прокси через `urllib.request.getproxies()`, который на macOS без переменных среды читает System Configuration (`getproxies_macosx_sysconf`). То есть процесс launchd идёт через прокси VPN-клиента не из-за переменных, а из-за системной настройки сети — потому `launchctl getenv` и пуст. Следствие: `env -u` в скрипте прокси НЕ снимет (переменных нет); обойти системный прокси можно только явно в коде (`httpx.Client(proxy=None)` / `trust_env=False` у клиента Supabase) или отключив системный прокси в настройках — **ни то, ни другое без слова не делаю**, это к решению владельца. Прямых проб больше не было и не будет без отдельного слова на каждую.
+
+**§3.2 / ключ:** 18:39 UTC — `OZON_API_KEY` в `.env` тот же (хэш `8a8f6d9e57`), `report/info` → 403 «Api-key has expired»; будильник 00:17 МСК проверит ключ ещё раз и, если он новый, снимет апрель … июль до 00:00 UTC (лимит 5 − 1 ночной). Без ключа ночь 23.10 по Ozon упадёт.
+
+---
+
 ## 2026-10-22 (день), пятьдесят четвёртая — §1а код (`5083fe7`, 1 398 тестов OK), §1б пробы сети (таблица ниже, путь сети не менялся), §1в ручная сборка книги через launchd прошла (код 0, но без WB-листов — прокси 503), §2 срез 1 000 строк подтверждён (143 дня из 143), **§3 остановлен: ключ Ozon Seller API протух (403), тот же ключ на Render — нужен новый до 00:15 UTC**; ветка `night-book-net` (worktree `~/mp-analytics-wt/54`, от `main ce12684`); db_writes 0 пока
 
 ### ⛔ БЛОКЕР (18:33 UTC): ключ Ozon Seller API протух — на Render тот же ключ, ночь 23.10 по Ozon не пройдёт

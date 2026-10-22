@@ -56,7 +56,7 @@ MAX_ATTEMPTS = 3               # 429 / таймаут / сеть на одном
 TIMEOUT = 300
 RAW_DIR = cabinet.data_path("wb_paid_storage_raw", prof=CABINET)
 RAW_RETENTION_DAYS = 30
-TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError)   # обрыв тела ответа (IncompleteRead) — история 22.10: 6 окон из 21
 REQUIRED = ("date", "nmId", "chrtId")
 DONE, WAITING, FAILED = "done", ("new", "processing"), ("purged", "canceled")
 RAW_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")

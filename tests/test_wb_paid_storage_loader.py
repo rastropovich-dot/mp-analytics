@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import unittest
+
+import requests
 from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
@@ -103,6 +105,19 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(calls[0][1], {"dateFrom": "2026-10-13", "dateTo": "2026-10-14"})
         self.assertTrue(calls[1][0].endswith("/tasks/t1/status") and calls[4][0].endswith("/tasks/t1/download"))
         self.assertEqual(self.sleeps, [5, ld.STATUS_POLL_SECONDS, ld.STATUS_POLL_SECONDS])              # пауза перед каждым опросом
+
+    def test_broken_body_on_download_is_retried_like_a_network_error(self):
+        # история 22.10: сеть рвала тело ответа download (ChunkedEncodingError / IncompleteRead) — 6 окон из 21 без повтора
+        answers = [requests.exceptions.ChunkedEncodingError("IncompleteRead"), Resp(200, ITEMS)]
+        def fake_get(url, headers=None, params=None, timeout=None):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        counters = {"requests": 0, "429": 0, "transient": 0}
+        with mock.patch.object(ld.requests, "get", side_effect=fake_get), redirect_stdout(io.StringIO()):
+            items = ld.download("t1", counters, self.sleep)
+        self.assertEqual((len(items), counters["requests"], counters["transient"], self.sleeps), (6, 2, 1, [ld.SLEEP_SECONDS]))
 
     def test_canceled_timeout_and_204(self):
         counters = {"requests": 0, "429": 0, "transient": 0}

@@ -771,6 +771,11 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         month = wbfin.build_month_sheet(rows)
         split_brand, split_cat = wbfin.build_split(rows, "brand"), wbfin.build_split(rows, "category")
         lap("сводные WB")
+        try:                                                    # WB-18: лист «Хранение WB по артикулам» — нефатально для книги
+            storage = wbfin.build_storage(wbfin.read_storage_rows(sb_wb, d1, d2), rows, days=days)
+        except Exception as exc:  # noqa: BLE001
+            storage = {"error": f"{type(exc).__name__}: {exc}"}
+        lap(f"хранение WB по артикулам ({storage.get('rows', 0)} строк таблицы)" if not storage.get("error") else "хранение WB по артикулам (ошибка)")
         # воронка по товарам — по одному дню за вызов: одно окно на 177 дней (~490 тыс. строк) читается OFFSET-страницами, глубокие страницы
         # упираются в statement_timeout 8 с (2026-09-25: APIError 57014 после 1 480 с, книга без WB); по дню — страницы мелкие, тот же читатель модуля
         funnel = []
@@ -800,7 +805,8 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         lap("коэффициент выкупа WB (модуль)")
         print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
-                "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings}
+                "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings,
+                "storage": storage}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -891,6 +897,68 @@ def write_wb_pivot_block(g, r0, title, piv, order):
             g.set(r, calc0 + j, m.get(k), f)
         r += 1
     return r
+
+
+WB_STORAGE_SHEET = "Хранение WB по артикулам"
+
+
+def write_wb_storage_sheet(wb, st, days):
+    """Лист «Хранение WB по артикулам» (WB-18, форма принята владельцем 22.10): свод по месяцам (дни каждого месяца под ним, «+»;
+    «Общий итог»), блоки × бренд / × категория (месяцы + «Итого»), затем строки (месяц, nmId) по STORAGE_COLS модуля.
+    st — build_storage модуля WB-сессии или {'error': …} (лист с одной строкой об ошибке, книга не падает). Возвращает число строк артикулов."""
+    g = Grid()
+    if not st or st.get("error"):
+        g.set(1, 1, "Лист хранения WB не собран: " + str((st or {}).get("error") or "модуль не отдал данных"))
+        _grid_sheet(wb, WB_STORAGE_SHEET, g)
+        return 0
+    g.set(1, 1, "Хранение WB по артикулам — таблица wb_paid_storage_daily (отчёт WB /api/v1/paid_storage, свёртка по дню × nmId, с НДС); свод по месяцам = "
+                "строке «Хранение» формы «Выкупы WB» за те же дни с точностью до копейки на каждом дне (WB округляет день по-своему; «дней с |разницей| ≥ 0,01» должно быть 0); продажи — «Данные WB выкупы» того же месяца, "
+                "без продаж — пусто; дни каждого месяца — под ним, «+»", bold=True, note=True)
+    mcols, acols = wbfin.STORAGE_MONTH_COLS, wbfin.STORAGE_COLS
+
+    def header(r, cols, title=None):
+        if title:
+            g.set(r, 1, title, bold=True); r += 1
+        for j, (h, _k, _f) in enumerate(cols):
+            g.set(r, 1 + j, h, bold=True, fill=True, wrap=True)
+        g.heights[r] = 45
+        return r + 1
+
+    def put(r, row, cols, bold=False, outline=None):
+        for j, (_h, k, f) in enumerate(cols):
+            g.set(r, 1 + j, row.get(k), f, bold=(bold and k in ("label", "month")))
+        if outline:
+            g.outline[r] = outline
+
+    months = []
+    for d in days:
+        if d[:7] not in months:
+            months.append(d[:7])
+    r = header(2, mcols)
+    for ym in months:
+        put(r, st["months"].get(ym) or {"label": wbfin.month_label(f"{ym}-01")}, mcols, bold=True); r += 1
+        for d in days:
+            if d[:7] == ym:
+                put(r, st["by_day"].get(d) or {"label": day_label(d)}, mcols, outline=1)
+                g.set(r, 1, day_label(d)); r += 1
+    put(r, st["total"], mcols, bold=True); r += 2
+    for title, key in (("По брендам", "by_brand"), ("По категориям", "by_category")):
+        g.set(r, 1, title, bold=True); r += 1
+        for name in sorted(st[key], key=lambda n: (n == "—", n)):
+            r = header(r, mcols, name)
+            per = st[key][name]
+            for ym in months:
+                if ym in per:
+                    put(r, per[ym], mcols); r += 1
+            put(r, per["Итого"], mcols, bold=True); r += 2
+    r = header(r, acols, "По артикулам (месяц × nmId; внутри месяца — по убыванию хранения)")
+    n = 0
+    for row in st["articles"]:
+        put(r, row, acols); r += 1; n += 1
+    if st.get("nm_without_labels"):
+        g.set(r + 1, 1, f"nmId без строк в «Данных WB выкупы» (ярлыки из таблицы хранения): {len(st['nm_without_labels'])}", note=True)
+    _grid_sheet(wb, WB_STORAGE_SHEET, g, freeze="A3")
+    return n
 
 
 def wb_orders_as_data_rows(orders):
@@ -1410,6 +1478,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
                 r_cols = write_wb_pivot_block(g, r_cols, name, p_, o_) + 1
             _grid_sheet(wb, title, g, freeze="B2")
         write_data_sheet(wb, "Данные WB выкупы", wb_data_cols(), wb_parts["rows"], widths={7: 48})   # «Эквайринг, ₽» — колонка O (сорок четвёртая §2)
+        write_wb_storage_sheet(wb, wb_parts.get("storage"), days)                                      # WB-18: хранение по артикулам
     else:
         g = Grid()
         g.set(1, 1, "Лист WB не собран: " + str((wb_parts or {}).get("error") or "модуля WB нет"))
@@ -1732,7 +1801,18 @@ def main(argv=None):
             print(f"  форма «Выкупы WB по {'брендам' if by == 'brand' else 'категориям'}»: групп {len(piv_g)}, против build_split модуля — ячеек {n_g}, расхождений {bad_g}")
         print("  коэффициент выкупа WB (модуль): " + (", ".join(f"{k} {v * 100:.2f} %" for k, v in wb_parts["buyout"].items()) if wb_parts.get("buyout") else "нет зрелых месяцев")
               + (f"; {wb_parts['buyout_note']}" if wb_parts.get("buyout_note") else ""))
-        notes["wb"] = [f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "
+        st = wb_parts.get("storage") or {}
+        if st.get("error"):
+            print(f"  хранение WB по артикулам: лист не собран — {st['error']}")
+        else:
+            print(f"  хранение WB по артикулам: строк таблицы {st['rows']}, nmId {st['nm_count']}, строк (месяц × nmId) {len(st['articles'])}, "
+                  f"без ярлыков из «Данных» {len(st['nm_without_labels'])}; Σ таблицы против «Хранение» формы за те же дни:")
+            for ym, nd, tot, form, diff, days_off, max_dd, form_all, form_days in st["check"]:
+                print(f"    {ym}: дней в таблице {nd} (в форме {form_days}), Σ {tot:,.2f}, форма за те же дни {form:,.2f}, разница {diff:,.2f} "
+                      f"(дней с |Δ| ≥ 0,01: {days_off}, max |Δ| дня {max_dd:.5f}); форма за весь месяц {form_all:,.2f}")
+        notes["wb"] = [f"Лист «{WB_STORAGE_SHEET}» (WB-18): wb_paid_storage_daily — отчёт /api/v1/paid_storage по дням и nmId (с НДС, сторно со знаком минус), "
+                       "свод по месяцам = «Хранение» формы «Выкупы WB» за дни, что есть в таблице; «Хранение / продажи, %» — к продажам «Данных WB выкупы» того же месяца, без продаж — пусто.",
+                       f"Строки и форма — модуль WB-сессии scripts/report_finrez_wb.py (договор в его docstring): продажи, комиссия, логистика, хранение, реклама и прочее с НДС; "
                        "K … Z — тождества второго кабинета (R = (логистика + хранение) / НДС). Приёмка — его --check (мост к «WB - месяц»).",
                        "Колонка O «Эквайринг, ₽» (acquiringFee, с НДС) — пятнадцатая колонка источника сводной WB и её восьмое поле значений (у второго кабинета "
                        "эквайринга в источнике нет, V — ввод руками); на листе сводной V = I / 1,22 — без НДС, как «Эквайринг, руб.» листа «Выкупы WB», W = V / N, "

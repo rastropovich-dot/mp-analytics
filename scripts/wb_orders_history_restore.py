@@ -75,7 +75,7 @@ from loaders.wb_orders_rows import build_order_rows  # noqa: E402
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
 PROGRESS_PATH = cabinet.logs_path("wb_orders_history_restore_progress.json", prof=_PROFILE)
-SNAPSHOT_DIR = "snapshots"
+SNAPSHOT_DIR = cabinet.data_path("snapshots", prof=_PROFILE)   # было "snapshots" в корне репозитория — снимок кабинета лежит в data/<кабинет>/snapshots/ (найдено 21.10 на РБХ-1)
 DEFAULT_SLEEP_SECONDS = 65
 PAGE_SIZE = 1000  # PostgREST отдаёт не больше 1000 строк на ответ, просить больше бессмысленно
 

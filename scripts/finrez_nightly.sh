@@ -41,7 +41,8 @@ while :; do
   venv/bin/python3 scripts/report_finrez.py "${ARGS[@]}" 2>&1 | tee "$ATTEMPT_LOG"
   RC=${pipestatus[1]}
   if [ "$RC" -eq 0 ] || [ "$ATTEMPT" -ge 3 ]; then break; fi
-  if tail -60 "$ATTEMPT_LOG" | grep -qE "503|502|504|Service Unavailable|Server disconnected|Connection reset|reset by peer|ProxyError|RemoteProtocolError|ReadError|ConnectError|ReadTimeout|ConnectTimeout"; then
+  # маркеры — только формы HTTP-статуса и имена сетевых ошибок: голые «503» ловили суммы вроде «1 503,00» в хвосте лога (довесок 54-й)
+  if tail -60 "$ATTEMPT_LOG" | grep -qE "HTTP[/ ]?([12]\.[01] )?50[234]([^0-9,.]|$)|status(_code)? ?[:=]? ?50[234]([^0-9,.]|$)|(^|[^0-9])50[234] (Service Unavailable|Bad Gateway|Gateway Time-?out)|Service Unavailable|Bad Gateway|Gateway Time-?out|Server disconnected|Connection reset|reset by peer|ProxyError|RemoteProtocolError|ReadError|ConnectError|ReadTimeout|ConnectTimeout"; then
     echo "⚠️ finrez_nightly: попытка $ATTEMPT упала от сети (код $RC) — повтор через 20 с"
     ATTEMPT=$((ATTEMPT + 1)); sleep 20
   else

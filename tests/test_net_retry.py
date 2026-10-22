@@ -94,3 +94,44 @@ class ReadersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FalseMarkerTests(unittest.TestCase):
+    """Довесок 54-й: голые 503 / 502 / 504 в суммах лога — не сеть; статус ответа решает по коду, не по тексту."""
+
+    def test_amounts_with_503_in_them_are_not_transient(self):
+        for text in ("Ozon  Общий итог  Себестоимость  свод  1 503,00 данные 1 503,00 разница 0,00", "разница 1 503,00", "строк 2504", "−2 504,17",
+                     "rows=2504", "Оборот 10,502.5", "KeyError: 'x'", "строк 57014,00"):
+            self.assertFalse(net_retry.text_is_transient(text), text)
+        self.assertFalse(net_retry.is_transient(RuntimeError("rows=2504")))
+        self.assertFalse(net_retry.is_transient(RuntimeError("итого 1 503,00")))
+
+    def test_status_forms_are_transient(self):
+        for text in ("httpx.ProxyError: 503 Service Unavailable", "HTTP 503", "HTTP/1.1 502 Bad Gateway", "status_code=504", "status 503",
+                     "report/info: HTTP 503 {\"code\":...}", "canceling statement due to statement timeout", "SQLSTATE 57014"):
+            self.assertTrue(net_retry.text_is_transient(text), text)
+        self.assertTrue(net_retry.is_transient(httpx.ProxyError("503 Service Unavailable")))
+        self.assertFalse(net_retry.text_is_transient("HTTP 404 Not Found")); self.assertFalse(net_retry.text_is_transient("HTTP 500"))
+
+    def test_http_status_errors_decide_by_response_code(self):
+        req = httpx.Request("GET", "https://x")
+        for code, expected in ((503, True), (502, True), (504, True), (404, False), (500, False), (401, False)):
+            exc = httpx.HTTPStatusError("x", request=req, response=httpx.Response(code, request=req))
+            self.assertEqual(net_retry.is_transient(exc), expected, code)
+        import requests
+        r = requests.Response(); r.status_code = 503
+        self.assertTrue(net_retry.is_transient(requests.HTTPError("boom", response=r)))
+        r.status_code = 400
+        self.assertFalse(net_retry.is_transient(requests.HTTPError("boom 503 in text only", response=r)))
+
+    def test_nightly_script_pattern_ignores_amounts(self):
+        import re, subprocess
+        sh = open(os.path.join(ROOT, "scripts", "finrez_nightly.sh"), encoding="utf-8").read()
+        m = re.search(r'grep -qE "([^"]+)"', sh); self.assertIsNotNone(m)
+        pattern = m.group(1).replace("\\\\", "\\")
+        def hits(line):
+            return subprocess.run(["grep", "-qE", pattern], input=line, text=True).returncode == 0
+        for line in ("   Ozon  Общий итог   Себестоимость    свод   1 503,00 данные 1 503,00 разница 0.0000", "строк 2504", "−2 504,17", "Оборот 10,502.5"):
+            self.assertFalse(hits(line), line)
+        for line in ("httpx.ProxyError: 503 Service Unavailable", "WB-приёмка вернула код 1: HTTP 502", "httpx.RemoteProtocolError: Server disconnected", "status_code=504"):
+            self.assertTrue(hits(line), line)

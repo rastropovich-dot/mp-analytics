@@ -17,6 +17,31 @@
 
 ---
 
+## 2026-10-22 (день), пятьдесят четвёртая — §1а код (`5083fe7`, 1 398 тестов OK), §1б пробы сети (таблица ниже, путь сети не менялся), §1в ручная сборка книги через launchd запущена 18:02 UTC по слову (результат — ниже, когда кончится), §2 срез 1 000 строк подтверждён (143 дня из 143), §3 (история хранения, слово дано) — после книги; ветка `night-book-net` (worktree `~/mp-analytics-wt/54`, от `main ce12684`); db_writes 0 пока
+
+### §1а — устойчивость книги к сети (код)
+
+`loaders/net_retry.py`: транзиентный отказ = `httpx.TransportError` (ProxyError, ConnectError, ReadError, RemoteProtocolError, таймауты), `requests.ConnectionError / Timeout`, а также текст с 503 / 502 / 504 / «Server disconnected» / «Connection reset» / «reset by peer» / «57014 statement timeout»; `call()` / `execute()` — 3 попытки с паузой 20 с, не транзиентное — сразу наружу. Подключено: `report_ozon_month.fetch` (каждая страница всех чтений книги и листа месяца), `unit_cost_history.load_rates` (курс), `ozon_ad_bonus.read_bonus_rows` (бонусы), `finrez_nightly_status.write_payload` (итог `finrez_nightly:last` — 21.10 и 22.10 он тоже «не записан»), `report_finrez` — WB-приёмка (`report_finrez_wb.py --check` как subprocess) перезапускается при транзиентном stderr до 3 раз; `finrez_nightly.sh` — до 3 запусков `report_finrez.py` с паузой 20 с, если хвост лога попытки содержит сетевой маркер (лог попытки — `finrez_<stamp>_attempt<N>.log`). Справочные читатели не роняют книгу: курс — «⚠️ курс 1С не прочитан (…) — себестоимость по снимку без поправки по курсу» и дальше (раньше `RuntimeError` из `load_rates` валил сборку), бонусы — строка «не прочитана» (так и было, 53-я). Модуль WB (`report_finrez_wb.py`, аванс) не трогала — сессии ВБ предложен тот же `net_retry.execute` после мержа. **Прокси для процесса не снимается, `env -u` в скрипте нет** (тест это проверяет). 7 тестов (классификация, 3 × 20 с и стоп, не транзиентное сразу, страница книги и бонусов через повтор, курс не роняет, скрипт без `env -u`).
+
+### §1б — пробы сети с этого Mac (18:04 … 18:06 UTC, `curl -m 15`, значений ключей нет; «прокси сессии» = `HTTPS_PROXY=http://HOST:1082` среды Claude, «прокси VPN» = `http://172.16.10.254:1082` из задачи, «напрямую» = `--noproxy '*'`)
+
+| хост | через прокси сессии | через прокси VPN 172.16.10.254:1082 | напрямую |
+|---|---|---|---|
+| `pkrsrwjrlurlfpdyixei.supabase.co` | 404 за 0,8 с (хост отвечает) | 000 за 0,2 с (CONNECT aborted) | 404 за 0,6 с (отвечает) |
+| `api.telegram.org` | 302 за 10,1 с | 000 за 0,4 с | 302 за 1,0 с |
+| `statistics-api.wildberries.ru` | 404 за 1,8 с | 000 | 404 за 2,2 с |
+| `suppliers-api.wildberries.ru` (`/ping`) | 000: CONNECT tunnel failed, 503 | 000: Proxy CONNECT aborted | 000: SSL_ERROR_SYSCALL за 5,1 с |
+| `api-seller.ozon.ru` (`POST /v1/report/info`) | 000: CONNECT tunnel failed, 503 | 000: Proxy CONNECT aborted | 000: SSL_ERROR_SYSCALL за 5,1 с |
+| `api.render.com` (`/v1/services`) | 000: CONNECT tunnel failed, 503 | 000: Proxy CONNECT aborted | 000: SSL_ERROR_SYSCALL за 5,1 с |
+
+Что это значит: (1) **Supabase и Telegram с этого Mac доступны напрямую** — быстрее и без 503; через прокси сессии тоже проходят; (2) прокси `172.16.10.254:1082` в 18:05 UTC не принимал CONNECT ни к одному хосту; в среде launchd его нет: `launchctl getenv https_proxy` пуст, plist задаёт только PATH / LANG, но **системный прокси включён** (`scutil --proxy`: HTTPEnable 1, HTTPSEnable 1, порт 1082) — `requests` его читает как системный прокси macOS; `httpx` читает только переменные среды, а 22.10 в 03:00 httpx шёл через прокси — значит, переменные у процесса были (откуда — не установила, сейчас в `launchctl getenv` пусто); (3) **Ozon Seller API, Render и `suppliers-api.wildberries.ru` в 18:05 UTC были недоступны всеми тремя путями** (напрямую — обрыв TLS за 5 с: VPN-клиент перехватывает трафик к ним и в этот момент рвёт), то есть без VPN-клиента к этим хостам с Mac, видимо, не попасть вовсе, а когда клиент «лежит», лежат и они; к Supabase / Telegram прямой путь, наоборот, надёжнее. Час назад (17:24 … 17:45 UTC) Render и Supabase через прокси сессии отвечали — отказы идут полосами. **Ничего не менялось:** книга ходит как ходила; решение о `env -u` для Supabase / Telegram в `finrez_nightly.sh` — за владельцем (закрыло бы 22.10, но не 21.10: там рвалась WB-приёмка, а WB-хосты без VPN недоступны).
+
+### §2 — срез 1 000 строк в `ozon_daily_sku_total_orders` (KARATOV)
+
+По базе: таблица с 2026-05-05 по 2026-10-21, **143 дня, и все 143 — ровно 1 000 строк** (ни одного дня больше или меньше; 09-03, 09-13, 09-14 отсутствуют — дни без записи). Активных SKU в день у KARATOV ~2 400–2 500 (хранение 20.10: 2 457 SKU с остатком), то есть срез режет больше половины SKU каждый день с мая. Читатели (grep): `reports_ozon_sku_organic.py` (органика — выключена `--skip-organic` с 09-03; «приоритет total source: ozon_daily_sku_total_orders → marketplace_orders»), `reports_ozon_organic_reconciliation_issues.py`, `reports_stock_data_quality_issues.py`, `loaders/ozon_product_identity_loader.py` (карта идентичности SKU); витрина `daily_sku_kpi`, книги и алерт её не читают — на цифры владельца срез не влияет. Досбор истории после мержа починки RBH (`7d5f73e` в `multi-cabinet`): `/v1/analytics/data` — ~2 500 строк в день = 3 страницы; за 143 дня ≈ 430 обращений с паузами (у `analytics/data` 429 с `Retry-After` до 1 126 с у части продавцов — чат) — **нужен ли, решать владельцу**: пока органика выключена, таблицу читают только отчёты качества и карта идентичности.
+
+---
+
 ## 2026-10-21 (ночь), пятьдесят вторая §2 — код НАПИСАН (`4fd0cb6`, 1 376 тестов OK), ПЛАН ждёт слова: (1) миграция через `db_migrate` (KARATOV → `--cabinet all`, план везде «49 применено / 1 ждёт»), (2) первая запись из сохранённого файла 20.10 `--file … --apply` (5 327 строк), (3) мерж `ozon-placement` → ночь 22.10 — первый отчёт за 21.10 сама; db_writes 0, Seller API — 0 сверх §1
 
 ### Что написано

@@ -55,9 +55,10 @@ def write_payload(payload, client=None):
         from dotenv import load_dotenv
         load_dotenv(os.path.join(ROOT, ".env"))
         from loaders.ozon_fbo_orders_loader import supabase as client
-    client.table("pipeline_runtime_state").upsert(
+    from loaders import net_retry
+    net_retry.execute(client.table("pipeline_runtime_state").upsert(
         {"state_key": STATE_KEY, "state_type": STATE_TYPE, "account_signature": None, "payload": payload, "updated_at": payload["finished_at"]},
-        on_conflict="state_key").execute()
+        on_conflict="state_key"), "finrez_nightly:last")   # 54-я: прокси / обрыв — повтор 3 × 20 с
 
 
 def main(argv=None):

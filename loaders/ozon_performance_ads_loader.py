@@ -2606,6 +2606,17 @@ def classify_expense_type(row, campaign):
     return "advertising_other"
 
 
+def report_text(response):
+    """Текст отчёта из ответа Ozon: многодневные выгрузки приходят gzip (ссылка с gz=true, Content-Type application/gzip,
+    тело 1f 8b) — так пришёл CPO «Все» за 60 дней на РБХ-1 22.10, и csv-читатель падал на «line contains NUL»; однодневные —
+    чистый CSV. Разжимаем по сигнатуре, не по заголовку; BOM снимаем."""
+    body = response.content or b""
+    if body[:2] == b"\x1f\x8b":
+        import gzip
+        body = gzip.decompress(body)
+    return body.decode("utf-8-sig", errors="replace")
+
+
 class OzonPerformanceClient:
     def __init__(self, skip_persistent_state_load=False):
         # Сколько раз пережидали антиспам за этот прогон. В ledger и в отчёт:
@@ -3939,7 +3950,7 @@ class OzonPerformanceClient:
     def download_report_by_link(self, link, uuid=None, return_meta=False):
         if link:
             response = self.request("GET", urljoin(OZON_PERFORMANCE_BASE_URL + "/", link))
-            text = response.text.lstrip("\ufeff")
+            text = report_text(response)
             if text:
                 if return_meta:
                     return text, sanitize_value(dict(response.headers))
@@ -3950,7 +3961,7 @@ class OzonPerformanceClient:
             "/api/client/statistics/report",
             params={"UUID": uuid},
         )
-        text = response.text.lstrip("\ufeff")
+        text = report_text(response)
         if return_meta:
             return text, sanitize_value(dict(response.headers))
         return text

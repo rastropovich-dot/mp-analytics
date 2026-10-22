@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import unittest
+
+import requests
 from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
@@ -35,6 +37,14 @@ ITEMS = [
     item(day="2026-10-14", nm=17641481, chrt=207424128, gi=34440898, barcode="7002899503", price=0.22176, cnt=1),
     item(day="2026-10-14", calc="Сторнирование хранения по складу", price=-0.5, cnt=0),
 ]
+
+
+def ITEMS_FOR(day):
+    """ITEMS с датой day (строки окна истории)."""
+    out = []
+    for it in ITEMS:
+        it = dict(it); it["date"] = day + it["date"][10:]; out.append(it)
+    return out
 
 
 class BuildRowsTests(unittest.TestCase):
@@ -95,6 +105,19 @@ class ApiFlowTests(unittest.TestCase):
         self.assertEqual(calls[0][1], {"dateFrom": "2026-10-13", "dateTo": "2026-10-14"})
         self.assertTrue(calls[1][0].endswith("/tasks/t1/status") and calls[4][0].endswith("/tasks/t1/download"))
         self.assertEqual(self.sleeps, [5, ld.STATUS_POLL_SECONDS, ld.STATUS_POLL_SECONDS])              # пауза перед каждым опросом
+
+    def test_broken_body_on_download_is_retried_like_a_network_error(self):
+        # история 22.10: сеть рвала тело ответа download (ChunkedEncodingError / IncompleteRead) — 6 окон из 21 без повтора
+        answers = [requests.exceptions.ChunkedEncodingError("IncompleteRead"), Resp(200, ITEMS)]
+        def fake_get(url, headers=None, params=None, timeout=None):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        counters = {"requests": 0, "429": 0, "transient": 0}
+        with mock.patch.object(ld.requests, "get", side_effect=fake_get), redirect_stdout(io.StringIO()):
+            items = ld.download("t1", counters, self.sleep)
+        self.assertEqual((len(items), counters["requests"], counters["transient"], self.sleeps), (6, 2, 1, [ld.SLEEP_SECONDS]))
 
     def test_canceled_timeout_and_204(self):
         counters = {"requests": 0, "429": 0, "transient": 0}
@@ -179,6 +202,15 @@ class RunTests(unittest.TestCase):
                 victims = ld.cleanup_raw(date(2026, 10, 15), raw_dir=d)
             self.assertEqual(victims, ["2026-08-01_2026-08-08.json", "2026-09-01_2026-09-08.json"])
             self.assertEqual(sorted(os.listdir(d)), ["2026-10-07_2026-10-14.json", "other.txt"])
+
+    def test_keep_raw_skips_retention_for_history_windows(self):
+        # история по слову (22.10): окно 28.04 … 05.05 старше ретенции — без --keep-raw его сырьё стёрлось бы сразу после сохранения
+        for keep in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                with mock.patch.object(ld, "fetch_window", return_value=("t9", ITEMS_FOR("2026-04-28"))), redirect_stdout(io.StringIO()):
+                    p = ld.run(FakeSB(), today=date(2026, 10, 22), raw_dir=d, date_from="2026-04-28", date_to="2026-05-05", keep_raw=keep)
+                self.assertEqual(os.path.exists(os.path.join(d, "2026-04-28_2026-05-05.json")), keep)
+                self.assertEqual(p["written"], 3)                                          # все строки в одном дне — 3 ключа
 
     def test_save_and_load_raw(self):
         with tempfile.TemporaryDirectory() as d:

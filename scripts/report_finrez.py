@@ -49,6 +49,7 @@ import cabinet  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 import report_ozon_month as rep  # noqa: E402
 from loaders import ozon_ad_bonus  # noqa: E402
+from loaders import net_retry  # noqa: E402
 from loaders import ozon_finance_accrual as accrual_mod  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402
 import ozon_product_catalog as catalog_rules  # noqa: E402
@@ -1910,6 +1911,12 @@ def main(argv=None):
             cmd = [sys.executable, os.path.join(ROOT, "scripts", "report_finrez_wb.py"), "--month-from", mf, "--month-to", mt, "--check"] + (["--date-to", dt] if dt else [])
             print(f"\nприёмка WB-листов модулем WB-сессии: {' '.join(os.path.basename(c) if c.endswith('.py') else c for c in cmd[1:])}")
             res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+            for _attempt in range(1, net_retry.TRIES):   # 54-я: приёмка упала от сети (прокси 503 / обрыв) — повтор 3 × 20 с
+                if res.returncode == 0 or not net_retry.text_is_transient(res.stderr):
+                    break
+                print(f"  ⚠️ WB-приёмка: транзиентный отказ сети ({res.stderr.strip().splitlines()[-1][:120] if res.stderr.strip() else 'код ' + str(res.returncode)}) — повтор {_attempt} из {net_retry.TRIES - 1} через {net_retry.PAUSE_SECONDS} с")
+                time.sleep(net_retry.PAUSE_SECONDS)
+                res = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
             lines = [ln for ln in res.stdout.splitlines() if "Мост" in ln or "остаток" in ln.lower() or ln.startswith(("колонка", "Оборот", "Комиссия", "Себестоимость", "Эквайринг", "Выручка", "Логистика", "Реклама", "Прочее", "Фин. рез.")) or ln.startswith("Итого")]
             print("\n".join(lines) if lines else res.stdout[-1500:])
             if res.returncode:

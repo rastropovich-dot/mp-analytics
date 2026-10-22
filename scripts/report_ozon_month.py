@@ -66,6 +66,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 from loaders import ozon_ad_bonus  # noqa: E402
+from loaders import net_retry  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders import unit_cost_history  # noqa: E402
@@ -482,7 +483,7 @@ def fetch(sb, table, select, filters, orders):
             qb = getattr(qb, f[0])(*f[1:])
         for col in orders:
             qb = qb.order(col)
-        res = qb.range(page * 1000, page * 1000 + 999).execute()
+        res = net_retry.execute(qb.range(page * 1000, page * 1000 + 999), f"{table} страница {page}")   # 54-я: прокси / обрыв — повтор 3 × 20 с
         out.extend(res.data)
         if len(res.data) < 1000:
             return out
@@ -536,7 +537,13 @@ def load_rates_for(sb, rates=None):
     False — без курсов (СС снимка, как сорок шестая)."""
     if rates is False or not COST_RATE_K:
         return None
-    return rates if rates is not None else unit_cost_history.load_rates(sb)
+    if rates is not None:
+        return rates
+    try:
+        return unit_cost_history.load_rates(sb)
+    except Exception as exc:  # noqa: BLE001  — 54-я: справочный читатель курса книгу не роняет; СС считается по снимку без поправки
+        print(f"⚠️ курс 1С не прочитан ({type(exc).__name__}: {str(exc)[:160]}) — себестоимость по снимку без поправки по курсу")
+        return None
 
 
 def load_costs(sb, snapshot, rates=None):

@@ -19,6 +19,8 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import requests
+
+NETWORK_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError)   # SSLError / ProxyError — подклассы ConnectionError
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -3323,12 +3325,21 @@ class OzonPerformanceClient:
             "grant_type": "client_credentials",
         }
 
-        response = requests.post(
-            url,
-            json=payload,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=60,
-        )
+        response = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    timeout=60,
+                )
+                break
+            except NETWORK_ERRORS as exc:   # токен — первое обращение прогона; сеть рвётся и здесь (прокси 503, 22.10)
+                if attempt == 3:
+                    raise
+                print(f"Ozon Performance token: network error {type(exc).__name__}, attempt={attempt}, sleep={5 * attempt}s")
+                time.sleep(5 * attempt)
         response.raise_for_status()
 
         data = response.json()
@@ -3373,13 +3384,23 @@ class OzonPerformanceClient:
             # живут внутри request() и снаружи не видны, а лимит они расходуют.
             if classify_statistics_usage_request(method, endpoint) == "poll":
                 self.tally_statistics_poll_request(endpoint.rsplit("/", 1)[-1])
-            response = requests.request(
-                method,
-                url,
-                headers=headers,
-                timeout=120,
-                **kwargs,
-            )
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=120,
+                    **kwargs,
+                )
+            except NETWORK_ERRORS as exc:
+                # Сеть, не ответ Ozon (обрыв TLS, прокси, таймаут): 22.10 на РБХ-1 опрос отчёта умирал на SSLEOFError
+                # после трёх пачек. Повтор с нарастающей паузой в рамках того же профиля попыток; последняя — наружу.
+                if attempt >= int(profile["max_attempts"]):
+                    raise
+                pause = min(30, 5 * attempt)
+                print(f"Ozon Performance network error on {endpoint}: {type(exc).__name__}, attempt={attempt}, sleep={pause}s")
+                time.sleep(pause)
+                continue
 
             if response.status_code == 401 and attempt == 1:
                 log_http_response(endpoint, attempt, response, extra={"reason": "refresh_token"})

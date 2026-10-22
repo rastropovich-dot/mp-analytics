@@ -151,3 +151,31 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetworkErrorTests(unittest.TestCase):
+    def test_network_exception_is_retried_with_growing_pause_then_succeeds(self):
+        import requests
+        calls, slept = [], []
+
+        class Session:
+            def request(self, method, url, **kw):
+                calls.append(url)
+                if len(calls) < 3:
+                    raise requests.exceptions.SSLError("EOF occurred in violation of protocol")
+                return _response(200, {"ok": True})
+        stats = {}
+        r = http_retry.request("GET", "https://x/y", label="t", session=Session(), sleep_fn=slept.append, stats=stats)
+        self.assertEqual((r.status_code, len(calls)), (200, 3))
+        self.assertEqual(slept, [5, 10])                       # 5 × attempt
+        self.assertEqual((stats["net_retries"], stats["requests"]), (2, 3))
+
+    def test_network_exception_on_last_attempt_propagates(self):
+        import requests
+
+        class Session:
+            def request(self, method, url, **kw):
+                raise requests.exceptions.ConnectionError("proxy")
+        with self.assertRaises(requests.exceptions.ConnectionError):
+            http_retry.request("GET", "https://x/y", label="t", session=Session(), sleep_fn=lambda s: None, max_attempts=2)
+

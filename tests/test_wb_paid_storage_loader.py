@@ -37,6 +37,14 @@ ITEMS = [
 ]
 
 
+def ITEMS_FOR(day):
+    """ITEMS с датой day (строки окна истории)."""
+    out = []
+    for it in ITEMS:
+        it = dict(it); it["date"] = day + it["date"][10:]; out.append(it)
+    return out
+
+
 class BuildRowsTests(unittest.TestCase):
     def test_rows_are_rolled_up_by_key_with_sums_and_counts(self):
         rows = ld.build_rows(ITEMS, "2026-10-15T00:30:00+00:00", "task-1", "2026-10-13", "2026-10-14")
@@ -179,6 +187,15 @@ class RunTests(unittest.TestCase):
                 victims = ld.cleanup_raw(date(2026, 10, 15), raw_dir=d)
             self.assertEqual(victims, ["2026-08-01_2026-08-08.json", "2026-09-01_2026-09-08.json"])
             self.assertEqual(sorted(os.listdir(d)), ["2026-10-07_2026-10-14.json", "other.txt"])
+
+    def test_keep_raw_skips_retention_for_history_windows(self):
+        # история по слову (22.10): окно 28.04 … 05.05 старше ретенции — без --keep-raw его сырьё стёрлось бы сразу после сохранения
+        for keep in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                with mock.patch.object(ld, "fetch_window", return_value=("t9", ITEMS_FOR("2026-04-28"))), redirect_stdout(io.StringIO()):
+                    p = ld.run(FakeSB(), today=date(2026, 10, 22), raw_dir=d, date_from="2026-04-28", date_to="2026-05-05", keep_raw=keep)
+                self.assertEqual(os.path.exists(os.path.join(d, "2026-04-28_2026-05-05.json")), keep)
+                self.assertEqual(p["written"], 3)                                          # все строки в одном дне — 3 ключа
 
     def test_save_and_load_raw(self):
         with tempfile.TemporaryDirectory() as d:

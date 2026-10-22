@@ -150,7 +150,8 @@ def main(argv=None):
     ap.add_argument("--services", default=",".join(SERVICES), help="id сервисов Render через запятую (по умолчанию оба cron-сервиса)")
     ap.add_argument("--env", default=".env", help=".env с RENDER_API_KEY (по умолчанию ./.env)")
     ap.add_argument("--apply", action="store_true", help="записать (по слову владельца); без флага — план")
-    ap.add_argument("--wait-live", type=int, default=900, help="с --apply: ждать деплой live до N секунд (0 — не ждать)")
+    ap.add_argument("--wait-live", type=int, default=120, help="с --apply: ждать деплой, созданный после записи, до N секунд (0 — не ждать); "
+                    "у cron-сервисов смена переменной деплоя не создаёт (проверено 22.10) — отсутствие деплоя не отказ, переменная берётся следующим запуском")
     args = ap.parse_args(argv)
     api_key = read_env_value(args.env, "RENDER_API_KEY")
     if not api_key:
@@ -187,7 +188,9 @@ def main(argv=None):
         for sid in written:
             res = wait_live(sid, api_key, started_at, args.wait_live)
             if res is None:
-                print(f"  {SERVICES.get(sid, sid)}: деплой после записи не стал live за {args.wait_live} с"); bad += 1
+                print(f"  {SERVICES.get(sid, sid)}: деплоя после записи нет за {args.wait_live} с — у cron-сервиса переменная применится следующим запуском (прежний деплой остаётся live)")
+            elif res[0] != "live":
+                print(f"  {SERVICES.get(sid, sid)}: деплой {res[0]}, создан {res[1]} — НЕ live"); bad += 1
             else:
                 print(f"  {SERVICES.get(sid, sid)}: деплой {res[0]}, создан {res[1]}, завершён {res[2]}", flush=True)
     print(f"записано сервисов: {len(written)}; расхождений после записи: {bad}")

@@ -5576,6 +5576,16 @@ def guard_cpc_materialization(
     if not should_verify:
         return summary
 
+    if not target_date:
+        # Многодневное окно (--mode full --date-from … --date-to …): целевого дня нет, проверка «строки за день лежат»
+        # по одному дню не о чем (22.10 на РБХ-1 запрос с expense_date = None падал в PostgREST 22007). Прогресс окна
+        # завершён, строк за прогон 0 — называем вслух, не падаем и не валим стадию.
+        summary["verification_performed"] = False
+        summary["downstream_verification"] = {"skipped": "multi-day window: no target_date"}
+        print("Ozon Performance CPC materialization guard: multi-day window, downstream verification skipped "
+              "(progress complete, no rows this run — reset the progress key if rows are expected)")
+        return summary
+
     summary["verification_performed"] = True
     verification = verify_cpc_downstream_materialized(target_date, db_client=db_client)
     summary["downstream_verification"] = verification

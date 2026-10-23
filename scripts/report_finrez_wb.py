@@ -66,6 +66,7 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 
 from loaders import keyset, stale_keys  # noqa: E402
 from loaders import wb_money_rules as rules  # noqa: E402  — удержания по виду, реклама «Баланс», упаковка (WB-14)
+from loaders import wb_ads_allocation as alloc  # noqa: E402  — разнесение рекламы по артикулам (20-я WB)
 import loaders.wb_sales_report_loader as report_loader  # noqa: E402
 import report_wb_month as wbm  # noqa: E402  — те же строки отчёта, СС, реклама и НДС, что у «WB - месяц»
 
@@ -317,26 +318,8 @@ def load_ads_nm_rows(sb, d1, d2):
 
 
 def nm_weights(nm_rows, advert_day=None, which="balance"):
-    """{день: {nmId: вес}} — Σ sum fullstats по кампаниям × доля вида оплаты кампании в этот день (advert_day
-    {(день, advert_id): (Баланс, всего)} из report_wb_month.load_ads_split). which: balance | other | all. Кампания без строки
-    списаний в день считается «Балансом» (как было до WB-14); advert_day нет — веса без долей (all)."""
-    out = defaultdict(lambda: defaultdict(Decimal))
-    for r in nm_rows or ():
-        value = D(r.get("sum"))
-        if value <= 0:
-            continue
-        day = str(r["day"])
-        if which != "all" and advert_day is not None:
-            adv = int(r["advert_id"]) if r.get("advert_id") not in (None, "") else None
-            balance, total = advert_day.get((day, adv), (None, None))
-            if total:
-                frac = (balance / total) if which == "balance" else ((total - balance) / total)
-            else:
-                frac = Decimal(1) if which == "balance" else Z
-            value = value * frac
-        if value > 0:
-            out[day][int(r["nm_id"])] += value
-    return {d: dict(v) for d, v in out.items()}
+    """{день: {nmId: вес}} — с двадцатой WB живёт в loaders.wb_ads_allocation (одно правило на книгу, лист и витрину)."""
+    return alloc.nm_weights(nm_rows, advert_day, which)
 
 
 def load_ads_nm_db(sb, d1, d2, advert_day=None, which="balance"):
@@ -672,20 +655,8 @@ def load_funnel_products(date_from, date_to, sb=None, only_with_orders=False):
 
 
 def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
-    """{(день, nmId): реклама ₽} — списания дня (updSum) × доля номенклатуры из fullstats (Σ по дню = списаниям)."""
-    out = {}
-    for day, shares in (ads_nm_by_day or {}).items():
-        total_day = (ads_by_day or {}).get(day, Z)
-        weights = {nm: v for nm, v in shares.items() if v > 0}
-        total = sum(weights.values(), Z)
-        if not total_day or not total:
-            continue
-        spent = Z
-        ordered = sorted(weights)
-        for nm in ordered[:-1]:
-            share = q(total_day * weights[nm] / total); out[(day, nm)] = share; spent += share
-        out[(day, ordered[-1])] = total_day - spent
-    return out
+    """{(день, nmId): реклама ₽} — списания дня × доля номенклатуры (Σ по дню = списаниям); с двадцатой WB — loaders.wb_ads_allocation."""
+    return alloc.nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day)
 
 
 def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None,

@@ -39,6 +39,17 @@ class Backoff(unittest.TestCase):
         self.assertEqual(seller.seller_retry_sleep_seconds(_response(429, RATE_LIMIT), 7), 32)
         self.assertEqual((seller.SELLER_RETRY_MAX_ATTEMPTS, seller.SELLER_RETRY_CAP_SLEEP_SECONDS), (6, 32))
 
+    def test_total_equal_to_page_size_does_not_stop_paging(self):
+        # analytics/data отдаёт total = размеру страницы (РБХ-1, 21.10: offset 1000 и 2000 — по 1 000 строк при total 1000);
+        # конец — только короткая страница
+        full = {"result": {"data": [{"dimensions": [], "metrics": []}] * 2, "totals": []}}
+        short = {"result": {"data": [{"dimensions": [], "metrics": []}], "totals": []}}
+        pages = [(full, {"offset": 0}), (full, {"offset": 2}), (full, {"offset": 4}), (short, {"offset": 6})]
+        with mock.patch.object(seller, "request_page", side_effect=pages), \
+                mock.patch.object(seller, "parse_rows", side_effect=lambda d: (d["result"]["data"], 2)), mock.patch("builtins.print"):
+            rows, meta = seller.fetch_total_orders("2026-09-21", "2026-09-21", page_size=2, sleep_fn=lambda s: None)
+        self.assertEqual((len(rows), meta["page_count"], meta["total_rows_reported"]), (7, 4, 2))
+
     def test_pages_are_separated_by_a_pause_but_the_first_is_not(self):
         pages = [({"result": {"data": [{"dimensions": [], "metrics": []}] * 2, "totals": []}}, {"offset": 0}),
                  ({"result": {"data": [{"dimensions": [], "metrics": []}] * 2, "totals": []}}, {"offset": 2}),

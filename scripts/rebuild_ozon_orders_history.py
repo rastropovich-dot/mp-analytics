@@ -29,6 +29,8 @@ import json
 import os
 import sys
 import time
+
+import requests
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -46,7 +48,10 @@ from loaders.pipeline_window import in_nightly_run_window as in_night_window, wi
 
 RAW_DIR = cabinet.data_path("postings_raw", prof=CABINET)
 SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
-CHUNK_DAYS = 30
+CHUNK_DAYS = 30            # --chunk-days: у крупного кабинета (РБХ-1 ~1 100 FBO-отправлений в день) окно 30 дней — 300+ страниц
+                            # по offset, глубокие offset-ы отвечают по 120 с; короче окно — мельче offset, страниц столько же
+NET_RETRIES = 3             # повторов сетевого обрыва на одно обращение (ReadTimeout / ConnectionError, в т. ч. прокси)
+NET_PAUSE_SECONDS = 15
 PAGE = 100
 SECONDS_PER_CALL = 2.05       # замер 2026-09-14, FBO /v3, пауза 1,5 с (docs/ozon_postings_migration.md)
 BATCH = 500
@@ -92,6 +97,11 @@ utc_window = rules.utc_window    # одно правило границ на н�
 
 def raw_path(scheme, date_from, date_to):
     return os.path.join(RAW_DIR, f"history_{scheme}_{date_from}_{date_to}.json")
+
+
+def part_path(scheme, since_utc, to_utc):
+    """Кусок сырья одного окна CHUNK_DAYS: прогон, оборвавшийся на сети, при повторе снимает только недостающие куски."""
+    return os.path.join(RAW_DIR, f"part_{scheme}_{since_utc.date().isoformat()}_{to_utc.date().isoformat()}.json")
 
 
 def estimate(date_from):
@@ -143,15 +153,26 @@ def fetch_history(scheme, date_from, date_to):
         return data["postings"]
     if in_night_window(datetime.now(timezone.utc)):
         raise SystemExit(f"окно ночного прогона {window_text()} — не стартую")
-    calls = {"n": 0, "429": 0}
+    calls = {"n": 0, "429": 0, "net": 0}
     orig = http_retry.post
 
     def counted(*a, **kw):
-        calls["n"] += 1
         stats = kw.setdefault("stats", {})        # повторы внутри http_retry тоже 429 — считаем и их
-        r = orig(*a, **kw)
-        calls["429"] += http_retry.count_429(stats, r)
-        return r
+        for attempt in range(1, NET_RETRIES + 2):
+            calls["n"] += 1
+            try:
+                r = orig(*a, **kw)
+            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
+                # Сетевой обрыв (таймаут чтения 120 с, прокси) — не ответ Ozon; http_retry его не повторяет.
+                # Найдено 21.10 на РБХ-1: три сбора подряд падали на 27-й, 43-й и 166-й странице.
+                calls["net"] += 1
+                if attempt > NET_RETRIES:
+                    raise
+                print(f"  сеть: {type(exc).__name__}, попытка {attempt}/{NET_RETRIES}, пауза {NET_PAUSE_SECONDS} с", flush=True)
+                time.sleep(NET_PAUSE_SECONDS)
+                continue
+            calls["429"] += http_retry.count_429(stats, r)
+            return r
     http_retry.post = counted
     if scheme == "fbo":
         import loaders.ozon_fbo_orders_loader as mod
@@ -162,12 +183,20 @@ def fetch_history(scheme, date_from, date_to):
     start, end = utc_window(date_from, date_to)
     postings, seen, t0 = [], {}, time.monotonic()
     cur = start
+    os.makedirs(RAW_DIR, exist_ok=True)
     while cur < end:
         nxt = min(cur + timedelta(days=CHUNK_DAYS), end)
-        batch = get(since=cur, to=nxt)
+        part = part_path(scheme, cur, nxt)
+        if os.path.exists(part):
+            batch = json.load(open(part))["postings"]      # кусок уже снят прошлым, оборвавшимся прогоном — в API не идём
+            print(f"  {scheme} {cur.date()} … {nxt.date()}: {len(batch)} отправлений из {os.path.basename(part)}", flush=True)
+        else:
+            batch = get(since=cur, to=nxt)
+            json.dump({"schema": scheme, "since_utc": cur.isoformat(), "to_utc": nxt.isoformat(), "postings": batch,
+                       "fetched_at": datetime.now(timezone.utc).isoformat()}, open(part, "w"), ensure_ascii=False)
+            print(f"  {scheme} {cur.date()} … {nxt.date()}: {len(batch)} отправлений, обращений всего {calls['n']}, сетевых повторов {calls['net']}", flush=True)
         for p in batch:
             seen[p["posting_number"]] = p   # окна не пересекаются; повтор — последний снимок
-        print(f"  {scheme} {cur.date()} … {nxt.date()}: {len(batch)} отправлений, обращений всего {calls['n']}", flush=True)
         cur = nxt
     http_retry.post = orig
     postings = list(seen.values())
@@ -249,17 +278,20 @@ def plan(date_from, date_to, apply=False, delete_by_month=False):
 
 
 def main():
+    global CHUNK_DAYS
     ap = argparse.ArgumentParser()
     ap.add_argument("--date-from", default="2026-03-28")
     ap.add_argument("--date-to", default=date.today().isoformat())
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--estimate", action="store_true")
     g.add_argument("--fetch", action="store_true")
+    ap.add_argument("--chunk-days", type=int, default=CHUNK_DAYS, help="окно одного запроса списка, дней (по умолчанию 30)")
     g.add_argument("--plan", action="store_true")
     g.add_argument("--apply", action="store_true")
     ap.add_argument("--delete-by-month", action="store_true",
                     help="с --apply: удалять помесячно — запасной путь, если delete одним запросом не уложился в statement_timeout")
     args = ap.parse_args()
+    CHUNK_DAYS = max(1, int(args.chunk_days))
     if args.estimate:
         estimate(args.date_from)
     elif args.fetch:

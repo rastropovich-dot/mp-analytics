@@ -54,6 +54,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(p["days_ok"], [])
         self.assertEqual(len(p["skipped_days"]), 1)
 
+    def test_first_write_flag_lets_an_empty_day_in_and_names_it(self):
+        # --first-write (РБХ §5.4): таблица за день пуста, сырьё строит строки — день в плане как «первая запись», контроль суммы не о чем
+        built = {"2026-05-04": [row("2026-05-04", "1", "other", "3.00")]}
+        p = rb.plan([], built, ["2026-05-04"], first_write=True)
+        self.assertEqual((p["days_ok"], p["skipped_days"], p["first_write_days"]), (["2026-05-04"], [], ["2026-05-04"]))
+        self.assertEqual(len(p["add"]), 1)
+        # день со строками в таблице под флагом по-прежнему под контролем суммы
+        existing = [row("2026-05-06", 7, "other", "1.00", 1)]
+        p2 = rb.plan(existing, {"2026-05-06": [row("2026-05-06", "7", "other", "3.00")]}, ["2026-05-06"], first_write=True)
+        self.assertEqual((p2["days_ok"], len(p2["skipped_days"]), p2["first_write_days"]), ([], 1, []))
+
     def test_key_normalises_sku_to_text(self):
         existing = [row("2026-05-05", 7, "other", "1.00", 1)]
         built = {"2026-05-05": [row("2026-05-05", "7", "other", "1.00")]}

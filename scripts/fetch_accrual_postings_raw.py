@@ -21,6 +21,7 @@
 прогона (loaders/pipeline_window.py) не стартует.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -33,9 +34,10 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
-_PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
+_PROFILE = cabinet.assert_env()   # кабинет (MP_CABINET): .env.<код> поверх общего .env и guard по хосту — ключи Ozon кабинета живут в файле кабинета (найдено 21.10: без overlay by-day отвечал 401 под rbh1)
 import requests  # noqa: E402
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
+from loaders import http_retry  # noqa: E402
 from loaders.pipeline_window import in_nightly_run_window as in_night_window, window_text  # noqa: E402
 
 BYDAY_DIR = cabinet.data_path("accrual_history", prof=_PROFILE)
@@ -47,11 +49,26 @@ CHUNK = 200
 
 def post(path, body, label, counters, max_requests):
     for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
-        time.sleep(PAUSE_SECONDS)
+        time.sleep(counters.get("pause", PAUSE_SECONDS))
         counters["requests"] += 1
         if counters["requests"] > max_requests:
             raise SystemExit(f"обращений уже {counters['requests']} — больше {max_requests}, стоп")
-        r = requests.post(f"{accrual.BASE}{path}", headers=accrual.headers(), json=body, timeout=180)
+        # 429 code 8 сначала снимается повтором по Retry-After (1 с) — как у ночного шага (loaders/http_retry);
+        # антиспам-пауза 60 с — только если не отпустило за MAX_ATTEMPTS. До 21.10 скрипт шёл на 60 с с первого 429,
+        # и у крупного кабинета (РБХ-1) каждое обращение стоило минуту.
+        stats = {}
+        try:
+            r = http_retry.post(f"{accrual.BASE}{path}", label=label, headers=accrual.headers(), json=body, timeout=180, stats=stats)
+        except http_retry.NETWORK_ERRORS as exc:
+            # прокси / TLS не отпустило за повторы http_retry (5 + 10 + 15 с): ждём минуту и пробуем снова — 22.10 обрыв
+            # прокси на ~1 мин стоил 100 обращений; последняя попытка — исключение наружу
+            counters["net"] = counters.get("net", 0) + 1
+            print(f"  {label}: сеть {type(exc).__name__}, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}", flush=True)
+            if attempt >= ANTISPAM_MAX_ATTEMPTS:
+                raise
+            time.sleep(ANTISPAM_PAUSE_SECONDS)
+            continue
+        counters["retry_429"] = counters.get("retry_429", 0) + int(stats.get("retries", 0))
         if r.status_code == 429:
             counters["429"] += 1
             print(f"  {label}: 429, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS} ({r.text[:100]})", flush=True)
@@ -110,11 +127,13 @@ def main():
     ap.add_argument("--date-from", required=True)
     ap.add_argument("--date-to", required=True)
     ap.add_argument("--max-requests", type=int, default=300)
+    ap.add_argument("--pause", type=float, default=PAUSE_SECONDS,
+                    help="пауза между обращениями, с (1,5 по умолчанию; у крупного кабинета accrual/postings пропускает ~8 обращений подряд и затем держит 429 около минуты — 12 с даёт ровный ход, проба 22.10 на РБХ-1)")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
     if in_night_window(now):
         raise SystemExit(f"окно ночного прогона {window_text()} — не стартую")
-    counters = {"requests": 0, "429": 0}
+    counters = {"requests": 0, "429": 0, "pause": float(args.pause)}
     t0 = time.monotonic()
     d, d_to = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)
     numbers, seen, per_day = [], set(), {}
@@ -132,14 +151,24 @@ def main():
         print(f"  {day}: начислений {len(accruals)}, отправлений с продажей {len(sold)} ({where})", flush=True)
         d += timedelta(days=1)
     print(f"by-day: дат {len(per_day)}, из файлов {src['file']}, из API {src['api']}; уникальных отправлений {len(numbers)}", flush=True)
-    result, rows = [], 0
+    result, rows, from_parts = [], 0, 0
+    parts_dir = os.path.join(POSTINGS_DIR, f"parts_{args.date_from}_{args.date_to}")
+    os.makedirs(parts_dir, exist_ok=True)
     for i in range(0, len(numbers), CHUNK):
         chunk = numbers[i:i + CHUNK]
-        data = post("/v1/finance/accrual/postings", {"posting_numbers": chunk},
-                    f"postings {i // CHUNK + 1}/{(len(numbers) + CHUNK - 1) // CHUNK}", counters, args.max_requests)
+        # кусок кэшируется на диске: оборвавшийся прогон при повторе снимает только недостающие (22.10, РБХ-1)
+        part = os.path.join(parts_dir, f"part_{i // CHUNK:04d}_{hashlib.sha1(','.join(chunk).encode()).hexdigest()[:10]}.json")
+        if os.path.exists(part):
+            data = json.load(open(part)); from_parts += 1
+        else:
+            data = post("/v1/finance/accrual/postings", {"posting_numbers": chunk},
+                        f"postings {i // CHUNK + 1}/{(len(numbers) + CHUNK - 1) // CHUNK}", counters, args.max_requests)
+            json.dump(data, open(part, "w"), ensure_ascii=False)
         items = data.get("posting_accruals") or []
         result.extend(items)
         rows += sum(len(it.get("accruals") or []) for it in items)
+    if from_parts:
+        print(f"accrual/postings: кусков из кэша {from_parts} из {(len(numbers) + CHUNK - 1) // CHUNK}")
     got = {it.get("posting_number") for it in result}
     missing = [pn for pn in numbers if pn not in got]
     os.makedirs(POSTINGS_DIR, exist_ok=True)

@@ -36,8 +36,11 @@ OWNER_COEF = {}
 OVERHEAD_PER_DAY = {}
 COST_RATE_K = {}                                    # k по пробам и видам (поправка СС по курсу 1С): косметика — не задано, СС снимка без поправки
 
-COST_SNAPSHOT_DATE = None
-COST_SNAPSHOT_FILE = None
+COST_SNAPSHOT_DATE = "2026-10-15"                 # прайс владельца rbh_cost_20261015.xlsx (дата файла; владелец дату не назвал)
+COST_SNAPSHOT_FILE = "../rbh_costs/rbh_cost_20261015.xlsx"   # относительно DATA_DIR: общий прайс на оба кабинета (data/rbh_costs, вне git)
+COST_PRICE_FORMAT = "rbh"                          # формат файла для load_article_unit_costs.py: loaders/rbh_cost_price.py
+COST_PRICE_VAT_RATE = Decimal("1.22")              # «С-ть до МП» — С НДС (слово 22.10): в unit_cost пишем цена ÷ 1,22, цена с НДС — в unit_cost_uniform
+COST_SOURCE_NOTE = "прайс РБХ 15.10, с НДС ÷ 1,22"   # суффикс к источнику СС в листах и книгах: у РБХ один снимок, продажи раньше него — подпись объясняет
 CATEGORY_TREE_FILE = "ozon_products/category_tree.json"     # относительно DATA_DIR
 CATALOG_FILE = "ozon_products/catalog_latest.json"
 OWNER_PIVOT_FILES = {"ozon_buyouts": "owner_finrez_ozon_buyouts_pivot.xlsx",   # форма книги «Фин рез» — одна на кабинеты

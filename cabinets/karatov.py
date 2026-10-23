@@ -125,6 +125,9 @@ COST_RATE_K = {
 # Файлы данных — имена относительно DATA_DIR (cabinet.data_path).
 COST_SNAPSHOT_DATE = "2026-05-20"                   # снимок 1С (load_article_unit_costs.py:219, report_*_month.py SNAP)
 COST_SNAPSHOT_FILE = "cost_20260520.xlsx"
+COST_PRICE_FORMAT = "1c"                           # файл 1С (лист TDSheet, три offer_id F/S/T) — load_article_unit_costs.py как прежде
+COST_PRICE_VAT_RATE = None                         # себестоимость 1С пишется как есть (без деления); вопрос «с НДС ли она» — вторая задача RBH, в отчёт
+COST_SOURCE_NOTE = None   # суффикс к источнику СС в листах и книгах (unit_cost_history.source_label); None — как раньше
 CATEGORY_TREE_FILE = "ozon_products/category_tree.json"
 CATALOG_FILE = "ozon_products/catalog_latest.json"
 OWNER_PIVOT_FILES = {"ozon_buyouts": "owner_finrez_ozon_buyouts_pivot.xlsx",

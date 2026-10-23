@@ -38,7 +38,9 @@ class ProfileSelectionTests(unittest.TestCase):
         for code in ("rbh1", "rbh2"):   # косметика: ювелирных словарей и констант листов KARATOV в профилях РБХ нет (ответ владельца 09-30)
             p = cabinet.profile(code)
             self.assertEqual((p.BRAND_BY_LETTER, p.OZON_PLATFORMS, p.DISCOUNTER_LETTER, p.OWNER_AFTER_COMMISSION, p.COST_RATE_K, p.OVERHEAD_PER_DAY), ({}, (), None, (), {}, {}))
-            self.assertIsNone(p.COST_SNAPSHOT_FILE)
+            # прайс РБХ (23.10): общий файл на оба кабинета, формат rbh, цены с НДС ÷ 1,22
+            self.assertEqual((p.COST_SNAPSHOT_DATE, p.COST_SNAPSHOT_FILE, p.COST_PRICE_FORMAT, str(p.COST_PRICE_VAT_RATE)),
+                             ("2026-10-15", "../rbh_costs/rbh_cost_20261015.xlsx", "rbh", "1.22"))
 
     def test_unknown_cabinet_exits_with_known_list(self):
         with self.assertRaises(SystemExit) as cm:
@@ -376,7 +378,7 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
 
     def test_ozon_month_platforms_metals_costs_not_set(self):
         rom = self.mods["report_ozon_month"]
-        self.assertEqual((rom.SNAP, rom.PLATFORMS, rom.METALS, rom.COST_RATE_K, rom.OVERHEAD_PER_DAY), (None, (), (), {}, {}))
+        self.assertEqual((rom.SNAP, rom.PLATFORMS, rom.METALS, rom.COST_RATE_K, rom.OVERHEAD_PER_DAY), ("2026-10-15", (), (), {}, {}))   # снимок — прайс РБХ 15.10 (23.10)
         self.assertEqual((rom.platform_of("F1"), rom.metal_of("серьги 925")), (rom.NO_PLATFORM, rom.NO_METAL))
         self.assertIsNone(rom.overhead_for("2026-09-09"))
         self.assertTrue(rom.OUT_DIR.endswith(os.path.join("data", "rbh1", "reports")))

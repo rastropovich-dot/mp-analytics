@@ -65,6 +65,7 @@ ARTICLES = ("Комиссия", "Логистика", "Прочее", "Рекл�
 NO_SKU = "(без SKU)"
 PLATFORM = "Ozon"
 OWNER_COEF = dict(CABINET.OWNER_COEF)        # коэффициенты листа владельца «Коэффициенты» — из профиля; пусто — колонка «образец» пуста
+COST_SOURCE_NOTE = getattr(CABINET, "COST_SOURCE_NOTE", None)   # подпись источника СС: у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22», у KARATOV — None
 MATURE_AGE = 21
 CATALOG_FILE = cabinet.data_path(CABINET.CATALOG_FILE, prof=CABINET)
 OUT_DIR = cabinet.data_path("reports", prof=CABINET)

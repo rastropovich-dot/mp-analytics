@@ -47,6 +47,8 @@ def read_keyset(sb, table, select, day_from, day_to, day_col="day", id_col="nm_i
                 return out
             day_lo = _after(day_lo)
             continue
+        if day_col not in data[-1] or id_col not in data[-1]:
+            raise RuntimeError(f"{table}: ключ страницы ({day_col}, {id_col}) не в select — страницы не продолжить")
         same_day = (str(data[-1][day_col]), data[-1][id_col])
 
 

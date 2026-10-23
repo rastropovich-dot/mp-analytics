@@ -31,8 +31,8 @@ class AllocationTests(unittest.TestCase):
           {"day": "2026-07-03", "advert_id": 1, "nm_id": 11, "sum": "50"}]         # день без списаний — веса есть, денег нет → ничего
 
     def test_scripts_import_the_same_functions(self):
-        import report_finrez_wb as wbfin
-        import report_wb_month as wbm
+        import scripts.report_finrez_wb as wbfin
+        import scripts.report_wb_month as wbm
         self.assertEqual(wbfin.nm_weights(self.NM, alloc.ads_split_of(self.UPD)["advert_day"]), alloc.nm_weights(self.NM, alloc.ads_split_of(self.UPD)["advert_day"]))
         self.assertEqual(wbm.ads_split_of(self.UPD), alloc.ads_split_of(self.UPD))
         self.assertEqual(wbm.row_day({"sale_dt": "2026-09-09T21:30:00+00:00", "rr_date": "2026-09-10"}), "2026-09-10")
@@ -112,6 +112,8 @@ class ShowcaseTests(unittest.TestCase):
             kpi.load_wb_costs()
         self.assertEqual([c[0] for c in calls], [kpi.WB_STORAGE_VIEW, kpi.WB_ADS_NM_VIEW, kpi.WB_REPORT_TABLE])
         self.assertEqual(calls[0][2:4], ("day", "nm_id")); self.assertEqual(calls[1][2:4], ("day", "campaign_nm_key"))
+        for table, select, day_col, id_col, _f in calls:          # dry-run 23.10: id страницы не было в select → KeyError, реклама 0
+            self.assertIn(day_col, select.split(",")); self.assertIn(id_col, select.split(","))
         self.assertEqual(calls[2][2:], ("rr_date", "rrd_id", [("or_", rules.SKU_OTHER_FILTER)]))
 
     def test_ads_loader_allocates_with_the_book_rule_and_names_silent_days(self):

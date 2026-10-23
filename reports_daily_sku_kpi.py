@@ -191,7 +191,7 @@ def load_wb_ads(today=None):
     day_to = (today or date.today()).isoformat()
     try:
         upd_rows = read_all_by_key(WB_ADS_TABLE, ("advert_id", "upd_time"))
-        nm_rows = keyset.read_keyset(supabase, WB_ADS_NM_VIEW, "day,advert_id,nm_id,sum", WB_SOURCES_FROM, day_to, day_col="day", id_col="campaign_nm_key")
+        nm_rows = keyset.read_keyset(supabase, WB_ADS_NM_VIEW, "day,campaign_nm_key,advert_id,nm_id,sum", WB_SOURCES_FROM, day_to, day_col="day", id_col="campaign_nm_key")   # ключ страницы обязан быть в select
     except Exception as exc:  # noqa: BLE001
         SOURCE_READ_FAILURES.append(WB_ADS_TABLE)
         print(f"⚠️ реклама WB не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — ad_spend WB за этот прогон не считается")

@@ -7,6 +7,71 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-23 (день, 10:05 → 10:40 UTC), дополнение 23.10 пп. 1–3: план `render_services_sync` (обращений 0), `origin/main` `d70235c` влит в ветку (один конфликт в тесте, объединение; набор **1 447 OK**), план мержа `multi-cabinet` → `main` со списком того, что уйдёт в прод KARATOV, рецепт CPO — в `docs/checklist.md`; два слова прошу отдельно: (1) `render_services_sync --apply`, (2) мерж
+
+### п. 1 — план `scripts/render_services_sync.py --plan` (к Render не ходил; `--check` / `--apply` — по слову)
+
+| сервис | расписание (UTC) | plan / region / runtime | команда | переменных |
+|---|---|---|---|---|
+| `mp-analytics-rbh1` (РБХ-1, ночь) | `20 0 * * *` | standard / oregon / python | `run_daily_pipeline.py --skip-recovery --skip-organic --skip-telegram --skip-excel --skip-decision --ozon-campaign-selection smart_recent_active --ozon-recent-activity-days 7 …` (= KARATOV) | 13 из 14: `MP_CABINET`, оба флага Selected CPO (`false`) — из блюпринта; 10 ключей — из `.env.rbh1`; `TELEGRAM_BOT_TOKEN` — из общего `.env`; без значения, не создаётся — `OPENAI_API_KEY` (читает только decision layer, выключен) |
+| `mp-analytics-rbh1-telegram-report` (РБХ-1, алерт) | `35 7 * * *` | starter / oregon / python | `alerts_telegram.py` | 11 из 12 (то же без флагов CPO) |
+| `mp-analytics-rbh2` (РБХ-2, ночь) | `25 0 * * *` | standard / oregon / python | то же | 13 из 14 из `.env.rbh2` |
+| `mp-analytics-rbh2-telegram-report` (РБХ-2, алерт) | `40 7 * * *` | starter / oregon / python | `alerts_telegram.py` | 11 из 12 |
+
+Все четыре — `cron_job` из того же репозитория, ветка `main`, `autoDeployTrigger: commit`, **создаются на паузе** (`POST /v1/services` → сразу
+`POST …/suspend`; `resume` в скрипте нет — снятие паузы отдельным словом после мержа). Расписания разведены с KARATOV (`15 0` / `30 7`) на 5 и 10 минут —
+Performance одной организации (если РБХ-1 и РБХ-2 в одной) будет ходить по очереди. «✅ значения всех переменных на месте». **Перед `--apply` нужен
+`RENDER_API_KEY` в общем `.env` worktree — сейчас его там нет (0 строк), скрипт откажет до первого обращения; ключ кладёт владелец (значение не печатаю).**
+Цена `--apply`: 1 `GET /v1/services` + по 2 запроса на сервис = 9 обращений к Render.
+
+### п. 2 — план мержа `multi-cabinet` → `main`
+
+**Состояние ветки.** `origin/main` = `d70235c` (54-я и её довесок, лист хранения WB-18 `810336e`) влит в ветку мержем `2af1f75`: один конфликт —
+`tests/test_cabinet.py`, обе стороны расширяли исключения guard по `SUPABASE_URL` (ветка: `render_services_sync.py` → `management_api_only`;
+`main`: `render_env_sync.py` → `no_database`), взято объединение. **35 коммитов над `main`** (`git log main..HEAD`), рабочее дерево чистое, набор
+**1 447 тестов OK** (3 skipped; было 1 419 + 28 из `main`). Вне `docs/` и `tests/` изменено 20 файлов (+1 096 / −165 строк).
+
+**`sql/`.** Новых файлов в ветке нет: 51 файл на диске = 51 в `origin/main`; `cabinet.sql_files()` считает 50 (без даты в имени
+`ozon_statistics_json_usage_last_24h.sql` — запрос, не миграция), `tests/test_db_migrate.py:203` ждёт **50**. Файл ВБ
+`20261023_create_wb_cost_views_for_kpi.sql` в `main` ещё не пришёл: **кто мержится вторым, поднимает счётчик до 51**; если ВБ первой — я перевливаю
+`main`, поднимаю счётчик и повторяю набор, перед её мержем файл должен лечь в три базы через `db_migrate` (guard ночи). Для KARATOV миграций в этом
+мерже нет — `assert_schema` печатает «применены все 50 файлов».
+
+**Что уходит в прод для KARATOV** (Render деплоит оба сервиса по коммиту в `main`; `MP_CABINET` у них не задан → профиль `karatov`):
+
+| файл | что меняется для ночи KARATOV | коммит |
+|---|---|---|
+| `loaders/http_retry.py` | **сетевые исключения (ConnectionError / SSLError / ProxyError / Timeout / ChunkedEncodingError) повторяются 5 × attempt с, последняя — наружу**; прежде любой обрыв ронял шаг | `3057947` |
+| `loaders/ozon_performance_ads_loader.py` | повторы сети в цикле запроса и на токене (3), gzip-отчёты по сигнатуре (однодневный путь не меняется), guard материализации для многодневного окна, `--skip-cpo` только для `full` (в ночной команде нет) | `3057947`, `7e9f2cb`, `13841c1`, `c35bc83` |
+| `loaders/ozon_sku_total_analytics_loader.py` | **пагинация не останавливается по `total` ответа** — ночной `daily-yesterday` перестанет срезать день до 1 000 строк (54-я: все 143 дня по 1 000; таблица кормит только органику, выключенную `--skip-organic`); первая ночь покажет в логе шага больше страниц и строк за D−1 | `7d5f73e` |
+| `loaders/ozon_finance_accrual.py` | семь типов РБХ в `TYPE_TO_EXPENSE` (12, 30 → logistics; 19 → external_promo; 95 → subscription; 50, 84, 116 → other) — у KARATOV не встречались (леджер 40 типов + 127), нейтрально | `1752638` |
+| `loaders/wb_sales_report_loader.py`, `loaders/wb_sales_funnel_orders_loader.py` | обрыв тела ответа (`ChunkedEncodingError` / `IncompleteRead`) — транзиентный, повтор как при обрыве соединения | `3b2daca`, `d90c225` |
+| `loaders/wb_orders_loader.py`, `scripts/ozon_fbo_orders_step.py`, `scripts/ozon_fbs_orders_step.py` | флаги `--dry-run` / `--days-back` для сухих прогонов §5.3; без флагов поведение прежнее | `da1ec3c` |
+| `scripts/fetch_accrual_history_range.py`, `fetch_accrual_postings_raw.py`, `wb_flag1_raw_capture.py`, `rebuild_ozon_orders_history.py`, `rebuild_ozon_expenses_from_raw.py`, `ozon_product_catalog.py`, `wb_orders_history_restore.py`, новый `seed_sku_catalog_from_products.py` | скрипты истории: overlay `.env.<кабинет>`, кэш окон / кусков, повторы сети, `--pause`, `--first-write`, `--from-files` по файлам, снимки в `data/<кабинет>/snapshots/`; ночью не запускаются | `5a7bf94`, `e74968f`, `d869b4b`, `98e68c3`, `752951f`, `7b0239f`, `b2758c2`, `1d9fe1e`, `2b3f435` |
+| `render.yaml`, `scripts/render_blueprint.py`, `scripts/render_services_sync.py` | описание и создание четырёх сервисов РБХ; на рантайм KARATOV не влияют (Blueprint не подключён) | `2c22eb0`, `216ec4d` |
+| `tests/` (+28 тестов, 1 447), `docs/` | — | |
+
+**Два механизма сетевых повторов** после вливания `main`: `net_retry` (54-я) оборачивает чтения книги / курса / финального статуса — 3 × 20 с на
+транспортных ошибках httpx/requests и 502/503/504; `http_retry` (эта ветка) — слой запросов к Seller API и Performance-клиент. Разные слои, не
+пересекаются по вызовам; предлагаю оставить оба, свести в один — отдельной задачей, не в этом мерже.
+
+**Порядок мержа (по слову):** временный worktree `~/mp-analytics-wt/rbh-merge` на `main` (правило 10-15) → `git merge --no-ff multi-cabinet` →
+полный набор на результате (ожидаю 1 447 OK) → `git push origin main` (VPN рвёт SSH — повторять) → по списку деплоев Render убедиться, что оба
+сервиса KARATOV пересобрались на новом коммите (`build_failed` на таймауте pypi оставляет прежний — 09-28) → `~/mp-analytics` на слитый `main`
+(по слову, как 10-13) → worktree снять. **Первая ночь KARATOV на слитом коде — 24.10:** в логе Render вторая строка «схема: применены все 50 файлов
+sql/», шаг аналитики заказов по SKU — число страниц > 1 за D−1, шаг рекламы — как обычно (CPO «Все» у KARATOV ночью: если и у него `state=ERROR` —
+это сбой Ozon для всех, см. `docs/checklist.md`), «Шаг не выполнен» — 0. **В РБХ ничего не меняется до снятия паузы с сервисов** (п. 4 дополнения, отдельное слово).
+
+### п. 3 — рецепт CPO в `docs/checklist.md` (раздел «CPO «Все» … `state=ERROR` на стороне Ozon», статус OPEN)
+
+Признак с текстом ошибки Ozon, четыре шага: `--skip-cpo` только в `full`, проба `cpo-report-check` через сутки (1 выгрузка), добор `full` без флага
+после сброса ключа `cpc_progress` со снимком (CPC из кэша заданий, submit 0) или `ozon_cpo_one_day.py` по дням, арбитр по типам порознь. В чат
+разработчиков Ozon не пишу. Сообщение Ozon-сессии «Сорок девятая» с вопросом о ночи KARATOV осталось в очереди (сессия офлайн).
+
+**Слова прошу два, отдельно: (1) `render_services_sync.py --check` → `--apply` — после того как `RENDER_API_KEY` ляжет в общий `.env` worktree;
+(2) мерж по порядку выше.** Обращений за этот блок: Render 0, Supabase 0, Ozon/WB 0; db_writes 0.
+
+---
 ## 2026-10-23 (утро, 09:21 → 09:50 UTC), §5.4 rbh2 ЗАВЕРШЁН с одним долгом: O11 — CPC за 60 дней записан (111 выгрузок, 2 491 строка, 1 078 475,07; атрибуция 3 309), **CPO «Все» не собирается — Ozon отдаёт `state=ERROR` «DB::Exception: Missing columns 'bd_ord_contract'» четыре раза подряд, и за 60 дней, и за один день**; для записи CPC без CPO добавлен `--skip-cpo` (только `--mode full`, `c35bc83`, 1 419 тестов OK); O12 витрины 28 911 / 120; алерт за 21.10 строится — Ozon «неполные» только по органике; 19 шагов из 19 пройдены, CPO за окно — долг с рецептом
 
 Будильник сработал 04:35 UTC (задача отключилась), его сообщение до сессии не дошло — продолжено словом владельца в 09:21 UTC. Окно то же: **2026-08-23 … 2026-10-21**.

@@ -1330,6 +1330,16 @@ def parse_args():
     )
     parser.add_argument("--existing-report-uuid")
     parser.add_argument("--debug-sample", action="store_true")
+    parser.add_argument(
+        "--skip-cpo",
+        action="store_true",
+        help=(
+            "Только --mode full: не запрашивать отчёт CPO «Все» (all_sku_promo/orders), записать CPC-строки, "
+            "CPO пометить skipped с причиной skip_cpo_flag (overall_status partial_ads). Для случая, когда отчёт "
+            "падает на стороне Ozon (state=ERROR, 2026-10-23 РБХ-2); CPO за окно добирается позже отдельным "
+            "прогоном. В других режимах — отказ до единого обращения."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2078,6 +2088,24 @@ def empty_stage_status(status="not_started", **extra):
     payload = {"status": status}
     payload.update(extra)
     return payload
+
+
+def cpo_stage_skip_reason(args):
+    """Причина пропуска отчёта CPO «Все» в этом прогоне или None (CPO запрашивается как обычно).
+
+    cpc-backfill пропускает CPO всегда (так было). --skip-cpo допустим только в --mode full — окно истории,
+    когда all_sku_promo/orders у Ozon падает state=ERROR (2026-10-23 РБХ-2: «Missing columns 'bd_ord_contract'»
+    и за 60 дней, и за один день) и без флага CPC-строки не записать вовсе. В ночном daily-yesterday и прочих
+    режимах флаг — отказ, чтобы ночь не писала рекламу без CPO молча.
+    """
+    skip_flag = bool(getattr(args, "skip_cpo", False))
+    if args.mode == "cpc-backfill":
+        return "cpc_backfill_mode"
+    if skip_flag:
+        if args.mode != "full":
+            raise SystemExit(f"--skip-cpo допустим только в --mode full, не в --mode {args.mode}")
+        return "skip_cpo_flag"
+    return None
 
 
 def normalize_batch_indexes(values):
@@ -7148,6 +7176,7 @@ def build_partial_failure_status(
 
 def run():
     args = parse_args()
+    cpo_stage_skip_reason(args)  # --skip-cpo вне --mode full — отказ до единого обращения к Ozon
 
     if args.write_runtime_only and not args.write:
         raise RuntimeError("--write-runtime-only requires --write")
@@ -8532,11 +8561,11 @@ def run():
                 if guard_summary.get("status_override"):
                     run_summary["cpc"]["status"] = guard_summary["status_override"]
 
-    if args.mode == "cpc-backfill":
-        run_summary["cpo"] = empty_stage_status(
-            "skipped",
-            reason="cpc_backfill_mode",
-        )
+    cpo_skip_reason = cpo_stage_skip_reason(args)
+    if cpo_skip_reason:
+        run_summary["cpo"] = empty_stage_status("skipped", reason=cpo_skip_reason)
+        if cpo_skip_reason == "skip_cpo_flag":
+            print("⚠️ CPO «Все» НЕ запрашивается (--skip-cpo): пишутся только CPC-строки; CPO за окно добрать отдельным прогоном")
     else:
         print("Запрашиваем Ozon all_sku_promo orders report")
         try:
@@ -8746,6 +8775,12 @@ def run():
         run_summary["overall_status"] = "success"
     elif run_summary["cpc"]["status"] == "skipped" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"
+    elif (
+        run_summary["cpc"]["status"] in {"success", "success_existing_downstream_verified"}
+        and run_summary["cpo"].get("reason") == "skip_cpo_flag"
+    ):
+        # --skip-cpo в --mode full: CPC записан, CPO не запрашивался — реклама неполная, не «успех»
+        run_summary["overall_status"] = "partial_ads"
     else:
         run_summary["overall_status"] = "failed"
 

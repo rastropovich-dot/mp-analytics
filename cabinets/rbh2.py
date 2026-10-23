@@ -14,7 +14,7 @@ SUPABASE_HOST = "rmeikipzaplqcglhwcue.supabase.co"  # проект mp-analytics-
 DATA_DIR = "data/rbh2"
 LOGS_DIR = "logs/rbh2"
 PROJECT_START = None                                # первая запись — окно 60 дней назад по умолчанию (§5.4)
-BOOK_MONTH_FROM = None                              # первый месяц книги «Фин рез» — после первой записи (finrez_nightly.sh без него не идёт)
+BOOK_MONTH_FROM = "2026-08"                              # первый месяц книги «Фин рез»: август 2026 — первый месяц с данными §5.4 (с 23.08)
 
 BRAND_DEFAULT = "Beautyhome.me"
 BRAND_BY_LETTER = {}
@@ -41,6 +41,8 @@ COST_SNAPSHOT_FILE = "../rbh_costs/rbh_cost_20261015.xlsx"   # относите�
 COST_PRICE_FORMAT = "rbh"                          # формат файла для load_article_unit_costs.py: loaders/rbh_cost_price.py
 COST_PRICE_VAT_RATE = Decimal("1.22")              # «С-ть до МП» — С НДС (слово 22.10): в unit_cost пишем цена ÷ 1,22, цена с НДС — в unit_cost_uniform
 COST_SOURCE_NOTE = "прайс РБХ 15.10, с НДС ÷ 1,22"   # суффикс к источнику СС в листах и книгах: у РБХ один снимок, продажи раньше него — подпись объясняет
+BOOK_BRAND_SOURCE = "price"          # бренд строк книг — из прайса (article_unit_costs.analytics_group, 42 бренда); карточки Ozon везде Beautyhome.me (решение советника 23.10)
+BOOK_CATEGORY_SOURCE = "platform"      # категория строк книг — тип карточки Ozon (ozon_products.type_name) и предмет WB как есть (решение владельца 22.10)
 CATEGORY_TREE_FILE = "ozon_products/category_tree.json"     # относительно DATA_DIR
 CATALOG_FILE = "ozon_products/catalog_latest.json"
 OWNER_PIVOT_FILES = {"ozon_buyouts": "owner_finrez_ozon_buyouts_pivot.xlsx",   # форма книги «Фин рез» — одна на кабинеты

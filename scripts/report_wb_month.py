@@ -793,7 +793,7 @@ def coinvest_by_day(report_rows):
     return acc
 
 
-def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, ads_known=True, platform="all"):
+def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, ads_known=True, platform="all", after_commission=None):
     """Строки листа заказов по дням: K = Σ orderSum × 0,58 / НДС; L = K − Σ orderCount × СС (базовый артикул);
     реклама — только на общем листе (списания по кампаниям на площадки не делятся); P — из отчёта реализации."""
     by = {d: defaultdict(Decimal) for d in days}
@@ -823,7 +823,8 @@ def build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, 
     out = []
     for d in days:
         s, c, vat = by[d], cnt[d], vat_for(d)
-        revenue = None if OWNER_ORDERS_AFTER_COMMISSION is None else s["orders_sum"] * OWNER_ORDERS_AFTER_COMMISSION / vat
+        k = OWNER_ORDERS_AFTER_COMMISSION if after_commission is None else after_commission   # расчётный (1 − комиссия листа), когда константы нет (РБХ)
+        revenue = None if k is None else s["orders_sum"] * k / vat
         margin = None if revenue is None else revenue - s["cogs"]
         ads = (ads_by_day.get(d, Z) / vat) if (ads_known and platform == "all") else None
         ci = coinvest.get(d, {}).get(platform)
@@ -1219,15 +1220,21 @@ def main(argv=None):
         funnel_note = f"воронка по товарам не прочитана: {error}; листы «Заказы WB» не собраны"
     print(funnel_note)
     orders, sheets = [], {}
+    # множитель заказов: константа владельца, а без неё (РБХ) — 1 − комиссия листа (Σ комиссии / Σ оборота выкупов окна), расчётный
+    after_k = OWNER_ORDERS_AFTER_COMMISSION
+    after_note = f"Выручка = Σ orderSum × {OWNER_ORDERS_AFTER_COMMISSION} / НДС (как K владельца)"
+    if after_k is None and total.get("commission_pct") is not None:
+        after_k = (Decimal(1) - total["commission_pct"]).quantize(Decimal("0.0001"))
+        after_note = f"Выручка = Σ orderSum × {after_k} / НДС — расчётный множитель (1 − комиссия листа {total['commission_pct']:.2%}), константа владельца не задана"
     if funnel_rows:
         coinvest = coinvest_by_day(rows)
         for platform, title in PLATFORMS:
-            o_rows = build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, ads_known, platform)
+            o_rows = build_orders_daily(funnel_rows, days, cost_fn, ads_by_day, coinvest, today, ads_known, platform, after_commission=after_k)
             o_total = orders_total_row(o_rows)
             sheets[platform] = o_rows
             o_notes = [f"Источник: воронка продаж WB по товарам (sales-funnel/products, день заказа МСК) — {funnel_note}. Площадка — первая буква артикула: "
                        + (f"`{DISCOUNTER_LETTER}` — Дискаунтер, остальное — Standard" if DISCOUNTER_LETTER else "буква «Дискаунтера» в профиле кабинета не задана, площадки не делятся") + f"; лист «{title}».",
-                       (f"Выручка = Σ orderSum × {OWNER_ORDERS_AFTER_COMMISSION} / НДС (как K владельца)" if OWNER_ORDERS_AFTER_COMMISSION is not None
+                       (after_note if after_k is not None
                         else "Выручка и Маржа пусты: множитель владельца в профиле кабинета не задан") + f"; Себестоимость = Σ orderCount × СС снимка {args.snapshot} по базовому артикулу; "
                        f"без СС {o_total['no_cost_qty']} из {o_total['orders_qty']} заказов ({o_total['no_cost_sum']:,.0f} с НДС); позиций по источникам: "
                        + ", ".join(f"{k} {v}" for k, v in sorted(o_total["cost_sources"].items())) + ".",
@@ -1238,8 +1245,10 @@ def main(argv=None):
     out = args.out or os.path.join(OUT_DIR, f"{CABINET.REPORT_PREFIX}wb_{args.month}_to_{days[-1]}.xlsx")
     write_xlsx(out, args.month, daily, total, notes, orders=orders)
     for title, _r, o_total, _n in orders:
-        print(f"{title} {d1}…{days[-1]}: заказов {o_total['orders_qty']} на {o_total['orders_sum']:,.2f}, выручка {o_total['revenue']:,.2f}, "
-              f"СС {o_total['cogs']:,.2f}, маржа {o_total['margin']:,.2f}" + (f", реклама {o_total['ads']:,.2f}" if o_total["ads"] is not None else "")
+        # выручка и маржа — None, когда множитель владельца (OWNER_ORDERS_AFTER_COMMISSION_WB) в профиле не задан (РБХ, 23.10): печатаем «—», не падаем
+        fmt = lambda v: "—" if v is None else f"{v:,.2f}"  # noqa: E731
+        print(f"{title} {d1}…{days[-1]}: заказов {o_total['orders_qty']} на {fmt(o_total['orders_sum'])}, выручка {fmt(o_total['revenue'])}, "
+              f"СС {fmt(o_total['cogs'])}, маржа {fmt(o_total['margin'])}" + (f", реклама {o_total['ads']:,.2f}" if o_total["ads"] is not None else "")
               + f"; без СС {o_total['no_cost_qty']} заказов")
     ads_text = "—" if total["ads"] is None else f"{total['ads']:,.2f}"
     print(f"итого {d1}…{days[-1]}: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f} ({total['commission_pct']:.2%}), выручка {total['revenue']:,.2f}, "

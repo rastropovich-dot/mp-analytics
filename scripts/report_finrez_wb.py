@@ -62,6 +62,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
+from loaders import unit_cost_history as uch  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import keyset, stale_keys  # noqa: E402
@@ -88,6 +89,9 @@ OWNER_CATEGORIES = tuple(CABINET.OWNER_CATEGORIES)
 CATEGORY_BY_SUBJECT = dict(CABINET.CATEGORY_BY_SUBJECT)
 CATEGORY_OTHER = "прочее"
 CATEGORY_UNKNOWN = "прочее (нет предмета)"
+BRAND_SOURCE = getattr(CABINET, "BOOK_BRAND_SOURCE", "catalog")        # "price" (РБХ): бренд по артикулу из прайса (article_unit_costs.analytics_group)
+CATEGORY_SOURCE = getattr(CABINET, "BOOK_CATEGORY_SOURCE", "owner")    # "platform" (РБХ): предмет WB как есть (решение владельца 22.10)
+PRICE_BRANDS = {}                                                       # vendorCode (lower, strip) → бренд прайса; заполняется в build_rows
 BRAND_LABELS = frozenset({BRAND_DEFAULT, NO_PRODUCT} | set(BRAND_BY_LETTER.values()))
 CATEGORY_LABELS = frozenset(OWNER_CATEGORIES) | {CATEGORY_OTHER, CATEGORY_UNKNOWN, NO_PRODUCT}
 SELECT = wbm.SELECT + ",additional_payment,brand_name"   # в wbm.SELECT с WB-14 уже subject_name и bonus_type_name   # поля «WB - месяц» (мост зовёт его build_daily) + доплаты, предмет, бренд
@@ -166,6 +170,8 @@ def brand_of(vendor_code, funnel_brand=None):
     code = str(vendor_code or "").strip()
     if is_unidentified(code, funnel_brand):
         return NO_PRODUCT
+    if BRAND_SOURCE == "price":
+        return PRICE_BRANDS.get(code.lower(), BRAND_DEFAULT) if code else BRAND_DEFAULT
     if code:
         return BRAND_BY_LETTER.get(code[:1].lower(), BRAND_DEFAULT)
     return BRAND_NORMALIZE.get(str(funnel_brand or "").strip().lower(), BRAND_DEFAULT)
@@ -179,8 +185,10 @@ def brand_rule_text():
 
 
 def category_of(subject_name):
-    if not subject_name:
+    if not subject_name or not str(subject_name).strip():
         return CATEGORY_UNKNOWN
+    if CATEGORY_SOURCE == "platform":
+        return str(subject_name).strip()
     return CATEGORY_BY_SUBJECT.get(subject_name, CATEGORY_OTHER)
 
 
@@ -422,6 +430,9 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     за кэшбэк WB — справочно в ads_cashback (доли номенклатур — fullstats × доля оплаты кампании в день); строки упаковки
     (предмет «Упаковки для украшений») в «Данные» не входят. ads_cashback_by_day / cashback_nm_by_day / advance_rows — для тестов."""
     sb = _sb(sb) if rows is None or costs is None or ads_by_day is None or products is None else sb
+    if BRAND_SOURCE == "price" and not PRICE_BRANDS and sb is not None and hasattr(sb, "table"):
+        PRICE_BRANDS.update(uch.load_brand_map(sb))
+        print(f"бренды WB — из прайса по артикулу поставщика: артикулов с брендом {len(PRICE_BRANDS)}", flush=True)
     d1, d2 = month_bounds(month_from, month_to, date_to)
     rows = load_report_rows(sb, d1, d2, select=BUILD_SELECT) if rows is None else rows
     products = load_product_dictionary(sb, d1, d2) if products is None else products
@@ -1321,7 +1332,7 @@ def main(argv=None):
     cat_ok = set(cat_by_month) == set(by_month_total) and all(cat_by_month[m] == v for m, v in by_month_total.items())
     print(f"Σ категорий по месяцам = общему по месяцам: {'да' if cat_ok else 'НЕТ'} — " + ", ".join(f"{m} {v:,.2f}" for m, v in by_month_total.items()))
     labels_b, labels_c = set(bstats.get("brands", {})), set(bstats.get("categories", {}))
-    labels_ok = labels_b <= BRAND_LABELS and labels_c <= CATEGORY_LABELS
+    labels_ok = (BRAND_SOURCE == "price" or labels_b <= BRAND_LABELS) and (CATEGORY_SOURCE == "platform" or labels_c <= CATEGORY_LABELS)   # прайс / предмет площадки — ярлыки свои
     print(f"ярлыки (WB-9 §2): бренды {sorted(labels_b)} ⊆ владельца — {'да' if labels_b <= BRAND_LABELS else 'НЕТ'}; категории {sorted(labels_c)} ⊆ владельца — "
           f"{'да' if labels_c <= CATEGORY_LABELS else 'НЕТ'}; строк «{CATEGORY_UNKNOWN}» {bstats.get('rows_unknown_category', 0)}; «{UNIDENTIFIED}»: строк отчёта {bstats.get('unidentified', {}).get('rows', 0)}")
     code = 0 if (cat_ok and labels_ok) else 1

@@ -407,6 +407,23 @@ def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, r
     return CostHistory(out, meta=meta, rates=rates, k_table=k_table, source_note=source_note)
 
 
+def load_brand_map(sb, marketplace_code="ozon", page=1000):
+    """{offer_id_norm: analytics_group} по последнему снимку каждого ключа — бренд строк книг у кабинетов с BOOK_BRAND_SOURCE = "price"
+    (прайс РБХ: колонка «Бренд» → analytics_group). Строки без группы не входят. Чтение страницами по ключу (ORDER BY обязателен)."""
+    out, seen_date, start = {}, {}, 0
+    while True:
+        res = (sb.table(TABLE).select("offer_id_norm,snapshot_date,analytics_group").eq("marketplace_code", marketplace_code)
+               .order("offer_id_norm").order("snapshot_date").range(start, start + page - 1).execute())
+        rows = res.data or []
+        for r in rows:
+            n, d = str(r["offer_id_norm"]), str(r["snapshot_date"])
+            if r.get("analytics_group") and d >= seen_date.get(n, ""):
+                out[n], seen_date[n] = str(r["analytics_group"]).strip(), d
+        if len(rows) < page:
+            return out
+        start += page
+
+
 def unit_cost_fn(history, sku2art):
     """unit_cost(sku, day=None, qty=None) для читателей: артикул по карте sku → article (из заказов), ключ — без регистра.
     unit_cost.with_source(sku, day, qty) → (себестоимость, источник) — для строк книг, которые несут источник (сорок шестая §3);

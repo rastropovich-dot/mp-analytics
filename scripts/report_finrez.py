@@ -64,6 +64,10 @@ MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "ию
 ARTICLES = ("Комиссия", "Логистика", "Прочее", "Реклама", "Товарооборот", "Эквайринг")       # порядок колонок владельца
 NO_SKU = "(без SKU)"
 PLATFORM = "Ozon"
+BRAND_SOURCE = getattr(CABINET, "BOOK_BRAND_SOURCE", "catalog")        # "catalog" — карточка / буква артикула (KARATOV); "price" — прайс (РБХ)
+CATEGORY_SOURCE = getattr(CABINET, "BOOK_CATEGORY_SOURCE", "owner")    # "owner" — словарь владельца (KARATOV); "platform" — тип карточки Ozon (РБХ)
+PRICE_BRANDS = {}                                                       # артикул (lower) → бренд прайса; заполняется в main при BRAND_SOURCE == "price"
+NO_TYPE = "(без типа карточки)"
 OWNER_COEF = dict(CABINET.OWNER_COEF)        # коэффициенты листа владельца «Коэффициенты» — из профиля; пусто — колонка «образец» пуста
 COST_SOURCE_NOTE = getattr(CABINET, "COST_SOURCE_NOTE", None)   # подпись источника СС: у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22», у KARATOV — None
 MATURE_AGE = 21
@@ -92,10 +96,18 @@ def days_between(month_from, month_to, date_to=None):
 
 # ---------- справочники ----------
 
+def wb_commission_share(wb_parts):
+    """Доля комиссии WB для заказов: из частей WB (константа владельца или расчётная), а без неё — 1 − константа профиля (тесты, старые части)."""
+    v = (wb_parts or {}).get("commission_share")
+    if v is None and wbfin is not None and wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION is not None:
+        v = Decimal(1) - D(wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION)
+    return v
+
+
 def load_catalog(sb):
     """{sku: {category, brand, metal, name, offer_id}} и источник: table / file / none."""
     try:
-        rows = rep.fetch(sb, "ozon_products", "sku,category,brand,metal,name,offer_id", [], ["sku"])
+        rows = rep.fetch(sb, "ozon_products", "sku,category,brand,metal,name,offer_id,type_name", [], ["sku"])
         return {str(r["sku"]): r for r in rows}, "table"
     except Exception as exc:
         if "ozon_products" not in str(exc) and "PGRST205" not in str(exc) and "42P01" not in str(exc):
@@ -114,8 +126,14 @@ def describe(sku, sku2art, catalog, names):
     c = catalog.get(sku) or {}
     article = c.get("offer_id") or sku2art.get(sku) or ""
     name = c.get("name") or names.get(sku) or ""
-    brand = c.get("brand") or catalog_rules.brand_of(article) or ""
-    category = c.get("category") or catalog_rules.category_by_name(name)
+    if BRAND_SOURCE == "price":                                            # РБХ: бренд прайса по артикулу; нет в прайсе — бренд карточки
+        brand = PRICE_BRANDS.get(str(article).strip().lower()) or c.get("brand") or ""
+    else:
+        brand = c.get("brand") or catalog_rules.brand_of(article) or ""
+    if CATEGORY_SOURCE == "platform":                                      # РБХ: тип карточки Ozon как есть (решение владельца 22.10)
+        category = (c.get("type_name") or "").strip() or NO_TYPE
+    else:
+        category = c.get("category") or catalog_rules.category_by_name(name)
     return brand, category, article, name
 
 
@@ -806,9 +824,20 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
             buyout, buyout_note = {}, f"коэффициент выкупа WB не прочитан: {exc}"
         lap("коэффициент выкупа WB (модуль)")
         print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
+        # комиссия WB для заказов и листа «Коэффициенты»: константа владельца (1 − OWNER_ORDERS_AFTER_COMMISSION_WB), а без неё (РБХ) —
+        # расчётная доля Σ комиссии / Σ продаж по строкам «Данные WB выкупы» окна (с НДС, как в листе месяца)
+        const = wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
+        c_sum = sum((D(r["commission"]) for r in rows if r.get("commission") is not None and r.get("nm_id") is not None), Z)
+        s_sum = sum((D(r["sales"]) for r in rows if r.get("sales") is not None and r.get("nm_id") is not None), Z)
+        if const is not None:
+            commission_share, commission_source = Decimal(1) - D(const), f"константа владельца 1 − {const}"
+        else:
+            commission_share = (c_sum / s_sum).quantize(Decimal("0.0001")) if s_sum else None
+            commission_source = f"расчётная: Σ комиссии {c_sum:,.2f} / Σ продаж {s_sum:,.2f} строк окна (константа владельца не задана)"
+        print(f"  комиссия WB для заказов: {commission_share} — {commission_source}")
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
                 "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings,
-                "storage": storage}
+                "storage": storage, "commission_share": commission_share, "commission_source": commission_source}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -1073,7 +1102,7 @@ def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
     for r in order_rows:
         keep(order_data_row(r, order_commission(coef, r["date"]), comm_all, buyout_all, "Ozon", SHOP, fill=fill_for("Ozon", r["date"])), "Ozon")
     if wb_parts and not wb_parts.get("error"):
-        wb_comm = 1 - wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
+        wb_comm = wb_commission_share(wb_parts)                           # константа владельца или расчётная (РБХ) — см. wb_part
         wb_buyout = (wb_parts.get("buyout") or {}).get("итого")
         wb_buyout = wb_buyout if wb_buyout is not None else Decimal(1)      # нет зрелых месяцев — 100 %, как в блоке WB «Свода»
         ads_in_rows = defaultdict(Decimal)
@@ -1521,7 +1550,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     for j, h in enumerate(["МП", "% выкупа", None, "МП", "Комиссия"], 1):
         if h:
             g.set(1, j, h, bold=True, fill=True)
-    wb_comm = (1 - wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION) if wbfin is not None else None
+    wb_comm = wb_commission_share(wb_parts) if wbfin is not None else None
     wb_rate = (wb_parts or {}).get("buyout") or {}
     wb_details = (wb_parts or {}).get("buyout_details") or {}
     g.set(2, 1, "Ozon"); g.set(2, 2, coef["buyout"].get("все"), "pct")
@@ -1565,7 +1594,12 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
         g.set(r, 1, f"Ozon — {key}"); g.set(r, 2, coef["commission"][key], "pct"); r += 1
     for name, v in OWNER_COEF.get("commission", ()):
         g.set(r, 1, name + " — образец владельца"); g.set(r, 5, v, "pct"); r += 1
-    for n, line in enumerate(notes["coef"], 1):
+    coef_lines = list(notes["coef"])
+    if not OWNER_COEF:
+        coef_lines.append("Коэффициенты этого кабинета — расчётные из данных (констант владельца в профиле нет): % выкупа Ozon — измеренный, "
+                          "% выкупа WB — когорта модуля, комиссия Ozon — Σ комиссии / Σ оборота выкупов, комиссия WB — "
+                          + str((wb_parts or {}).get("commission_source") or "константа владельца не задана") + ".")
+    for n, line in enumerate(coef_lines, 1):
         g.set(r + n, 1, line)
     _grid_sheet(wb, "Коэффициенты", g, widths={1: 44})
     lap("Заказы и Коэффициенты")
@@ -1698,6 +1732,9 @@ def main(argv=None):
     if getattr(unit_cost, "history", None) is not None and unit_cost.history.rates:
         print(f"курс 1С: {unit_cost.history.rates.describe()}" + (" (из csv, не из таблицы)" if args.rates_csv else " (таблица metal_rates_1c)"))
     catalog, catalog_source = load_catalog(sb)
+    if BRAND_SOURCE == "price":
+        PRICE_BRANDS.update(uch.load_brand_map(sb))
+        print(f"бренды строк — из прайса (article_unit_costs.analytics_group): артикулов с брендом {len(PRICE_BRANDS)}, брендов {len(set(PRICE_BRANDS.values()))}")
     names = {}
     for r in buyouts + kpi:
         if r.get("product_name") and str(r["marketplace_sku"]) not in names:

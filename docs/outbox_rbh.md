@@ -7,6 +7,49 @@
 о проверенном; работа в ветке — с `git log main..HEAD`.
 
 ---
+## 2026-10-23 (день, 13:20 → 13:45 UTC), слово выполнено: `RENDER_API_KEY` скопирован скриптом из `~/mp-analytics-wb/.env` (значение не печаталось); **Render live `fb9e185` на обоих сервисах KARATOV подтверждён по API** (деплой 12:50:05 → 12:50:50 UTC, trigger `new_commit`); **четыре сервиса РБХ созданы и стоят на паузе** (`suspended` по GET у всех четырёх), переменных 13 / 11 / 13 / 11 — по плану; `suspend` сразу после создания отвечал 404 — починено повтором с проверкой чтением (`a40ce65`); снятие паузы — отдельным словом
+
+### Ключ
+
+`~/mp-analytics-wb/.env` → `~/mp-analytics-rbh/.env`: одна строка `RENDER_API_KEY=…` (32 символа) дописана скриптом с комментарием-источником; в `.env`
+RBH строк с ключом стало 1; файл в `.gitignore`. `.env` KARATOV не читался.
+
+### Render live KARATOV (`GET /v1/services/{id}/deploys`, 2 чтения)
+
+| сервис | статус | commit | создан → финиш (UTC) | trigger |
+|---|---|---|---|---|
+| `mp-analytics` (crn-d7n7nan7f7vs73fk70kg, ночь) | **live** | `fb9e185` | 12:50:05 → 12:50:50 | new_commit |
+| `mp-analytics-telegram-report` (crn-d7t5ed1j2pic73aiqmog, утро) | **live** | `fb9e185` | 12:50:04 → 12:50:50 | new_commit |
+
+Предыдущие деплои (`d70235c`, `04da6f2`) — `deactivated`. Первая ночь KARATOV на слитом коде — 24.10 00:15 UTC, чек-лист — в блоке мержа выше.
+
+### `render_services_sync` — `--check` → `--apply`
+
+`--check` упал на `ProxyError` прокси Mac на единственном `GET /v1/services` (повторов в скрипте нет; это чтение, `--apply` делает его заново сам).
+`--apply`: `GET /v1/services` (четырёх имён не было) → 4 × `POST /v1/services` (все 201) → 4 × `POST …/suspend` — **все четыре 404**; итог скрипта
+«создано 4, на паузе 0». Разбор через минуту (`GET /v1/services/{id}` × 4): **все четыре уже `suspended`**, повторный `POST …/suspend` — 200 у всех,
+после — снова `suspended`. То есть 404 — гонка сразу после создания (сервис ещё не виден по id), а не отказ паузы; состояние верное.
+
+| сервис | id | расписание (UTC) | plan | переменных (имена, без значений) | состояние | деплой |
+|---|---|---|---|---|---|---|
+| `mp-analytics-rbh1` | crn-dbdljqg473hc73cpp27g | `20 0 * * *` | standard | 13: `APPROVE_OZON_SELECTED_CPO_DAILY_WRITE, ENABLE_OZON_SELECTED_CPO_DAILY, MP_CABINET, OZON_API_KEY, OZON_CLIENT_ID, OZON_PERFORMANCE_CLIENT_ID, OZON_PERFORMANCE_CLIENT_SECRET, OZON_PERFORMANCE_STATE_BACKEND, SUPABASE_SERVICE_KEY, SUPABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WB_API_KEY` | **suspended** | build_in_progress `fb9e185` |
+| `mp-analytics-rbh1-telegram-report` | crn-dbdljr7avr4c73aglmkg | `35 7 * * *` | starter | 11 (те же без двух флагов CPO) | **suspended** | build_in_progress `fb9e185` |
+| `mp-analytics-rbh2` | crn-dbdljs3ncjis73aka8rg | `25 0 * * *` | standard | 13 | **suspended** | build_in_progress `fb9e185` |
+| `mp-analytics-rbh2-telegram-report` | crn-dbdljue7bikc73e254qg | `40 7 * * *` | starter | 11 | **suspended** | build_in_progress `fb9e185` |
+
+Сервис на паузе собирается по коммиту (`autoDeploy yes`), но по расписанию не запускается до `resume`; `resume` в скрипте нет (тест) — **снятие паузы —
+отдельным словом после отчёта**, через панель или `POST /v1/services/{id}/resume` × 4. Обращений к Render за блок: 2 + 1 (check, отказ прокси) + 9
+(apply) + 12 (разбор: 4 GET + 4 POST + 4 GET) + 8 (env-vars + deploys) = **32**; Supabase / Ozon / WB — 0; db_writes 0.
+
+**Починка `a40ce65`:** `suspend_verified` — после 201 `POST …/suspend` повторяется до 5 раз с паузой 5 с, исход «suspended» только когда `GET
+/services/{id}` прочитал `suspended`; в исходе `suspend_attempts`. Тест на гонку (первый POST 404 → второй 200), набор 1 448 OK. На четыре
+созданных сервиса не влияет — они уже на паузе; пригодится следующему кабинету. В `main` — следующим мержем, не срочно.
+
+**Перед снятием паузы (напоминание из плана):** первая ночь РБХ пойдёт в 00:20 / 00:25 UTC по команде KARATOV на коде `main`; `OZON_API_KEY` у РБХ —
+свои ключи кабинетов (не протухший KARATOV); CPO «Все» у РБХ-2 — если Ozon не починил, утро 24.10 покажет `ozon_ads_layer_missing`, рецепт в
+`docs/checklist.md`; алерты уйдут в группу «РБХ · mp-analytics».
+
+---
 ## 2026-10-23 (день, 12:47 → 13:05 UTC), два слова: (2) **мерж `multi-cabinet` → `main` ВЫПОЛНЕН** — `fb9e185` `--no-ff` поверх `d70235c`, набор на результате 1 447 OK, push ~12:55 UTC, `~/mp-analytics` на `fb9e185`; **«Render live» на обоих сервисах KARATOV НЕ ПРОВЕРЕН** — ключа `RENDER_API_KEY` в общем `.env` worktree нет, а `.env` KARATOV я не читаю (§6); (1) **`render_services_sync --apply` НЕ ВЫПОЛНЕН** по той же причине — скрипт отказывает до первого обращения без ключа. Нужен ключ в `~/mp-analytics-rbh/.env` (значение не печатаю), затем оба пункта — тем же словом, без нового
 
 ### (2) мерж — как сделано

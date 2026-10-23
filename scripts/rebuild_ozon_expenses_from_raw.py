@@ -103,12 +103,12 @@ def key_of(r):
     return (r["expense_date"], r["marketplace_code"], str(r["marketplace_sku"] or ""), r["expense_type"])
 
 
-def plan(existing, built, days):
+def plan(existing, built, days, first_write=False):
     """Возвращает словарь плана: по дням — add / rewrite / delete / same, суммы до/после, дни с нарушенным контролем."""
     by_day_existing = defaultdict(dict)
     for r in existing:
         by_day_existing[r["expense_date"]][key_of(r)] = r
-    out = {"add": [], "rewrite": [], "delete": [], "same": 0, "skipped_days": [], "days_ok": [], "no_raw": [],
+    out = {"add": [], "rewrite": [], "delete": [], "same": 0, "skipped_days": [], "days_ok": [], "no_raw": [], "first_write_days": [],
            "by_month": defaultdict(lambda: {"before": defaultdict(Decimal), "after": defaultdict(Decimal), "rows_before": 0, "rows_after": 0})}
     for day in days:
         month = day[:7]
@@ -119,9 +119,11 @@ def plan(existing, built, days):
         new = {key_of(r): r for r in built[day]}
         sum_before = sum((D(r["expense_amount"]) for r in old.values()), Z).quantize(C)
         sum_after = sum((D(r["expense_amount"]) for r in new.values()), Z).quantize(C)
-        if sum_before != sum_after:
+        if sum_before != sum_after and not (first_write and not old):
             out["skipped_days"].append((day, sum_before, sum_after, sum_after - sum_before))
             continue
+        if first_write and not old:
+            out["first_write_days"].append(day)   # --first-write: строк за день в таблице нет — первая запись кабинета, контроль «Σ до = Σ после» не о чем (РБХ §5.4)
         out["days_ok"].append(day)
         m = out["by_month"][month]
         for r in old.values():
@@ -148,6 +150,9 @@ def print_plan(p, d1, d2):
         print(f"  без файла сырья (не трогаю): {', '.join(p['no_raw'][:12])}{' …' if len(p['no_raw']) > 12 else ''}")
     for day, b, a, diff in p["skipped_days"]:
         print(f"  {day}: Σ статей до {b:,.2f} ≠ после {a:,.2f} ({diff:+,.2f}) — день не трогаю: сырьё дня и таблица разошлись (начисления доехали или ушли после ночи, когда день писался)")
+    if p.get("first_write_days"):
+        print(f"  дней без единой строки в таблице — первая запись, контроль суммы дня не применяется: {len(p['first_write_days'])} "
+              f"({p['first_write_days'][0]} … {p['first_write_days'][-1]})")
     print(f"  ключей: добавить {len(p['add'])}, переписать {len(p['rewrite'])}, удалить {len(p['delete'])}, без изменений {p['same']}")
     arts = sorted({a for m in p["by_month"].values() for a in list(m["before"]) + list(m["after"])})
     print(f"\n  {'месяц':8}{'строк до→после':>16}  " + "".join(f"{a[:22]:>24}" for a in arts))
@@ -156,7 +161,11 @@ def print_plan(p, d1, d2):
         print(f"  {month:8}{m['rows_before']:>7} → {m['rows_after']:<6}  " + "".join(f"{m['before'].get(a, Z):>11,.0f}→{m['after'].get(a, Z):<11,.0f}" for a in arts))
     tot_b = sum((v for m in p["by_month"].values() for v in m["before"].values()), Z)
     tot_a = sum((v for m in p["by_month"].values() for v in m["after"].values()), Z)
-    print(f"  Σ всех статей по дням плана: до {tot_b:,.2f}, после {tot_a:,.2f}, разница {tot_a - tot_b:,.2f} (обязана быть 0,00 — контроль по дням)")
+    fw = set(p.get("first_write_days") or [])
+    if fw:
+        print(f"  Σ всех статей по дням плана: до {tot_b:,.2f}, после {tot_a:,.2f} — из них дней первой записи {len(fw)} (контроль «до = после» к ним не применяется)")
+    else:
+        print(f"  Σ всех статей по дням плана: до {tot_b:,.2f}, после {tot_a:,.2f}, разница {tot_a - tot_b:,.2f} (обязана быть 0,00 — контроль по дням)")
     moved = defaultdict(Decimal)
     for m in p["by_month"].values():
         for a in arts:
@@ -204,6 +213,8 @@ def main(argv=None):
     ap.add_argument("--date-from", required=True); ap.add_argument("--date-to", required=True)
     ap.add_argument("--plan", action="store_true"); ap.add_argument("--apply", action="store_true")
     ap.add_argument("--approve-ozon-expenses-write", action="store_true")
+    ap.add_argument("--first-write", action="store_true",
+                    help="дни без единой строки в таблице — писать (первая запись кабинета, РБХ §5.4); без флага такие дни пропускаются контролем суммы")
     args = ap.parse_args(argv)
     if args.apply and not args.approve_ozon_expenses_write:
         raise SystemExit("--apply требует --approve-ozon-expenses-write (слово владельца по плану с числами)")
@@ -213,7 +224,7 @@ def main(argv=None):
           f"свёртка: {len(accrual.TYPE_TO_EXPENSE)} типов TYPE_TO_EXPENSE")
     existing = read_existing(args.date_from, args.date_to)
     print(f"таблица: строк своих статей за окно {len(existing)}")
-    p = plan(existing, built, days)
+    p = plan(existing, built, days, first_write=bool(args.first_write))
     print_plan(p, args.date_from, args.date_to)
     if not args.apply:
         print("\ndb_writes = 0")

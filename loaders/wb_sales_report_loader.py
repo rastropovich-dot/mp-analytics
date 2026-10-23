@@ -94,7 +94,8 @@ FIELDS = (
     ("subjectName", "subject_name", "s"), ("brandName", "brand_name", "s"),
 )
 REQUIRED = ("rrdId", "reportId", "dateFrom", "dateTo", "rrDate", "sellerOperName")
-TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+TRANSIENT = (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+             requests.exceptions.ChunkedEncodingError)   # обрыв тела ответа (IncompleteRead) — тот же класс, что обрыв соединения; 21.10 на РБХ-1 рвался кусок 09-06 … 09-19 дважды
 
 
 def _client():

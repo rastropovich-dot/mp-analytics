@@ -30,6 +30,8 @@ import requests
 MAX_ATTEMPTS = 4
 BASE_SLEEP_SECONDS = 1
 CAP_SLEEP_SECONDS = 10
+NET_BASE_SLEEP_SECONDS = 5       # пауза после сетевого исключения: 5, 10, 15 … с (потолок 30)
+NETWORK_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError)   # SSLError и ProxyError — подклассы ConnectionError
 OZON_RATE_LIMIT_PER_SECOND_CODE = 8
 
 RETRY_429_OZON_RATE_LIMIT = "ozon_code_8"
@@ -112,7 +114,21 @@ def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
     caller = session or requests
     response = None
     for attempt in range(1, max(1, int(max_attempts)) + 1):
-        response = caller.request(method, url, **kwargs)
+        try:
+            response = caller.request(method, url, **kwargs)
+        except NETWORK_ERRORS as exc:
+            # Сеть, не ответ сервера: обрыв TLS (SSLEOFError), прокси, таймаут, оборванное тело. 22.10 на РБХ-1 без
+            # повтора падали и сбор accrual/postings, и опрос отчётов Performance. Повторяем с нарастающей паузой,
+            # последняя попытка — исключение наружу, как раньше.
+            if stats is not None:
+                stats["requests"] = stats.get("requests", 0) + 1
+                stats["net_retries"] = stats.get("net_retries", 0) + 1
+            if attempt >= max_attempts:
+                raise
+            pause = min(CAP_SLEEP_SECONDS * 3, NET_BASE_SLEEP_SECONDS * attempt)
+            print(f"{label}: сеть {type(exc).__name__} attempt={attempt}/{max_attempts} sleep={pause}s")
+            sleep_fn(pause)
+            continue
         if stats is not None:
             stats["requests"] = stats.get("requests", 0) + 1
         retryable, reason = classify(response, retry_429=retry_429)

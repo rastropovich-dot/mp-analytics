@@ -19,6 +19,8 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import requests
+
+NETWORK_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError)   # SSLError / ProxyError — подклассы ConnectionError
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -1328,6 +1330,16 @@ def parse_args():
     )
     parser.add_argument("--existing-report-uuid")
     parser.add_argument("--debug-sample", action="store_true")
+    parser.add_argument(
+        "--skip-cpo",
+        action="store_true",
+        help=(
+            "Только --mode full: не запрашивать отчёт CPO «Все» (all_sku_promo/orders), записать CPC-строки, "
+            "CPO пометить skipped с причиной skip_cpo_flag (overall_status partial_ads). Для случая, когда отчёт "
+            "падает на стороне Ozon (state=ERROR, 2026-10-23 РБХ-2); CPO за окно добирается позже отдельным "
+            "прогоном. В других режимах — отказ до единого обращения."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2078,6 +2090,24 @@ def empty_stage_status(status="not_started", **extra):
     return payload
 
 
+def cpo_stage_skip_reason(args):
+    """Причина пропуска отчёта CPO «Все» в этом прогоне или None (CPO запрашивается как обычно).
+
+    cpc-backfill пропускает CPO всегда (так было). --skip-cpo допустим только в --mode full — окно истории,
+    когда all_sku_promo/orders у Ozon падает state=ERROR (2026-10-23 РБХ-2: «Missing columns 'bd_ord_contract'»
+    и за 60 дней, и за один день) и без флага CPC-строки не записать вовсе. В ночном daily-yesterday и прочих
+    режимах флаг — отказ, чтобы ночь не писала рекламу без CPO молча.
+    """
+    skip_flag = bool(getattr(args, "skip_cpo", False))
+    if args.mode == "cpc-backfill":
+        return "cpc_backfill_mode"
+    if skip_flag:
+        if args.mode != "full":
+            raise SystemExit(f"--skip-cpo допустим только в --mode full, не в --mode {args.mode}")
+        return "skip_cpo_flag"
+    return None
+
+
 def normalize_batch_indexes(values):
     normalized = []
     seen = set()
@@ -2602,6 +2632,17 @@ def classify_expense_type(row, campaign):
         return "advertising_order_other"
 
     return "advertising_other"
+
+
+def report_text(response):
+    """Текст отчёта из ответа Ozon: многодневные выгрузки приходят gzip (ссылка с gz=true, Content-Type application/gzip,
+    тело 1f 8b) — так пришёл CPO «Все» за 60 дней на РБХ-1 22.10, и csv-читатель падал на «line contains NUL»; однодневные —
+    чистый CSV. Разжимаем по сигнатуре, не по заголовку; BOM снимаем."""
+    body = response.content or b""
+    if body[:2] == b"\x1f\x8b":
+        import gzip
+        body = gzip.decompress(body)
+    return body.decode("utf-8-sig", errors="replace")
 
 
 class OzonPerformanceClient:
@@ -3323,12 +3364,21 @@ class OzonPerformanceClient:
             "grant_type": "client_credentials",
         }
 
-        response = requests.post(
-            url,
-            json=payload,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=60,
-        )
+        response = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    timeout=60,
+                )
+                break
+            except NETWORK_ERRORS as exc:   # токен — первое обращение прогона; сеть рвётся и здесь (прокси 503, 22.10)
+                if attempt == 3:
+                    raise
+                print(f"Ozon Performance token: network error {type(exc).__name__}, attempt={attempt}, sleep={5 * attempt}s")
+                time.sleep(5 * attempt)
         response.raise_for_status()
 
         data = response.json()
@@ -3373,13 +3423,23 @@ class OzonPerformanceClient:
             # живут внутри request() и снаружи не видны, а лимит они расходуют.
             if classify_statistics_usage_request(method, endpoint) == "poll":
                 self.tally_statistics_poll_request(endpoint.rsplit("/", 1)[-1])
-            response = requests.request(
-                method,
-                url,
-                headers=headers,
-                timeout=120,
-                **kwargs,
-            )
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=120,
+                    **kwargs,
+                )
+            except NETWORK_ERRORS as exc:
+                # Сеть, не ответ Ozon (обрыв TLS, прокси, таймаут): 22.10 на РБХ-1 опрос отчёта умирал на SSLEOFError
+                # после трёх пачек. Повтор с нарастающей паузой в рамках того же профиля попыток; последняя — наружу.
+                if attempt >= int(profile["max_attempts"]):
+                    raise
+                pause = min(30, 5 * attempt)
+                print(f"Ozon Performance network error on {endpoint}: {type(exc).__name__}, attempt={attempt}, sleep={pause}s")
+                time.sleep(pause)
+                continue
 
             if response.status_code == 401 and attempt == 1:
                 log_http_response(endpoint, attempt, response, extra={"reason": "refresh_token"})
@@ -3918,7 +3978,7 @@ class OzonPerformanceClient:
     def download_report_by_link(self, link, uuid=None, return_meta=False):
         if link:
             response = self.request("GET", urljoin(OZON_PERFORMANCE_BASE_URL + "/", link))
-            text = response.text.lstrip("\ufeff")
+            text = report_text(response)
             if text:
                 if return_meta:
                     return text, sanitize_value(dict(response.headers))
@@ -3929,7 +3989,7 @@ class OzonPerformanceClient:
             "/api/client/statistics/report",
             params={"UUID": uuid},
         )
-        text = response.text.lstrip("\ufeff")
+        text = report_text(response)
         if return_meta:
             return text, sanitize_value(dict(response.headers))
         return text
@@ -5544,6 +5604,16 @@ def guard_cpc_materialization(
     if not should_verify:
         return summary
 
+    if not target_date:
+        # Многодневное окно (--mode full --date-from … --date-to …): целевого дня нет, проверка «строки за день лежат»
+        # по одному дню не о чем (22.10 на РБХ-1 запрос с expense_date = None падал в PostgREST 22007). Прогресс окна
+        # завершён, строк за прогон 0 — называем вслух, не падаем и не валим стадию.
+        summary["verification_performed"] = False
+        summary["downstream_verification"] = {"skipped": "multi-day window: no target_date"}
+        print("Ozon Performance CPC materialization guard: multi-day window, downstream verification skipped "
+              "(progress complete, no rows this run — reset the progress key if rows are expected)")
+        return summary
+
     summary["verification_performed"] = True
     verification = verify_cpc_downstream_materialized(target_date, db_client=db_client)
     summary["downstream_verification"] = verification
@@ -7106,6 +7176,7 @@ def build_partial_failure_status(
 
 def run():
     args = parse_args()
+    cpo_stage_skip_reason(args)  # --skip-cpo вне --mode full — отказ до единого обращения к Ozon
 
     if args.write_runtime_only and not args.write:
         raise RuntimeError("--write-runtime-only requires --write")
@@ -8490,11 +8561,11 @@ def run():
                 if guard_summary.get("status_override"):
                     run_summary["cpc"]["status"] = guard_summary["status_override"]
 
-    if args.mode == "cpc-backfill":
-        run_summary["cpo"] = empty_stage_status(
-            "skipped",
-            reason="cpc_backfill_mode",
-        )
+    cpo_skip_reason = cpo_stage_skip_reason(args)
+    if cpo_skip_reason:
+        run_summary["cpo"] = empty_stage_status("skipped", reason=cpo_skip_reason)
+        if cpo_skip_reason == "skip_cpo_flag":
+            print("⚠️ CPO «Все» НЕ запрашивается (--skip-cpo): пишутся только CPC-строки; CPO за окно добрать отдельным прогоном")
     else:
         print("Запрашиваем Ozon all_sku_promo orders report")
         try:
@@ -8704,6 +8775,12 @@ def run():
         run_summary["overall_status"] = "success"
     elif run_summary["cpc"]["status"] == "skipped" and run_summary["cpo"]["status"] == "success":
         run_summary["overall_status"] = "success"
+    elif (
+        run_summary["cpc"]["status"] in {"success", "success_existing_downstream_verified"}
+        and run_summary["cpo"].get("reason") == "skip_cpo_flag"
+    ):
+        # --skip-cpo в --mode full: CPC записан, CPO не запрашивался — реклама неполная, не «успех»
+        run_summary["overall_status"] = "partial_ads"
     else:
         run_summary["overall_status"] = "failed"
 

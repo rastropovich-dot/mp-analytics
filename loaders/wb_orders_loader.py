@@ -155,8 +155,24 @@ def save_wb_orders(items, days_back=DEFAULT_DAYS_BACK, today=None, observed_at=N
     return {"rows_written": len(rows), "held_rows": len(held), "window_start": window_start.isoformat()}
 
 
-if __name__ == "__main__":
-    run_date = date.today()
-    items = get_wb_orders(days_back=DEFAULT_DAYS_BACK, today=run_date)
+def main(argv=None, fetch=None, save=None, today=None):
+    """Точка входа шага: --days-back (окно, по умолчанию DEFAULT_DAYS_BACK), --dry-run — снять и посчитать, в базу не писать (§5.3 RBH)."""
+    import argparse
+    ap = argparse.ArgumentParser(description="WB: загрузка заказов (statistics/api/v1/supplier/orders)")
+    ap.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK)
+    ap.add_argument("--dry-run", action="store_true", help="снять окно и напечатать счётчики; db_writes = 0")
+    args = ap.parse_args(argv)
+    run_date = today or date.today()
+    items = (fetch or get_wb_orders)(days_back=args.days_back, today=run_date)
     print(f"Получено строк WB orders: {len(items)}")
-    save_wb_orders(items, days_back=DEFAULT_DAYS_BACK, today=run_date)
+    if args.dry_run:
+        rows = list(aggregate_orders(items).values())   # агрегат — словарь по (дата, площадка, sku)
+        print(f"dry-run: окно {args.days_back} дн. с {write_window_start(args.days_back, run_date)}, строк агрегата {len(rows)}, "
+              f"дат {len({r['order_date'] for r in rows})}; db_writes = 0")
+        return 0
+    (save or save_wb_orders)(items, days_back=args.days_back, today=run_date)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

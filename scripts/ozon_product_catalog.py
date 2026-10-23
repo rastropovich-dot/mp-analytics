@@ -232,6 +232,9 @@ def compare(rows, kinds_by_art):
 def load_kinds(sb, offer_ids, snapshot=rep.SNAP):
     norms = sorted({str(o).lower() for o in offer_ids if o})
     out = {}
+    if not snapshot:
+        print("снимок себестоимости 1С у кабинета не задан (COST_SNAPSHOT_DATE) — сверка «карточка против 1С» пропущена")   # РБХ, 21.10
+        return out
     for i in range(0, len(norms), 500):
         res = sb.table("article_unit_costs").select("offer_id_norm,product_kind").eq("snapshot_date", snapshot).in_("offer_id_norm", norms[i:i + 500]).order("offer_id_norm").execute()
         for r in res.data:

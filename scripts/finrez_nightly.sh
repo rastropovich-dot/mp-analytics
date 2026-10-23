@@ -33,8 +33,22 @@ BOOK="$MP_DATA_DIR/reports/${MP_REPORT_PREFIX}ozon_${MONTH_TO}_to_${YESTERDAY}.x
 echo "finrez_nightly: старт $STARTED, окно $MONTH_FROM … $YESTERDAY, книга → $OUT, лог $LOG"
 ARGS=(--month-from "$MONTH_FROM" --month-to "$MONTH_TO" --date-to "$YESTERDAY" --check --check-month "$MONTH_TO" --check-days "$CHECK_DAYS" --out "$OUT")
 if [ -f "$BOOK" ]; then ARGS+=(--book "$BOOK"); else echo "утренней книги $BOOK на диске нет — сверка заказов с ней пропущена"; fi
-venv/bin/python3 scripts/report_finrez.py "${ARGS[@]}"
-RC=$?
+# 54-я §1а: отказ от сети (прокси 503 / обрыв / reset) — транзиентный: до 3 попыток с паузой 20 с, потом шаг не выполнен.
+# Путь сети (прокси) не меняется — только по слову владельца.
+ATTEMPT=1
+while :; do
+  ATTEMPT_LOG="$LOGDIR/finrez_${STAMP}_attempt${ATTEMPT}.log"
+  venv/bin/python3 scripts/report_finrez.py "${ARGS[@]}" 2>&1 | tee "$ATTEMPT_LOG"
+  RC=${pipestatus[1]}
+  if [ "$RC" -eq 0 ] || [ "$ATTEMPT" -ge 3 ]; then break; fi
+  # маркеры — только формы HTTP-статуса и имена сетевых ошибок: голые «503» ловили суммы вроде «1 503,00» в хвосте лога (довесок 54-й)
+  if tail -60 "$ATTEMPT_LOG" | grep -qE "HTTP[/ ]?([12]\.[01] )?50[234]([^0-9,.]|$)|status(_code)? ?[:=]? ?50[234]([^0-9,.]|$)|(^|[^0-9])50[234] (Service Unavailable|Bad Gateway|Gateway Time-?out)|Service Unavailable|Bad Gateway|Gateway Time-?out|Server disconnected|Connection reset|reset by peer|ProxyError|RemoteProtocolError|ReadError|ConnectError|ReadTimeout|ConnectTimeout"; then
+    echo "⚠️ finrez_nightly: попытка $ATTEMPT упала от сети (код $RC) — повтор через 20 с"
+    ATTEMPT=$((ATTEMPT + 1)); sleep 20
+  else
+    break
+  fi
+done
 SECONDS_TOTAL=$(( $(date +%s) - T0 ))
 ERROR=""
 if [ "$RC" -ne 0 ]; then ERROR="report_finrez.py завершился с кодом $RC"; fi

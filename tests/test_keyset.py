@@ -1,7 +1,8 @@
 """loaders.keyset: страницы по (день, id) только индексными запросами — диапазон по дню и «тот же день, id >»."""
 import unittest
+from unittest import mock
 
-from loaders import keyset
+from loaders import keyset, net_retry
 
 
 class FakeSb:
@@ -58,3 +59,41 @@ class KeysetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeysetRetryTests(unittest.TestCase):
+    """20-я WB §0: statement timeout (57014) на странице — повтор через net_retry; не транзиентное — сразу наружу."""
+
+    def _sb(self, fail_times, message):
+        sb = FakeSb([{"day": "2026-09-01", "id": 1}])
+        inner_table, state = sb.table, {"left": fail_times, "attempts": 0}
+
+        def table(name):
+            q = inner_table(name)
+            real = q.execute
+
+            def execute():
+                state["attempts"] += 1
+                if state["left"] > 0:
+                    state["left"] -= 1
+                    raise RuntimeError(message)
+                return real()
+            q.execute = execute
+            return q
+        sb.table = table
+        return sb, state
+
+    def test_statement_timeout_is_retried_and_the_page_comes_back(self):
+        sb, state = self._sb(1, "{'message': 'canceling statement due to statement timeout', 'code': '57014'}")
+        sleeps = []
+        with mock.patch.object(net_retry.time, "sleep", sleeps.append), mock.patch("builtins.print"):
+            out = keyset.read_keyset(sb, "t", "*", "2026-09-01", "2026-09-01", day_col="day", id_col="id")
+        self.assertEqual([r["id"] for r in out], [1])
+        self.assertEqual((state["attempts"], sleeps), (2, [net_retry.PAUSE_SECONDS]))
+
+    def test_non_transient_error_is_raised_at_once(self):
+        sb, state = self._sb(5, "column \"nope\" does not exist")
+        with mock.patch.object(net_retry.time, "sleep", lambda s: self.fail("ждать нельзя")):
+            with self.assertRaises(RuntimeError):
+                keyset.read_keyset(sb, "t", "*", "2026-09-01", "2026-09-01", day_col="day", id_col="id")
+        self.assertEqual(state["attempts"], 1)

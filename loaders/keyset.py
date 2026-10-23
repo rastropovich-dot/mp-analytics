@@ -8,7 +8,16 @@
 Полная страница → продолжаем тот же день; неполная страница в режиме «тот же день» → день исчерпан, переходим к
 диапазону day > D; неполная страница в режиме «диапазон» → всё прочитано. Потолок PostgREST — 1 000 строк на ответ,
 больше просить бессмысленно (how-we-work).
+
+Двадцатая WB (§0 ночи 23.10): первая страница чтения отчёта реализации для когорты упёрлась в statement_timeout (57014) — с
+холодного кэша 6 689 блоков с диска, 5,4 с при потолке 8 с; повтор через 20 с идёт по тёплому кэшу. Поэтому каждая страница —
+через net_retry (3 попытки × 20 с, только транзиентные отказы: таймаут Postgres, сеть, 5xx); не транзиентное — сразу наружу.
 """
+
+try:
+    from loaders import net_retry
+except ImportError:  # запуск из каталога loaders/
+    import net_retry
 
 PAGE = 1_000
 
@@ -28,7 +37,7 @@ def read_keyset(sb, table, select, day_from, day_to, day_col="day", id_col="nm_i
             qb = base().gte(day_col, day_lo).lte(day_col, day_to).order(day_col).order(id_col).limit(page)
         else:
             qb = base().eq(day_col, same_day[0]).gt(id_col, same_day[1]).order(id_col).limit(page)
-        data = qb.execute().data or []
+        data = net_retry.execute(qb, f"{table} страница ({day_col}, {id_col})").data or []   # 20-я WB: 57014 / сеть — повтор 3 × 20 с
         out.extend(data)
         if len(data) < page:
             if same_day is None:

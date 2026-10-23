@@ -788,6 +788,17 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         sb_wb = wbfin.report_loader._client()
         rows = wbfin.build_rows(month_from, month_to, date_to, sb=sb_wb)
         lap("build_rows (отчёт реализации, словарь товаров, реклама по nm)")
+        # комиссия WB для заказов и листа «Коэффициенты»: константа владельца (1 − OWNER_ORDERS_AFTER_COMMISSION_WB), а без неё (РБХ) —
+        # расчётная доля Σ комиссии / Σ продаж по строкам «Данные WB выкупы» окна (с НДС, как в листе месяца)
+        const = wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
+        c_sum = sum((D(r["commission"]) for r in rows if r.get("commission") is not None and r.get("nm_id") is not None), Z)
+        s_sum = sum((D(r["sales"]) for r in rows if r.get("sales") is not None and r.get("nm_id") is not None), Z)
+        if const is not None:
+            commission_share, commission_source = Decimal(1) - D(const), f"константа владельца 1 − {const}"
+        else:
+            commission_share = (c_sum / s_sum).quantize(Decimal("0.0001")) if s_sum else None
+            commission_source = f"расчётная: Σ комиссии {c_sum:,.2f} / Σ продаж {s_sum:,.2f} строк окна (константа владельца не задана)"
+        print(f"  комиссия WB для заказов: {commission_share} — {commission_source}")
         month = wbfin.build_month_sheet(rows)
         split_brand, split_cat = wbfin.build_split(rows, "brand"), wbfin.build_split(rows, "category")
         lap("сводные WB")
@@ -805,7 +816,8 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         costs = wbfin.wbm.load_costs(sb_wb)
         ostats = {}
         # модуль с 2026-09-25 (WB-8 §6) сам не отдаёт пустые строки и кладёт рекламу номенклатуры в строку (updSum дня × доля fullstats)
-        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb, funnel_rows=funnel, costs=costs, stats=ostats)
+        orders = wbfin.orders_rows_for_finrez(d1, d2, sb=sb_wb, funnel_rows=funnel, costs=costs, stats=ostats,
+                                              after_commission=(Decimal(1) - commission_share) if commission_share is not None else None)
         lap("orders_rows_for_finrez")
         if ostats:
             print(f"  заказы WB модулем: строк было {ostats.get('rows_before')}, стало {ostats.get('rows_after')}; Σ orderSum по месяцам до = после: {ostats.get('equal')}")
@@ -824,17 +836,6 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
             buyout, buyout_note = {}, f"коэффициент выкупа WB не прочитан: {exc}"
         lap("коэффициент выкупа WB (модуль)")
         print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
-        # комиссия WB для заказов и листа «Коэффициенты»: константа владельца (1 − OWNER_ORDERS_AFTER_COMMISSION_WB), а без неё (РБХ) —
-        # расчётная доля Σ комиссии / Σ продаж по строкам «Данные WB выкупы» окна (с НДС, как в листе месяца)
-        const = wbfin.wbm.OWNER_ORDERS_AFTER_COMMISSION
-        c_sum = sum((D(r["commission"]) for r in rows if r.get("commission") is not None and r.get("nm_id") is not None), Z)
-        s_sum = sum((D(r["sales"]) for r in rows if r.get("sales") is not None and r.get("nm_id") is not None), Z)
-        if const is not None:
-            commission_share, commission_source = Decimal(1) - D(const), f"константа владельца 1 − {const}"
-        else:
-            commission_share = (c_sum / s_sum).quantize(Decimal("0.0001")) if s_sum else None
-            commission_source = f"расчётная: Σ комиссии {c_sum:,.2f} / Σ продаж {s_sum:,.2f} строк окна (константа владельца не задана)"
-        print(f"  комиссия WB для заказов: {commission_share} — {commission_source}")
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
                 "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings,
                 "storage": storage, "commission_share": commission_share, "commission_source": commission_source}

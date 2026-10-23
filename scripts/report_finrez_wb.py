@@ -700,7 +700,7 @@ def nm_ads_by_day_and_nm(ads_by_day, ads_nm_by_day):
 
 
 def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=None, ads_by_day=None, ads_nm_by_day=None, keep_empty=False, stats=None,
-                           products=None, only_with_orders=True):
+                           products=None, only_with_orders=True, after_commission=None):
     """Заказы WB по (день, nmId) для общего листа «Заказы»: созданные из воронки, выручка по правилу владельца
     (orderSum × 0,58 / НДС, WB-6 §2), СС снимка по базовому артикулу × штуки, реклама номенклатуры (updSum дня × доля
     fullstats); buyout_* воронки — по дню заказа. Пустые строки (orderSum 0, заказов 0, рекламы 0) не отдаются — их в
@@ -751,6 +751,8 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         hist = wbm.as_cost_history(costs)
     out, before, after = [], defaultdict(Decimal), defaultdict(Decimal)
     n_before = 0
+    # множитель заказов: константа владельца, а без неё (РБХ, 23.10) — расчётный от книги (1 − Σ комиссии / Σ продаж окна); нет ни того ни другого — выручка None
+    k_after = wbm.OWNER_ORDERS_AFTER_COMMISSION if after_commission is None else after_commission
     for r in funnel_rows:
         qty = int(r.get("order_count") or 0)
         day = str(r["day"])
@@ -765,7 +767,7 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         out.append({"date": day, "month": month_label(day), "month_no": int(day[5:7]), "platform": PLATFORM, "shop": SHOP, "article": (str(r.get("vendor_code") or "").upper() or None),
                     "nm_id": int(r["nm_id"]), "title": r.get("title"), "brand": brand_of(r.get("vendor_code"), r.get("brand")),
                     "category": category_of(r.get("subject_name")), "orders_qty": qty, "orders_sum": order_sum, "ads": ads,
-                    "revenue": order_sum * wbm.OWNER_ORDERS_AFTER_COMMISSION / vat, "cogs": (cost * qty) if cost is not None else None,
+                    "revenue": (order_sum * k_after / vat) if k_after is not None else None, "cogs": (cost * qty) if cost is not None else None,
                     "no_cost": cost is None and qty > 0, "cost_source": cost_src if cost is not None else "",
                     "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
                     "funnel_cancel_qty": int(r.get("cancel_count") or 0), "funnel_cancel_sum": D(r.get("cancel_sum"))})

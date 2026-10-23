@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Ночная сборка книги «Фин рез» кабинета РБХ-2 (дополнение 23.10 п. 3): после KARATOV (06:00 МСК), ночь Render кабинета кончается ~04:xx МСК.
+         Код — worktree ветки multi-cabinet (~/mp-analytics-rbh; venv — ссылка на основной), профиль — MP_CABINET=rbh2 (.env.rbh2 поверх .env).
+         Установка: cp ops/launchd/com.mp-analytics.rbh2.finrez-nightly.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mp-analytics.rbh2.finrez-nightly.plist
+         Снять: launchctl bootout gui/$(id -u)/com.mp-analytics.rbh2.finrez-nightly. Копия владельцу (FINREZ_COPY_DIR, подпапка rbh2/) — не задана: по слову. -->
+    <key>Label</key>
+    <string>com.mp-analytics.rbh2.finrez-nightly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mihaileliseev/mp-analytics-rbh/scripts/finrez_nightly.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/mihaileliseev/mp-analytics-rbh</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>20</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MP_CABINET</key>
+        <string>rbh2</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>ru_RU.UTF-8</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/mihaileliseev/mp-analytics-rbh/logs/rbh2/finrez_nightly/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mihaileliseev/mp-analytics-rbh/logs/rbh2/finrez_nightly/launchd.err.log</string>
+</dict>
+</plist>

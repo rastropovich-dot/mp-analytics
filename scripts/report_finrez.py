@@ -772,7 +772,26 @@ def check_coinvest_fill(data_rows, days, svods, shares):
 
 # ---------- WB-часть — модулем WB-сессии ----------
 
-def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
+def build_wb_parts(month_from, month_to, date_to, d1, d2, days, tries=None, pause=None, sleep_fn=None):
+    """Листы WB книги с повтором транзиентного отказа сети (дополнение RBH 24.10): ночью 24.10 книга rbh1 потеряла все WB-листы на одном
+    ProxyError 503 за 5,2 с — сборка WB-части повторяется по правилу 54-й (loaders/net_retry: прокси 503 / обрыв / таймаут / 57014 —
+    до tries попыток с паузой pause с), нетранзиентный отказ — сразу оговорка, как прежде. Возвращает части или {"error": …}."""
+    if wbfin is None:
+        return {"error": f"модуль report_finrez_wb не импортирован: {WB_IMPORT_ERROR}"}
+    tries = net_retry.TRIES if tries is None else tries
+    attempts = {"n": 0}
+
+    def once():
+        attempts["n"] += 1
+        return _build_wb_parts_once(month_from, month_to, date_to, d1, d2, days)
+    try:
+        return net_retry.call(once, "WB-часть книги", tries=tries, pause=pause, sleep_fn=sleep_fn)
+    except Exception as exc:  # noqa: BLE001
+        how = f" (попыток {attempts['n']}, отказ транзиентный)" if net_retry.is_transient(exc) else ""
+        return {"error": f"{type(exc).__name__}: {exc}{how}"}
+
+
+def _build_wb_parts_once(month_from, month_to, date_to, d1, d2, days):
     """Листы WB по договору с report_finrez_wb: строки данных, лист выкупов, разрезы, заказы для общего листа. Ошибка — {'error': …}."""
     if wbfin is None:
         return {"error": f"модуль report_finrez_wb не импортирован: {WB_IMPORT_ERROR}"}
@@ -831,7 +850,9 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         # коэффициент выкупа WB — модуль (WB-9): когорта месяца заказа по ₽, только зрелые месяцы (конец месяца + 25 дней ≤ сегодня)
         details, buyout_note = {}, ""
         try:
-            buyout = wbfin.buyout_rate_for_finrez(month_from, month_to, sb=sb_wb, details=details)
+            # с первого полного месяца данных кабинета (профиль BOOK_WB_BUYOUT_MONTH_FROM; РБХ — сентябрь, август — краевой эффект окна)
+            buyout_from = max(month_from, getattr(CABINET, "BOOK_WB_BUYOUT_MONTH_FROM", None) or month_from)
+            buyout = wbfin.buyout_rate_for_finrez(buyout_from, month_to, sb=sb_wb, details=details)
         except Exception as exc:  # noqa: BLE001 — без коэффициента блок WB считается по созданным (выкуп 100 %) и говорит об этом
             buyout, buyout_note = {}, f"коэффициент выкупа WB не прочитан: {exc}"
         lap("коэффициент выкупа WB (модуль)")
@@ -839,8 +860,8 @@ def build_wb_parts(month_from, month_to, date_to, d1, d2, days):
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
                 "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings,
                 "storage": storage, "commission_share": commission_share, "commission_source": commission_source}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"{type(exc).__name__}: {exc}"}
+    except Exception:
+        raise   # решает build_wb_parts: транзиентный отказ — повтор, иначе оговорка в книге
 
 
 def _removed_pivot_orders_wb():

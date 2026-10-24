@@ -127,6 +127,7 @@ COST_SNAPSHOT_DATE = "2026-05-20"                   # снимок 1С (load_art
 COST_SNAPSHOT_FILE = "cost_20260520.xlsx"
 COST_PRICE_FORMAT = "1c"                           # файл 1С (лист TDSheet, три offer_id F/S/T) — load_article_unit_costs.py как прежде
 COST_PRICE_VAT_RATE = None                         # себестоимость 1С пишется как есть (без деления); вопрос «с НДС ли она» — вторая задача RBH, в отчёт
+BOOK_WB_BUYOUT_MONTH_FROM = None   # % выкупа WB (когорта) — с первого месяца книги, как прежде
 COST_SOURCE_NOTE = None   # суффикс к источнику СС в листах и книгах (unit_cost_history.source_label); None — как раньше
 BOOK_BRAND_SOURCE = "catalog"        # бренд строк книг: карточка Ozon / буква артикула (KARATOV)
 BOOK_CATEGORY_SOURCE = "owner"       # категория строк книг: словарь владельца по типу карточки / предмету (KARATOV)

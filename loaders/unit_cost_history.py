@@ -63,11 +63,13 @@ RATE_REASON_TEXT = {"by_rate": "по курсу 1С", "rate_same": "курс с 
 def source_label(snapshot_date, kind, note=None):
     """Источник себестоимости для строки книги: дата снимка, либо «после последнего снимка <дата>» (сорок шестая §3, слово владельца 10-06).
     Для later / earlier / latest — дата снимка с пометкой, почему взят не снимок ≤ дате; без снимка — «нет снимка».
-    note (профиль кабинета COST_SOURCE_NOTE, у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22») — суффикс « · note» ко всем видам, кроме «нет снимка»;
-    параметр, не состояние модуля: один процесс может держать истории разных кабинетов (тесты)."""
-    label = _source_label(snapshot_date, kind)
+    note (профиль кабинета COST_SOURCE_NOTE, у РБХ «прайс РБХ 15.10») — подпись целиком вместо даты и вида снимка (ответ советника 23.10, п. 5:
+    у РБХ один снимок, «ключа нет в снимке ≤ даты, взят более поздний» на каждой строке — шум); «нет снимка» остаётся.
+    Параметр, не состояние модуля: один процесс может держать истории разных кабинетов (тесты)."""
     note = (str(note).strip() or None) if note else None
-    return f"{label} · {note}" if note and snapshot_date is not None else label
+    if note and snapshot_date is not None:
+        return note
+    return _source_label(snapshot_date, kind)
 
 
 def _source_label(snapshot_date, kind):

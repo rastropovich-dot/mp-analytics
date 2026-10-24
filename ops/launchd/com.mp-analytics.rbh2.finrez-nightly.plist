@@ -5,7 +5,7 @@
     <!-- Ночная сборка книги «Фин рез» кабинета РБХ-2 (дополнение 23.10 п. 3): после KARATOV (06:00 МСК), ночь Render кабинета кончается ~04:xx МСК.
          Код — worktree ветки multi-cabinet (~/mp-analytics-rbh; venv — ссылка на основной), профиль — MP_CABINET=rbh2 (.env.rbh2 поверх .env).
          Установка: cp ops/launchd/com.mp-analytics.rbh2.finrez-nightly.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mp-analytics.rbh2.finrez-nightly.plist
-         Снять: launchctl bootout gui/$(id -u)/com.mp-analytics.rbh2.finrez-nightly. Копия владельцу (FINREZ_COPY_DIR, подпапка rbh2/) — не задана: по слову. -->
+         Снять: launchctl bootout gui/$(id -u)/com.mp-analytics.rbh2.finrez-nightly. Копия владельцу — FINREZ_COPY_DIR/rbh2/ (ответ 23.10, п. 3). -->
     <key>Label</key>
     <string>com.mp-analytics.rbh2.finrez-nightly</string>
     <key>ProgramArguments</key>
@@ -26,6 +26,10 @@
     <dict>
         <key>MP_CABINET</key>
         <string>rbh2</string>
+        <!-- копия владельцу (ответ советника 23.10, п. 3): та же папка iCloud «Фин рез», что у KARATOV; finrez_nightly.sh кладёт книгу
+             кабинета в подпапку rbh2/ (создаёт её сама); папки нет — шаг копии даёт ошибку в итоге, книга при этом собрана -->
+        <key>FINREZ_COPY_DIR</key>
+        <string>/Users/mihaileliseev/Library/Mobile Documents/com~apple~CloudDocs/Фин рез</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>LANG</key>

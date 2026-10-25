@@ -470,10 +470,10 @@ ORGANIC_WARNING = "⚠️ БЕЗ ОРГАНИКИ — ТРЕБУЕТ РАЗБО�
 ORGANIC_NOT_COUNTED = "не посчитано: нет органики"
 
 
-def format_ozon_attribution_without_organic(raw_ad_revenue):
-    """Строка атрибуции, когда органики за день нет: рекламная выручка есть, органика и доля рекламы — «не посчитано», не 0."""
-    return (f"Атрибуция: реклама {fmt_money(raw_ad_revenue)} руб., органика — {ORGANIC_NOT_COUNTED}, "
-            f"доля рекламы — {ORGANIC_NOT_COUNTED}.")
+def format_ozon_attribution_without_organic(raw_ad_revenue=None):
+    """Строка атрибуции, когда органики за день нет: выручку рекламных заказов, органику и долю рекламы считает тот же шаг органики
+    (dry-run 23.10: «реклама 0 руб.» у всех трёх кабинетов при тратах на рекламу) — вся строка «не посчитано», не нули."""
+    return f"Атрибуция (рекламные заказы / органика / доля рекламы): {ORGANIC_NOT_COUNTED}."
 
 
 def format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation):

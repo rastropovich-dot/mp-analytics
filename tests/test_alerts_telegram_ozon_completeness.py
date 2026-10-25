@@ -142,8 +142,9 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertTrue(block.startswith("🔵 <b>Ozon вчера</b>\n⚠️ БЕЗ ОРГАНИКИ — ТРЕБУЕТ РАЗБОРА\n"))   # первая строка блока, дословно
         self.assertIn("Заказы: 10 /", block)
         self.assertIn("Реклама: клики", block)
-        self.assertIn("органика — не посчитано: нет органики", block)
+        self.assertIn("Атрибуция (рекламные заказы / органика / доля рекламы): не посчитано: нет органики.", block)
         self.assertNotIn("органика 0", block)
+        self.assertNotIn("Атрибуция: реклама", block)
         self.assertNotIn("данные неполные", block)
 
     def test_completed_day_without_organic_shows_ozon_with_the_caps_line(self):

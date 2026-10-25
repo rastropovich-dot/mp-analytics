@@ -66,8 +66,6 @@ class AmountTests(unittest.TestCase):
         self.assertEqual(log.posting_amount(p), Decimal("26.00"))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class PipelineWiringTests(unittest.TestCase):
@@ -166,3 +164,86 @@ class OrderStepWrappersTests(unittest.TestCase):
         step.run(fbo_module=FakeFbo, log_module=FakeLog, report_module=BrokenReport)
         # отчёт ЛК упал — заказы всё равно записаны (цены покупателя пустые → amount_buyer null), шаг не упал
         self.assertEqual(order, [("build", {}), "save", "dump"])
+
+
+class _CappedQuery:
+    """PostgREST в миниатюре: in_ / order / range и потолок 1 000 строк на ответ — как у живого сервера."""
+    CAP = 1000
+
+    def __init__(self, rows, calls):
+        self.rows, self.calls, self.numbers, self.orders, self.span = rows, calls, None, [], None
+
+    def select(self, _cols): return self
+    def in_(self, _col, values): self.numbers = set(values); return self
+    def order(self, col, desc=False): self.orders.append((col, desc)); return self
+    def range(self, a, b): self.span = (a, b); return self
+
+    def execute(self):
+        self.calls.append(len(self.numbers))
+        out = [r for r in self.rows if r["posting_number"] in self.numbers]
+        for col, desc in reversed(self.orders):
+            out.sort(key=lambda r: r[col], reverse=desc)
+        if self.span is not None:
+            out = out[self.span[0]:self.span[1] + 1]
+        class R: pass
+        res = R(); res.data = out[:self.CAP]
+        return res
+
+
+class _CappedClient:
+    def __init__(self, rows): self.rows, self.calls = rows, []
+    def table(self, _name): return _CappedQuery(self.rows, self.calls)
+
+
+def _history(number, statuses, day0=1):
+    return [{"posting_number": number, "observed_at": f"2026-10-{day0 + i:02d}T01:00:00+00:00", "status": s}
+            for i, s in enumerate(statuses)]
+
+
+class LoadLastStatusTests(unittest.TestCase):
+    """55-я §4: 500 номеров одним запросом без страниц — при 2–8 строках истории ответ упирается в 1 000 строк."""
+
+    def test_posting_with_eight_history_rows_returns_its_latest_status(self):
+        statuses = ["awaiting_packaging", "awaiting_deliver", "delivering", "delivering", "delivering",
+                    "delivering", "delivering", "delivered"]
+        sb = _CappedClient(_history("A-8", statuses))
+        self.assertEqual(log.load_last_status(sb, ["A-8"]), {"A-8": "delivered"})
+
+    def test_tail_of_a_large_batch_is_not_lost(self):
+        """600 отправлений × 3 строки = 1 800 строк: прежний читатель (500 номеров, без range) видел 1 000 строк из 1 500
+        первой пачки, и треть номеров выглядела «впервые»."""
+        rows, numbers = [], []
+        for i in range(600):
+            number = f"P-{i:04d}"
+            numbers.append(number)
+            rows += _history(number, ["awaiting_deliver", "delivering", "delivered" if i % 2 else "cancelled"])
+        sb = _CappedClient(rows)
+        last = log.load_last_status(sb, numbers)
+        self.assertEqual(len(last), 600)
+        self.assertEqual(last["P-0599"], "delivered")
+        self.assertEqual(last["P-0000"], "cancelled")
+        self.assertTrue(all(n <= log.LAST_STATUS_NUMBERS for n in sb.calls))
+
+    def test_pages_are_followed_when_one_batch_exceeds_the_cap(self):
+        """Даже пачка в 100 номеров может перевалить за 1 000 строк (по 12 строк истории) — тогда идёт вторая страница."""
+        rows = []
+        for i in range(100):
+            rows += _history(f"Q-{i:03d}", ["delivering"] * 11 + ["delivered"], day0=1)
+        sb = _CappedClient(rows)
+        last = log.load_last_status(sb, [f"Q-{i:03d}" for i in range(100)])
+        self.assertEqual(set(last.values()), {"delivered"})
+        self.assertEqual(len(last), 100)
+        self.assertEqual(len(sb.calls), 2)          # 1 200 строк — две страницы
+
+    def test_old_reader_shape_would_have_lost_the_tail(self):
+        """Контроль самого теста: один запрос на 500 номеров без range возвращает не все номера."""
+        rows = []
+        for i in range(500):
+            rows += _history(f"R-{i:03d}", ["delivering", "delivering", "delivered"])
+        q = _CappedClient(rows).table("x").select("*").in_("posting_number", [f"R-{i:03d}" for i in range(500)])
+        q = q.order("posting_number").order("observed_at", desc=True)
+        self.assertLess(len({r["posting_number"] for r in q.execute().data}), 500)
+
+
+if __name__ == "__main__":
+    unittest.main()

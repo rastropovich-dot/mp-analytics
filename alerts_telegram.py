@@ -897,9 +897,11 @@ def build_executive_summary(kpi_rows, target_date=None):
 
             ads = get_ozon_ads_breakdown(target_date)
             organic_reconciliation = get_ozon_organic_reconciliation(target_date)
+            # advertising_order_other — CPO «Все» со ставкой вне 5 / 10 % (с 20.10.2026 — 6 %): ставка известна из
+            # отчёта, трата входит в тип 54 и в ad_spend витрины (56-я). «Не распознано» — только тип без ставки
+            # и реклама без типа кампании.
             ads_unknown = (
-                ads["advertising_order_other"]
-                + ads["advertising_order_unknown"]
+                ads["advertising_order_unknown"]
                 + ads["advertising_other"]
             )
             ads_line = (
@@ -907,6 +909,8 @@ def build_executive_summary(kpi_rows, target_date=None):
                 f"заказ 10% {fmt_money(ads['advertising_order_10'])}, "
                 f"заказ 5% {fmt_money(ads['advertising_order_5'])}"
             )
+            if ads["advertising_order_other"] > 0:
+                ads_line += f", заказ другая ставка {fmt_money(ads['advertising_order_other'])}"
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
             ads_line += "."

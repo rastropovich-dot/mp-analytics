@@ -396,6 +396,25 @@ class OzonCompletenessGateTests(unittest.TestCase):
         self.assertIn("Атрибуция:", text)
         self.assertNotIn("данные неполные", text)
 
+    def test_cpo_other_rate_is_named_not_unrecognised(self):
+        """56-я: CPO со ставкой вне 5 / 10 % — «заказ другая ставка», а не «не распознано/прочее»."""
+        kpi_rows = [_kpi_row("wb"), _kpi_row("ozon")]
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={"complete": True, "blockers": []}), \
+            mock.patch.object(alerts, "get_ozon_ads_breakdown", return_value={
+                "advertising_clicks": 1200, "advertising_order_10": 0, "advertising_order_5": 5000,
+                "advertising_order_other": 6000, "advertising_order_unknown": 0, "advertising_other": 0,
+            }), \
+            mock.patch.object(alerts, "get_ozon_organic_reconciliation", return_value={
+                "available": True, "sum_total_orders_revenue": 25000, "sum_ad_orders_revenue": 5000,
+                "sum_organic_orders_revenue": 20000, "status_counts": {"ok": 1}, "warning_count": 0,
+            }), \
+            mock.patch.object(alerts, "get_ozon_ad_bonus_lines", return_value=[]):
+            text = "\n".join(alerts.build_executive_summary(kpi_rows))
+        self.assertIn("заказ другая ставка", text)
+        self.assertNotIn("не распознано", text)
+
     def test_dry_run_does_not_send_or_save_snapshot(self):
         with mock.patch.object(alerts, "build_message", return_value="preview message") as build_message, \
             mock.patch.object(alerts, "send_telegram") as send_telegram, \

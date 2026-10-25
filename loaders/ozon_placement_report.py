@@ -175,13 +175,22 @@ def summary(rows):
 
 # ---------------------------------------------------------------- весь путь
 
-def fetch_report(date_from, date_to, post=None, get=None, sleep_fn=time.sleep, clock=time.monotonic, save_dir=OUT_DIR, log=print):
-    """create → info → скачивание → разбор. → (rows, stats, content). Обращений: 1 + опросы + скачивания."""
+def fetch_report(date_from, date_to, post=None, get=None, sleep_fn=time.sleep, clock=time.monotonic, save_dir=OUT_DIR, log=print,
+                 create_post=None, create_once=False):
+    """create → info → скачивание → разбор. → (rows, stats, content). Обращений: 1 + опросы + скачивания.
+
+    create_once (56-я §4): create уходит ОДНОЙ попыткой, без повторов http_retry (1 / 10 / 10 с) — 24.10 повторы обёртки
+    сами нарушили паузу между create и получили 8 отказов 429 «rate limit per second». Отказ → ReportError, следующий
+    create — не раньше паузы вызывающего (история — ≥ 65 с). info и скачивание повторяются как прежде.
+    """
     post = post or (lambda path, body: http_retry.post(f"{BASE}{path}", label=f"report{path}", headers=headers(), json=body, timeout=120))
+    if create_post is None:
+        create_post = post if not create_once else (lambda path, body: http_retry.post(
+            f"{BASE}{path}", label=f"report{path}", headers=headers(), json=body, timeout=120, max_attempts=1))
     get = get or (lambda url: requests.get(url, timeout=300, allow_redirects=True))
     started = clock()
     stats = {"create": 1, "info": 0, "download": 0, "seconds": 0.0, "bytes": 0}
-    code, _data = create_report(date_from, date_to, post)
+    code, _data = create_report(date_from, date_to, create_post)
     log(f"placement/by-products: create {date_from} … {date_to} → code …{str(code)[-12:]}")
     info, polls, waited = wait_report(code, post, sleep_fn=sleep_fn, clock=clock)
     stats["info"] = polls
@@ -269,6 +278,8 @@ def main(argv=None):
     g.add_argument("--apply", action="store_true", help="писать таблицу, счётчик и итог")
     g.add_argument("--dry-run", action="store_true", help="ничего не писать (по умолчанию)")
     ap.add_argument("--no-state", action="store_true", help="не писать ozon_placement:last / quota")
+    ap.add_argument("--create-once", action="store_true",
+                    help="create одной попыткой, без повторов http_retry (история, 56-я §4); отказ — стоп")
     args = ap.parse_args(argv)
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
@@ -306,7 +317,7 @@ def main(argv=None):
             used = int(quota.get("creates") or 0) if quota.get("day") == today_utc else 0
             if used >= DAILY_LIMIT:
                 raise ReportError(f"лимит отчётов за сутки исчерпан: {used} из {DAILY_LIMIT} (UTC {today_utc}) — create не отправлен")
-            rows, stats, _content = fetch_report(d1, d2)
+            rows, stats, _content = fetch_report(d1, d2, create_once=args.create_once)
             if sb is not None and not args.no_state:
                 new_quota = bump_quota(quota, today_utc)
                 write_state(sb, QUOTA_KEY, "ozon_placement_quota", new_quota)

@@ -31,6 +31,11 @@ EXPENSE_TYPE_BUCKETS = {
     "logistics": "logistics_amount",
     "advertising_clicks": "ad_spend",
     "advertising_order_5": "ad_spend",
+    # CPO «Все» со ставкой вне 5 % (classify_cpo_rate: 9…11 % → _10, остальное → _other). С 20.10.2026 Ozon
+    # ставит 6 % части заказов; тип 54 начислений = CPO 5 % + other + Selected до копейки (56-я, 20 … 23.10),
+    # то есть это трата рекламы, а не «прочее». До 56-й тип падал в прочее как незнакомый.
+    "advertising_order_10": "ad_spend",
+    "advertising_order_other": "ad_spend",
     "advertising_order_selected_cpo": "ad_spend",
     "advertising_other": "ad_spend",
     "other": "other_expenses_amount",

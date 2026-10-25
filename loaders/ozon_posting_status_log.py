@@ -21,6 +21,11 @@ except ImportError:  # вызов как скрипт из корня
     from ozon_fbo_orders_loader import to_local_order_date, posting_price
 
 try:
+    from loaders import net_retry
+except ImportError:  # вызов как скрипт из корня
+    import net_retry
+
+try:
     import cabinet
 except ImportError:  # вызов как скрипт из корня
     import sys as _sys
@@ -29,6 +34,11 @@ except ImportError:  # вызов как скрипт из корня
 RAW_DIR = cabinet.data_path("postings_raw", prof=cabinet.profile())   # сырьё отправлений — в каталоге данных кабинета
 TABLE = "ozon_posting_status_log"
 BATCH = 500
+# Чтение последнего статуса: номеров в одном in_() и строк на страницу. PostgREST отдаёт не больше 1 000 строк на
+# ответ (how-we-work), а у отправления в логе по 2–8 строк истории — 500 номеров одним запросом без страниц теряли
+# хвост пачки (55-я §4: FBO 1 938 из 4 609 «невидимы», previous_status ложно пуст, строки-повторы каждую ночь).
+LAST_STATUS_NUMBERS = 100
+PAGE = 1_000
 
 
 def posting_amount(posting):
@@ -93,16 +103,32 @@ def observation_rows(postings, schema, observed_at, source, last_status):
     return rows, counters
 
 
-def load_last_status(sb, posting_numbers):
-    """Последний известный статус по каждому отправлению из таблицы, батчами по 500."""
-    last = {}
+def load_last_status(sb, posting_numbers, numbers_per_query=LAST_STATUS_NUMBERS, page=PAGE):
+    """Последний известный статус по каждому отправлению из таблицы.
+
+    Пачка номеров → страницы range() с сортировкой по ПОЛНОМУ ключу таблицы (posting_number, observed_at desc):
+    порядок однозначен, следующая страница — пока ответ полный. Ключ (posting_number, observed_at) — первичный;
+    повтор ключа в чтении значит, что страницы съехали, — тогда падать, а не считать «впервые».
+    """
+    last, seen = {}, set()
     numbers = sorted(set(posting_numbers))
-    for i in range(0, len(numbers), BATCH):
-        chunk = numbers[i:i + BATCH]
-        res = (sb.table(TABLE).select("posting_number,observed_at,status")
-               .in_("posting_number", chunk).order("posting_number").order("observed_at", desc=True).execute())
-        for r in res.data:
-            last.setdefault(r["posting_number"], r["status"])   # первый в порядке observed_at desc — последний по времени
+    for i in range(0, len(numbers), numbers_per_query):
+        chunk = numbers[i:i + numbers_per_query]
+        start = 0
+        while True:
+            qb = (sb.table(TABLE).select("posting_number,observed_at,status")
+                  .in_("posting_number", chunk).order("posting_number").order("observed_at", desc=True)
+                  .range(start, start + page - 1))
+            data = net_retry.execute(qb, f"{TABLE} последний статус, страница {start // page}").data or []
+            for r in data:
+                key = (r["posting_number"], r["observed_at"])
+                if key in seen:
+                    raise RuntimeError(f"{TABLE}: повтор ключа {key} в постраничном чтении — страницы съехали")
+                seen.add(key)
+                last.setdefault(r["posting_number"], r["status"])   # первый в порядке observed_at desc — последний по времени
+            if len(data) < page:
+                break
+            start += page
     return last
 
 

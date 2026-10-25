@@ -206,3 +206,17 @@ class RateRuleTests(unittest.TestCase):
         self.assertEqual(r.rate_on("gold585", "2026-09-01"), (D("6600.00"), "2026-09-01"))
         self.assertEqual(r.rate_on("gold585", "2026-05-19"), (None, None))
         self.assertEqual(r.last_picture, "2026-09-30")
+
+
+class SourceNoteTests(unittest.TestCase):
+    def test_source_note_is_a_parameter_not_module_state(self):
+        self.assertEqual(uch.source_label("2026-10-15", "later"), "2026-10-15 (ключа нет в снимке ≤ даты, взят более поздний)")
+        note = "прайс РБХ 15.10"
+        self.assertEqual(uch.source_label("2026-10-15", "later", note), note)       # подпись целиком (ответ 23.10, п. 5)
+        self.assertEqual(uch.source_label("2026-10-15", "exact", note), note)
+        self.assertEqual(uch.source_label(None, "none", note), "нет снимка")
+        self.assertEqual(uch.source_label("2026-10-15", "exact", "  "), "2026-10-15")
+        h = uch.CostHistory({"2026-10-15": {"930281": D("149.06")}}, source_note=note)
+        self.assertEqual(h.cost_pair("930281", "2026-09-10")[2], note)
+        h0 = uch.CostHistory({"2026-10-15": {"930281": D("149.06")}})
+        self.assertEqual(h0.cost_pair("930281", "2026-10-20")[2], "после последнего снимка 2026-10-15")   # день после снимка — правило сорок шестой

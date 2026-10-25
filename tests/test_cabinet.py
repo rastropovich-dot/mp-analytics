@@ -38,7 +38,9 @@ class ProfileSelectionTests(unittest.TestCase):
         for code in ("rbh1", "rbh2"):   # косметика: ювелирных словарей и констант листов KARATOV в профилях РБХ нет (ответ владельца 09-30)
             p = cabinet.profile(code)
             self.assertEqual((p.BRAND_BY_LETTER, p.OZON_PLATFORMS, p.DISCOUNTER_LETTER, p.OWNER_AFTER_COMMISSION, p.COST_RATE_K, p.OVERHEAD_PER_DAY), ({}, (), None, (), {}, {}))
-            self.assertIsNone(p.COST_SNAPSHOT_FILE)
+            # прайс РБХ (23.10): общий файл на оба кабинета, формат rbh, цены с НДС ÷ 1,22
+            self.assertEqual((p.COST_SNAPSHOT_DATE, p.COST_SNAPSHOT_FILE, p.COST_PRICE_FORMAT, str(p.COST_PRICE_VAT_RATE)),
+                             ("2026-10-15", "../rbh_costs/rbh_cost_20261015.xlsx", "rbh", "1.22"))
 
     def test_unknown_cabinet_exits_with_known_list(self):
         with self.assertRaises(SystemExit) as cm:
@@ -376,7 +378,7 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
 
     def test_ozon_month_platforms_metals_costs_not_set(self):
         rom = self.mods["report_ozon_month"]
-        self.assertEqual((rom.SNAP, rom.PLATFORMS, rom.METALS, rom.COST_RATE_K, rom.OVERHEAD_PER_DAY), (None, (), (), {}, {}))
+        self.assertEqual((rom.SNAP, rom.PLATFORMS, rom.METALS, rom.COST_RATE_K, rom.OVERHEAD_PER_DAY), ("2026-10-15", (), (), {}, {}))   # снимок — прайс РБХ 15.10 (23.10)
         self.assertEqual((rom.platform_of("F1"), rom.metal_of("серьги 925")), (rom.NO_PLATFORM, rom.NO_METAL))
         self.assertIsNone(rom.overhead_for("2026-09-09"))
         self.assertTrue(rom.OUT_DIR.endswith(os.path.join("data", "rbh1", "reports")))
@@ -396,7 +398,8 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
         fw = self.mods["report_finrez_wb"]
         self.assertEqual((fw.SHOP, fw.brand_of("t1"), fw.brand_of("", "КОЮЗ Топаз")), ("РБХ-1", "Beautyhome.me", "Beautyhome.me"))
         self.assertEqual(fw.BRAND_LABELS, {"Beautyhome.me", "(без товара)"})
-        self.assertEqual((fw.OWNER_CATEGORIES, fw.category_of("Ювелирные кольца")), ((), "прочее"))
+        self.assertEqual((fw.OWNER_CATEGORIES, fw.category_of("Ювелирные кольца"), fw.category_of(" Тени ")), ((), "Ювелирные кольца", "Тени"))   # предмет WB как есть (23.10)
+        self.assertEqual((fw.BRAND_SOURCE, fw.CATEGORY_SOURCE), ("price", "platform"))
 
     def test_pivot_samples_in_cabinet_data_dir(self):
         fp = self.mods["finrez_pivots"]
@@ -542,13 +545,13 @@ class ShellExportsTests(unittest.TestCase):
         self.assertIn("export MP_DATA_DIR=/r/data/rbh2", text)
         self.assertIn("export MP_LOGS_DIR=/r/logs/rbh2", text)
         self.assertIn("export MP_REPORT_PREFIX=rbh2_", text)
-        self.assertIn("export MP_BOOK_MONTH_FROM=''", text)
+        self.assertIn("export MP_BOOK_MONTH_FROM=2026-08", text)   # первый месяц книги РБХ — август 2026 (23.10)
 
     def test_new_profile_names_shared_and_empty_for_rbh(self):
         for code in ("rbh1", "rbh2"):
             p = cabinet.profile(code)
             self.assertEqual((p.METALS, p.OWNER_CATEGORIES, p.TYPE_TO_CATEGORY, p.KIND_TO_CATEGORY, p.NAME_RULES, p.CATEGORY_BY_SUBJECT, p.BOOK_MONTH_FROM),
-                             ((), (), {}, {}, (), {}, None))
+                             ((), (), {}, {}, (), {}, "2026-08"))
         k = cabinet.profile("karatov")
         self.assertEqual(set(k.TYPE_TO_CATEGORY.values()) | set(k.CATEGORY_BY_SUBJECT.values()), set(k.OWNER_CATEGORIES))
         self.assertEqual(sorted(k.GOLDEN_SKU["campaigns"]), ["24375331", "24375352"])

@@ -76,6 +76,8 @@ import ozon_orders_forecast as forecast  # noqa: E402
 Z = Decimal(0)
 C = Decimal("0.01")
 SNAP = CABINET.COST_SNAPSHOT_DATE              # снимок 1С себестоимости — из профиля; None — не задан, СС не считается
+from loaders import unit_cost_history as uch  # noqa: E402
+COST_SOURCE_NOTE = getattr(CABINET, "COST_SOURCE_NOTE", None)   # подпись источника СС: у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22», у KARATOV — None
 OUT_DIR = cabinet.data_path("reports", prof=CABINET)
 RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
 YOUNG_DAYS = 2                     # сверка берёт дату не моложе двух суток: начисления доезжают (CLAUDE.md §2)
@@ -559,7 +561,7 @@ def load_costs(sb, snapshot, rates=None):
     norms = sorted({a.lower() for a in sku2art.values() if a})
     # все снимки таблицы по этим ключам: себестоимость продажи дня — снимок ≤ дате (сорок шестая §3, loaders/unit_cost_history);
     # snapshot оставлен в подписи как «последний известный» — на выбор снимка он больше не влияет
-    history = unit_cost_history.load_history(sb, norms, rates=load_rates_for(sb, rates), k_table=COST_RATE_K)   # + курс 1С и k (сорок восьмая §2)
+    history = unit_cost_history.load_history(sb, norms, rates=load_rates_for(sb, rates), k_table=COST_RATE_K, source_note=COST_SOURCE_NOTE)   # + курс 1С и k (сорок восьмая §2)
     unit_cost = unit_cost_history.unit_cost_fn(history, sku2art)
     found = {n for n in norms if history.lookup(n)[0] is not None}
     return sku2art, unit_cost, len(found), len(norms), orders

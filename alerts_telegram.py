@@ -222,12 +222,15 @@ def get_ozon_report_completeness(target_date):
     performance_status = get_latest_ozon_performance_status(target_date)
 
     blockers = []
+    # Органика — оговорка, не блокер (слово владельца 2026-10-24, дополнение RBH): органика выключена `--skip-organic` с 2026-09-03 у
+    # KARATOV и не считается у РБХ, а блокер гасил Ozon-сводку каждое утро. Сводка строится, первой строкой Ozon-блоков — ORGANIC_WARNING.
+    warnings = []
     if not daily_marketplace_kpi_present:
         blockers.append("daily_marketplace_kpi_missing")
     if not daily_sku_kpi_present:
         blockers.append("daily_sku_kpi_missing")
     if not organic_present:
-        blockers.append("ozon_daily_sku_organic_missing")
+        warnings.append("ozon_daily_sku_organic_missing")
     if not ads_present:
         blockers.append("ozon_ads_layer_missing")
     if not fbo_orders_present:
@@ -263,6 +266,8 @@ def get_ozon_report_completeness(target_date):
     return {
         "complete": not blockers,
         "blockers": blockers,
+        "warnings": warnings,
+        "organic_missing": not organic_present,
         "daily_marketplace_kpi_present": daily_marketplace_kpi_present,
         "daily_sku_kpi_present": daily_sku_kpi_present,
         "organic_present": organic_present,
@@ -461,6 +466,16 @@ def get_ozon_organic_reconciliation(sale_date):
     }
 
 
+ORGANIC_WARNING = "⚠️ БЕЗ ОРГАНИКИ — ТРЕБУЕТ РАЗБОРА"   # дословно по слову владельца 2026-10-24
+ORGANIC_NOT_COUNTED = "не посчитано: нет органики"
+
+
+def format_ozon_attribution_without_organic(raw_ad_revenue):
+    """Строка атрибуции, когда органики за день нет: рекламная выручка есть, органика и доля рекламы — «не посчитано», не 0."""
+    return (f"Атрибуция: реклама {fmt_money(raw_ad_revenue)} руб., органика — {ORGANIC_NOT_COUNTED}, "
+            f"доля рекламы — {ORGANIC_NOT_COUNTED}.")
+
+
 def format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation):
     if not reconciliation.get("available"):
         return "Атрибуция Ozon: данные organic attribution недоступны."
@@ -592,6 +607,12 @@ def build_completed_day_alerts(kpi_rows, target_date=None):
                 f"Причины: {blockers}."
             )
             continue
+        if mp == "ozon" and ozon_completeness.get("organic_missing"):
+            alerts.append(
+                f"⚠️ <b>Ozon</b>\n"
+                f"{ORGANIC_WARNING}\n"
+                f"{target_date}: органика {ORGANIC_NOT_COUNTED} (ozon_daily_sku_organic пуста за день); остальные слои полные — вывод ниже."
+            )
 
         mp_rows = [
             r for r in kpi_rows
@@ -889,15 +910,20 @@ def build_executive_summary(kpi_rows, target_date=None):
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
             ads_line += "."
-            attribution_line = format_ozon_attribution_summary(
-                ad_orders_revenue,
-                organic_orders_revenue,
-                ad_share_revenue,
-                organic_reconciliation,
-            )
+            no_organic = bool(ozon_completeness.get("organic_missing"))
+            if no_organic:
+                attribution_line = format_ozon_attribution_without_organic(ad_orders_revenue)
+            else:
+                attribution_line = format_ozon_attribution_summary(
+                    ad_orders_revenue,
+                    organic_orders_revenue,
+                    ad_share_revenue,
+                    organic_reconciliation,
+                )
             lines.append(
                 f"🔵 <b>Ozon вчера</b>\n"
-                f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
+                + (f"{ORGANIC_WARNING}\n" if no_organic else "")
+                + f"Заказы: {orders:.0f} / {fmt_money(orders_amount)} руб.\n"
                 f"Реализация: {buyouts:.0f} шт / {fmt_money(buyouts_amount)} руб.\n"
                 f"{attribution_line}\n"
                 f"{ads_line}\n"

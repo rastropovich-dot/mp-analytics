@@ -106,13 +106,61 @@ class OzonCompletenessGateTests(unittest.TestCase):
 
         self.assertIn(("in", "expense_type", ("advertising_clicks",)), fake_query.calls)
 
-    def test_missing_organic_marks_ozon_incomplete(self):
+    def test_missing_organic_is_a_warning_not_a_blocker(self):
+        # слово владельца 2026-10-24: органика не гасит Ozon-сводку — оговорка, сводка строится
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
             mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
             table_has_rows.side_effect = _presence(True, True, False, True, False)
             result = alerts.get_ozon_report_completeness("2026-05-20")
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["blockers"], [])
+        self.assertEqual(result["warnings"], ["ozon_daily_sku_organic_missing"])
+        self.assertTrue(result["organic_missing"])
+
+    def test_missing_organic_with_missing_fbo_orders_stays_incomplete(self):
+        with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \
+            mock.patch.object(alerts, "get_latest_ozon_performance_status", return_value=None):
+            table_has_rows.side_effect = _presence(True, True, False, True, False, fbo=False)
+            result = alerts.get_ozon_report_completeness("2026-05-20")
         self.assertFalse(result["complete"])
-        self.assertIn("ozon_daily_sku_organic_missing", result["blockers"])
+        self.assertEqual(result["blockers"], ["ozon_fbo_orders_missing"])
+        self.assertIn("ozon_daily_sku_organic_missing", result["warnings"])
+
+    def test_summary_without_organic_is_built_with_the_caps_line(self):
+        kpi_rows = [_kpi_row("wb"), _kpi_row("ozon"), _kpi_row("ozon", "2026-05-19")]
+        ads = {"advertising_clicks": 100, "advertising_order_10": 0, "advertising_order_5": 50, "advertising_order_other": 0,
+               "advertising_order_unknown": 0, "advertising_other": 0}
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_wb_buyout_cohort_summary", return_value="Выкуп по когорте: нет данных."), \
+            mock.patch.object(alerts, "get_ozon_ads_breakdown", return_value=ads), \
+            mock.patch.object(alerts, "get_ozon_organic_reconciliation", return_value={"available": False}), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
+                "complete": True, "blockers": [], "warnings": ["ozon_daily_sku_organic_missing"], "organic_missing": True}):
+            lines = alerts.build_executive_summary(kpi_rows)
+        text = "\n".join(lines)
+        block = text[text.index("🔵 <b>Ozon вчера</b>"):]
+        self.assertTrue(block.startswith("🔵 <b>Ozon вчера</b>\n⚠️ БЕЗ ОРГАНИКИ — ТРЕБУЕТ РАЗБОРА\n"))   # первая строка блока, дословно
+        self.assertIn("Заказы: 10 /", block)
+        self.assertIn("Реклама: клики", block)
+        self.assertIn("органика — не посчитано: нет органики", block)
+        self.assertNotIn("органика 0", block)
+        self.assertNotIn("данные неполные", block)
+
+    def test_completed_day_without_organic_shows_ozon_with_the_caps_line(self):
+        kpi_rows = [
+            _kpi_row("ozon", "2026-05-20", orders_qty=34, buyouts_qty=20),
+            _kpi_row("ozon", "2026-05-19", orders_qty=100, buyouts_qty=80),
+            _kpi_row("wb", "2026-05-20"), _kpi_row("wb", "2026-05-19"),
+        ]
+        with mock.patch.object(alerts, "today_local", return_value=alerts.date(2026, 5, 21)), \
+            mock.patch.object(alerts, "get_ozon_report_completeness", return_value={
+                "complete": True, "blockers": [], "warnings": ["ozon_daily_sku_organic_missing"], "organic_missing": True}):
+            rows = alerts.build_completed_day_alerts(kpi_rows)
+        joined = "\n".join(rows)
+        self.assertIn("⚠️ БЕЗ ОРГАНИКИ — ТРЕБУЕТ РАЗБОРА", joined)
+        self.assertIn("органика не посчитано: нет органики", joined)
+        self.assertIn("Ozon: вчера падение заказов", joined)          # вывод по Ozon строится
+        self.assertNotIn("полный дневной вывод пропущен", joined)
 
     def test_missing_ads_marks_ozon_incomplete_not_zero(self):
         with mock.patch.object(alerts, "table_has_rows") as table_has_rows, \

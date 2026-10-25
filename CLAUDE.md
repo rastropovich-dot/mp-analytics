@@ -1120,6 +1120,9 @@ scripts/ll_rates_ocr.py                   курсы золота 585 / сере
 scripts/cost_gold_rate_check.py           курс 1С и себестоимость: металл = вес × курс 1С в снимках, k по категориям, СС выкупов по месяцам «было → стало по курсу» против книги и ручного отчёта; только чтение; --k-profile --k-digits 4 --k-min-rows 10 печатает COST_RATE_K для профиля (не править руками)
 scripts/fetch_accrual_history_range.py    снять by-day за окно дат в data/accrual_history/ (глубина метода до ноября 2025 есть); только чтение
 sql/20261008_create_metal_rates_1c.sql    курс 1С по металлам и доллару (сорок восьмая §1): установка = строка (metal, set_date), seen_to — последняя картинка; применяется по слову через MCP
+loaders/wb_ads_allocation.py              разнесение рекламы WB по артикулам — одно правило на книгу, лист и витрину (20-я WB): списания «Баланс» дня × доли fullstats с долей «Баланса» кампании, Σ по дню = списаниям; чистые функции
+loaders/keyset.py                         страницы по (день, id) индексными запросами; с 20-й WB каждая страница через net_retry (57014 / сеть — 3 × 20 с)
+sql/20261023_create_wb_cost_views_for_kpi.sql  вьюхи wb_paid_storage_nm_daily (день × nmId) и wb_ad_spend_nm_campaign_daily (день × кампания × nmId, campaign_nm_key) + частичный индекс строк «прочего» отчёта реализации — источники витрины daily_sku_kpi по WB; только через db_migrate, до мержа
 loaders/ozon_ad_bonus.py                  бонусные кампании Ozon (53-я): чтение атрибуции по is_bonus страницами, суммы по дням / SKU / кампаниям, строки алерта
 scripts/ozon_ad_bonus_rewrite.py          пересчёт окна под бонусные кампании: флаг is_bonus в атрибуции, advertising_clicks без бонусной траты; план без --apply, снимок до записи
 sql/20261021_add_ad_attribution_is_bonus.sql  is_bonus в ozon_daily_sku_ad_attribution; только через db_migrate, до мержа ветки

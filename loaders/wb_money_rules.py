@@ -14,11 +14,19 @@
 2. Реклама — только payment_type «Баланс» (is_balance_payment); реклама за кэшбэк WB — не наши деньги, справочно.
 3. Упаковка — предмет «Упаковки для украшений» (коробка karatov 75*75*65, nmId 334613161): из строк исключается
    (is_packaging) правилом по предмету, не по одному nmId.
+4. «Прочее» по артикулу для витрины daily_sku_kpi (двадцатая WB, слово владельца 2026-10-23 — развилка Б): строки отчёта
+   с nmId → other_amount строки (штрафы + удержания вида OTHER − доплаты — та же колонка «Ост.расходы и компенсации МП» книги
+   по nmId); строки без nmId вида «Списание за отзыв <id>: акция №…, товар <nmId>» → counted_deduction на nmId из текста
+   (sku_other_rows). Остальное без артикула (Джем, Витрина, аванс, доплата-корректировка) в витрину не кладётся. День строки —
+   row_day: saleDt по МСК, без него — rrDate (правило владельца, WB-5 §3).
 Чистые функции, без ввода-вывода."""
+import re
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 Z = Decimal(0)
+MSK = timezone(timedelta(hours=3))
 
 ADS_WITHHELD = "ads_withheld"
 REVIEW_ADVANCE = "review_points_advance"
@@ -152,3 +160,59 @@ def is_packaging(subject_name):
 
 def is_balance_payment(payment_type):
     return str(payment_type or "").strip() == BALANCE_PAYMENT
+
+
+# ---- день строки отчёта и «прочее» по артикулу для витрины (20-я WB) ----
+
+REVIEW_WRITEOFF_PREFIX = "Списание за отзыв"
+REVIEW_WRITEOFF_NM_RE = re.compile(r"товар\s+(\d+)\s*$")
+# фильтр PostgREST (or=) для строк отчёта, из которых витрина берёт «прочее» по артикулу; тот же предикат — у частичного индекса
+# idx_wb_sales_report_rows_sku_other (sql/20261023_create_wb_cost_views_for_kpi.sql)
+SKU_OTHER_FILTER = f"penalty.neq.0,additional_payment.neq.0,bonus_type_name.like.{REVIEW_WRITEOFF_PREFIX}*"
+SKU_OTHER_SELECT = "rrd_id,rr_date,sale_dt,nm_id,penalty,deduction,additional_payment,bonus_type_name"
+
+
+def row_day(r):
+    """День строки отчёта реализации: saleDt в московском времени; без saleDt (или с датой-заглушкой) — rrDate.
+    Правило владельца: оборот, комиссия, выручка, логистика и прочее сошлись 21 из 21 только так (WB-5 §3);
+    по rrDate оборот расходился 09-09 / 09-10 (четыре продажи 09-09 16:50–18:44 UTC с rrDate 09-10)."""
+    value = r.get("sale_dt")
+    if value:
+        try:
+            ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            ts = None
+        if ts is not None and ts.year >= 2000:
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts.astimezone(MSK).date().isoformat()
+    return str(r["rr_date"])[:10]
+
+
+def review_writeoff_nm(name):
+    """nmId из текста «Списание за отзыв <id>: акция №…, товар <nmId>»; не этот вид или без номера — None."""
+    text = str(name or "").strip()
+    if not text.startswith(REVIEW_WRITEOFF_PREFIX):
+        return None
+    m = REVIEW_WRITEOFF_NM_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def sku_other_rows(rows):
+    """[(день, nmId, сумма с НДС, вид)] — «прочее» по артикулу из строк отчёта: вид "row" — строка с nmId (other_amount: штрафы +
+    удержания OTHER − доплаты, как «Ост.расходы и компенсации МП» книги по nmId); вид "review_text" — списание за отзыв без nmId
+    у строки, артикул из текста (counted_deduction). Нули не отдаются; строки без nmId других видов — пропуск (без артикула)."""
+    out = []
+    for r in rows:
+        nm = int(r.get("nm_id") or 0)
+        if nm:
+            amount = other_amount(r)
+            if amount:
+                out.append((row_day(r), nm, amount, "row"))
+            continue
+        nm_text = review_writeoff_nm(r.get("bonus_type_name"))
+        if nm_text:
+            amount = counted_deduction(r)
+            if amount:
+                out.append((row_day(r), nm_text, amount, "review_text"))
+    return out

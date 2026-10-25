@@ -63,6 +63,7 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 from loaders import stale_keys  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402  — снимки 1С по дате продажи (сорок шестая), ключи WB — WB-17 §2
 from loaders import wb_money_rules as rules  # noqa: E402  — удержания по виду, реклама «Баланс», упаковка (WB-14)
+from loaders import wb_ads_allocation as alloc  # noqa: E402  — разнесение рекламы по артикулам (20-я WB)
 import loaders.wb_sales_report_loader as loader  # noqa: E402
 import loaders.wb_ads_loader as ads_loader  # noqa: E402
 from reconcile_manual_report_ozon import read_manual_sheet  # noqa: E402
@@ -121,20 +122,9 @@ def month_days(month, date_to=None):
 
 
 def row_day(r):
-    """День строки на листе: saleDt в московском времени; без saleDt (или с датой-заглушкой) — rrDate.
-    Правило владельца: оборот, комиссия, выручка, логистика и прочее сошлись 21 из 21 только так (WB-5 §3);
-    по rrDate оборот расходился 09-09 / 09-10 (четыре продажи 09-09 16:50–18:44 UTC с rrDate 09-10)."""
-    value = r.get("sale_dt")
-    if value:
-        try:
-            ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except ValueError:
-            ts = None
-        if ts is not None and ts.year >= 2000:
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            return ts.astimezone(MSK).date().isoformat()
-    return str(r["rr_date"])[:10]
+    """День строки на листе: saleDt в московском времени; без saleDt (или с датой-заглушкой) — rrDate (правило владельца, WB-5 §3).
+    С двадцатой WB правило живёт в loaders.wb_money_rules.row_day — одно на лист, книгу и витрину."""
+    return rules.row_day(r)
 
 
 def window_end(d2):
@@ -528,21 +518,9 @@ def fetch_ads(d1, d2):
 
 
 def ads_split_of(rows):
-    """Списания по видам оплаты из строк wb_ad_spend_daily: balance / other ({день: Σ updSum}), by_type {вид: Σ},
-    advert_day {(день, advert_id): [Баланс, всего]} — доля «Баланса» кампании в день для разнесения по номенклатурам."""
-    balance, other, by_type = defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal)
-    advert_day = defaultdict(lambda: [Z, Z])
-    for r in rows:
-        day, amount = str(r["upd_day"]), D(r["upd_sum"])
-        pt = str(r.get("payment_type") or "").strip() or "(пусто)"
-        by_type[pt] += amount
-        key = (day, int(r["advert_id"]) if r.get("advert_id") not in (None, "") else None)
-        advert_day[key][1] += amount
-        if rules.is_balance_payment(pt):
-            balance[day] += amount; advert_day[key][0] += amount
-        else:
-            other[day] += amount
-    return {"balance": dict(balance), "other": dict(other), "by_type": dict(by_type), "advert_day": {k: tuple(v) for k, v in advert_day.items()}}
+    """Списания по видам оплаты из строк wb_ad_spend_daily (balance / other / by_type / advert_day) — с двадцатой WB живёт в
+    loaders.wb_ads_allocation (одно правило на лист, книгу и витрину)."""
+    return alloc.ads_split_of(rows)
 
 
 def load_ads_split(sb, d1, d2):

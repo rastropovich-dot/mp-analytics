@@ -73,3 +73,6 @@ data/ll_rates/
 data/ozon_bonus_reports
 # сырой список кампаний Performance (53-я §1/§3), вне git
 data/ozon_performance_campaigns
+
+# Прайс себестоимости РБХ и файлы аналитика РБХ (вторая задача RBH, дополнения 23–24.10) — данные владельца, в git не кладутся
+data/rbh_costs/

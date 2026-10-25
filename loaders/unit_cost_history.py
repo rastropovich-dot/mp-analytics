@@ -60,9 +60,19 @@ RATE_REASON_TEXT = {"by_rate": "по курсу 1С", "rate_same": "курс с 
                     "no_rate": "нет курса на дату — без поправки", "no_k": "k для пробы не задан — без поправки"}
 
 
-def source_label(snapshot_date, kind):
+def source_label(snapshot_date, kind, note=None):
     """Источник себестоимости для строки книги: дата снимка, либо «после последнего снимка <дата>» (сорок шестая §3, слово владельца 10-06).
-    Для later / earlier / latest — дата снимка с пометкой, почему взят не снимок ≤ дате; без снимка — «нет снимка»."""
+    Для later / earlier / latest — дата снимка с пометкой, почему взят не снимок ≤ дате; без снимка — «нет снимка».
+    note (профиль кабинета COST_SOURCE_NOTE, у РБХ «прайс РБХ 15.10») — подпись целиком вместо даты и вида снимка (ответ советника 23.10, п. 5:
+    у РБХ один снимок, «ключа нет в снимке ≤ даты, взят более поздний» на каждой строке — шум); «нет снимка» остаётся.
+    Параметр, не состояние модуля: один процесс может держать истории разных кабинетов (тесты)."""
+    note = (str(note).strip() or None) if note else None
+    if note and snapshot_date is not None:
+        return note
+    return _source_label(snapshot_date, kind)
+
+
+def _source_label(snapshot_date, kind):
     if snapshot_date is None:
         return "нет снимка"
     if kind == "after":
@@ -230,7 +240,7 @@ def k_for(k_table, fineness, kind):
 
 
 class CostHistory:
-    def __init__(self, snapshots, meta=None, rates=None, k_table=None, stale_days=STALE_DAYS):
+    def __init__(self, snapshots, meta=None, rates=None, k_table=None, stale_days=STALE_DAYS, source_note=None):
         """snapshots — {snapshot_date 'YYYY-MM-DD': {offer_id_norm: Decimal}}; meta — {snapshot_date: {norm: (metal_fineness, product_kind)}};
         rates — MetalRates | None; k_table — COST_RATE_K профиля ({} / None → без поправки)."""
         self.dates = sorted(str(d) for d in snapshots)
@@ -239,6 +249,7 @@ class CostHistory:
         self.rates = rates
         self.k_table = k_table or {}
         self.stale_limit = stale_days
+        self.source_note = source_note      # суффикс подписи источника (профиль: COST_SOURCE_NOTE), None — без суффикса
         self.counters = Counter()
         self.rubles = defaultdict(Decimal)
         self.rate_counters = Counter()
@@ -339,7 +350,7 @@ class CostHistory:
                 self.rubles[kind] += adjusted * q
                 self.base_rubles += base * q
                 self.rate_rubles += (adjusted - base) * q
-        return adjusted, base, source_label(d, kind) + rate_source_label(info)
+        return adjusted, base, source_label(d, kind, self.source_note) + rate_source_label(info)
 
     def cost_source(self, norm, day=None, qty=None):
         """(себестоимость | None, источник-строка) с учётом в счётчиках — СС уже по курсу (сорок восьмая)."""
@@ -379,7 +390,7 @@ class CostHistory:
                 + self.rate_note())
 
 
-def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, rates=None, k_table=None):
+def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, rates=None, k_table=None, source_note=None):
     """Все снимки таблицы по ключам norms: {snapshot_date: {norm: Decimal}} + проба и вид изделия строки (для поправки по курсу). Ключи — кусками
     по chunk (снимков может быть несколько на ключ, а PostgREST отдаёт не больше page_cap строк на ответ — ответ ровно в page_cap строк
     считается обрезанным и роняет чтение вслух). rates / k_table — курсы 1С и k профиля; без них история считает как сорок шестая."""
@@ -395,7 +406,24 @@ def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, r
             d, n = str(r["snapshot_date"]), str(r["offer_id_norm"])
             out[d][n] = Decimal(str(r["unit_cost"]))
             meta[d][n] = (r.get("metal_fineness"), r.get("product_kind"))
-    return CostHistory(out, meta=meta, rates=rates, k_table=k_table)
+    return CostHistory(out, meta=meta, rates=rates, k_table=k_table, source_note=source_note)
+
+
+def load_brand_map(sb, marketplace_code="ozon", page=1000):
+    """{offer_id_norm: analytics_group} по последнему снимку каждого ключа — бренд строк книг у кабинетов с BOOK_BRAND_SOURCE = "price"
+    (прайс РБХ: колонка «Бренд» → analytics_group). Строки без группы не входят. Чтение страницами по ключу (ORDER BY обязателен)."""
+    out, seen_date, start = {}, {}, 0
+    while True:
+        res = (sb.table(TABLE).select("offer_id_norm,snapshot_date,analytics_group").eq("marketplace_code", marketplace_code)
+               .order("offer_id_norm").order("snapshot_date").range(start, start + page - 1).execute())
+        rows = res.data or []
+        for r in rows:
+            n, d = str(r["offer_id_norm"]), str(r["snapshot_date"])
+            if r.get("analytics_group") and d >= seen_date.get(n, ""):
+                out[n], seen_date[n] = str(r["analytics_group"]).strip(), d
+        if len(rows) < page:
+            return out
+        start += page
 
 
 def unit_cost_fn(history, sku2art):

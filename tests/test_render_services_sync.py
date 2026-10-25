@@ -39,15 +39,23 @@ class FakeSession:
         self.calls = []
         self.existing = [{"service": {"name": n, "id": f"crn-{n}", "suspended": "not_suspended"}} for n in existing]
 
+    suspend_fail_first = 0   # сколько первых POST …/suspend отвечают 404, а GET показывает not_suspended (гонка 2026-10-23)
+
     def get(self, url, **kw):
         self.calls.append(("GET", url, kw.get("params")))
-        return FakeResponse(200, self.existing)
+        if url.endswith("/services"):
+            return FakeResponse(200, self.existing)
+        sid = url.rsplit("/", 1)[1]                                           # GET /services/{id} — состояние после suspend
+        ok = self.suspends.get(sid, 0) > self.suspend_fail_first
+        return FakeResponse(200, {"id": sid, "suspended": "suspended" if ok else "not_suspended"})
 
     def post(self, url, **kw):
         self.calls.append(("POST", url, kw.get("json")))
         if url.endswith("/services"):
             return FakeResponse(201, {"service": {"id": "crn-new-" + kw["json"]["name"]}})
-        return FakeResponse(202, {})
+        sid = url.rsplit("/", 2)[1]
+        self.suspends = getattr(self, "suspends", {}); self.suspends[sid] = self.suspends.get(sid, 0) + 1
+        return FakeResponse(404 if self.suspends[sid] <= self.suspend_fail_first else 200, {})
 
 
 class ComposeTests(unittest.TestCase):
@@ -141,8 +149,22 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual([c[1].endswith("/suspend") for c in posts], [False, True] * 3)
             self.assertTrue(all(o["suspended"] == "suspended" for o in outcomes if o["action"] == "created"))
             self.assertEqual(s.calls[0][0], "GET")                             # сначала список, потом запись
+            self.assertTrue(all(o["suspend_attempts"] == 1 for o in outcomes if o["action"] == "created"))
         finally:
             d.cleanup()
+
+    def test_suspend_is_retried_and_verified_by_reading_the_service(self):
+        # 2026-10-23: первый POST …/suspend сразу после создания отвечал 404; верим только GET /services/{id}
+        s = FakeSession(); s.suspend_fail_first = 1
+        slept = []
+        state, tries = rs.suspend_verified(s, {}, "crn-x", attempts=3, pause_seconds=5.0, sleep_fn=slept.append)
+        self.assertEqual((state, tries), ("suspended", 2))
+        self.assertEqual(slept, [5.0])
+        posts = [c for c in s.calls if c[0] == "POST"]; gets = [c for c in s.calls if c[0] == "GET"]
+        self.assertEqual((len(posts), len(gets)), (2, 2))
+        s2 = FakeSession(); s2.suspend_fail_first = 99
+        state2, tries2 = rs.suspend_verified(s2, {}, "crn-y", attempts=2, pause_seconds=0.0, sleep_fn=lambda _p: None)
+        self.assertTrue(state2.startswith("suspend_failed HTTP 404")); self.assertEqual(tries2, 2)
 
     def test_apply_refuses_before_any_call_when_values_missing(self):
         d = fake_env_dir(drop=("OZON_API_KEY",))

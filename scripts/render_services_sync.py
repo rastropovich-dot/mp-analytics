@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -170,10 +171,29 @@ def apply(rows, session, key, owner_id=OWNER_ID, existing=None):
             outcomes.append({"name": s["name"], "action": "create_failed", "status": created.status_code, "text": created.text[:300]})
             break   # дальше не идём: разбирать причину, повтор создаст дубль имени только после починки
         sid = created.json()["service"]["id"]
-        paused = session.post(f"{API}/services/{sid}/suspend", headers=headers, timeout=60)
-        outcomes.append({"name": s["name"], "action": "created", "id": sid,
-                         "suspended": "suspended" if paused.status_code in (200, 202, 204) else f"suspend_failed HTTP {paused.status_code}"})
+        state, tries = suspend_verified(session, headers, sid)
+        outcomes.append({"name": s["name"], "action": "created", "id": sid, "suspended": state, "suspend_attempts": tries})
     return outcomes
+
+
+def suspend_verified(session, headers, sid, attempts=5, pause_seconds=5.0, sleep_fn=time.sleep):
+    """POST …/suspend и проверка чтением: исход «suspended» — только когда GET /services/{id} отдал suspended == "suspended".
+
+    2026-10-23, первые четыре сервиса РБХ: suspend сразу после 201 вернул 404 у всех четырёх (сервис ещё не виден по id), а через
+    минуту GET показывал suspended и повторный POST — 200. Код ответа одного POST ничего не доказывает — верим только прочитанному
+    состоянию; между попытками пауза.
+    """
+    last = None
+    for attempt in range(1, attempts + 1):
+        paused = session.post(f"{API}/services/{sid}/suspend", headers=headers, timeout=60)
+        last = paused.status_code
+        got = session.get(f"{API}/services/{sid}", headers=headers, timeout=60)
+        body = got.json() if got.status_code == 200 else {}
+        if isinstance(body, dict) and body.get("suspended") == "suspended":
+            return "suspended", attempt
+        if attempt < attempts:
+            sleep_fn(pause_seconds)
+    return f"suspend_failed HTTP {last} (после {attempts} попыток; состояние не suspended)", attempts
 
 
 def main(argv=None):

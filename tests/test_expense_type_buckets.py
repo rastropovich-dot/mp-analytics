@@ -32,6 +32,16 @@ class ExpenseBucketTests(unittest.TestCase):
             if expense_type.startswith("advertising"):
                 self.assertEqual(bucket, "ad_spend", expense_type)
 
+    def test_cpo_other_rates_are_advertising(self):
+        """56-я: CPO «Все» со ставкой вне 5 % (с 20.10.2026 — 6 %) — трата рекламы, тип 54 её содержит.
+
+        До 56-й advertising_order_other не было в списке, и 618 313,38 ₽ за 20 … 24.10 легли в прочее
+        как незнакомый тип. Загрузчик пишет ровно эти три CPO-типа (classify_cpo_rate)."""
+        from loaders import ozon_performance_ads_loader as loader
+        for rate in ("5,00", "6,00", "10,00", "12,00"):
+            expense_type = loader.classify_cpo_rate(rate)
+            self.assertEqual(kpi.EXPENSE_TYPE_BUCKETS.get(expense_type), "ad_spend", f"{rate} -> {expense_type}")
+
     def test_buckets_are_real_columns(self):
         allowed = {"commission_amount", "logistics_amount", "ad_spend", "other_expenses_amount"}
         for expense_type, bucket in kpi.EXPENSE_TYPE_BUCKETS.items():

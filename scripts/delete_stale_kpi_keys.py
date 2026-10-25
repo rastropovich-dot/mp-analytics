@@ -38,6 +38,9 @@ SNAP_DIR = cabinet.data_path("snapshots", prof=CABINET)
 MARKETPLACE = "ozon"
 SOURCES = (("marketplace_orders", "order_date"), ("marketplace_buyouts", "buyout_date"),
            ("marketplace_expenses", "expense_date"), ("ozon_daily_sku_organic", "sale_date"))
+# Хранение Ozon по товарам (52-я) — тоже источник ключа витрины (load_placement): ключ, державшийся только на хранении,
+# не «без источника». У таблицы нет marketplace_code, ключ (day, sku: bigint) — проверяется отдельно (56-я §3).
+PLACEMENT_SOURCE = ("ozon_placement_by_product_daily", "day", "sku")
 CHUNK = 100
 D = lambda v: Decimal(str(v or 0))  # noqa: E731
 
@@ -77,6 +80,14 @@ def main():
                     raise SystemExit(f"{table} {kpi_date}: 1000 строк в ответе — страница обрезана, проверка недостоверна")
                 for r in res.data:
                     with_source[(kpi_date, r["marketplace_sku"])].add(table)
+            table, day_col, sku_col = PLACEMENT_SOURCE
+            numeric = [int(x) for x in part if str(x).isdigit()]
+            if numeric:
+                res = sb().table(table).select(sku_col).eq(day_col, kpi_date).in_(sku_col, numeric).order(sku_col).limit(1000).execute()
+                if len(res.data) >= 1000:
+                    raise SystemExit(f"{table} {kpi_date}: 1000 строк в ответе — страница обрезана, проверка недостоверна")
+                for r in res.data:
+                    with_source[(kpi_date, str(r[sku_col]))].add(table)
 
     absent = sorted(k for k in want if k not in rows)
     blocked = sorted(k for k in rows if with_source.get(k))

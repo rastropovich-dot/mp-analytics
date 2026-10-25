@@ -109,6 +109,24 @@ class FetchTests(unittest.TestCase):
             P.fetch_report("2026-10-20", "2026-10-20", post=post, get=lambda u: _R(200), sleep_fn=lambda s: None, clock=iter(range(0, 10000, 200)).__next__, save_dir=None, log=lambda *a: None)
         self.assertIn("не готов за", str(cm.exception)); self.assertIn("status=waiting", str(cm.exception))
 
+    def test_create_once_sends_create_exactly_once_and_names_the_429(self):
+        """56-я §4: при --create-once create уходит одной попыткой; 429 — именованный отказ, без повторов и без info."""
+        from unittest import mock
+        sent = []
+
+        def fake_request(method, url, **kw):
+            sent.append((method, url, kw.get("json")))
+            return _R(429, {"code": 8, "message": "You have reached request rate limit per second"})
+
+        with mock.patch.object(P.http_retry.requests, "request", side_effect=fake_request), \
+             mock.patch.object(P.http_retry.time, "sleep", side_effect=AssertionError("повтор create запрещён")):
+            with self.assertRaises(P.ReportError) as cm:
+                P.fetch_report("2026-04-01", "2026-04-30", get=lambda u: _R(200), sleep_fn=lambda s: None,
+                               clock=iter(range(100)).__next__, save_dir=None, log=lambda *a: None, create_once=True)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0][1].endswith("/v1/report/placement/by-products/create"))
+        self.assertIn("HTTP 429", str(cm.exception)); self.assertIn("rate limit per second", str(cm.exception))
+
     def test_empty_body_twice_is_an_error(self):
         with self.assertRaises(P.ReportError) as cm:
             P.fetch_report("2026-10-20", "2026-10-20", post=self.post_factory([{"status": "success", "file": "https://x"}]), get=lambda u: _R(200, None, b""),

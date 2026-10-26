@@ -13,9 +13,9 @@ EMPTY = {"storage": [], "ads": {}, "other": [], "articles": {}}
 def build(wb_costs, orders=(), buyouts=(), expenses=(), placement=()):
     with mock.patch.object(kpi, "load_orders", return_value=list(orders)), mock.patch.object(kpi, "load_buyouts", return_value=list(buyouts)), \
          mock.patch.object(kpi, "load_expenses", return_value=list(expenses)), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), \
-         mock.patch.object(kpi, "load_placement", return_value=list(placement)), mock.patch.object(kpi, "load_wb_costs", return_value=wb_costs), \
+         mock.patch.object(kpi, "load_placement", return_value=list(placement)), mock.patch.object(kpi, "load_ledger_type46", return_value={}), mock.patch.object(kpi, "load_wb_costs", return_value=wb_costs), \
          mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), mock.patch("builtins.print"):
-        return {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi()}
+        return {(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]): r for r in kpi.build_kpi(today=kpi.date(2026, 9, 15))}   # 57-я: окно ключей «только хранение» — от фиксированной даты
 
 
 class AllocationTests(unittest.TestCase):

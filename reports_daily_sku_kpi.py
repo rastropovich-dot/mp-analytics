@@ -187,6 +187,59 @@ def read_placement_by_day(sb=None, page=PAGE_SIZE):
     return rows
 
 
+LEDGER_TABLE = "ozon_accrual_daily_types"
+STORAGE_ONLY_DAYS = 30      # = STALE_WINDOW_DAYS: ключ «только хранение» витрина заводит не глубже окна ночи
+PLACEMENT_TYPE_ID = 46
+
+
+def load_ledger_type46():
+    """{день: тип 46 «Размещение» положительно} из леджера начислений; не прочитался — {} (перенос п. 1 57-й в этот прогон не делается)."""
+    try:
+        rows = net_retry.execute(supabase.table(LEDGER_TABLE).select("accrual_date,amount").eq("type_id", PLACEMENT_TYPE_ID)
+                                 .order("accrual_date").limit(PAGE_SIZE), f"{LEDGER_TABLE} тип 46").data or []
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ {LEDGER_TABLE} (тип 46) не прочитан ({type(exc).__name__}: {str(exc)[:120]}) — размещение остаётся строкой без SKU")
+        return {}
+    if len(rows) >= PAGE_SIZE:
+        raise RuntimeError(f"{LEDGER_TABLE}: тип 46 — {len(rows)} строк, больше одной страницы; читать страницами")
+    return {str(r["accrual_date"])[:10]: -Decimal(str(r["amount"])) for r in rows}
+
+
+def move_placement_into_sku_logistics(grouped, placement, ledger46):
+    """57-я §2 п. 1: размещение (тип 46) — не дважды. Ночь пишет его в marketplace_expenses строкой logistics без SKU (у Ozon в
+    by-day нет SKU), а витрина с 52-й держит его же по SKU в storage_cost — сумма logistics + storage_cost считала 46 дважды.
+    На день, где Σ хранения по SKU = типу 46 леджера до копейки и в строке без SKU логистики не меньше этой суммы, сумма
+    переезжает из строки без SKU в logistics_amount строк SKU (по их storage_cost). storage_cost остаётся — «в т. ч. хранение»
+    внутри logistics_amount. Итог логистики дня не меняется (сводная витрина и алерт берут logistics_amount); книга и лист месяца
+    берут логистику из расходов / леджера и не задеты. День без совпадения не трогается и называется вслух. → счётчики."""
+    by_day = defaultdict(lambda: defaultdict(Decimal))
+    for row in placement:
+        by_day[str(row["day"])[:10]][str(row["sku"])] += -Decimal(str(row.get("amount") or 0))
+    stats = {"moved_days": 0, "moved": Decimal(0), "no_ledger": [], "mismatch": [], "short": []}
+    for day, skus in sorted(by_day.items()):
+        total = sum(skus.values(), Decimal(0)).quantize(Decimal("0.01"))
+        ledger = ledger46.get(day)
+        if ledger is None:
+            stats["no_ledger"].append(day); continue
+        if ledger.quantize(Decimal("0.01")) != total:
+            stats["mismatch"].append((day, total, ledger)); continue
+        present = {sku: amount for sku, amount in skus.items() if (day, "ozon", sku) in grouped}   # ключи «только хранение» старше окна не заводятся
+        moved = sum(present.values(), Decimal(0)).quantize(Decimal("0.01"))
+        nosku = grouped.get((day, "ozon", ""))
+        if nosku is None or Decimal(str(round(nosku["logistics_amount"], 2))) < moved:
+            stats["short"].append((day, moved, None if nosku is None else nosku["logistics_amount"])); continue
+        nosku["logistics_amount"] = float(Decimal(str(nosku["logistics_amount"])) - moved)
+        for sku, amount in present.items():
+            grouped[(day, "ozon", sku)]["logistics_amount"] += float(amount)
+        stats["moved_days"] += 1; stats["moved"] += moved; stats["kept_nosku"] = stats.get("kept_nosku", Decimal(0)) + (total - moved)
+    print(f"Размещение (тип 46) в логистику SKU: дней {stats['moved_days']}, {stats['moved']:,.2f} ₽ перенесено из строки без SKU"
+          + (f" (у ключей без строки витрины осталось без SKU {stats['kept_nosku']:,.2f})" if stats.get("kept_nosku") else "")
+          + (f"; без леджера {len(stats['no_ledger'])} дн." if stats["no_ledger"] else "")
+          + (f"; Σ хранения ≠ типу 46: {', '.join(f'{d} {t} / {l}' for d, t, l in stats['mismatch'][:5])}" if stats["mismatch"] else "")
+          + (f"; в строке без SKU меньше хранения: {', '.join(f'{d} {t}' for d, t, _ in stats['short'][:5])}" if stats["short"] else ""))
+    return stats
+
+
 def load_placement():
     """Хранение Ozon по товарам (52-я): строки (day, sku, warehouse) с amount со знаком леджера; таблицы нет или не прочиталась —
     источник помечается непрочитанным (чистка витрины не удаляет), колонка остаётся 0."""
@@ -392,7 +445,7 @@ def load_wb_cohort():
         return {}, {}
 
 
-def build_kpi(wb_cohort=None, with_source=False):
+def build_kpi(wb_cohort=None, with_source=False, today=None):
     orders = load_orders()
     buyouts = load_buyouts()
     expenses = load_expenses()
@@ -473,11 +526,24 @@ def build_kpi(wb_cohort=None, with_source=False):
             bucket = "other_expenses_amount"
         grouped[key][bucket] += amount
 
+    # 57-я, слово 2026-10-26: строка витрины «только хранение» (ключ без продаж, расходов и органики) — только за последние
+    # STORAGE_ONLY_DAYS дней (окно ночи); старше — хранение идёт только в ключи, у которых есть другой источник. Иначе история хранения
+    # с 01.04 удваивала витрину (сухая сборка 26.10: 470 996 → 946 728 строк). Хранение таких ключей остаётся в строке без SKU (п. 1).
+    storage_only_from = ((today or date.today()) - timedelta(days=STORAGE_ONLY_DAYS)).isoformat()
+    skipped_storage_only = [0, 0.0]
     for row in placement:      # 52-я: хранение по SKU за день = Σ по складам, положительно (в таблице знак леджера)
         key = (str(row["day"])[:10], "ozon", str(row["sku"]))
         if key not in grouped:
+            if key[0] < storage_only_from:
+                skipped_storage_only[0] += 1; skipped_storage_only[1] += -float(row.get("amount") or 0)
+                continue
             grouped[key] = empty_kpi_row(key[0], "ozon", key[2], row.get("offer_id") or "", None)
         grouped[key]["storage_cost"] += -float(row.get("amount") or 0)
+    if skipped_storage_only[0]:
+        print(f"Хранение без строки витрины (ключ только с хранением старше {storage_only_from}): строк хранения {skipped_storage_only[0]}, "
+              f"{skipped_storage_only[1]:,.2f} ₽ — остаются в логистике без SKU")
+    if placement:
+        move_placement_into_sku_logistics(grouped, placement, load_ledger_type46())
 
     # 20-я WB: хранение, реклама и «прочее» по артикулу у WB — с НДС и положительные, как остальные колонки расходов витрины
     wb_new_keys = 0

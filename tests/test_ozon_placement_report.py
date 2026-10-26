@@ -147,8 +147,8 @@ class KpiTests(unittest.TestCase):
         expenses = [{"id": 1, "expense_date": "2026-10-20", "marketplace_code": "ozon", "marketplace_sku": "1017340949", "expense_type": "logistics", "expense_amount": 10}]
         with mock.patch.object(kpi, "load_orders", return_value=[]), mock.patch.object(kpi, "load_buyouts", return_value=[]), \
              mock.patch.object(kpi, "load_expenses", return_value=expenses), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), \
-             mock.patch.object(kpi, "load_placement", return_value=placement), mock.patch.object(kpi, "load_wb_costs", return_value={"storage": [], "ads": {}, "other": [], "articles": {}}), mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), mock.patch("builtins.print"):
-            rows = {(r["kpi_date"], r["marketplace_sku"]): r for r in kpi.build_kpi()}
+             mock.patch.object(kpi, "load_placement", return_value=placement), mock.patch.object(kpi, "load_ledger_type46", return_value={}), mock.patch.object(kpi, "load_wb_costs", return_value={"storage": [], "ads": {}, "other": [], "articles": {}}), mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), mock.patch("builtins.print"):
+            rows = {(r["kpi_date"], r["marketplace_sku"]): r for r in kpi.build_kpi(today=kpi.date(2026, 10, 26))}
         r = rows[("2026-10-20", "1017340949")]
         self.assertEqual(r["storage_cost"], 3.75); self.assertEqual(r["logistics_amount"], 10); self.assertEqual(r["other_expenses_amount"], 0)
         self.assertEqual(rows[("2026-10-20", "999")]["storage_cost"], 0.0); self.assertEqual(rows[("2026-10-20", "999")]["article"], "X")

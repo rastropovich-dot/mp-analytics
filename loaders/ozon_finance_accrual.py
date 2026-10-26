@@ -237,9 +237,49 @@ def _service_lines(accrual):
             yield service.get("type_id"), "", money(service.get("accrued"))
 
 
+# 57-я §2 п. 2: логистика rFBS без SKU — сбор по отправлению (non_item_fee, unit_number = номер отправления «0107284972-0153-1»).
+# Товар отправления — в товарных строках того же unit_number в том же сырье окна (проверено 2 из 2 на 20 … 22.10 KARATOV).
+# Сбор делится между SKU отправления по штукам (одно SKU — целиком), копейки — остатком на последнее SKU; не нашлось — без SKU.
+RFBS_NOSKU_TYPE_IDS = {63, 64, 65}
+
+
+def unit_sku_quantities(accruals):
+    """{unit_number: {sku: штук}} из товарных строк начислений (item_fees и posting.products)."""
+    out = defaultdict(lambda: defaultdict(int))
+    for accrual in accruals:
+        unit = accrual.get("unit_number")
+        if not unit:
+            continue
+        for fee in ((accrual.get("item_fees") or {}).get("fees") or []):
+            if fee.get("sku"):
+                out[unit][str(fee["sku"])] = max(out[unit][str(fee["sku"])], int(fee.get("quantity") or 0))
+        for product in ((accrual.get("posting") or {}).get("products") or []):
+            if product.get("sku"):
+                out[unit][str(product["sku"])] = max(out[unit][str(product["sku"])], int(product.get("quantity") or 0))
+    return out
+
+
+def split_by_quantity(amount, quantities):
+    """[(sku, часть)] — сумма со знаком делится по штукам до копейки; Σ частей = amount точно. Штук нет ни у кого — поровну."""
+    from decimal import Decimal, ROUND_DOWN
+    total = Decimal(str(amount)).quantize(Decimal("0.01"))
+    skus = sorted(quantities)
+    weights = [max(int(quantities[s]), 0) for s in skus]
+    if sum(weights) == 0:
+        weights = [1] * len(skus)
+    parts, left = [], total
+    for sku, w in zip(skus[:-1], weights[:-1]):
+        part = (total * w / sum(weights)).quantize(Decimal("0.01"), rounding=ROUND_DOWN) if total >= 0 else \
+            -((-total) * w / sum(weights)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        parts.append((sku, part)); left -= part
+    parts.append((skus[-1], left))
+    return parts
+
+
 def build_expense_rows(accruals, type_names=None):
     """Строки расходов из начислений. Возвращает (строки, счётчики, unknown)."""
     type_names = type_names or {}
+    unit_skus = unit_sku_quantities(accruals)
     grouped = {}
     counters = defaultdict(int)
     unknown = defaultdict(float)
@@ -305,10 +345,21 @@ def build_expense_rows(accruals, type_names=None):
                     "Суммируем (замещения нет), но факт зафиксирован."
                 )
             seen_service_keys.add(service_key)
+            if not sku and type_id in RFBS_NOSKU_TYPE_IDS:
+                found = unit_skus.get(accrual.get("unit_number") or "")
+                if found:
+                    for part_sku, part in split_by_quantity(amount, found):
+                        put(day, part_sku, expense_type, float(part))
+                    counters["rfbs_nosku_spread"] += 1
+                    continue
+                counters["rfbs_nosku_not_found"] += 1
             put(day, sku, expense_type, amount)
 
     rows = [dict(r, expense_amount=round(r["expense_amount"], 2)) for r in grouped.values()]
     rows = [r for r in rows if r["expense_amount"] != 0]
+    if counters.get("rfbs_nosku_spread") or counters.get("rfbs_nosku_not_found"):
+        print(f"rFBS без SKU (типы 63 / 64 / 65): разнесено по SKU отправления {counters.get('rfbs_nosku_spread', 0)} строк, "
+              f"без товара в окне — {counters.get('rfbs_nosku_not_found', 0)} (остались без SKU)")
     if unclassified:
         print("Вне классификации (в расходы НЕ идут, ждут сверки с кабинетом):")
         for type_id, amount in sorted(unclassified.items(), key=lambda x: -abs(x[1])):

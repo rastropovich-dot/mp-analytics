@@ -66,6 +66,8 @@ OWNER_AFTER_COMMISSION = (
 OWNER_ORDERS_AFTER_COMMISSION_WB = Decimal("0.58")
 OWNER_COEF = {"buyout": (("Ozon", Decimal("0.84")), ("WB", Decimal("0.86"))),
               "commission": (("Ozon (<300)", Decimal("0.23")), ("Ozon (>300)", Decimal("0.52")), ("WB", Decimal("0.43")))}
+BOOK_COEF_BY_SKU = None      # коэффициенты заказов книги по SKU (РБХ, решение 25.10); KARATOV — по кабинету, как прежде
+ANALYST_COEF = {}            # коэффициенты аналитика кабинета справочно — у KARATOV нет (образец владельца — OWNER_COEF)
 # Накладные в день с датой действия (report_ozon_month.py:84; report_wb_month.py:71).
 OVERHEAD_PER_DAY = {"ozon": (("2026-09-01", Decimal("311527.00")),), "wb": (("2026-09-01", Decimal("74002.00")),)}
 # Индекс себестоимости COST_INDEX (1,150 с 2026-09-01, лист владельца 22.09) снят 2026-10-08 (сорок восьмая, решение владельца 10-07):

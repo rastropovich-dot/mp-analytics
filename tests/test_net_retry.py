@@ -88,7 +88,8 @@ class ReadersTests(unittest.TestCase):
 
     def test_nightly_script_retries_on_network_markers(self):
         sh = open(os.path.join(ROOT, "scripts", "finrez_nightly.sh"), encoding="utf-8").read()
-        self.assertIn('[ "$ATTEMPT" -ge 3 ]', sh); self.assertIn("sleep 20", sh); self.assertIn("ProxyError|RemoteProtocolError|ReadError", sh)
+        self.assertIn('[ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]', sh); self.assertIn("FINREZ_RETRY_PAUSES:-120 300 600", sh)   # 26.10: 2 / 5 / 10 мин
+        self.assertIn("ProxyError|RemoteProtocolError|ReadError", sh); self.assertIn("Connection refused", sh)
         self.assertNotIn("env -u", sh, "путь сети (прокси) не меняется без слова владельца")
 
 
@@ -135,3 +136,53 @@ class FalseMarkerTests(unittest.TestCase):
             self.assertFalse(hits(line), line)
         for line in ("httpx.ProxyError: 503 Service Unavailable", "WB-приёмка вернула код 1: HTTP 502", "httpx.RemoteProtocolError: Server disconnected", "status_code=504"):
             self.assertTrue(hits(line), line)
+
+
+class NightlyLoopTests(unittest.TestCase):
+    """Дополнение РБХ 26.10: книга rbh2 упала трижды за минуту на `ConnectError: [Errno 61] Connection refused` (прокси VPN не слушал
+    порт). Скрипт гоняется по-настоящему в пустом каталоге: python3 подменён заглушкой, сборка падает отказом соединения заданное
+    число раз, паузы — FINREZ_RETRY_PAUSES="0 0 0", итог в базу не пишется (FINREZ_NO_STATUS)."""
+
+    STUB = """#!/bin/zsh
+case "$1" in
+  cabinet.py) print -r -- "export MP_CABINET=rbh2 MP_CABINET_NAME=TEST MP_DATA_DIR=$PWD/data MP_LOGS_DIR=$PWD/logs MP_REPORT_PREFIX=t_ MP_BOOK_MONTH_FROM=2026-09"; exit 0 ;;
+  scripts/report_finrez.py)
+    n=$(( $(cat calls 2>/dev/null || echo 0) + 1 )); echo $n > calls
+    if [ $n -le $FAILS ]; then echo "httpx.ConnectError: [Errno 61] Connection refused"; exit 1; fi
+    for a in "$@"; do if [ "$prev" = "--out" ]; then echo book > "$a"; fi; prev="$a"; done; exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+
+    def run_script(self, fails, pauses="0 0 0"):
+        import shutil, subprocess, tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "scripts")); os.makedirs(os.path.join(d, "venv", "bin"))
+        shutil.copy(os.path.join(ROOT, "scripts", "finrez_nightly.sh"), os.path.join(d, "scripts", "finrez_nightly.sh"))
+        stub = os.path.join(d, "venv", "bin", "python3")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(self.STUB)
+        os.chmod(stub, 0o755)
+        env = {k: v for k, v in os.environ.items() if k not in ("FINREZ_COPY_DIR", "FINREZ_RETRY_PAUSES")}
+        env.update({"FAILS": str(fails), "FINREZ_RETRY_PAUSES": pauses, "FINREZ_NO_STATUS": "1"})
+        p = subprocess.run(["zsh", os.path.join(d, "scripts", "finrez_nightly.sh")], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+        calls = int(open(os.path.join(d, "calls")).read())
+        return p.returncode, calls, p.stdout
+
+    def test_connection_refused_three_times_then_the_fourth_attempt_builds_the_book(self):
+        rc, calls, out = self.run_script(fails=3)
+        self.assertEqual((rc, calls), (0, 4), out)
+        self.assertIn("попытка 3 из 4 упала от сети", out)
+
+    def test_four_refusals_stop_with_the_build_code(self):
+        rc, calls, out = self.run_script(fails=9)
+        self.assertEqual((rc, calls), (1, 4), out)
+
+    def test_pauses_set_the_number_of_attempts(self):
+        rc, calls, _out = self.run_script(fails=9, pauses="0")
+        self.assertEqual((rc, calls), (1, 2))
+
+    def test_connection_refused_is_transient_in_process_too(self):
+        self.assertTrue(net_retry.is_transient(ConnectionRefusedError(61, "Connection refused")))
+        self.assertTrue(net_retry.is_transient(httpx.ConnectError("[Errno 61] Connection refused")))

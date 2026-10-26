@@ -55,7 +55,22 @@ class FormulaTests(unittest.TestCase):
         self.assertEqual(rep.q(r["revenue"]), rep.q((D("900") - D("377")) / D("1.22") - r["vat_refund"]))   # его E
         self.assertEqual(r["logistics"], D("200"))                      # 244 / 1,22
         self.assertEqual(r["acquiring"], D("90"))                       # (122 − 12,2) / 1,22 — возврат со знаком минус
-        self.assertEqual(r["other"], D("1344"))                         # 1220 / 1,22 + 244 (штраф без НДС) + 122 / 1,22
+        self.assertEqual(r["storage_cost"], D("1000"))                  # 1220 / 1,22 — своя колонка с 2026-10-25
+        self.assertEqual(r["other"], D("344"))                          # 244 (штраф без НДС) + 122 / 1,22 — без хранения
+        self.assertEqual(r["other_with_storage"], D("1344"))            # его O = хранение + прочее
+        self.assertEqual(r["fin_result"], r["margin"] - D("200") - D("1000") - D("90") - D("344"))   # Логистика, Хранение, Эквайринг, Прочее
+
+    def test_storage_column_moves_out_of_other_and_fin_result_is_unchanged(self):
+        [r] = rep.build_daily(ROWS, ["2026-09-01"], cost_base, {"2026-09-01": D("122")}, date(2026, 9, 10))
+        old_other = D("1220") / D("1.22") + D("244") + D("122") / D("1.22")   # «Прочее» до 2026-10-25
+        old_fin = r["margin"] - r["logistics"] - r["ads"] - r["acquiring"] - old_other
+        self.assertEqual(r["fin_result"], old_fin)
+        self.assertEqual(r["storage_cost"] + r["other"], old_other)
+        t = rep.total_row([r])
+        self.assertEqual(t["storage_cost"], D("1000")); self.assertEqual(t["storage_pct"], rep.ratio(D("1000"), t["revenue"]))
+        heads = [h for h, _k, _f in rep.COLS]
+        self.assertEqual(heads.index("Хранение, руб."), heads.index("% Логистики") + 1)
+        self.assertLess(heads.index("Хранение, руб."), heads.index("Прочее, руб."))
         self.assertEqual(r["deduction"], D("122"))
         self.assertEqual(r["cogs"], D("110") - D("110"))                # продажа + возврат одного артикула по единой СС
         self.assertEqual(r["overhead"], D("74002.00"))
@@ -147,7 +162,7 @@ class CheckTests(unittest.TestCase):
         by = {t["title"]: t for t in table}
         self.assertEqual([t["title"] for t in table if t["must"]],
                          ["Оборот (с НДС)", "Выручка (оборот − комиссия) / НДС − НДС за возмещение", ACQ_TITLE,
-                          "Прочее (хранение / НДС + штрафы без НДС + удержания / НДС)", "Комиссия (Σ цена × кВВ строки, знак возврата)", LOG_TITLE])
+                          "Хранение + Прочее (хранение / НДС + штрафы без НДС + удержания / НДС) — его O", "Комиссия (Σ цена × кВВ строки, знак возврата)", LOG_TITLE])
         self.assertTrue(all(by[t]["equal_days"] == 1 for t in by if by[t]["must"]))
         rep.KNOWN_MANUAL_DIFFS.add(("acquiring", "2026-09-01"))
         try:

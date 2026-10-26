@@ -29,10 +29,12 @@ saleDt в московском времени (у строки без saleDt —
                         Σ updSum / 1,22 до рубля); источник по умолчанию — таблица wb_ad_spend_daily,
                         --ads api — живой adv/v1/upd (1 обращение, ручной путь), --ads none — пусто, не ноль
     Эквайринг           Σ acquiringFee (продажа +, возврат −) / НДС — его M; 09-17 он возвраты не вычел
-    Прочее              Σ paidStorage / НДС + Σ penalty (штрафы без НДС) + Σ удержаний вида «прочее» / НДС — его O
+    Хранение            Σ paidStorage / НДС — своя колонка (слово владельца 2026-10-25: «выделил бы отдельной колонкой»;
+                        до этого сидело в «Прочем», итог дня тот же)
+    Прочее              Σ penalty (штрафы без НДС) + Σ удержаний вида «прочее» / НДС; его O = Хранение + Прочее
                         (WB-14: удержания «WB Продвижение» — это реклама с баланса, в «Прочее» не входят; аванс
                         «Баллы за отзывы» и его возврат — только нетто в день возврата; правила — loaders/wb_money_rules)
-    Фин. рез.           Маржа − Логистика − Реклама − Эквайринг − Прочее
+    Фин. рез.           Маржа − Логистика − Хранение − Реклама − Эквайринг − Прочее
     Накладные в день    OVERHEAD_PER_DAY["wb"] с датой действия (T81 листа владельца: 74 002,00 с 09-01)
     Ebitda              Фин. рез. − Накладные
 
@@ -670,9 +672,10 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
         cogs = s["cogs"]
         ads = (ads_by_day.get(d, Z) / vat) if ads_known else None   # updSum с НДС → без, как на листе владельца
         logistics, acquiring = s["delivery"] / vat, s["acquiring_raw"] / vat
-        other = s["storage"] / vat + s["penalty"] + s["deduction"] / vat   # штрафы у владельца без НДС — 21 из 21 только так; deduction — вида «прочее» + нетто аванса
+        storage = s["storage"] / vat                    # своя колонка с 2026-10-25 (слово владельца); прежде — внутри «Прочего»
+        other = s["penalty"] + s["deduction"] / vat     # штрафы у владельца без НДС — 21 из 21 только так; deduction — вида «прочее» + нетто аванса
         margin = revenue - cogs
-        fin = margin - logistics - (ads or Z) - acquiring - other
+        fin = margin - logistics - storage - (ads or Z) - acquiring - other
         overhead = overhead_for(d)
         young = (date.fromisoformat(d) >= today - timedelta(days=YOUNG_DAYS - 1))
         row = {"date": d, "vat": vat, "rows": c["rows"], "positions": c["positions"], "no_cost_positions": c["no_cost_positions"], "no_pct_rows": c["no_pct_rows"],
@@ -681,7 +684,7 @@ def build_daily(rows, days, cost_fn, ads_by_day, today, ads_known=True, outside=
                "withheld": withheld, "withheld_pct": ratio(withheld, s["turnover"]), "vat_refund": vat_refund, "revenue": revenue,
                "cogs": cogs, "margin": margin, "margin_pct": ratio(margin, revenue), "logistics": logistics, "logistics_pct": ratio(logistics, revenue),
                "ads": ads, "drr_pct": ratio(ads, s["turnover"]) if ads is not None else None, "acquiring": acquiring, "acquiring_pct": ratio(acquiring, revenue),
-               "other": other, "fin_result": fin, "fin_result_pct": ratio(fin, revenue), "overhead": overhead,
+               "storage_cost": storage, "storage_pct": ratio(storage, revenue), "other": other, "other_with_storage": other + storage, "fin_result": fin, "fin_result_pct": ratio(fin, revenue), "overhead": overhead,
                "ebitda": (fin - overhead) if overhead is not None else None, "young": young,
                "reward": s["reward"], "rebill": s["rebill"], "storage": s["storage"], "penalty": s["penalty"], "deduction": s["deduction"],
                "deduction_ads": s["deduction_ads"], "deduction_advance": s["deduction_advance"], "advance_net": s["advance_net"],
@@ -695,14 +698,14 @@ def total_row(rows):
     t = {"date": "Итого", "young": False, "vat": rows[-1]["vat"] if rows else vat_for("2026-01-01")}
     for k in ("rows", "positions", "no_cost_positions", "no_pct_rows"):
         t[k] = sum(r[k] for r in rows)
-    for k in ("turnover", "commission", "withheld", "vat_refund", "revenue", "cogs", "margin", "logistics", "acquiring", "other", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "deduction_ads", "deduction_advance", "advance_net", "acquiring_other", "no_cost_turnover"):
+    for k in ("turnover", "commission", "withheld", "vat_refund", "revenue", "cogs", "margin", "logistics", "storage_cost", "acquiring", "other", "other_with_storage", "fin_result", "reward", "rebill", "storage", "penalty", "deduction", "deduction_ads", "deduction_advance", "advance_net", "acquiring_other", "no_cost_turnover"):
         t[k] = sum((r[k] for r in rows), Z)
     t["ads"] = sum((r["ads"] for r in rows if r["ads"] is not None), Z) if any(r["ads"] is not None for r in rows) else None
     t["overhead"] = sum((r["overhead"] for r in rows if r["overhead"] is not None), Z) if any(r["overhead"] is not None for r in rows) else None
     t["ebitda"] = (t["fin_result"] - t["overhead"]) if t["overhead"] is not None else None
     t["commission_pct"] = ratio(t["commission"], t["turnover"]); t["withheld_pct"] = ratio(t["withheld"], t["turnover"])
     t["margin_pct"] = ratio(t["margin"], t["revenue"])
-    t["logistics_pct"] = ratio(t["logistics"], t["revenue"]); t["acquiring_pct"] = ratio(t["acquiring"], t["revenue"])
+    t["logistics_pct"] = ratio(t["logistics"], t["revenue"]); t["storage_pct"] = ratio(t["storage_cost"], t["revenue"]); t["acquiring_pct"] = ratio(t["acquiring"], t["revenue"])
     t["drr_pct"] = ratio(t["ads"], t["turnover"]) if t["ads"] is not None else None
     t["fin_result_pct"] = ratio(t["fin_result"], t["revenue"]); t["ebitda_pct"] = ratio(t["ebitda"], t["revenue"]) if t["ebitda"] is not None else None
     srcs = defaultdict(int)
@@ -893,7 +896,8 @@ COLS = [("Дата реализации", "date", None), ("Оборот (с НД
         ("Комиссия, %", "commission_pct", "pct"), ("справочно: удержано из выплаты всего (оборот − forPay), руб.", "withheld", "money"),
         ("справочно: удержано, %", "withheld_pct", "pct"), ("Выручка, руб.", "revenue", "money"),
         ("Себестоимость, руб.", "cogs", "money"), ("Маржа, руб.", "margin", "money"), ("Мар-ть, %", "margin_pct", "pct"),
-        ("Логистика, руб.", "logistics", "money"), ("% Логистики", "logistics_pct", "pct"), ("Реклама, руб.", "ads", "money"),
+        ("Логистика, руб.", "logistics", "money"), ("% Логистики", "logistics_pct", "pct"),
+        ("Хранение, руб.", "storage_cost", "money"), ("% Хранения", "storage_pct", "pct"), ("Реклама, руб.", "ads", "money"),
         ("% ДРР (от ТО)", "drr_pct", "pct"), ("Эквайринг, руб.", "acquiring", "money"), ("% Эквайринга", "acquiring_pct", "pct"),
         ("Прочее, руб.", "other", "money"), ("Фин. рез., руб.", "fin_result", "money"), ("% Фин. рез.", "fin_result_pct", "pct"),
         ("Накладные в день, руб.", "overhead", "money"), ("Ebitda, руб.", "ebitda", "money"), ("% Ebitda", "ebitda_pct", "pct"),
@@ -966,7 +970,7 @@ CHECK_LINES = (
     ("Выручка (оборот − комиссия) / НДС − НДС за возмещение", "revenue", "revenue", True, ""),
     ("Эквайринг (acquiringFee, возврат со знаком минус) / НДС", "acquiring", "acquiring", True,
      "09-17 владелец не вычел эквайринг двух возвратов (441,25 + 936,24 с НДС = 1 129,09 без) — на 09-03, 09-07, 09-14 вычел; его сторона"),
-    ("Прочее (хранение / НДС + штрафы без НДС + удержания / НДС)", "other", "other", True, ""),
+    ("Хранение + Прочее (хранение / НДС + штрафы без НДС + удержания / НДС) — его O", "other_with_storage", "other", True, ""),
     ("Комиссия (Σ цена × кВВ строки, знак возврата)", "commission", "commission", True, ""),
     ("Логистика (deliveryService / НДС, по дате продажи МСК)", "logistics", "logistics", True, ""),
     ("справочно: удержано из выплаты всего (оборот − forPay) против его комиссии", "withheld", "commission", False,
@@ -1173,7 +1177,7 @@ def main(argv=None):
         print(f"ВНИМАНИЕ: строк продаж/возвратов без commissionPercent — {total['no_pct_rows']}, в комиссии по образцу они как 0 %")
     notes = [f"Источник: отчёт реализации WB (finance-api sales-reports/detailed, period=daily); день строки — saleDt в московском времени, без saleDt — rrDate. "
              f"Строк {len(rows)}; {outside_text}.",
-             "Правила WB-14 (loaders/wb_money_rules): «Прочее» = хранение / НДС + штрафы + удержания вида «прочее» / НДС; удержания "
+             "Правила WB-14 (loaders/wb_money_rules): «Хранение» = хранение / НДС (своя колонка с 25.10, прежде — в «Прочем»); «Прочее» = штрафы + удержания вида «прочее» / НДС; удержания "
              "«Оказание услуг «WB Продвижение»» — реклама с баланса, уже в «Рекламе» (из upd), сюда не входят; аванс «Баллы за отзывы» и его "
              "возврат — только нетто в день возврата; реклама — только оплата «Баланс» (кэшбэк WB — не расход); упаковка (предмет «Упаковки для "
              f"украшений») из листа исключена. {rules_text}.",
@@ -1183,7 +1187,7 @@ def main(argv=None):
              + f"; без СС {total['no_cost_positions']} из {total['positions']} позиций — оборот {total['no_cost_turnover']:,.2f}"
              + (f" ({ratio(total['no_cost_turnover'], total['turnover']):.1%} оборота)." if total["turnover"] else "."),
              ads_note, "Логистика = deliveryService / НДС по дате продажи МСК — с листом владельца до копейки; эквайринг — возврат со знаком минус; "
-             "прочее = хранение / НДС + штрафы без НДС + удержания / НДС (docs/wb_report_model.md).",
+             "хранение = paidStorage / НДС; прочее = штрафы без НДС + удержания / НДС; в листе владельца «Прочее» (O) = хранение + прочее (docs/wb_report_model.md).",
              f"Жёлтым — дни моложе {YOUNG_DAYS} суток: строки доезжают." + (f" Таких дней: {', '.join(young)}." if young else "")]
     # Листы заказов — из воронки по товарам (таблица или сырьё); нет источника — листов нет, сказано вслух.
     funnel_rows, funnel_note = [], ""
@@ -1230,7 +1234,7 @@ def main(argv=None):
               + f"; без СС {o_total['no_cost_qty']} заказов")
     ads_text = "—" if total["ads"] is None else f"{total['ads']:,.2f}"
     print(f"итого {d1}…{days[-1]}: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f} ({total['commission_pct']:.2%}), выручка {total['revenue']:,.2f}, "
-          f"СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}, логистика {total['logistics']:,.2f}, реклама {ads_text}, "
+          f"СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}, логистика {total['logistics']:,.2f}, хранение {total['storage_cost']:,.2f}, реклама {ads_text}, "
           f"эквайринг {total['acquiring']:,.2f}, прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
           + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total["ebitda"] is not None else ""))
     print(f"без СС: {total['no_cost_positions']} из {total['positions']} позиций, оборот {total['no_cost_turnover']:,.2f}"

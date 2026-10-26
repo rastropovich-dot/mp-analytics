@@ -243,6 +243,118 @@ class LongRows(unittest.TestCase):
         self.assertEqual([r for r in rows if r.kind == "Товарооборот"][0].qty, D(1))
 
 
+class Reviews(unittest.TestCase):
+    """«Отзывы» (слово владельца 2026-10-25): 95 «Отзывы за баллы» идут по SKU, 96 «Ускоренный сбор отзывов» — без SKU; своя статья книги,
+    из «Прочего» убраны, фин. рез. и тождества с листом месяца — те же."""
+
+    def test_type_to_owner_article(self):
+        self.assertEqual([fr.article_key_of_type(t) for t in (95, 96, 1, 32, 51, 38)], ["reviews", "reviews", "acquiring", "logistics", "other", "other"])
+        self.assertEqual(fr.ARTICLES, tuple(sorted(fr.ARTICLES)))                       # по алфавиту — так статьи ставит сводная
+        self.assertIn("Отзывы", fr.NET_KINDS)
+
+    def test_reviews_rows_residual_and_identities(self):
+        m = lambda v: {"amount": v, "currency": "RUB"}  # noqa: E731
+        raw = raw_accruals() + [
+            {"accrual_id": 6, "date": RAW_DAY, "accrued_category": "ITEM", "item_fees": {"fees": [{"sku": 11, "fees": [{"type_id": 95, "accrued": m("-24.40")}]}]}},
+            {"accrual_id": 7, "date": RAW_DAY, "accrued_category": "NON_ITEM", "non_item_fee": {"fees": [{"type_id": 96, "accrued": m("-12.20")}]}}]
+        day = daily_for_raw()
+        day["reviews"] = D("36.60") / day["vat"]                                         # лист месяца: (95 + 96) / НДС
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, f"{RAW_DAY}.json"), "w", encoding="utf-8") as fh:
+                json.dump({"date": RAW_DAY, "accruals": raw}, fh)
+            buyouts = [dict(buyout(RAW_DAY, "11", "1000", "400", units=2), buyouts_qty=1), dict(buyout(RAW_DAY, "22", "-500", "-200"), buyouts_units=None, buyouts_qty=-1)]
+            rows, wide, stats = fr.build_buyout_long_rows([RAW_DAY], tmp, buyouts, [], [{"kpi_date": RAW_DAY, "marketplace_sku": "11", "ad_spend": "100"}], [day],
+                                                         UNIT_COST, {"11": "F1", "22": "T2"}, CATALOG, {})
+        by = {(r.accrual_id, r.sku, r.kind): r.amount for r in rows}
+        self.assertEqual(by[(6, "11", "Отзывы")], D("-24.40"))                             # 95 — у товара
+        self.assertEqual(by[(7, "", "Отзывы")], D("-12.20"))                               # 96 — без SKU
+        self.assertNotIn(("", "", "Отзывы"), by)                                           # остатка нет: сырьё = листу месяца
+        self.assertFalse([k for k in stats if k.startswith("residual_reviews")], stats)
+        table = fr.check_against_month(wide, [day], [RAW_DAY])
+        self.assertEqual([t[3] for t in table], [D(0)] * len(table), table)
+        self.assertIn("Отзывы без НДС (95 + 96)", [t[0] for t in table])
+        piv, order = fr.pivot_buyouts(wide, [RAW_DAY])
+        tot = piv["Ozon"][order[-1]]
+        self.assertEqual(rep.q(tot["reviews_net"]), D("30.00"))
+        self.assertEqual(tot["drr_reviews_pct"], (tot["ads_net"] + tot["reviews_net"]) / tot["revenue_net"])
+        self.assertEqual(rep.q(tot["fin_result"]), rep.q(tot["margin"] - tot["logistics_net"] - tot["ads_net"] - tot["reviews_net"] - tot["acquiring_net"] - tot["other_net"]))
+        self.assertEqual(fr.long_identity(rows, piv["Ozon"], order), [])
+        sheet = fr.long_rows_for_sheet(rows)
+        self.assertEqual(sum((r.amount for r in sheet if r.kind == "Отзывы"), D(0)), D("-36.60") / D("1.22"))   # на листе — без НДС, как реклама
+
+    def test_owner_formulas_follow_the_new_column(self):
+        import finrez_pivots as fp
+        spec = fp.FORMULAS["Сводная Ozon выкупы"]
+        f = dict(spec["columns"])
+        self.assertEqual((f["P"], f["Y"], f["AC"], f["AF"]), ('IF(L{r}="","",L{r})', 'IF(J{r}="","",-J{r})', 'IF(H{r}="","",-H{r})', 'IF(F{r}="","",-F{r})'))
+        self.assertIn("-AF{r}", f["AD"]); self.assertIn("(Y{r}+AF{r})/S{r}", f["Z"])
+        xml = ('<worksheet><dimension ref="A1:AE12"/><sheetData><row r="11"><c r="P11" s="4" t="inlineStr"><is><t>Оборот (с НДС)</t></is></c>'
+               '<c r="Z11" s="4" t="inlineStr"><is><t>% ДРР</t></is></c></row>'
+               '<row r="12"><c r="W12" s="9"><f>-D12</f></c><c r="X12" s="8"><f>W12/S12</f></c></row></sheetData></worksheet>')
+        out = fp.write_formulas(xml, spec, rows=2)
+        self.assertIn('<c r="Z11" s="4" t="inlineStr"><is><t>% ДРР (реклама + отзывы)</t></is></c>', out)
+        self.assertIn('<c r="AF11" s="4" t="inlineStr"><is><t>Отзывы, руб. (без НДС)</t></is></c>', out)
+        self.assertIn('<c r="AF12" s="9"><f>IF(F12="","",-F12)</f></c>', out)             # стиль денег — как у W
+        self.assertIn('<c r="AG13" s="8">', out)                                           # стиль процента — как у X
+
+
+class CoefBySku(unittest.TestCase):
+    """РБХ, решение владельца 25.10: % выкупа и комиссия строки заказов — свои у SKU, где данных хватает, иначе кабинета; аналитик — справочно."""
+    BY = {"min_orders": 20, "min_buyout_units": 10}
+
+    def orders(self):
+        r = lambda sku, conf, created, q, age=30: {"sku": sku, "age": age, "confirmed_a": D(conf), "created_a": D(created), "created_q": q, "platform_name": "Ozon"}  # noqa: E731
+        return [r("11", 800, 1000, 25), r("22", 50, 100, 5), r("33", 900, 1000, 30, age=10), r(fr.NO_SKU, 0, 0, 0)]
+
+    def buyouts(self):
+        b = lambda sku, t, c, u: {"sku": sku, "month": "сен", "turnover": D(t), "commission": D(-c), "units": D(u)}  # noqa: E731
+        return [b("11", 1000, 400, 12), b("22", 1000, 600, 3)]
+
+    def test_thresholds_and_fallback(self):
+        coef = fr.coefficients(self.orders(), self.buyouts(), DAYS, by_sku=self.BY)
+        self.assertEqual(coef["buyout_sku"], {"11": D("0.8")})               # 22 — 5 шт < 20; 33 — дни моложе 21 суток не в счёт
+        self.assertEqual(coef["commission_sku"], {("сен", "11"): D("0.4")})  # по месяцу; 22 — 3 выкупленных шт < 10
+        self.assertEqual(coef["buyout"]["все"], D(850) / D(1100))            # кабинет — как прежде (только зрелые)
+        self.assertEqual(fr.sku_coef(coef["buyout_sku"], "11", D("0.5")), (D("0.8"), fr.COEF_SKU))
+        self.assertEqual(fr.sku_coef(coef["buyout_sku"], "22", D("0.5")), (D("0.5"), fr.COEF_CABINET))
+        plain = fr.coefficients(self.orders(), self.buyouts(), DAYS)
+        self.assertEqual((plain["buyout_sku"], plain["commission_sku"]), ({}, {}))   # KARATOV (без порога) — словари пусты, строки по кабинету
+
+    def test_wb_sku_coefficients_from_mature_cohort_and_rows(self):
+        cohort = [{"nm_id": 5, "mature": True, "sold_sum": "700", "created_sum": "1000", "created_qty": 15},
+                  {"nm_id": 5, "mature": True, "sold_sum": "100", "created_sum": "200", "created_qty": 10},
+                  {"nm_id": 5, "mature": False, "sold_sum": "0", "created_sum": "5000", "created_qty": 90},
+                  {"nm_id": 6, "mature": True, "sold_sum": "10", "created_sum": "20", "created_qty": 3}]
+        rows = [{"month": "сен", "nm_id": 5, "sales": "1000", "commission": "430", "qty": 11}, {"month": "сен", "nm_id": 6, "sales": "500", "commission": "200", "qty": 2},
+                {"month": "окт", "nm_id": 5, "sales": "100", "commission": "50", "qty": 1}, {"month": "сен", "nm_id": None, "sales": "1", "commission": "1", "qty": 99}]
+        out = fr.wb_sku_coefficients(rows, cohort, self.BY)
+        self.assertEqual(out["buyout_sku"], {"5": D(800) / D(1200)})          # незрелый день не входит; 6 — 3 шт
+        self.assertEqual(out["commission_sku"], {("сен", "5"): D("0.43")})   # октябрь — 1 шт < 10, по кабинету
+        self.assertEqual(out["sku_tested"], {"buyout": 2, "commission": 3})
+
+
+class CoefBySkuRows(unittest.TestCase):
+    def test_rows_take_their_sku_coefficients_and_name_the_source(self):
+        from unittest import mock
+        rows, _ = Orders().data()
+        days = ["2026-08-01", "2026-09-01"]
+        coef = fr.coefficients(rows, [], days)
+        coef["commission"] = {"сен": D("0.4"), "авг": D("0.4"), "все": D("0.4")}
+        coef["buyout_sku"], coef["commission_sku"] = {"11": D("0.9")}, {("сен", "11"): D("0.5")}
+        with mock.patch.object(fr, "COEF_BY_SKU", {"min_orders": 1, "min_buyout_units": 1}):
+            data, stats = fr.build_order_data_rows(rows, None, coef, days)
+        r11 = next(x for x in data if x["date"] == "2026-09-01" and x["sku"] == "11")
+        r22 = next(x for x in data if x["date"] == "2026-09-01" and x["sku"] == "22")
+        self.assertEqual((r11["buyout_rate"], r11["commission"], r11["coef_source"]), (D("0.9"), D("0.5"), "выкуп SKU, комиссия SKU"))
+        self.assertEqual((r22["buyout_rate"], r22["commission"], r22["coef_source"]), (D("0.8"), D("0.4"), "выкуп кабинет, комиссия кабинет"))
+        self.assertEqual(r11["revenue"], r11["created_net"] * D("0.5")); self.assertEqual(r11["buyout_rub"], r11["revenue"] * D("0.9"))
+        self.assertGreater(stats["coef_Ozon_buyout_SKU"], 0)
+        cov = fr.coef_coverage(data, "Ozon")
+        self.assertEqual(cov["buyout"][0], sum((x["created_a"] for x in data if x["sku"] == "11"), D(0)))
+        plain, _ = fr.build_order_data_rows(rows, None, coef, days)                     # без порога (KARATOV) — колонка пуста
+        self.assertTrue(all(x.get("coef_source") is None for x in plain))
+
+
 class OrdersData(unittest.TestCase):
     def parts(self):
         rows, _ = Orders().data()
@@ -270,10 +382,11 @@ class OrdersData(unittest.TestCase):
         self.assertEqual((r["week"], r["day_num"], r["month_num"]), (36, 1, 9))
         self.assertEqual(r["drr_pct"], r["ads_net"] / r["buyout_rub"])
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][:4], ["Дата", "МП", "Магазин", "Артикул поставщика"])
-        self.assertEqual(len(fr.ORDER_DATA_COLS), 35)
+        self.assertEqual(len(fr.ORDER_DATA_COLS), 36)                 # + «Коэф. источник» (РБХ, 25.10)
         self.assertEqual([h for h, _k, _f in fr.ORDER_DATA_COLS][28:31], ["Фин.рез %", "Месяцы", "SKU/nmId"])      # «Месяцы» — после 29 полей владельца
-        self.assertEqual(fr.ORDER_DATA_COLS[-2][:2], ("СПП источник", "spp_source"))                              # сорок первая §4 — наша
-        self.assertEqual(fr.ORDER_DATA_COLS[-1][:2], ("СС источник", "cost_source"))                              # сорок шестая §3 — последняя, наша
+        self.assertEqual(fr.ORDER_DATA_COLS[-3][:2], ("СПП источник", "spp_source"))                              # сорок первая §4 — наша
+        self.assertEqual(fr.ORDER_DATA_COLS[-2][:2], ("СС источник", "cost_source"))                              # сорок шестая §3 — наша
+        self.assertEqual(fr.ORDER_DATA_COLS[-1][:2], ("Коэф. источник", "coef_source"))                           # РБХ 25.10 — последняя, наша
         self.assertEqual(fr.LONG_COLS[-1][:2], ("СС источник", "cost_source"))
         self.assertEqual(stats, {"spp_measured_Ozon": 1, "spp_empty_Ozon": 3})                                     # без долей месяца — подстановки нет
         self.assertEqual(r["spp_source"], fr.SPP_MEASURED)
@@ -332,8 +445,8 @@ class Book(unittest.TestCase):
             v = lambda ws, r, c: ws.cell(row=r, column=c).value  # noqa: E731
             ws = wb["Выкупы Ozon"]
             cells = {(r, c): x for r, row in enumerate(ws.iter_rows(min_row=1, max_row=14, values_only=True), 1) for c, x in enumerate(row, 1)}
-            self.assertEqual((cells[(2, 1)], cells[(2, 2)], cells[(3, 1)], cells[(3, 2)], cells[(3, 14)], cells[(4, 1)], cells[(5, 1)], cells[(6, 1)]),
-                             ("Названия столбцов", "Комиссия", "Названия строк", " Начисления", "Оборот (с НДС)", "сен", "01.сен", "Общий итог"))   # компактно, без пустых колонок
+            self.assertEqual((cells[(2, 1)], cells[(2, 2)], cells[(3, 1)], cells[(3, 2)], cells[(3, 16)], cells[(4, 1)], cells[(5, 1)], cells[(6, 1)]),
+                             ("Названия столбцов", "Комиссия", "Названия строк", " Начисления", "Оборот (с НДС)", "сен", "01.сен", "Общий итог"))   # компактно, без пустых колонок; 7 статей (с «Отзывами») × 2
             wo = wb["Заказы"]
             cells = {(r, c): x for r, row in enumerate(wo.iter_rows(min_row=1, max_row=12, values_only=True), 1) for c, x in enumerate(row, 1)}
             self.assertEqual((cells[(2, 1)], cells[(2, 2)], cells[(2, 15)], cells[(3, 1)], cells[(3, 2)], cells[(4, 1)]), ("Названия столбцов", "Ozon", "WB", "Названия строк", "Оборот (с НДС)", "авг"))

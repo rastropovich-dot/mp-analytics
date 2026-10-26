@@ -133,6 +133,11 @@ TYPE_TO_EXPENSE = {
 # пишем, видим отдельно. Разрешит только сверка с отчётом в кабинете.
 UNCLASSIFIED_TYPE_IDS = {25, 10}
 
+# «Отзывы» (слово владельца 2026-10-25): 95 CustomerReviews «Отзывы за баллы» + 96 AcceleratedReviewCollection «Ускоренный сбор
+# отзывов» — своя статья в ОТЧЁТАХ (лист месяца, книга «Фин рез»): колонка рядом с «Рекламой» и в ДРР «(реклама + отзывы)».
+# В TYPE_TO_EXPENSE они остаются как были (95 — subscription, 96 — other): marketplace_expenses и витрины не меняются (вариант А).
+REVIEW_TYPE_IDS = {95, 96}
+
 def headers():
     return {
         "Client-Id": os.getenv("OZON_CLIENT_ID"),

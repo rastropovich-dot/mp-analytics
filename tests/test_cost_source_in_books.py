@@ -53,7 +53,7 @@ class LongRowsCarrySource(unittest.TestCase):
         self.assertEqual([r["cost_source"] for r in orows if r["sku"] == "11"], ["после последнего снимка 2026-05-20"])
         data = fr.order_data_row(orows[0], D("0.4"), None, D("0.5"), "Ozon", "KARATOV")
         self.assertEqual(data["cost_source"], "после последнего снимка 2026-05-20")
-        self.assertEqual(fr.ORDER_DATA_COLS[-1][1], "cost_source")
+        self.assertEqual(fr.ORDER_DATA_COLS[-2][1], "cost_source")   # последняя — «Коэф. источник» (РБХ, 25.10)
 
 
 class SkuSheetCarriesSources(unittest.TestCase):

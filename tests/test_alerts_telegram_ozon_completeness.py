@@ -3,15 +3,50 @@ from unittest import mock
 
 import alerts_telegram as alerts
 
+_REVIEWS_REAL = alerts.get_ozon_reviews_lines            # до заглушки модуля — для прямых тестов строки
+
 _BONUS_STUB = mock.patch.object(alerts, "get_ozon_ad_bonus_lines", return_value=[])   # 53-я: строки бонусов читают базу — в тестах заглушка
+_REVIEWS_STUB = mock.patch.object(alerts, "get_ozon_reviews_lines", return_value=[])  # «Отзывы» (25.10): строка читает леджер — в тестах заглушка
 
 
 def setUpModule():
-    _BONUS_STUB.start()
+    _BONUS_STUB.start(); _REVIEWS_STUB.start()
 
 
 def tearDownModule():
-    _BONUS_STUB.stop()
+    _BONUS_STUB.stop(); _REVIEWS_STUB.stop()
+
+
+class ReviewsLine(unittest.TestCase):
+    class _Sb:
+        def __init__(self, rows=None, exc=None):
+            self.rows, self.exc, self.calls = rows, exc, []
+
+        def table(self, name):
+            self.calls.append(name)
+            return self
+
+        def __getattr__(self, name):
+            return lambda *a, **k: (self.calls.append((name, a)) or self)
+
+        def execute(self):
+            if self.exc:
+                raise self.exc
+            return type("R", (), {"data": self.rows})()
+
+    def test_reviews_line_from_ledger(self):
+        sb = self._Sb([{"type_id": 95, "amount": "-12000.40"}, {"type_id": 96, "amount": "-305"}])
+        [line] = self._real()("2026-10-24", sb)
+        self.assertEqual(line, "Отзывы (баллы): 12 305 руб. — за баллы (95) 12 000, ускоренный сбор (96) 305; в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)».")
+        self.assertIn(("in_", ("type_id", [95, 96])), sb.calls)
+
+    def test_no_rows_no_line_and_failure_is_named(self):
+        self.assertEqual(self._real()("2026-10-24", self._Sb([])), [])
+        self.assertEqual(self._real()("2026-10-24", self._Sb(exc=RuntimeError("x"))), ["Отзывы (баллы): не прочитано — RuntimeError"])
+
+    @staticmethod
+    def _real():
+        return _REVIEWS_REAL
 
 
 

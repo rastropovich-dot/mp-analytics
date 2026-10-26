@@ -74,3 +74,32 @@ class PlacementMoveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageOnlyWindowTests(unittest.TestCase):
+    """Слово 2026-10-26: ключ «только хранение» — только за 30 дней; хранение у ключей с продажами — за всю историю."""
+
+    def build(self, placement, expenses):
+        from unittest import mock
+        with mock.patch.object(kpi, "load_orders", return_value=[]), mock.patch.object(kpi, "load_buyouts", return_value=[]), \
+             mock.patch.object(kpi, "load_expenses", return_value=expenses), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), \
+             mock.patch.object(kpi, "load_placement", return_value=placement), \
+             mock.patch.object(kpi, "load_ledger_type46", return_value={"2026-06-10": Decimal("3.00"), "2026-10-20": Decimal("3.00")}), \
+             mock.patch.object(kpi, "load_wb_costs", return_value={"storage": [], "ads": {}, "other": [], "articles": {}}), \
+             mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), mock.patch("builtins.print"):
+            return {(r["kpi_date"], r["marketplace_sku"]): r for r in kpi.build_kpi(today=kpi.date(2026, 10, 26))}
+
+    def test_old_storage_only_key_is_not_created_and_its_storage_stays_without_sku(self):
+        placement = [{"day": d, "sku": s, "warehouse": "A", "amount": a, "offer_id": ""}
+                     for d in ("2026-06-10", "2026-10-20") for s, a in ((1, "-2.00"), (2, "-1.00"))]
+        expenses = [{"id": i, "expense_date": d, "marketplace_code": "ozon", "marketplace_sku": sku, "expense_type": "logistics", "expense_amount": v}
+                    for i, (d, sku, v) in enumerate((("2026-06-10", "1", 10), ("2026-06-10", "", 3), ("2026-10-20", "1", 10), ("2026-10-20", "", 3)))]
+        rows = self.build(placement, expenses)
+        self.assertNotIn(("2026-06-10", "2"), rows)                       # старше 30 дней, только хранение — строки нет
+        self.assertIn(("2026-10-20", "2"), rows)                          # в окне — строка есть
+        self.assertAlmostEqual(rows[("2026-06-10", "1")]["storage_cost"], 2.0)   # ключ с продажами — хранение за всю историю
+        self.assertAlmostEqual(rows[("2026-06-10", "1")]["logistics_amount"], 12.0)
+        self.assertAlmostEqual(rows[("2026-06-10", "")]["logistics_amount"], 1.0)  # хранение SKU 2 осталось без SKU
+        self.assertAlmostEqual(rows[("2026-10-20", "")]["logistics_amount"], 0.0)
+        for day in ("2026-06-10", "2026-10-20"):                          # итог логистики дня не меняется
+            self.assertAlmostEqual(sum(r["logistics_amount"] for (d, _), r in rows.items() if d == day), 13.0)

@@ -338,3 +338,26 @@ class ManualSheetSeptember22(unittest.TestCase):
         self.assertEqual(failures, 0)
         line = next(t for t in table if t["title"].startswith("Ebitda"))
         self.assertEqual((line["must"], line["diff"]), (False, D("100")))
+
+
+class PrintOrdersWithoutOwnerConstants(unittest.TestCase):
+    """26.10: у РБХ констант владельца нет (owner_* = None), а прогноз заказов уже есть — печать итога не должна падать на «{None:,.2f}»."""
+
+    def test_rbh_like_totals_print(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        num = {k: D("1") for k in ("created_a", "conf_a", "canc_a", "expected_cancels_a", "fc_a", "revenue", "cogs", "margin", "other", "ads", "fin_result",
+                                   "ads_manual")}
+        tot = dict(num, drr_created_pct=D("0.1"), drr_fc_pct=D("0.1"), fin_result_pct=D("0.1"), fin_result_snapshot=None, cogs_snapshot=None,
+                   owner_revenue=None, owner_drr_pct=None, owner_fin_result=None, fin_result_minus_owner=None)
+        o = {"log_rows": 1, "totals": {"fbo": tot, "fbs": tot, "all": tot}}
+        out = io.StringIO()
+        with mock.patch.object(rep, "orders_notes", return_value=("", [])), redirect_stdout(out):
+            rep.print_orders(o, {"fin_result": None})
+        self.assertIn("формулы владельца (0,65 / множители площадок / 0,024) для кабинета не заданы", out.getvalue())
+        tot.update(owner_revenue=D("2"), owner_drr_pct=D("0.2"), owner_fin_result=D("3"), fin_result_minus_owner=D("-2"))
+        out = io.StringIO()
+        with mock.patch.object(rep, "orders_notes", return_value=("", [])), redirect_stdout(out):
+            rep.print_orders(o, {"fin_result": None})
+        self.assertIn("выручка 2.00", out.getvalue()); self.assertIn("наш − владельца -2.00", out.getvalue())

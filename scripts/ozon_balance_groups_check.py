@@ -45,7 +45,7 @@ def our_article(type_id):
     if type_id == 1:
         return "эквайринг"
     art = TYPE_TO_EXPENSE.get(type_id)
-    return {"logistics": "логистика", "other": "прочее", "subscription": "реклама (подписка)", "external_promo": "реклама (внешнее)"}.get(art, f"? {art}")
+    return {"logistics": "логистика", "other": "прочее", "subscription": "реклама (подписка)", "reviews": "реклама (отзывы)", "external_promo": "реклама (внешнее)"}.get(art, f"? {art}")
 
 
 def balance_by_month(path):

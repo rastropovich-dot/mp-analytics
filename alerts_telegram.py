@@ -304,7 +304,7 @@ def get_ozon_reviews_lines(target_date, sb=None):
     by = {int(r["type_id"]): -num(r.get("amount")) for r in rows}
     total = sum(by.values())
     return [f"Отзывы (баллы): {fmt_money(total)} руб. — за баллы (95) {fmt_money(by.get(95, 0))}, ускоренный сбор (96) {fmt_money(by.get(96, 0))}; "
-            "в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)»."]
+            "в «Рекламе» и «прочих» не учтены — своя статья (26.10)."]
 
 
 def get_ozon_ads_breakdown(expense_date, sb=None):
@@ -942,6 +942,9 @@ def build_executive_summary(kpi_rows, target_date=None):
             reviews_lines = get_ozon_reviews_lines(target_date)
             if reviews_lines:
                 ads_line += "\n" + "\n".join(reviews_lines)
+            if row.get("ads_reviews_share_of_orders") is not None:
+                ads_line += (f"\nДРР от заказов: реклама + отзывы {num(row.get('ads_reviews_share_of_orders')) * 100:.1f} %, "
+                             f"только реклама {num(row.get('ad_share_of_orders')) * 100:.1f} %.")
             no_organic = bool(ozon_completeness.get("organic_missing"))
             if no_organic:
                 attribution_line = format_ozon_attribution_without_organic(ad_orders_revenue)

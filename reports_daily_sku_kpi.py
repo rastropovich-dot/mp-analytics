@@ -8,6 +8,7 @@ from supabase import create_client
 from decimal import Decimal
 
 from loaders import keyset, net_retry, peak_memory, stale_keys
+from loaders import ozon_reviews
 from loaders import wb_ads_allocation as alloc
 from loaders import wb_buyout_cohort as cohort
 from loaders import wb_money_rules as rules
@@ -41,6 +42,9 @@ EXPENSE_TYPE_BUCKETS = {
     "other": "other_expenses_amount",
     "subscription": "other_expenses_amount",
     "external_promo": "other_expenses_amount",
+    # «Отзывы» (типы 95 + 96, слово владельца 26.10) — своя колонка, в ad_spend не кладётся; ДРР «(реклама + отзывы)» —
+    # ads_reviews_share_of_orders. Имя статьи не на advertising — правило §2.
+    "reviews": "reviews_spend",
 }
 
 
@@ -69,6 +73,8 @@ def empty_kpi_row(kpi_date, marketplace_code, marketplace_sku, article="", produ
         "logistics_amount": 0,
         "storage_cost": 0,
         "other_expenses_amount": 0,
+        "reviews_spend": 0,
+        "ads_reviews_share_of_orders": 0,
     }
 
 
@@ -524,6 +530,58 @@ def load_wb_cohort():
         return {}, {}
 
 
+def load_reviews_participants():
+    """Снимки участников «Ускоренного сбора отзывов» (ozon_reviews_promo_daily) — только у кабинета с правилом participants."""
+    if CABINET.REVIEWS_96_RULE != "participants":
+        return {}
+    try:
+        return ozon_reviews.read_participants(supabase)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ {ozon_reviews.TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — 96 разносится по доле 95 дня")
+        SOURCE_READ_FAILURES.append(ozon_reviews.TABLE)
+        return {}
+
+
+def allocate_reviews_96(grouped, participants=None, rule=None):
+    """Тип 96 «Ускоренный сбор отзывов» приходит без SKU: строка витрины (день, ozon, «») с reviews_spend. Правило профиля REVIEWS_96_RULE
+    (loaders/ozon_reviews): no_sku — остаётся без SKU (KARATOV); participants — по SKU, подключённым к услуге на дату, пропорционально их
+    заказам дня, иначе по доле SKU в 95 дня, иначе без SKU (РБХ). Σ дня не меняется: что разнесено — снято со строки без SKU.
+    Печатает итог по дням и правилам."""
+    rule = rule or CABINET.REVIEWS_96_RULE
+    if rule not in ozon_reviews.RULES:
+        raise SystemExit(f"REVIEWS_96_RULE «{rule}» не из {ozon_reviews.RULES}")
+    no_sku_rows = {k: r for k, r in grouped.items() if k[1] == "ozon" and not k[2] and (r.get("reviews_spend") or 0)}
+    if not no_sku_rows:
+        return {}
+    if rule == "no_sku":
+        total = sum(r["reviews_spend"] for r in no_sku_rows.values())
+        print(f"Отзывы 96 без SKU: дней {len(no_sku_rows)}, {total:,.2f} — остаются строкой без SKU (правило no_sku)")
+        return {}
+    participants = load_reviews_participants() if participants is None else participants
+    by_day = defaultdict(dict)
+    for (day, mp, sku), r in grouped.items():
+        if mp == "ozon" and sku:
+            by_day[day][sku] = r
+    tally = defaultdict(lambda: [0, Decimal(0)])
+    for (day, mp, sku), r in sorted(no_sku_rows.items()):
+        amount = Decimal(str(r["reviews_spend"])).quantize(ozon_reviews.C)
+        rows_day = by_day.get(day, {})
+        parts, used = ozon_reviews.allocate_96(
+            amount, ozon_reviews.participants_on(day, participants),
+            {s: Decimal(str(x.get("orders_amount_seller") or 0)) for s, x in rows_day.items()},
+            {s: Decimal(str(x.get("reviews_spend") or 0)) for s, x in rows_day.items()})
+        tally[used][0] += 1; tally[used][1] += amount
+        if not parts:
+            continue
+        for s, v in parts.items():
+            if s not in rows_day:
+                grouped[(day, "ozon", s)] = rows_day[s] = empty_kpi_row(day, "ozon", s, "", None)
+            rows_day[s]["reviews_spend"] += float(v)
+        r["reviews_spend"] = 0.0
+    print("Отзывы 96 без SKU → по SKU: " + "; ".join(f"{k} — дней {n}, {v:,.2f}" for k, (n, v) in sorted(tally.items())))
+    return dict(tally)
+
+
 def build_kpi(wb_cohort=None, with_source=False, today=None, period=None, shared=None):
     """Строки витрины. Без period — вся история одним куском (как до 59-й; тесты). С period=(день от, день до) и shared из
     load_shared — один месяц сборки по месяцам: заказы / выкупы / расходы / хранение — только его дни, остальное из shared."""
@@ -615,6 +673,8 @@ def build_kpi(wb_cohort=None, with_source=False, today=None, period=None, shared
             unknown_expense_types[expense_type] += amount
             bucket = "other_expenses_amount"
         grouped[key][bucket] += amount
+
+    allocate_reviews_96(grouped, participants=None if shared is None else shared.get("reviews_participants"))
 
     # 57-я, слово 2026-10-26: строка витрины «только хранение» (ключ без продаж, расходов и органики) — только за последние
     # STORAGE_ONLY_DAYS дней (окно ночи); старше — хранение идёт только в ключи, у которых есть другой источник. Хранение
@@ -724,9 +784,11 @@ def build_kpi(wb_cohort=None, with_source=False, today=None, period=None, shared
 
         if orders_amount > 0:
             row["ad_share_of_orders"] = round(ad_spend / orders_amount, 4)
+            row["ads_reviews_share_of_orders"] = round((ad_spend + (row.get("reviews_spend") or 0)) / orders_amount, 4)
             row["ad_share_revenue"] = round((row.get("ad_orders_revenue") or 0) / orders_amount, 4)
         else:
             row["ad_share_of_orders"] = 0
+            row["ads_reviews_share_of_orders"] = 0
             row["ad_share_revenue"] = 0
 
         if orders_qty > 0:
@@ -766,7 +828,8 @@ def load_shared(today):
     """Источники на всю глубину, нужные каждому месяцу: малые или свёрнутые при чтении."""
     shared = {"wb_cohort": load_wb_cohort(), "ledger46": load_ledger_type46(), "organic": load_ozon_organic(),
               "article_map": build_article_map(iter_by_id("marketplace_orders", ARTICLE_MAP_COLUMNS)),
-              "wb_ads": load_wb_ads(today), "wb_other": load_wb_sku_other(today), "wb_articles": load_wb_articles(today)}
+              "wb_ads": load_wb_ads(today), "wb_other": load_wb_sku_other(today), "wb_articles": load_wb_articles(today),
+              "reviews_participants": load_reviews_participants()}
     print(f"Общие источники: карта артикулов {len(shared['article_map'])} SKU, органика {len(shared['organic'])} строк, "
           f"реклама WB {len(shared['wb_ads'])} ключей, «прочее» WB {len(shared['wb_other'])}, артикулы WB {len(shared['wb_articles'])}")
     return shared

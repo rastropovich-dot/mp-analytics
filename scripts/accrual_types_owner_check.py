@@ -54,7 +54,7 @@ ALIASES = {
 OUR_ARTICLE = {**accrual.TYPE_TO_EXPENSE, **{t: "advertising (41 + 54, Performance)" for t in accrual.AD_TYPE_IDS},
                **{t: "вне классификации (доход)" for t in accrual.UNCLASSIFIED_TYPE_IDS}, 69: "commission (SaleCommission)"}
 # Наша статья → его Вид, если он совпадает по смыслу
-ARTICLE_TO_KIND = {"commission": "Комиссия", "logistics": "Логистика", "subscription": "Реклама", "external_promo": "Реклама",
+ARTICLE_TO_KIND = {"commission": "Комиссия", "logistics": "Логистика", "subscription": "Реклама", "external_promo": "Реклама", "reviews": "Реклама",
                    "other": "Прочее", "advertising (41 + 54, Performance)": "Реклама", "commission (SaleCommission)": "Комиссия",
                    "вне классификации (доход)": "От Ozon"}
 ACQUIRING = 1

@@ -86,7 +86,7 @@ OUT_DIR = cabinet.data_path("reports", prof=CABINET)
 RAW_DIR = cabinet.data_path("accrual_history", prof=CABINET)
 YOUNG_DAYS = 2                     # сверка берёт дату не моложе двух суток: начисления доезжают (CLAUDE.md §2)
 ACQUIRING_TYPE, PREMIUM_TYPE, REVIEWS_TYPE = 1, 51, 96
-KNOWN_ARTICLES = {"logistics", "other", "subscription", "external_promo", "commission"}
+KNOWN_ARTICLES = {"logistics", "other", "subscription", "external_promo", "commission", "reviews"}   # reviews — типы 95 + 96 с 2026-10-26
 
 # НДС с датой действия: (с какой даты, коэффициент). Лист декабря 2025 считался с 1,2.
 VAT_RATES = (("2026-01-01", Decimal("1.22")), ("0001-01-01", Decimal("1.20")))
@@ -244,7 +244,8 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             row["logistics"] = a["exp_logistics"] / vat
             row["subscription"] = a["exp_subscription"] / vat
             row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
-            for k in ("acquiring", "ads", "reviews", "reviews_in_subscription", "reviews_in_other", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
+            row["reviews"] = a["exp_reviews"] / vat          # статья reviews базы (с 26.10); до пересборки истории 95 / 96 там внутри подписки и прочего
+            for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
                       "ebitda", "ebitda_with_comp", "fin_result_snapshot", "ebitda_snapshot"):
                 row[k] = None
             row["overhead"] = overhead_for(d)
@@ -254,7 +255,8 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             rows.append(row)
             continue
         # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
-        # «Отзывы» (95 + 96) — статья отчёта: articles держит полную свёртку (для сверки с marketplace_expenses), reviews_in — их долю по статьям.
+        # «Отзывы» (95 + 96) — по типам, а не по имени статьи: articles держит свёртку TYPE_TO_EXPENSE (для сверки с marketplace_expenses),
+        # reviews_in — долю типов отзывов по статьям (с 26.10 вся она в статье reviews; формулы ниже от этого не зависят).
         articles, reviews_in = defaultdict(Decimal), defaultdict(Decimal)
         for type_id, v in ts.items():
             if type_id in accrual.AD_TYPE_IDS or type_id in accrual.UNCLASSIFIED_TYPE_IDS:
@@ -270,18 +272,22 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         ads = sum((ts.get(t, Z) for t in accrual.AD_TYPE_IDS), Z)
         # types_by_day держит расход положительным; компенсация — деньги НАМ, в леджере она > 0, здесь < 0
         comp = -sum((ts.get(t, Z) for t in accrual.UNCLASSIFIED_TYPE_IDS), Z)
-        row["logistics"] = (articles["logistics"] - reviews_in["logistics"]) / vat
-        row["subscription"] = (articles["subscription"] - reviews_in["subscription"]) / vat
+        logistics_net = articles["logistics"] - reviews_in["logistics"]
+        subscription_net = articles["subscription"] - reviews_in["subscription"]
+        other_net = articles["other"] + articles["external_promo"] - reviews_in["other"] - reviews_in["external_promo"]
+        reviews = sum(reviews_in.values(), Z)
+        row["logistics"] = logistics_net / vat
+        row["subscription"] = subscription_net / vat
         row["acquiring"] = acq / vat
         row["ads"] = ads / vat
-        row["reviews"] = sum(reviews_in.values(), Z) / vat
-        row["reviews_in_subscription"] = reviews_in["subscription"] / vat      # для сложения площадок: там отзывы внутри статей расходов по SKU
-        row["reviews_in_other"] = (reviews_in["other"] + reviews_in["external_promo"]) / vat
-        row["other"] = (articles["other"] + articles["external_promo"] - reviews_in["other"] - reviews_in["external_promo"] - acq) / vat
+        row["reviews"] = reviews / vat
+        row["other"] = (other_net - acq) / vat
         row["compensations"] = comp / vat
         # у владельца в «Рекламе» — вся статья подписки (51, 52, 74), не только Premium: 2026-09-20 разница ровно 24 990,00 / 1,22
-        row["ads_like_manual"] = (ads + articles["subscription"] + ts.get(REVIEWS_TYPE, Z)) / vat
-        row["log_other_like_manual"] = (articles["logistics"] + articles["other"] - acq - ts.get(REVIEWS_TYPE, Z)) / vat
+        # «по образцу» ручного листа: реклама = 41 + 54 + 96 + вся подписка (51, 52, 74 и 95) = реклама + подписка + отзывы; логистика + прочее —
+        # без эквайринга и без отзывов (96 у владельца в рекламе) — от статей базы не зависит
+        row["ads_like_manual"] = (ads + subscription_net + reviews) / vat
+        row["log_other_like_manual"] = (logistics_net + other_net - acq) / vat
         row["fin_result"] = row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["reviews"] - row["other"]
         row["fin_result_with_comp"] = row["fin_result"] + row["compensations"]
         row["overhead"] = overhead_for(d)
@@ -296,13 +302,13 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
         # Сверка двух таблиц одной базы: статья из типов против той же статьи в marketplace_expenses. Расходятся —
         # называем: upsert расходов строк не удаляет, и начисление, которое Ozon убрал, застревает в базе
         # (найдено 2026-09-21: 09-11, 09-12, 09-15, 09-19 — по одной строке). Лист считает по типам.
-        row["db_minus_raw"] = {art: q(a["exp_" + art] - articles[art]) for art in ("logistics", "other", "subscription", "external_promo")
+        row["db_minus_raw"] = {art: q(a["exp_" + art] - articles[art]) for art in ("logistics", "other", "subscription", "external_promo", "reviews")
                                if q(a["exp_" + art]) != q(articles[art])}
         rows.append(row)
     return rows, dict(unknown)
 
 
-MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "reviews", "reviews_in_subscription", "reviews_in_other", "other",
+MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "reviews", "other",
          "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
          "cogs_snapshot", "margin_snapshot", "fin_result_snapshot", "ebitda_snapshot",
          "ads_like_manual", "log_other_like_manual", "positions", "units", "coinvest"]
@@ -417,7 +423,7 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, 
         if d not in acc[rest] or t == "commission" or t.startswith("advertising"):
             continue
         a = acc[where(r.get("marketplace_sku"))][d]
-        a["logistics" if t == "logistics" else "subscription" if t == "subscription" else "other_with_acq"] += D(r["expense_amount"])
+        a["logistics" if t == "logistics" else "subscription" if t == "subscription" else "reviews" if t == "reviews" else "other_with_acq"] += D(r["expense_amount"])
     for r in kpi_rows:
         d = r["kpi_date"]
         if d in acc[rest]:
@@ -429,19 +435,19 @@ def build_platform_daily(days, buyouts, expenses, kpi_rows, sku2art, unit_cost, 
             a, vat = acc[name][d], vat_for(d)
             row = {"date": d, "vat": vat, "positions": a["positions"], "turnover": a["turnover"], "commission": a["commission"],
                    "revenue": (a["turnover"] - a["commission"]) / vat, "cogs": a["cogs"],
-                   "logistics": a["logistics"] / vat, "subscription": a["subscription"] / vat, "other_with_acq": a["other_with_acq"] / vat,
+                   "logistics": a["logistics"] / vat, "subscription": a["subscription"] / vat, "reviews": a["reviews"] / vat, "other_with_acq": a["other_with_acq"] / vat,
                    "ads_perf": a["ads_perf"] / vat}
             row["margin"] = row["revenue"] - row["cogs"]
-            row["fin_result"] = row["margin"] - row["logistics"] - row["subscription"] - row["other_with_acq"] - row["ads_perf"]
+            row["fin_result"] = row["margin"] - row["logistics"] - row["subscription"] - row["reviews"] - row["other_with_acq"] - row["ads_perf"]
             row["margin_pct"] = ratio(row["margin"], row["revenue"])
-            row["drr_pct"] = drr(row["ads_perf"], row["revenue"])
+            row["drr_pct"] = drr_with_reviews(row["ads_perf"], row["reviews"], row["revenue"])   # (Performance + отзывы) / выручка
             row["fin_result_pct"] = ratio(row["fin_result"], row["revenue"])
             rows.append(row)
         out[name] = rows
     return out
 
 
-PLATFORM_MONEY = ("turnover", "commission", "revenue", "cogs", "margin", "logistics", "subscription", "other_with_acq", "ads_perf", "fin_result", "positions")
+PLATFORM_MONEY = ("turnover", "commission", "revenue", "cogs", "margin", "logistics", "subscription", "reviews", "other_with_acq", "ads_perf", "fin_result", "positions")
 
 
 def platform_total(rows):
@@ -449,7 +455,7 @@ def platform_total(rows):
     for k in PLATFORM_MONEY:
         t[k] = sum((r[k] for r in rows), Z)
     t["margin_pct"], t["fin_result_pct"] = ratio(t["margin"], t["revenue"]), ratio(t["fin_result"], t["revenue"])
-    t["drr_pct"] = drr(t["ads_perf"], t["revenue"])
+    t["drr_pct"] = drr_with_reviews(t["ads_perf"], t["reviews"], t["revenue"])
     return t
 
 
@@ -460,11 +466,10 @@ def platform_addition(total, platform_totals):
     out = [(title, s(k), total[k], "те же строки выкупов — обязана быть 0,00") for title, k in exact]
     same_source = "площадки — marketplace_expenses по SKU, общий лист — типы начислений; разница = строки, застрявшие в расходах (upsert не удаляет)"
     out.append(("Логистика", s("logistics"), total["logistics"], same_source))
-    # «Отзывы» (95 + 96) по площадкам не выделены — в расходах по SKU они внутри подписки (95) и прочего (96): к общему листу их добавляем назад
-    rev_sub, rev_other = total.get("reviews_in_subscription"), total.get("reviews_in_other")
-    out.append(("Подписка (+ отзывы 95)", s("subscription"), None if rev_sub is None else total["subscription"] + rev_sub, same_source))
-    both = None if total.get("acquiring") is None or rev_other is None else total["other"] + total["acquiring"] + rev_other
-    out.append(("Прочее + Эквайринг (+ отзывы 96)", s("other_with_acq"), both, same_source + "; по площадкам эквайринг от прочего не отделён — леджер без SKU"))
+    out.append(("Подписка", s("subscription"), total["subscription"], same_source))
+    out.append(("Отзывы", s("reviews"), total.get("reviews"), same_source + "; 96 без SKU — в «Без площадки»"))
+    both = None if total.get("acquiring") is None else total["other"] + total["acquiring"]
+    out.append(("Прочее + Эквайринг", s("other_with_acq"), both, same_source + "; по площадкам эквайринг от прочего не отделён — леджер без SKU"))
     out.append(("Реклама", s("ads_perf"), total.get("ads"), "площадки — Performance по SKU, общий лист — начисления 41 + 54: источники разные по решению 5, разница названа на листе «По SKU»"))
     return [(title, a, b, None if b is None else q(a - b), why) for title, a, b, why in out]
 
@@ -485,7 +490,7 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
             a["no_cost_positions"] += D(r.get("buyouts_qty"))
         else:
             a["cogs_by_day"] += D(r.get("buyouts_qty")) * uc_day
-        a["commission"] += D(r.get("commission_amount")); a["ads_gross"] += D(r.get("ad_spend"))
+        a["commission"] += D(r.get("commission_amount")); a["ads_gross"] += D(r.get("ad_spend")); a["reviews_gross"] += D(r.get("reviews_spend"))
         a["logistics_gross"] += D(r.get("logistics_amount")); a["other_gross"] += D(r.get("other_expenses_amount"))
         if sku not in names and (r.get("article") or r.get("product_name")):
             names[sku] = (r.get("article") or "", r.get("product_name") or "")
@@ -498,11 +503,11 @@ def build_sku(kpi_rows, sku2art, unit_cost, vat):
                "revenue": (a["turnover"] - a["commission"]) / vat,
                # СС нет ни у одной позиции — None (счётчик), иначе Σ по дням; позиции без СС внутри строки в сумму не входят
                "cogs": None if (a["positions"] and a["no_cost_positions"] == a["positions"]) else a["cogs_by_day"],
-               "ads": a["ads_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat,
+               "ads": a["ads_gross"] / vat, "reviews": a["reviews_gross"] / vat, "logistics": a["logistics_gross"] / vat, "other": a["other_gross"] / vat,
                "cost_source": "; ".join(sorted(sources.get(sku, ()))) or None}
         row["margin"] = None if row["cogs"] is None else row["revenue"] - row["cogs"]
         row["margin_pct"] = None if row["margin"] is None else ratio(row["margin"], row["revenue"])
-        row["drr_pct"] = drr(row["ads"], row["revenue"])
+        row["drr_pct"] = drr_with_reviews(row["ads"], row["reviews"], row["revenue"])   # ДРР товара — (реклама + отзывы), слово владельца 26.10
         out.append(row)
     out.sort(key=lambda r: (-r["turnover"], r["sku"]))
     return out
@@ -702,7 +707,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         wsp["A1"] = f"Выкупы Ozon — {name}"; wsp["A1"].font = bold
         pcols = [("Дата реализации", "date", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС), руб.", "commission", money), ("Выручка, руб.", "revenue", money),
                  ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct), ("Логистика, руб.", "logistics", money),
-                 ("Подписка, руб.", "subscription", money), ("Реклама (Performance), руб.", "ads_perf", money), ("% ДРР (от выручки)", "drr_pct", pct),
+                 ("Подписка, руб.", "subscription", money), ("Реклама (Performance), руб.", "ads_perf", money), ("Отзывы, руб.", "reviews", money), ("% ДРР (реклама + отзывы)", "drr_pct", pct),
                  ("Прочее с эквайрингом, руб.", "other_with_acq", money), ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), ("Позиций", "positions", "#,##0")]
         for j, (head, _k, _f) in enumerate(pcols, 1):
             c = wsp.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
@@ -773,19 +778,20 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     ws2 = wb.create_sheet("По SKU")
     cols2 = [("SKU", "sku", None), ("Артикул", "article", None), ("Товар", "name", None), ("Позиций", "positions", "#,##0"), ("Оборот - выкупы", "turnover", money),
              ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money), ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct),
-             ("Реклама (Performance)", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct), ("Логистика", "logistics", money), ("Прочее (вкл. эквайринг и подписку)", "other", money),
+             ("Реклама (Performance)", "ads", money), ("Отзывы", "reviews", money), ("% ДРР (реклама + отзывы)", "drr_pct", pct), ("Логистика", "logistics", money),
+             ("Прочее (вкл. эквайринг и подписку)", "other", money),
              ("СС источник", "cost_source", None)]
     for j, (head, _k, _f) in enumerate(cols2, 1):
         c = ws2.cell(row=1, column=j, value=head); c.font = bold; c.fill = head_fill
         c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
     tot = {"sku": "Итого", "article": "", "name": ""}
-    for k in ("positions", "turnover", "commission", "revenue", "ads", "logistics", "other"):
+    for k in ("positions", "turnover", "commission", "revenue", "ads", "reviews", "logistics", "other"):
         tot[k] = sum((r[k] for r in sku_rows), Z)
     tot["cogs"] = sum((r["cogs"] for r in sku_rows if r["cogs"] is not None), Z)
     tot["margin"] = tot["revenue"] - tot["cogs"]
     tot["margin_pct"] = ratio(tot["margin"], tot["revenue"])
     vat = rows[0]["vat"] if rows else vat_for(month + "-01")
-    tot["drr_pct"] = drr(tot["ads"], tot["revenue"])
+    tot["drr_pct"] = drr_with_reviews(tot["ads"], tot["reviews"], tot["revenue"])
     for i, r in enumerate(sku_rows + [tot], 2):
         for j, (_head, k, fmt) in enumerate(cols2, 1):
             v = r.get(k)
@@ -1553,7 +1559,7 @@ def main():
     coinvest_columns = "bonus_amount" in optional and "coinvestment_amount" in optional
     expenses = fetch(sb, "marketplace_expenses", "id,expense_date,marketplace_sku,expense_type,expense_amount", flt("expense_date"),
                      ["expense_date", "marketplace_code", "marketplace_sku", "expense_type"])
-    kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,logistics_amount,other_expenses_amount",
+    kpi = fetch(sb, "daily_sku_kpi", "id,kpi_date,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller,commission_amount,ad_spend,reviews_spend,logistics_amount,other_expenses_amount",
                 flt("kpi_date"), ["kpi_date", "marketplace_code", "marketplace_sku"])
     # пятьдесят третья: трата бонусных кампаний Ozon — из атрибуции по is_bonus, справочной колонкой (в расходы и ДРР не входит)
     bonus_note = ""

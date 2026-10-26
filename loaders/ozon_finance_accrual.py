@@ -99,7 +99,7 @@ TYPE_TO_EXPENSE = {
     79: "other",  # TemporaryPlacementsAgent
     76: "other",  # StockInsurance
     94: "other",  # DefectFineShipmentDelayRate
-    96: "other",  # AcceleratedReviewCollection
+    96: "reviews",  # AcceleratedReviewCollection — «Ускоренный сбор отзывов»; до 2026-10-26 — other (статья «Отзывы», слово владельца)
     93: "other",  # DefectFineErrors
     92: "other",  # DefectFineComplaint
     47: "other",  # PointsForReviews
@@ -123,7 +123,7 @@ TYPE_TO_EXPENSE = {
     19: "external_promo",  # ExternalPromotion — «Внешнее продвижение»: как 23, заказов не приписывает, в органике не участвует
     # 95 — подписка «Управление отзывами» (rbh1 472 411,26 / rbh2 224 986,67 за месяц). Советник: subscription; если владелец
     # скажет «как 127» — поменять на "other" явной строкой (тест tests/test_accrual_types_rbh.py держит текущее решение).
-    95: "subscription",  # CustomerReviews — «Подписка Управление отзывами»
+    95: "reviews",  # CustomerReviews — «Отзывы за баллы»; до 2026-10-26 — subscription (статья «Отзывы», слово владельца)
     50: "other",  # PremiumMailingCommission — «Бонусы продавца - рассылка»
     84: "other",  # ItemPacking — «Дополнительная упаковка на складе Ozon»
     116: "other",  # FirstCustomerReview — «Сбор первых отзывов»
@@ -134,9 +134,11 @@ TYPE_TO_EXPENSE = {
 UNCLASSIFIED_TYPE_IDS = {25, 10}
 
 # «Отзывы» (слово владельца 2026-10-25): 95 CustomerReviews «Отзывы за баллы» + 96 AcceleratedReviewCollection «Ускоренный сбор
-# отзывов» — своя статья в ОТЧЁТАХ (лист месяца, книга «Фин рез»): колонка рядом с «Рекламой» и в ДРР «(реклама + отзывы)».
-# В TYPE_TO_EXPENSE они остаются как были (95 — subscription, 96 — other): marketplace_expenses и витрины не меняются (вариант А).
+# отзывов» — своя статья: колонка рядом с «Рекламой» и в ДРР «(реклама + отзывы)». С 2026-10-26 (слово: «Отзывы» по SKU до витрины) —
+# и в базе: TYPE_TO_EXPENSE 95, 96 → reviews (имя не на advertising — правило §2), витрина — колонка reviews_spend. Отчёты собирают
+# статью по этим типам, а не по имени статьи: история расходов до пересборки держит 95 в subscription, 96 в other.
 REVIEW_TYPE_IDS = {95, 96}
+REVIEWS_ARTICLE = "reviews"
 
 def headers():
     return {

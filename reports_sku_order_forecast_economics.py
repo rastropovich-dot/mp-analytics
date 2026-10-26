@@ -308,7 +308,8 @@ def derive_variable_cost_assumptions(kpi_rows: List[Dict]) -> Dict:
             {
                 "commission_rate": safe_div(row.get("commission_amount"), buyouts_revenue) or 0.0,
                 "logistics_per_unit": safe_div(row.get("logistics_amount"), buyouts_qty) or 0.0,
-                "other_rate": safe_div(row.get("other_expenses_amount"), buyouts_revenue) or 0.0,
+                # отзывы 95 + 96 с 26.10 — своя колонка витрины reviews_spend; в доле прочих остаются, как до 26.10
+                "other_rate": safe_div(num(row.get("other_expenses_amount")) + num(row.get("reviews_spend")), buyouts_revenue) or 0.0,
             }
         )
 

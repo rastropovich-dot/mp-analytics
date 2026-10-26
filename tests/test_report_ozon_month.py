@@ -57,13 +57,28 @@ class DailyFormulaTests(unittest.TestCase):
         self.assertEqual(r["acquiring"], D("10"))                  # тип 1 / НДС
         self.assertEqual(r["subscription"], D("20"))
         self.assertEqual(r["ads"], D("100"))                       # 41 + 54, без 51 и 96
-        self.assertEqual(r["other"], D("20"))                      # (other − тип 1) / НДС
-        self.assertEqual(r["fin_result"], D("700") - 100 - 10 - 20 - 100 - 20)
+        self.assertEqual(r["reviews"], D("10"))                    # «Отзывы» = (95 + 96) / НДС — своя статья с 2026-10-25
+        self.assertEqual(r["other"], D("10"))                      # (other − тип 1 − тип 96) / НДС
+        self.assertEqual(r["fin_result"], D("700") - 100 - 10 - 20 - 100 - 10 - 10)   # тот же, что до «Отзывов»: 700 − 100 − 10 − 20 − 100 − 20
+        self.assertEqual(r["drr_reviews_pct"], D("0.11"))          # (реклама + отзывы) / выручка
         self.assertEqual(r["compensations"], D("50"))              # типы 25 + 10: доход, «+» — деньги нам
         self.assertEqual(r["fin_result_with_comp"], r["fin_result"] + 50)
         self.assertEqual(r["drr_pct"], D("0.1"))                   # реклама / выручка (комиссия 0 — совпадает со старым «от ТО»)
         self.assertEqual(r["drr_ozon_pct"], D("100") / D("1220"))  # методика Ozon: реклама без НДС / оборот с НДС
         self.assertEqual(r["margin_pct"], D("0.7"))
+
+    def test_reviews_95_leave_subscription_96_leave_other_and_fin_result_is_unchanged(self):
+        before, _ = one_day()
+        r, _ = one_day(types={**TYPES, 95: D("36.6")})                 # 95 «Отзывы за баллы» — по TYPE_TO_EXPENSE подписка
+        self.assertEqual(r["subscription"], before["subscription"])    # 95 не в подписке листа
+        self.assertEqual(r["reviews"], D("40"))                        # (36,6 + 12,2) / 1,22
+        self.assertEqual((r["reviews_in_subscription"], r["reviews_in_other"]), (D("30"), D("10")))
+        self.assertEqual(r["fin_result"], before["fin_result"] - D("30"))   # 95 — новый расход, ровно на свою сумму
+        self.assertEqual(r["drr_pct"], D("0.1")); self.assertEqual(r["drr_reviews_pct"], D("0.14"))
+        self.assertEqual(r["ads_like_manual"], before["ads_like_manual"] + D("30"))   # «по образцу» — как прежде: вся подписка (с 95) + 96
+        self.assertEqual(r["db_minus_raw"], {"subscription": D("-36.60")})   # сверка с расходами — по полной статье (в базе 95 внутри subscription)
+        t = rep.total_row([r])
+        self.assertEqual(t["reviews"], D("40")); self.assertEqual(t["drr_reviews_pct"], D("0.14"))
 
     def test_reference_columns_reproduce_the_manual_grouping(self):
         r, _ = one_day()
@@ -85,7 +100,7 @@ class DailyFormulaTests(unittest.TestCase):
     def test_unknown_type_goes_to_other_and_is_named(self):
         r, unknown = one_day(types={**TYPES, 777: D("12.2")})
         self.assertEqual(unknown, {"тип 777": D("12.2")})
-        self.assertEqual(r["other"], D("30"))
+        self.assertEqual(r["other"], D("20"))                      # 10 + незнакомый 777; 96 — в «Отзывах»
 
     def test_expense_columns_come_from_accrual_types_not_from_the_expenses_table(self):
         """В marketplace_expenses застревают строки, которые Ozon убрал: лист считает по типам, базу только сверяет."""
@@ -166,7 +181,7 @@ class PlatformTests(unittest.TestCase):
         rows, _ = rep.build_daily([DAY], self.buyouts, self.expenses, {DAY: types}, lambda sku, day=None, qty=None: D("100"), "2026-09-19")
         total = rep.total_row([rep.add_ratios(r) for r in rows])
         add = {title: (diff, why) for title, _a, _b, diff, why in rep.platform_addition(total, {n: rep.platform_total(r) for n, r in self.platforms.items()})}
-        for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка", "Прочее + Эквайринг"):
+        for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка (+ отзывы 95)", "Прочее + Эквайринг (+ отзывы 96)"):
             self.assertEqual(add[title][0], D("0.00"), title)
         self.assertEqual(add["Реклама"][0], q_(D("110") - D("200") / D("1.22")))   # Performance против начислений — источники разные
 

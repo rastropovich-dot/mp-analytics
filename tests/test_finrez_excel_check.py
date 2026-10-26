@@ -126,22 +126,22 @@ class SideColumns(unittest.TestCase):
         return [x.col_letters(i) for i in range(x.col_index(a), x.col_index(b) + 1)]
 
     def test_ozon_and_wb_side_columns_are_contiguous(self):
-        self.assertEqual(list(x.OZON_FORMULA_COLS), self.letters("P", "AE"))
+        self.assertEqual(list(x.OZON_FORMULA_COLS), self.letters("P", "AG"))                # AF «Отзывы», AG ДРР только рекламы — с 2026-10-25
         self.assertEqual(list(x.WB_FORMULA_COLS), self.letters("K", "Z"))
-        self.assertEqual(len(x.OZON_FORMULA_COLS), 16)
+        self.assertEqual(len(x.OZON_FORMULA_COLS), 18)
         self.assertEqual(len(x.WB_FORMULA_COLS), 16)
-        self.assertEqual(len(set(x.OZON_FORMULA_COLS.values())), 16)                    # шапки статичного листа не повторяются
+        self.assertEqual(len(set(x.OZON_FORMULA_COLS.values())), 18)                    # шапки статичного листа не повторяются
         self.assertEqual(len(set(x.WB_FORMULA_COLS.values())), 16)
 
     def test_pct_columns_are_six_per_pivot(self):
-        self.assertEqual([c for c, h in x.OZON_FORMULA_COLS.items() if x.is_pct(h)], ["R", "V", "X", "Z", "AB", "AE"])
+        self.assertEqual([c for c, h in x.OZON_FORMULA_COLS.items() if x.is_pct(h)], ["R", "V", "X", "Z", "AB", "AE", "AG"])
         self.assertEqual([c for c, h in x.WB_FORMULA_COLS.items() if x.is_pct(h)], ["M", "Q", "S", "U", "W", "Z"])
         self.assertFalse(x.is_pct("Фин. рез., руб."))
 
     def test_no_known_base_differences_left(self):
         """Сорок пятая §2: «% ДРР» листов переведён на выручку — Z сводной сверяется со статичным листом и идёт в итог."""
         self.assertEqual(x.BASE_DIFF, {})
-        self.assertEqual(x.OZON_FORMULA_COLS["Z"], "% ДРР")
+        self.assertEqual(x.OZON_FORMULA_COLS["Z"], "% ДРР (реклама + отзывы)")          # с 2026-10-25: Z = (Y + AF) / S, ДРР только рекламы — AG
 
 
 class Vat(unittest.TestCase):

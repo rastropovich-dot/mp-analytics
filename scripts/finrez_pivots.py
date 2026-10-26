@@ -354,14 +354,19 @@ def clear_shared_items(cd_xml):
 
 
 # формулы владельца справа от сводной — по колонкам области сводной (сорок вторая §4); ссылки прямые, раскладка после сброса состояния полная:
-# Ozon — A метки, B … M = 6 статей × (Начисления, Ст-ть) по алфавиту статей; WB — B … H = семь денег в порядке dataFields
+# Ozon — A метки, B … O = 7 статей × (Начисления, Ст-ть) по алфавиту статей: Комиссия B/C, Логистика D/E, Отзывы F/G (с 2026-10-25, слово владельца),
+# Прочее H/I, Реклама J/K, Товарооборот L/M, Эквайринг N/O; до «Отзывов» было 6 статей B … M. Колонки P … AE владельца на своих местах, ссылки
+# сдвинуты на две колонки после Логистики; Z — «% ДРР (реклама + отзывы)», AF — Отзывы, AG — справочно ДРР только по рекламе (шапки — headers,
+# стиль новых колонок — style_like). WB — B … H = семь денег в порядке dataFields
 FORMULAS = {
     "Сводная Ozon выкупы": {"first_row": 12, "columns": [
-        ("P", 'IF(J{r}="","",J{r})'), ("Q", 'IF(B{r}="","",-B{r})'), ("R", 'IFERROR(IF(P{r}="","",Q{r}/P{r}),"")'), ("S", 'IF(P{r}="","",(P{r}-Q{r})/1.22)'),
-        ("T", 'IF(K{r}="","",K{r})'), ("U", 'IF(S{r}="","",S{r}-T{r})'), ("V", 'IFERROR(IF(S{r}="","",U{r}/S{r}),"")'), ("W", 'IF(D{r}="","",-D{r})'),
-        ("X", 'IFERROR(IF(S{r}="","",W{r}/S{r}),"")'), ("Y", 'IF(H{r}="","",-H{r})'), ("Z", 'IFERROR(IF(S{r}="","",Y{r}/S{r}),"")'), ("AA", 'IF(L{r}="","",-L{r})'),
-        ("AB", 'IFERROR(IF(S{r}="","",AA{r}/S{r}),"")'), ("AC", 'IF(F{r}="","",-F{r})'), ("AD", 'IF(S{r}="","",U{r}-W{r}-Y{r}-AA{r}-AC{r})'),
-        ("AE", 'IFERROR(IF(S{r}="","",AD{r}/S{r}),"")')]},
+        ("P", 'IF(L{r}="","",L{r})'), ("Q", 'IF(B{r}="","",-B{r})'), ("R", 'IFERROR(IF(P{r}="","",Q{r}/P{r}),"")'), ("S", 'IF(P{r}="","",(P{r}-Q{r})/1.22)'),
+        ("T", 'IF(M{r}="","",M{r})'), ("U", 'IF(S{r}="","",S{r}-T{r})'), ("V", 'IFERROR(IF(S{r}="","",U{r}/S{r}),"")'), ("W", 'IF(D{r}="","",-D{r})'),
+        ("X", 'IFERROR(IF(S{r}="","",W{r}/S{r}),"")'), ("Y", 'IF(J{r}="","",-J{r})'), ("Z", 'IFERROR(IF(S{r}="","",(Y{r}+AF{r})/S{r}),"")'), ("AA", 'IF(N{r}="","",-N{r})'),
+        ("AB", 'IFERROR(IF(S{r}="","",AA{r}/S{r}),"")'), ("AC", 'IF(H{r}="","",-H{r})'), ("AD", 'IF(S{r}="","",U{r}-W{r}-Y{r}-AA{r}-AC{r}-AF{r})'),
+        ("AE", 'IFERROR(IF(S{r}="","",AD{r}/S{r}),"")'), ("AF", 'IF(F{r}="","",-F{r})'), ("AG", 'IFERROR(IF(S{r}="","",Y{r}/S{r}),"")')],
+        "headers": {"Z": "% ДРР (реклама + отзывы)", "AF": "Отзывы, руб. (без НДС)", "AG": "справочно: % ДРР (только реклама)"},
+        "style_like": {"AF": "W", "AG": "X"}},
     "Сводная WB выкупы": {"first_row": 8, "columns": [
         ("K", 'IF(B{r}="","",B{r})'), ("L", 'IF(C{r}="","",C{r})'), ("M", 'IFERROR(IF(K{r}="","",L{r}/K{r}),"")'), ("N", 'IF(K{r}="","",(K{r}-L{r})/1.22)'),
         ("O", 'IF(D{r}="","",D{r})'), ("P", 'IF(N{r}="","",N{r}-O{r})'), ("Q", 'IFERROR(IF(N{r}="","",P{r}/N{r}),"")'), ("R", 'IF(N{r}="","",(F{r}+G{r})/1.22)'),
@@ -386,11 +391,20 @@ def write_formulas(sheet_xml, spec, rows=FORMULA_ROWS):
     Строки за пределами листа создаются; ячейки строки остаются в порядке колонок."""
     cols = [c for c, _f in spec["columns"]]
     r0, r1 = spec["first_row"], spec["first_row"] + rows - 1
+    hr, headers = r0 - 1, spec.get("headers", {})          # шапка над формулами: свои подписи новых / переименованных колонок (Отзывы, 25.10)
     style_of = {}
     for c in cols:
         m = re.search(rf'<c r="{c}\d+"([^>]*)>\s*<f\b', sheet_xml) or re.search(rf'<c r="{c}{r0}"([^>]*?)/?>', sheet_xml)   # без формулы (V у WB — ввод) — стиль ячейки first_row
         if m and re.search(r's="(\d+)"', m.group(1)):
             style_of[c] = re.search(r's="(\d+)"', m.group(1)).group(1)
+    for c, like in spec.get("style_like", {}).items():     # новой колонке у владельца нет ячейки — стиль соседней того же вида (деньги / %)
+        if c not in style_of and like in style_of:
+            style_of[c] = style_of[like]
+    head_style = {}
+    for c in headers:
+        m = re.search(rf'<c r="{c}{hr}"([^>]*?)/?>', sheet_xml) or re.search(rf'<c r="P{hr}"([^>]*?)/?>', sheet_xml)   # своя ячейка шапки или первая (P)
+        if m and re.search(r's="(\d+)"', m.group(1)):
+            head_style[c] = re.search(r's="(\d+)"', m.group(1)).group(1)
     colset = set(cols)
 
     def cell_col(tag):
@@ -407,13 +421,18 @@ def write_formulas(sheet_xml, spec, rows=FORMULA_ROWS):
         if r0 <= r <= r1:
             new = [f'<c r="{c}{r}"' + (f' s="{style_of[c]}"' if c in style_of else "") + f"><f>{escape(f.format(r=r))}</f></c>" for c, f in spec["columns"]]
             keep = sorted(keep + new, key=lambda c: col_index(cell_col(c)))
+        if r == hr and headers:
+            keep = [c for c in keep if cell_col(c) not in headers]
+            new = [f'<c r="{c}{r}"' + (f' s="{head_style[c]}"' if c in head_style else "") + f' t="inlineStr"><is><t>{escape(t)}</t></is></c>' for c, t in headers.items()]
+            keep = sorted(keep + new, key=lambda c: col_index(cell_col(c)))
         return head + "".join(keep) + "</row>"
     # sheetData пересобирается целиком: существующие строки — по порядку, недостающие строки диапазона вставляются между ними
     m_sd = re.search(r"<sheetData>(.*?)</sheetData>|<sheetData\s*/>", sheet_xml, re.S)
     body = m_sd.group(1) or ""
     existing = [(int(m.group(1)), m.group(0)) for m in re.finditer(r'<row r="(\d+)"[^>]*(?:/>|>.*?</row>)', body, re.S)]
     have = {r for r, _x in existing}
-    merged = sorted(existing + [(r, f'<row r="{r}"/>') for r in range(r0, r1 + 1) if r not in have], key=lambda t: t[0])
+    need = set(range(r0, r1 + 1)) | ({hr} if headers else set())
+    merged = sorted(existing + [(r, f'<row r="{r}"/>') for r in sorted(need) if r not in have], key=lambda t: t[0])
     sheet_xml = sheet_xml[:m_sd.start()] + "<sheetData>" + "".join(rebuild(r, x) for r, x in merged) + "</sheetData>" + sheet_xml[m_sd.end():]
     # dimension листа
     sheet_xml = re.sub(r'<dimension ref="([A-Z]+\d+):([A-Z]+)(\d+)"/>', lambda m: f'<dimension ref="{m.group(1)}:{m.group(2)}{max(int(m.group(3)), r1)}"/>', sheet_xml)

@@ -286,6 +286,27 @@ def get_ozon_ad_bonus_lines(target_date):
     return ozon_ad_bonus.alert_lines(supabase, target_date, fmt_money)
 
 
+REVIEW_TYPE_IDS = (95, 96)   # «Отзывы» (слово владельца 2026-10-25) — loaders.ozon_finance_accrual.REVIEW_TYPE_IDS; модуль здесь не грузим (requests)
+
+
+def get_ozon_reviews_lines(target_date, sb=None):
+    """Строка «отзывы (баллы)» в блоке рекламы Ozon: типы 95 «Отзывы за баллы» + 96 «Ускоренный сбор отзывов» за день из леджера начислений
+    (ozon_accrual_daily_types, знак Ozon: списание < 0), с НДС, как остальные суммы алерта. В «Рекламу» строки выше не входят — это
+    своя статья листов; в ДРР листов месяца и книги — «(реклама + отзывы)». Леджер не прочитан — строка об этом, алерт идёт дальше."""
+    sb = sb or supabase
+    try:
+        rows = (sb.table("ozon_accrual_daily_types").select("type_id,amount").eq("accrual_date", target_date)
+                .in_("type_id", list(REVIEW_TYPE_IDS)).execute().data or [])
+    except Exception as exc:  # noqa: BLE001
+        return [f"Отзывы (баллы): не прочитано — {type(exc).__name__}"]
+    if not rows:
+        return []
+    by = {int(r["type_id"]): -num(r.get("amount")) for r in rows}
+    total = sum(by.values())
+    return [f"Отзывы (баллы): {fmt_money(total)} руб. — за баллы (95) {fmt_money(by.get(95, 0))}, ускоренный сбор (96) {fmt_money(by.get(96, 0))}; "
+            "в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)»."]
+
+
 def get_ozon_ads_breakdown(expense_date):
     result = (
         supabase
@@ -914,6 +935,9 @@ def build_executive_summary(kpi_rows, target_date=None):
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
             ads_line += "."
+            reviews_lines = get_ozon_reviews_lines(target_date)
+            if reviews_lines:
+                ads_line += "\n" + "\n".join(reviews_lines)
             no_organic = bool(ozon_completeness.get("organic_missing"))
             if no_organic:
                 attribution_line = format_ozon_attribution_without_organic(ad_orders_revenue)

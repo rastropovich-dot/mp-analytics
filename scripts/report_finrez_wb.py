@@ -907,7 +907,8 @@ def bridge_to_month_sheet(rows, report_rows, d1, d2, costs, ads_by_day, advance_
         ("Выручка без НДС", form["n_revenue"], m["revenue"], [("НДС за возмещение вычитается только у владельца", m["vat_refund"])]),
         ("Логистика без НДС", form["r_logistics"], m["logistics"], [("хранение / НДС внутри R у второго кабинета", m["storage"] / vat)]),
         ("Реклама без НДС", form["t_ads"] if form["t_ads"] is not None else Z, m["ads"] if m["ads"] is not None else Z, []),
-        ("Прочее без НДС", form["x_other"], m["other"], [("хранение / НДС — у владельца в прочем, здесь в логистике", -(m["storage"] / vat)), ("штрафы: у владельца без НДС, здесь H / НДС", -penalty_vat_part), ("additionalPayment / НДС вычтен из H", add_pay / vat)]),
+        ("Хранение без НДС (на листе месяца — своя колонка с 25.10)", sums["storage"] / vat, m["storage_cost"], []),
+        ("Прочее без НДС", form["x_other"], m["other"], [("штрафы: у владельца без НДС, здесь H / НДС", -penalty_vat_part), ("additionalPayment / НДС вычтен из H", add_pay / vat)]),
         ("Фин. рез.", form["y_fin"], m["fin_result"], [("НДС за возмещение", m["vat_refund"]), ("штрафы без НДС у владельца", penalty_vat_part), ("additionalPayment / НДС", -(add_pay / vat))]),
     ]
     out = []

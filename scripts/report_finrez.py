@@ -61,7 +61,8 @@ except Exception as _exc:  # noqa: BLE001
 
 Z, D, q, vat_for = rep.Z, rep.D, rep.q, rep.vat_for
 MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
-ARTICLES = ("Комиссия", "Логистика", "Прочее", "Реклама", "Товарооборот", "Эквайринг")       # порядок колонок владельца
+# порядок колонок владельца (по алфавиту — так их ставит сводная, sortType="ascending"); «Отзывы» (95 + 96) — статья с 2026-10-25, слово владельца
+ARTICLES = ("Комиссия", "Логистика", "Отзывы", "Прочее", "Реклама", "Товарооборот", "Эквайринг")
 NO_SKU = "(без SKU)"
 PLATFORM = "Ozon"
 BRAND_SOURCE = getattr(CABINET, "BOOK_BRAND_SOURCE", "catalog")        # "catalog" — карточка / буква артикула (KARATOV); "price" — прайс (РБХ)
@@ -69,6 +70,9 @@ CATEGORY_SOURCE = getattr(CABINET, "BOOK_CATEGORY_SOURCE", "owner")    # "owner"
 PRICE_BRANDS = {}                                                       # артикул (lower) → бренд прайса; заполняется в main при BRAND_SOURCE == "price"
 NO_TYPE = "(без типа карточки)"
 OWNER_COEF = dict(CABINET.OWNER_COEF)        # коэффициенты листа владельца «Коэффициенты» — из профиля; пусто — колонка «образец» пуста
+COEF_BY_SKU = CABINET.BOOK_COEF_BY_SKU                            # РБХ: % выкупа и комиссия заказов по SKU, где данных хватает (решение 25.10)
+ANALYST_COEF = dict(CABINET.ANALYST_COEF or {})                     # коэффициенты аналитика кабинета — справочно, в расчёт не входят
+COEF_SKU, COEF_CABINET = "SKU", "кабинет"
 COST_SOURCE_NOTE = getattr(CABINET, "COST_SOURCE_NOTE", None)   # подпись источника СС: у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22», у KARATOV — None
 MATURE_AGE = 21
 CATALOG_FILE = cabinet.data_path(CABINET.CATALOG_FILE, prof=CABINET)
@@ -224,7 +228,7 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         by_sku = defaultdict(Decimal)
         for (dd, sku), a in acc.items():
             if dd == d and sku != NO_SKU:
-                for k in ("ads", "logistics", "other", "acquiring"):
+                for k in ("ads", "logistics", "other", "acquiring", "reviews"):
                     by_sku[k] += a[k]
         res = acc[(d, NO_SKU)]
         if row.get("ads") is None:
@@ -234,6 +238,10 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         if row.get("acquiring") is not None:
             res["acquiring"] = -(row["acquiring"] * vat) - by_sku["acquiring"]
         res["logistics"] = -(row["logistics"] * vat) - by_sku["logistics"]
+        if row.get("reviews") is not None:
+            # день без файла сырья: расходы по SKU из таблицы несут 95 внутри «Прочего» (subscription) — отзывы дня целиком в строке без SKU,
+            # а «Прочее» без SKU уходит в минус на ту же сумму; Σ дня по статьям верна, к SKU отзывы привязаны только в днях с сырьём
+            res["reviews"] = -(row["reviews"] * vat) - by_sku["reviews"]
         other_total = (row["other"] + (row.get("subscription") or Z)) * vat
         res["other"] = -other_total - by_sku["other"]
         for k in list(res):
@@ -247,7 +255,7 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         brand, category, article, name = describe(sku, sku2art, catalog, names)
         rows.append({"date": d, "month": month_label(d), "platform": PLATFORM, "brand": brand, "category": category, "article": article,
                      "sku": sku, "name": name, "turnover": a["turnover"], "commission": a["commission"], "logistics": a["logistics"],
-                     "ads": a["ads"], "acquiring": a["acquiring"], "other": a["other"], "cogs": a["cogs"], "coinvest": a["coinvest"],
+                     "ads": a["ads"], "acquiring": a["acquiring"], "other": a["other"], "reviews": a["reviews"], "cogs": a["cogs"], "coinvest": a["coinvest"],
                      "units": a["units"], "vat": vat_for(d), "cost_source": "; ".join(sorted(sources.get((d, sku), ())))})
     return rows, dict(stats)
 
@@ -257,13 +265,14 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
 Long = namedtuple("Long", "accrual_id date article sku qty kind brand_cc month cogs brand category amount name day_num month_num coinvest platform key cost_source")
 # cost_source — источник себестоимости строки (дата снимка 1С или «после последнего снимка …»), колонка «СС источник» листа (сорок шестая §3)
 # key — ключ статьи для сводных (turnover / commission / logistics / ads / acquiring / other); в лист не пишется
-OWNER_ARTICLE = {"turnover": "Товарооборот", "commission": "Комиссия", "logistics": "Логистика", "ads": "Реклама", "acquiring": "Эквайринг", "other": "Прочее"}
-WIDE_KEYS = ("turnover", "commission", "logistics", "ads", "acquiring", "other")
+OWNER_ARTICLE = {"turnover": "Товарооборот", "commission": "Комиссия", "logistics": "Логистика", "ads": "Реклама", "acquiring": "Эквайринг", "other": "Прочее",
+                 "reviews": "Отзывы"}
+WIDE_KEYS = ("turnover", "commission", "logistics", "ads", "acquiring", "other", "reviews")
 # Четыре статьи расходов на листе «Данные Ozon выкупы» — БЕЗ НДС по дате начисления, оборот и комиссия — с НДС: так в запросе Power Query
 # образца владельца («Фин начисления», customXml → DataMashup → Section1.m: Логистика / Реклама / Прочее / Эквайринг ÷ 1,22), и только на таком
 # источнике верны его формулы рядом со сводной (W = −D, Y = −H, AA = −L, AC = −F, S = (P − Q) / 1,22). Внутренние строки (статичные листы,
 # тождества, pivot_buyouts) остаются с НДС — иначе НДС снялся бы дважды (сорок третья §2).
-NET_KINDS = tuple(OWNER_ARTICLE[k] for k in ("logistics", "ads", "acquiring", "other"))
+NET_KINDS = tuple(OWNER_ARTICLE[k] for k in ("logistics", "ads", "acquiring", "other", "reviews"))   # «Отзывы» — расход, как реклама: без НДС
 
 
 def long_rows_for_sheet(long_rows):
@@ -316,9 +325,12 @@ def dec_money(node):
 
 
 def article_key_of_type(type_id):
-    """Статья владельца для типа начисления: 1 → Эквайринг; logistics → Логистика; other / external_promo / subscription / незнакомый → Прочее."""
+    """Статья владельца для типа начисления: 1 → Эквайринг; 95 / 96 → Отзывы (слово владельца 2026-10-25); logistics → Логистика;
+    other / external_promo / subscription / незнакомый → Прочее."""
     if type_id == ACQUIRING_TYPE:
         return "acquiring"
+    if type_id in accrual_mod.REVIEW_TYPE_IDS:
+        return "reviews"
     return "logistics" if accrual_mod.TYPE_TO_EXPENSE.get(type_id) == "logistics" else "other"
 
 
@@ -407,6 +419,8 @@ def residual_rows(day, day_rows, daily_row, stats):
     vat = daily_row["vat"]
     target = {"turnover": daily_row["turnover"], "commission": -daily_row["commission"], "logistics": -(daily_row["logistics"] * vat),
               "other": -((daily_row["other"] + (daily_row.get("subscription") or Z)) * vat)}
+    if daily_row.get("reviews") is not None:
+        target["reviews"] = -(daily_row["reviews"] * vat)
     if daily_row.get("ads") is None:
         stats["days_without_raw_ads"] += 1
     else:
@@ -443,7 +457,8 @@ def wide_from_long(long_rows):
         brand, category, article, name = desc[(d, sku)]
         rows.append({"date": d, "month": month_label(d), "platform": PLATFORM, "brand": brand, "category": category, "article": article, "sku": sku,
                      "name": name, "turnover": a["turnover"], "commission": a["commission"], "logistics": a["logistics"], "ads": a["ads"],
-                     "acquiring": a["acquiring"], "other": a["other"], "cogs": a["cogs"], "coinvest": a["coinvest"], "units": a["units"], "vat": vat_for(d)})
+                     "acquiring": a["acquiring"], "other": a["other"], "reviews": a["reviews"], "cogs": a["cogs"], "coinvest": a["coinvest"], "units": a["units"],
+                     "vat": vat_for(d)})
     return rows
 
 
@@ -569,12 +584,12 @@ def pivot_buyouts(rows, days, key_fn=lambda r: "Ozon"):
         vat = r["vat"]
         for lab in of(r["date"]):
             a = out[key_fn(r)][lab]
-            for k in ("turnover", "commission", "logistics", "ads", "acquiring", "other", "cogs", "coinvest", "units"):
-                a[k] += r[k]
+            for k in ("turnover", "commission", "logistics", "ads", "acquiring", "other", "reviews", "cogs", "coinvest", "units"):
+                a[k] += r.get(k, Z)
             a["revenue_net"] += (r["turnover"] + r["commission"]) / vat            # комиссия в строках отрицательна
             a["turnover_net"] += r["turnover"] / vat
-            for k in ("logistics", "ads", "acquiring", "other"):
-                a[k + "_net"] += -r[k] / vat
+            for k in ("logistics", "ads", "acquiring", "other", "reviews"):
+                a[k + "_net"] += -r.get(k, Z) / vat
     return {k: {lab: metrics(a) for lab, a in labs.items()} for k, labs in out.items()}, order
 
 
@@ -584,10 +599,12 @@ def metrics(a):
     m["margin"] = a["revenue_net"] - a["cogs"]
     m["margin_pct"] = rep.ratio(m["margin"], a["revenue_net"])
     m["logistics_pct"] = rep.ratio(a["logistics_net"], a["revenue_net"])
-    m["drr_pct"] = rep.drr(a["ads_net"], a["revenue_net"])                 # от выручки без НДС = S сводной (сорок пятая §2)
+    m["drr_pct"] = rep.drr(a["ads_net"], a["revenue_net"])                 # от выручки без НДС = S сводной (сорок пятая §2); с 25.10 — справочно
+    m["drr_reviews_pct"] = rep.drr_with_reviews(a["ads_net"], a["reviews_net"], a["revenue_net"])   # «% ДРР (реклама + отзывы)» — Z сводной с 25.10
+    m["reviews_pct"] = rep.ratio(a["reviews_net"], a["revenue_net"])
     m["drr_ozon_pct"] = rep.drr_ozon_method(a["ads_net"], a["turnover"])   # справочно: методика Ozon — к обороту с НДС до комиссии
     m["acquiring_pct"] = rep.ratio(a["acquiring_net"], a["revenue_net"])
-    m["fin_result"] = m["margin"] - a["logistics_net"] - a["ads_net"] - a["acquiring_net"] - a["other_net"]
+    m["fin_result"] = m["margin"] - a["logistics_net"] - a["ads_net"] - a["reviews_net"] - a["acquiring_net"] - a["other_net"]
     m["fin_result_pct"] = rep.ratio(m["fin_result"], a["revenue_net"])
     m["coinvest_pct"] = rep.ratio(a["coinvest"], a["turnover"])
     return m
@@ -653,8 +670,12 @@ def build_order_rows(days, order_rows, kpi_rows, daily_rows, unit_cost, sku2art,
     return rows, dict(stats)
 
 
-def coefficients(order_rows_data, buyout_rows, days):
-    """Наши коэффициенты: выкуп (подтверждённые / созданные ₽ по дозревшим дням, по площадке и все) и комиссия по месяцам (из выкупов)."""
+def coefficients(order_rows_data, buyout_rows, days, by_sku=None):
+    """Наши коэффициенты: выкуп (подтверждённые / созданные ₽ по дозревшим дням, по площадке и все) и комиссия по месяцам (из выкупов).
+    by_sku ({"min_orders", "min_buyout_units"}, профиль BOOK_COEF_BY_SKU) — ещё по SKU: выкуп SKU = подтверждённые / созданные ₽ его дозревших
+    дней, если заказов там не меньше min_orders шт; комиссия (месяц, SKU) = Σ комиссии / Σ оборота его выкупов за МЕСЯЦ, если выкуплено в нём
+    не меньше min_buyout_units шт — по месяцу, как кабинетная: комиссия Ozon менялась между месяцами (rbh1: август 42 %, сентябрь — октябрь 51 %),
+    и ставка за всё окно переносила бы поздние тарифы на ранние дни. Ключ без порога в словари не входит — строки берут коэффициент кабинета."""
     conf, created = defaultdict(Decimal), defaultdict(Decimal)
     for r in order_rows_data:
         if r["age"] >= MATURE_AGE and r["sku"] != NO_SKU:
@@ -666,7 +687,27 @@ def coefficients(order_rows_data, buyout_rows, days):
         for key in (r["month"], "все"):
             comm_t[key] += r["turnover"]; comm_c[key] += -r["commission"]
     commission = {k: rep.ratio(comm_c[k], comm_t[k]) for k in comm_t}
-    return {"buyout": buyout, "buyout_base": {k: (conf[k], created[k]) for k in created}, "commission": commission}
+    out = {"buyout": buyout, "buyout_base": {k: (conf[k], created[k]) for k in created}, "commission": commission, "buyout_sku": {}, "commission_sku": {}}
+    if by_sku:
+        b = defaultdict(lambda: [Z, Z, Z])
+        for r in order_rows_data:
+            if r["age"] >= MATURE_AGE and r["sku"] != NO_SKU:
+                x = b[r["sku"]]; x[0] += r["confirmed_a"]; x[1] += r["created_a"]; x[2] += D(r["created_q"])
+        out["buyout_sku"] = {sku: x[0] / x[1] for sku, x in b.items() if x[2] >= by_sku["min_orders"] and x[1] > 0}
+        c = defaultdict(lambda: [Z, Z, Z])
+        for r in buyout_rows:
+            if r["sku"] != NO_SKU:
+                x = c[(r["month"], r["sku"])]; x[0] += r["turnover"]; x[1] += -r["commission"]; x[2] += D(r["units"])
+        out["commission_sku"] = {key: x[1] / x[0] for key, x in c.items() if x[2] >= by_sku["min_buyout_units"] and x[0] > 0}
+        out["sku_tested"] = {"buyout": len(b), "commission": len(c)}
+    return out
+
+
+def sku_coef(table, key, fallback):
+    """Коэффициент строки: свой у ключа (SKU или (месяц, SKU)), если он есть в table (порог пройден), иначе fallback кабинета; (значение, источник)."""
+    key = tuple(str(k or "") for k in key) if isinstance(key, tuple) else str(key or "")
+    v = table.get(key) if table else None
+    return (v, COEF_SKU) if v is not None else (fallback, COEF_CABINET)
 
 
 def order_commission(coef, day):
@@ -856,12 +897,50 @@ def _build_wb_parts_once(month_from, month_to, date_to, d1, d2, days):
         except Exception as exc:  # noqa: BLE001 — без коэффициента блок WB считается по созданным (выкуп 100 %) и говорит об этом
             buyout, buyout_note = {}, f"коэффициент выкупа WB не прочитан: {exc}"
         lap("коэффициент выкупа WB (модуль)")
+        sku_parts = {}
+        if COEF_BY_SKU:                                      # РБХ (25.10): % выкупа и комиссия по nmId, где данных хватает
+            cohort = wbfin.read_keyset(sb_wb, "wb_buyout_cohort_sku_daily", "day,nm_id,created_qty,created_sum,sold_sum,mature", f"{buyout_from}-01", d2)
+            sku_parts = wb_sku_coefficients(rows, cohort, COEF_BY_SKU)
+            lap(f"коэффициенты WB по nmId (когорта по SKU, {len(cohort)} строк)")
         print("  время WB-модуля по вызовам: " + ", ".join(f"{k} {v} с" for k, v in timings.items()))
         return {"rows": rows, "month": month, "split_brand": split_brand, "split_category": split_cat, "orders": orders,
                 "ads_by_day": ads_by_day, "ads_note": ads_note, "buyout": buyout, "buyout_details": details, "buyout_note": buyout_note, "timings": timings,
-                "storage": storage, "commission_share": commission_share, "commission_source": commission_source}
+                "storage": storage, "commission_share": commission_share, "commission_source": commission_source, **sku_parts}
     except Exception:
         raise   # решает build_wb_parts: транзиентный отказ — повтор, иначе оговорка в книге
+
+
+def wb_sku_coefficients(rows, cohort, by_sku):
+    """WB по nmId (решение владельца 25.10): выкуп = Σ продаж / Σ заказов ₽ когорты дня заказа (wb_buyout_cohort_sku_daily) по ЗРЕЛЫМ дням —
+    то же определение, что у итога модуля, — если заказов там не меньше min_orders шт; комиссия = Σ комиссии / Σ продаж строк «Данных WB выкупы»
+    МЕСЯЦА, если продано в нём не меньше min_buyout_units шт (ключ (месяц, nmId), как у Ozon). Ключ — nmId строкой (как sku строк заказов).
+    Возвращает buyout_sku, commission_sku, sku_tested."""
+    b = defaultdict(lambda: [Z, Z, Z])
+    for r in cohort:
+        if r.get("mature"):
+            x = b[str(r["nm_id"])]; x[0] += D(r.get("sold_sum")); x[1] += D(r.get("created_sum")); x[2] += D(r.get("created_qty"))
+    c = defaultdict(lambda: [Z, Z, Z])
+    for r in rows:
+        if r.get("nm_id") is None or r.get("commission") is None or r.get("sales") is None:
+            continue
+        x = c[(r["month"], str(r["nm_id"]))]; x[0] += D(r["sales"]); x[1] += D(r["commission"]); x[2] += D(r.get("qty"))
+    return {"buyout_sku": {k: x[0] / x[1] for k, x in b.items() if x[2] >= by_sku["min_orders"] and x[1] > 0},
+            "commission_sku": {k: x[1] / x[0] for k, x in c.items() if x[2] >= by_sku["min_buyout_units"] and x[0] > 0},
+            "sku_tested": {"buyout": len(b), "commission": len(c)}}
+
+
+def coef_coverage(data_rows, mp):
+    """Доля созданных ₽ строк площадки, у которых выкуп / комиссия свои у SKU (колонка «Коэф. источник»): {buyout|commission: (₽ SKU, ₽ всего)}."""
+    out = {"buyout": [Z, Z], "commission": [Z, Z]}
+    for r in data_rows:
+        src = r.get("coef_source") or ""
+        if r["mp"] != mp or not src:
+            continue
+        for k, word in (("buyout", "выкуп SKU"), ("commission", "комиссия SKU")):
+            out[k][1] += r["created_a"]
+            if word in src:
+                out[k][0] += r["created_a"]
+    return out
 
 
 def _removed_pivot_orders_wb():
@@ -1054,7 +1133,8 @@ ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Маг�
                    ("Месяцы", "month_num", "int"),        # у владельца — поле ГРУППИРОВКИ сводной (fieldGroup по «Дата»), не колонка источника: справочно, после его 29
                    ("SKU/nmId", "sku", None), ("Подтверждено сейчас, руб.", "confirmed_a", "money"), ("Площадка Ozon", "platform_name", None),
                    ("СПП источник", "spp_source", None),   # 29 владельца + «Месяцы» + 5 наших («СПП источник» — сорок первая §4: измерено / по выкупам месяца)
-                   ("СС источник", "cost_source", None)]   # источник себестоимости строки: дата снимка 1С / «после последнего снимка …» (сорок шестая §3)
+                   ("СС источник", "cost_source", None),   # источник себестоимости строки: дата снимка 1С / «после последнего снимка …» (сорок шестая §3)
+                   ("Коэф. источник", "coef_source", None)]  # РБХ (25.10): % выкупа и комиссия строки — свои у SKU или кабинета; у KARATOV пусто
 ORDER_CHECK_COLS = [("Оборот (с НДС)", "created_a"), ("Заказы, шт", "created_q"), ("Цена продавца", "price"), ("Комиссия %", "commission_pct"), ("Выручка", "revenue"),
                     ("Себестоимость", "cogs"), ("Маржа", "margin"), ("М-ть, %", "margin_pct"), ("Реклама", "ads_net"), ("ДДР, %", "drr_pct"),
                     ("Соинвест, %", "coinvest_pct"), ("Гр.фин.рез", "gross_fin"), ("Гр.фин.рез, %", "gross_fin_pct")]
@@ -1121,8 +1201,16 @@ def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
         stats[f"spp_{'measured' if src == SPP_MEASURED else ('filled' if src == SPP_FILLED else 'empty')}_{mp}"] += 1
         out.append(row)
 
+    def with_source(row, b_src, c_src):
+        if COEF_BY_SKU:
+            row["coef_source"] = f"выкуп {b_src}, комиссия {c_src}"
+            stats[f"coef_{row['mp']}_buyout_{b_src}"] += 1; stats[f"coef_{row['mp']}_commission_{c_src}"] += 1
+        return row
+
     for r in order_rows:
-        keep(order_data_row(r, order_commission(coef, r["date"]), comm_all, buyout_all, "Ozon", SHOP, fill=fill_for("Ozon", r["date"])), "Ozon")
+        comm, c_src = sku_coef(coef.get("commission_sku"), (month_label(r["date"]), r["sku"]), order_commission(coef, r["date"]))
+        bo, b_src = sku_coef(coef.get("buyout_sku"), r["sku"], buyout_all)
+        keep(with_source(order_data_row(r, comm, comm_all, bo, "Ozon", SHOP, fill=fill_for("Ozon", r["date"])), b_src, c_src), "Ozon")
     if wb_parts and not wb_parts.get("error"):
         wb_comm = wb_commission_share(wb_parts)                           # константа владельца или расчётная (РБХ) — см. wb_part
         wb_buyout = (wb_parts.get("buyout") or {}).get("итого")
@@ -1132,7 +1220,9 @@ def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
             if r["cogs_created"] is None:
                 stats["wb_rows_without_cost"] += 1
             ads_in_rows[r["date"]] += r["ads"] or Z
-            keep(order_data_row(r, wb_comm, wb_comm, wb_buyout, "WB", wbfin.SHOP, fill=fill_for("WB", r["date"])), "WB")
+            comm, c_src = sku_coef(wb_parts.get("commission_sku"), (month_label(r["date"]), r["sku"]), wb_comm)
+            bo, b_src = sku_coef(wb_parts.get("buyout_sku"), r["sku"], wb_buyout)
+            keep(with_source(order_data_row(r, comm, wb_comm, bo, "WB", wbfin.SHOP, fill=fill_for("WB", r["date"])), b_src, c_src), "WB")
         for d in days:
             # реклама дня сверх строк номенклатур (модуль разносит updSum дня по nmId долями fullstats; день без долей — целиком сюда)
             ads = (wb_parts.get("ads_by_day") or {}).get(d)
@@ -1210,13 +1300,14 @@ def check_orders_data(data_rows, days, piv_ozon, piv_wb):
 
 # ---------- запись книги (write_only: строки только вперёд) ----------
 
-PIVOT_ARTICLE_KEYS = {"Комиссия": "commission", "Логистика": "logistics", "Прочее": "other", "Реклама": "ads", "Товарооборот": "turnover", "Эквайринг": "acquiring"}
+PIVOT_ARTICLE_KEYS = {"Комиссия": "commission", "Логистика": "logistics", "Отзывы": "reviews", "Прочее": "other", "Реклама": "ads", "Товарооборот": "turnover",
+                      "Эквайринг": "acquiring"}
 PIVOT_CALC = [("Оборот (с НДС)", "turnover", "money"), ("Комиссия (с НДС), руб.", "commission_abs", "money"), ("Комиссия, %", "commission_pct", "pct"),
               ("Выручка, руб. (без НДС)", "revenue_net", "money"), ("Себестоимость, руб.", "cogs", "money"), ("Маржа, руб.", "margin", "money"), ("Мар-ть, %", "margin_pct", "pct"),
-              ("Логистика, руб. (без НДС)", "logistics_net", "money"), ("% Логистики", "logistics_pct", "pct"), ("Реклама, руб. (без НДС)", "ads_net", "money"), ("% ДРР", "drr_pct", "pct"),
-              ("Эквайринг, руб. (без НДС)", "acquiring_net", "money"), ("% Эквайринга", "acquiring_pct", "pct"), ("Прочее, руб. (без НДС)", "other_net", "money"),
+              ("Логистика, руб. (без НДС)", "logistics_net", "money"), ("% Логистики", "logistics_pct", "pct"), ("Реклама, руб. (без НДС)", "ads_net", "money"),
+              ("Отзывы, руб. (без НДС)", "reviews_net", "money"), ("% ДРР (реклама + отзывы)", "drr_reviews_pct", "pct"), ("Эквайринг, руб. (без НДС)", "acquiring_net", "money"), ("% Эквайринга", "acquiring_pct", "pct"), ("Прочее, руб. (без НДС)", "other_net", "money"),
               ("Фин. рез., руб.", "fin_result", "money"), ("% Фин. рез.", "fin_result_pct", "pct")]
-PIVOT_EXTRA = [("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", "pct"),
+PIVOT_EXTRA = [("справочно: % ДРР (только реклама)", "drr_pct", "pct"), ("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", "pct"),
                ("справочно: Соинвест (баллы + зелёные цены), руб.", "coinvest", "money"), ("Соинвест, % от оборота", "coinvest_pct", "pct"), ("Штуки", "units", "int")]
 ORDER_COLS = [("Оборот (с НДС)", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Цена продавца", "price", "money"), ("Комиссия %", "commission_pct", "pct"),
               ("Выручка", "revenue", "money"), ("Себестоимость", "cogs", "money"), ("Маржа", "margin", "money"), ("М-ть, %", "margin_pct", "pct"), ("Реклама", "ads_net", "money"),
@@ -1388,7 +1479,7 @@ def _grid_sheet(wb, title, g, widths=None, ncols=None, freeze=None):
     return ws
 
 
-ARTICLE_BUYOUT_KINDS = ("Товарооборот", "Комиссия", "Логистика", "Реклама", "Эквайринг", "Прочее")
+ARTICLE_BUYOUT_KINDS = ("Товарооборот", "Комиссия", "Логистика", "Реклама", "Отзывы", "Эквайринг", "Прочее")
 
 
 def write_article_sheet(wb, days, long_rows, order_data_rows, wb_parts):
@@ -1616,6 +1707,28 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
         g.set(r, 1, f"Ozon — {key}"); g.set(r, 2, coef["commission"][key], "pct"); r += 1
     for name, v in OWNER_COEF.get("commission", ()):
         g.set(r, 1, name + " — образец владельца"); g.set(r, 5, v, "pct"); r += 1
+    if COEF_BY_SKU:
+        # РБХ (решение владельца 25.10): строки «Данных заказы» берут % выкупа и комиссию своего SKU, где данных хватает, иначе — кабинета
+        r += 1
+        for j, h in enumerate(["По SKU (порог: выкуп — от {min_orders} заказов шт на зрелых днях окна, комиссия — от {min_buyout_units} выкупленных шт в месяце)".format(**COEF_BY_SKU),
+                               "ключей со своим (выкуп — SKU, комиссия — месяц × SKU)", "ключей проверено", "доля созданного ₽ на своём (строки «Данных заказы»)"], 1):
+            g.set(r, j, h, bold=True, fill=True)
+        r += 1
+        cov = {mp_: coef_coverage(order_data_rows or [], mp_) for mp_ in ("Ozon", "WB")}
+        for mp_, src in (("Ozon", coef), ("WB", wb_parts or {})):
+            tested = src.get("sku_tested") or {}
+            for k, label in (("buyout", "% выкупа"), ("commission", "комиссия")):
+                own, total = cov[mp_][k]
+                g.set(r, 1, f"{mp_} — {label}"); g.set(r, 2, len(src.get(k + "_sku") or {}), "int"); g.set(r, 3, tested.get(k), "int")
+                g.set(r, 4, rep.ratio(own, total) if total else None, "pct"); r += 1
+    if ANALYST_COEF:
+        r += 1
+        for j, h in enumerate(["Аналитик кабинета — справочно, в расчёт не входит", "значение"], 1):
+            g.set(r, j, h, bold=True, fill=True)
+        r += 1
+        for kind, label in (("buyout", "% выкупа"), ("commission", "комиссия")):
+            for name, v in ANALYST_COEF.get(kind, ()):
+                g.set(r, 1, f"{label} — {name}"); g.set(r, 2, v, "pct"); r += 1
     coef_lines = list(notes["coef"])
     if not OWNER_COEF:
         coef_lines.append("Коэффициенты этого кабинета — расчётные из данных (констант владельца в профиле нет): % выкупа Ozon — измеренный, "
@@ -1655,7 +1768,7 @@ def check_against_month(buyout_rows, daily_rows, days):
             vat = r["vat"]
             s["turnover"] += r["turnover"]; s["commission"] += -r["commission"]; s["revenue"] += (r["turnover"] + r["commission"]) / vat
             s["cogs"] += r["cogs"]; s["logistics"] += -r["logistics"] / vat; s["ads"] += -r["ads"] / vat
-            s["acquiring"] += -r["acquiring"] / vat; s["other"] += -r["other"] / vat
+            s["acquiring"] += -r["acquiring"] / vat; s["other"] += -r["other"] / vat; s["reviews"] += -r.get("reviews", Z) / vat
     m = defaultdict(Decimal)
     missing_ads = 0
     for r in daily_rows:
@@ -1667,15 +1780,17 @@ def check_against_month(buyout_rows, daily_rows, days):
                 missing_ads += 1
             else:
                 m["ads"] += r["ads"]; m["acquiring"] += r["acquiring"]; m["other"] += r["other"] + (r.get("subscription") or Z)
-    s["fin_result"] = s["revenue"] - s["cogs"] - s["logistics"] - s["ads"] - s["acquiring"] - s["other"]
-    m["fin_result"] = m["revenue"] - m["cogs"] - m["logistics"] - m["ads"] - m["acquiring"] - m["other"]
+                m["reviews"] += r.get("reviews") or Z
+    s["fin_result"] = s["revenue"] - s["cogs"] - s["logistics"] - s["ads"] - s["reviews"] - s["acquiring"] - s["other"]
+    m["fin_result"] = m["revenue"] - m["cogs"] - m["logistics"] - m["ads"] - m["reviews"] - m["acquiring"] - m["other"]
     out = [("Оборот", s["turnover"], m["turnover"], "те же строки выкупов"), ("Комиссия", s["commission"], m["commission"], "те же строки выкупов"),
            ("Выручка без НДС", s["revenue"], m["revenue"], "те же строки"),
            ("Себестоимость", s["cogs"], m["cogs"], "те же строки выкупов: СС снимка по дате × поправка по курсу 1С (сорок восьмая); по снимку без курса " + f"{m['cogs_snapshot']:,.2f}"),
            ("Логистика без НДС", s["logistics"], m["logistics"], "SKU из расходов + остаток без SKU против типов"),
            ("Реклама без НДС", s["ads"], m["ads"], "Performance по SKU + остаток до 41 + 54" + (f"; дней без сырья {missing_ads}" if missing_ads else "")),
            ("Эквайринг без НДС", s["acquiring"], m["acquiring"], "только строка без SKU (леджер)"),
-           ("Прочее без НДС (с подпиской)", s["other"], m["other"], "прочее + подписка листа месяца"),
+           ("Отзывы без НДС (95 + 96)", s["reviews"], m["reviews"], "по SKU из сырья (95) + остаток без SKU против типов (96 — без SKU)"),
+           ("Прочее без НДС (с подпиской)", s["other"], m["other"], "прочее + подписка листа месяца (без отзывов)"),
            ("Фин. рез.", s["fin_result"], m["fin_result"], "лист месяца: «Фин. рез.» (СС по курсу)")]
     return [(t, a, b, q(a - b), why) for t, a, b, why in out]
 
@@ -1772,7 +1887,7 @@ def main(argv=None):
               "category": pivot_buyouts(buyout_rows, days, lambda r: r["category"])}
     phase("выкупы: длинные строки из сырья и сводные")
     order_data, ostats = build_order_rows(days, order_rows, kpi, daily_rows, unit_cost, sku2art, catalog, names, today)
-    coef = coefficients(order_data, buyout_rows, days)
+    coef = coefficients(order_data, buyout_rows, days, by_sku=COEF_BY_SKU)
     phase("заказы Ozon: строки, коэффициенты")
     residual_note = "; ".join(f"{OWNER_ARTICLE[k]} — дней {bstats.get(f'residual_{k}_days', 0)}, Σ {bstats.get(f'residual_{k}_sum', Z):,.2f}"
                               for k in WIDE_KEYS if bstats.get(f"residual_{k}_days"))
@@ -1784,27 +1899,30 @@ def main(argv=None):
                     f"585 и 375 — золото, 925 — серебро; индекс СС 1,150 снят 2026-10-08 по решению владельца); позиций без СС: {bstats.get('positions_without_cost', 0)}. "
                     "Источник себестоимости каждой строки — колонка «СС источник» листов «Данные Ozon выкупы» и «Данные заказы» (дата снимка или «после последнего снимка»). "
                     + (unit_cost.history.note() if getattr(unit_cost, "history", None) is not None else f"Снимок {args.snapshot}."),
-                    "«Прочее» включает подписку (у владельца отдельной статьи нет); эквайринг — тип 1 по строке товара; компенсации 25 / 10 — не статья формы, в лист не входят. "
+                    "«Отзывы» = типы 95 «Отзывы за баллы» (по SKU) + 96 «Ускоренный сбор отзывов» (без SKU — строкой «(без SKU)») — своя статья с 2026-10-25 "
+                    "(слово владельца): из «Прочего» (95 — подписка, 96 — прочее) убраны, фин. рез. тот же. «Прочее» включает подписку (у владельца отдельной статьи нет); эквайринг — тип 1 по строке товара; компенсации 25 / 10 — не статья формы, в лист не входят. "
                     "«Ст-ть продаж в себ-ти» — только под Товарооборотом, как в образце.",
                     ads_bonus_note,
-                    "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
+                    "«% ДРР (реклама + отзывы)» = (Реклама + Отзывы) / Выручка, все без НДС (выручка = (оборот − комиссия) / НДС) — Z сводной «Фин рез» с 2026-10-25; "
+                    "справочно «% ДРР (только реклама)» = Реклама / Выручка — база владельца с 2026-09-29; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
                     ("Дни моложе двух суток (" + ", ".join(young_days) + "): реклама 41 + 54 в леджере появляется следующей ночью — в этих строках реклама занижена; утренняя книга берёт их живым ответом."
                      if young_days else "Дней моложе двух суток в книге нет."),
                     f"Категория — карточка Ozon ({catalog_source}); бренд — по первой букве артикула ({catalog_rules.brand_rule_text()})."
                     + (f" Дней без сырья рекламы: {bstats['days_without_raw_ads']}." if bstats.get("days_without_raw_ads") else "")],
         "buyout_data": ["Длинный формат кэша сводной владельца: строка на начисление × SKU × статья; 15 его полей по порядку, справа наши «Соинвест» и «Площадка». "
                         "Знак как в его сводной: списания отрицательные, товарооборот и себестоимость положительные. НДС — как в запросе Power Query владельца «Фин начисления»: "
-                        "Логистика, Реклама, Прочее и Эквайринг — без НДС по дате начисления (ставка проекта по дате), Товарооборот и Комиссия — с НДС; "
+                        "Логистика, Реклама, Отзывы, Прочее и Эквайринг — без НДС по дате начисления (ставка проекта по дате), Товарооборот и Комиссия — с НДС; "
                         "себестоимость — снимок 1С, уже без НДС, не делится.",
                         "ID начисления — accrual_id ответа /v1/finance/accrual/by-day; пусто у строк рекламы Performance по SKU и у строк остатка дня «(без SKU)» "
                         "(леджер 41 + 54 минус Performance по SKU; для прочих статей — цель листа месяца минус Σ строк дня"
                         + (f": {residual_note}" if residual_note else ": по всем статьям, кроме рекламы, остаток 0,00 на всех днях") + ").",
                         "Количество — только у строк Товарооборот: позиции ±1 по знаку продажи, измеренные штуки (buyouts_units) разложены по строкам (день, SKU) — "
                         f"разница к первой строке продажи, ключей с разницей {bstats.get('units_reallocated_keys', 0)}; Ст-ть продаж = количество × СС по курсу 1С.",
-                        "Колонки сбоку «Сводная Ozon выкупы» P … AE — формулы владельца от столбцов сводной (статьи по алфавиту, «Начисления» / «Ст-ть продаж» парами): "
-                        "P = J Товарооборот, Q = −B Комиссия, T = K Ст-ть продаж, W = −D Логистика, Y = −H Реклама, AA = −L Эквайринг, AC = −F Прочее (четыре статьи уже без НДС); "
-                        "S = (P − Q) / 1,22, U = S − T, AD = U − W − Y − AA − AC; проценты — от S, кроме R = Q / P. Z «% ДРР» = Y / S (реклама к выручке без НДС) — "
-                        "та же база на листах «Выкупы Ozon» и «Ozon - месяц» (решение владельца 2026-09-29, сорок пятая §2)."],
+                        "Колонки сбоку «Сводная Ozon выкупы» P … AG — формулы владельца от столбцов сводной (статьи по алфавиту, «Начисления» / «Ст-ть продаж» парами; "
+                        "с 2026-10-25 между Логистикой и Прочим — Отзывы, F / G): P = L Товарооборот, Q = −B Комиссия, T = M Ст-ть продаж, W = −D Логистика, Y = −J Реклама, "
+                        "AA = −N Эквайринг, AC = −H Прочее, AF = −F Отзывы (пять статей уже без НДС); S = (P − Q) / 1,22, U = S − T, AD = U − W − Y − AA − AC − AF; проценты — "
+                        "от S, кроме R = Q / P. Z «% ДРР (реклама + отзывы)» = (Y + AF) / S; AG справочно «% ДРР (только реклама)» = Y / S — "
+                        "та же база на листах «Выкупы Ozon» и «Ozon - месяц» (решение владельца 2026-09-29, сорок пятая §2; отзывы — слово 2026-10-25)."],
         "orders": ["Семантика источника сводной владельца (решение 25.09): Выручка = Σ Заказы без НДС × (1 − Комиссия) по ВСЕМ созданным заказам, без коэффициента выкупа; Себестоимость = Σ Себ-ть Реал "
                    "(СС × шт по курсу 1С, все заказы); «Выкуплено» — рубли = Выручка × коэффициент выкупа площадки (Ozon измеренный, WB — модуль); коэффициент входит только в Гр.фин.рез.",
                    "Формулы его вычисляемых полей на суммах по метке: Маржа = Выручка − Себестоимость; М-ть = Маржа / Выручка; ДДР = Реклама без НДС / Выкуплено; Соинвест = (без НДС − с СПП) / без НДС "
@@ -1976,7 +2094,8 @@ def main(argv=None):
             rs = [r for r in order_data_rows if r["mp"] == mp_ and r.get("buyout_rub") is not None]
             if rs:
                 rev = sum((r["revenue"] for r in rs), Z); bo = sum((r["buyout_rub"] for r in rs), Z)
-                print(f"«Данные заказы» {mp_}: Σ Выкуплено {bo:,.2f} / Σ Выручка {rev:,.2f} = {(bo / rev) if rev else Z:.6f}; коэффициент площадки "
+                print(f"«Данные заказы» {mp_}: Σ Выкуплено {bo:,.2f} / Σ Выручка {rev:,.2f} = {(bo / rev) if rev else Z:.6f}"
+                      + ("; строки с выкупом по SKU — средневзвешенно, не обязано равняться кабинету" if COEF_BY_SKU else "") + "; коэффициент площадки "
                       f"{(coef['buyout'].get('все') if mp_ == 'Ozon' else (wb_parts.get('buyout') or {}).get('итого', Decimal(1))) or Z:.6f}")
         # §3: Σ дней каждого месяца = строке месяца на всех листах формы
         days_checks = [("Выкупы Ozon", pivots["all"][0]["Ozon"], pivots["all"][1], BUYOUT_KEYS[:9])]

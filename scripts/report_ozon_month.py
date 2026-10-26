@@ -1095,11 +1095,16 @@ def print_orders(o, buyout_total):
     t = o["totals"]["all"]
     p = lambda v: "—" if v is None else f"{v * 100:.2f} %"  # noqa: E731
     if t["fin_result"] is not None:
-        print(f"  реклама {t['ads']:,.2f}; ДРР от созданного {p(t['drr_created_pct'])}, от прогноза подтв. {p(t['drr_fc_pct'])}; фин. рез. прогноз {t['fin_result']:,.2f} ({p(t['fin_result_pct'])} выручки)")
+        print(f"  реклама {f(t['ads'])}; ДРР от созданного {p(t['drr_created_pct'])}, от прогноза подтв. {p(t['drr_fc_pct'])}; фин. рез. прогноз {f(t['fin_result'])} ({p(t['fin_result_pct'])} выручки)")
         if t.get("fin_result_snapshot") is not None:
-            print(f"  по снимку без курса: СС {t['cogs_snapshot']:,.2f}, фин. рез. прогноз {t['fin_result_snapshot']:,.2f}")
-        print(f"  реклама по образцу (41 + 54 + 96 + подписка) {t['ads_manual']:,.2f}; по формулам владельца (0,65 / множители площадок / 0,024) на ней: выручка {t['owner_revenue']:,.2f}, "
-              f"ДРР {p(t['owner_drr_pct'])}, фин. рез. {t['owner_fin_result']:,.2f}; наш − владельца {t['fin_result_minus_owner']:+,.2f}")
+            print(f"  по снимку без курса: СС {f(t.get('cogs_snapshot'))}, фин. рез. прогноз {f(t['fin_result_snapshot'])}")
+        # формулы владельца (0,65 / множители площадок / 0,024) — только у кабинета, где они заданы; у РБХ констант нет — owner_* = None
+        # (26.10: печать «{None:,.2f}» уронила лист РБХ за октябрь, как только накопилась кривая дозревания и прогноз стал не пустым)
+        if t.get("owner_revenue") is not None:
+            print(f"  реклама по образцу (41 + 54 + 96 + подписка) {f(t['ads_manual'])}; по формулам владельца (0,65 / множители площадок / 0,024) на ней: выручка {f(t['owner_revenue'])}, "
+                  f"ДРР {p(t['owner_drr_pct'])}, фин. рез. {f(t['owner_fin_result'])}; наш − владельца {'—' if t.get('fin_result_minus_owner') is None else format(t['fin_result_minus_owner'], '+,.2f')}")
+        else:
+            print(f"  реклама по образцу (41 + 54 + 96 + подписка) {f(t['ads_manual'])}; формулы владельца (0,65 / множители площадок / 0,024) для кабинета не заданы")
         for _pl, name in PLATFORMS + ((None, NO_PLATFORM),):
             pt = o["totals"].get(f"platform:{name}")
             if pt is not None and pt["created_a"]:

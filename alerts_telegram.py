@@ -304,7 +304,7 @@ def get_ozon_reviews_lines(target_date, sb=None):
     by = {int(r["type_id"]): -num(r.get("amount")) for r in rows}
     total = sum(by.values())
     return [f"Отзывы (баллы): {fmt_money(total)} руб. — за баллы (95) {fmt_money(by.get(95, 0))}, ускоренный сбор (96) {fmt_money(by.get(96, 0))}; "
-            "в «Рекламе» выше не учтены, в ДРР листов — «(реклама + отзывы)»."]
+            "в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)»."]
 
 
 def get_ozon_ads_breakdown(expense_date):

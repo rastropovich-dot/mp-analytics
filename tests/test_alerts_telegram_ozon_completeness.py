@@ -37,7 +37,7 @@ class ReviewsLine(unittest.TestCase):
     def test_reviews_line_from_ledger(self):
         sb = self._Sb([{"type_id": 95, "amount": "-12000.40"}, {"type_id": 96, "amount": "-305"}])
         [line] = self._real()("2026-10-24", sb)
-        self.assertEqual(line, "Отзывы (баллы): 12 305 руб. — за баллы (95) 12 000, ускоренный сбор (96) 305; в «Рекламе» выше не учтены, в ДРР листов — «(реклама + отзывы)».")
+        self.assertEqual(line, "Отзывы (баллы): 12 305 руб. — за баллы (95) 12 000, ускоренный сбор (96) 305; в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)».")
         self.assertIn(("in_", ("type_id", [95, 96])), sb.calls)
 
     def test_no_rows_no_line_and_failure_is_named(self):

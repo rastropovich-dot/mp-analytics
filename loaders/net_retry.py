@@ -15,7 +15,7 @@ TRANSIENT_STATUSES = (502, 503, 504)
 TRANSIENT_MARKERS = ("Service Unavailable", "Bad Gateway", "Gateway Timeout", "Gateway Time-out", "Server disconnected", "Connection reset",
                      "reset by peer", "ProxyError", "RemoteProtocolError", "ReadError", "ConnectError", "ReadTimeout", "ConnectTimeout",
                      "timed out", "Temporary failure", "EOF occurred", "Connection aborted", "RemoteDisconnected", "statement timeout",
-                     "canceling statement")
+                     "canceling statement", "Connection refused", "ConnectionRefusedError")
 # Код 502 / 503 / 504 — только в форме HTTP-статуса: «HTTP 503», «status 503», «status_code=503», «code 503», «503 Service Unavailable»;
 # «1 503,00», «rows=2504», «−2 504,17» — не статус (границы: перед кодом не цифра, после — не цифра / запятая / точка с цифрой).
 TRANSIENT_STATUS_RE = re.compile(

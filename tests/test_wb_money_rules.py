@@ -119,7 +119,8 @@ class MonthSheetRulesTests(unittest.TestCase):
         self.assertEqual(d["deduction"], D("42990") + D("40260"))                    # Джем + нетто аванса
         self.assertEqual(d["deduction_ads"], D("472678"))
         self.assertEqual(d["deduction_advance"], D("-6430620"))
-        self.assertEqual(d["other"], D("122") / vat + D("300") + (D("42990") + D("40260")) / vat)
+        self.assertEqual(d["storage_cost"], D("122") / vat)                          # хранение — своя колонка с 2026-10-25
+        self.assertEqual(d["other"], D("300") + (D("42990") + D("40260")) / vat)
         self.assertEqual(d["ads"], D("1320") / vat)                                   # только «Баланс»
 
 

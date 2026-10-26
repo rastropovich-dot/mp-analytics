@@ -13,14 +13,16 @@
     Себестоимость     article_unit_costs (снимок 1С, --snapshot) × ПОЗИЦИИ выкупов; sku → article по заказам
     Логистика, Прочее, Подписка — типы начислений, свёрнутые в статьи через TYPE_TO_EXPENSE (классификация у читателя)
     Эквайринг         тип 1 / НДС (в marketplace_expenses он внутри статьи other)
-    Подписка          статья subscription (типы 51, 52, 74) / НДС
+    Подписка          статья subscription (типы 51, 52, 74) / НДС — без типа 95 (он в «Отзывах»)
     Реклама           типы 41 + 54 / НДС — «на круг», решение владельца 5 от 2026-09-19
+    Отзывы            типы 95 + 96 / НДС (REVIEW_TYPE_IDS; слово владельца 2026-10-25): из «Подписки» (95) и «Прочего» (96) — своя колонка
     Компенсации       типы 25 + 10, ДОХОД: «+» — деньги нам; в расходы и в «Прочее» не входят (решение 8 от 2026-09-21)
     Фин. рез. с компенсациями   справочно; сопоставим с «Фин. рез.» владельца, у которого компенсации внутри «Прочего»
-    ДРР %             Реклама / Выручка (обе без НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез» (до 09-29 было
-                      «от ТО»: Реклама / (Оборот / НДС)); справочно рядом «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС
-    Прочее            (статьи other + external_promo − тип 1) / НДС; незнакомая статья — сюда же И называется вслух
-    Фин. рез.         Маржа − Логистика − Эквайринг − Подписка − Реклама − Прочее
+    ДРР %             (Реклама + Отзывы) / Выручка (все без НДС) — «% ДРР (реклама + отзывы)», слово владельца 2026-10-25; справочно рядом
+                      «% ДРР (только реклама)» = Реклама / Выручка — база владельца с 2026-09-29, та же, что Z сводной «Фин рез» до 25.10
+                      (до 09-29 было «от ТО»), и «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС
+    Прочее            (статьи other + external_promo − тип 1 − тип 96) / НДС; незнакомая статья — сюда же И называется вслух
+    Фин. рез.         Маржа − Логистика − Эквайринг − Подписка − Реклама − Отзывы − Прочее (сумма та же: отзывы переехали из подписки и прочего)
     Ebitda            Фин. рез. − накладные в день (OVERHEAD_PER_DAY: параметр с датой действия, как НДС; Ozon с 2026-09-01 —
                       311 527,00, ячейка T83 ручного листа от 22.09); «Ebitda с компенсациями» сопоставима с «Ebitda» владельца
     справочно         «Реклама по образцу» = (41 + 54 + 96 + вся статья subscription) / НДС — так считает ручной лист
@@ -157,6 +159,16 @@ def drr(ads_net, revenue_net):
     return None if ads_net is None else ratio(ads_net, revenue_net)
 
 
+def pct_or_dash(v):
+    return "—" if v is None else f"{v:.2%}"
+
+
+def drr_with_reviews(ads_net, reviews_net, revenue_net):
+    """«% ДРР (реклама + отзывы)» — (реклама + отзывы 95 + 96) без НДС / выручка без НДС (слово владельца 2026-10-25: отзывы — часть рекламы
+    в ДРР товара и бренда, в подписи сказано, что входит). Нет рекламы или отзывов (день без типов начислений) — None, не ноль."""
+    return None if ads_net is None or reviews_net is None else ratio(ads_net + reviews_net, revenue_net)
+
+
 def drr_ozon_method(ads_net, turnover_gross):
     """«ДРР по методике Ozon» — реклама без НДС / оборот с НДС до комиссии: так Ozon считает долю рекламы для порога соинвеста.
     Справочно рядом с «% ДРР»; в сводную владельца не входит."""
@@ -230,7 +242,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             row["logistics"] = a["exp_logistics"] / vat
             row["subscription"] = a["exp_subscription"] / vat
             row["other"] = (a["exp_other"] + a["exp_external_promo"]) / vat
-            for k in ("acquiring", "ads", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
+            for k in ("acquiring", "ads", "reviews", "reviews_in_subscription", "reviews_in_other", "compensations", "ads_like_manual", "log_other_like_manual", "fin_result", "fin_result_with_comp",
                       "ebitda", "ebitda_with_comp", "fin_result_snapshot", "ebitda_snapshot"):
                 row[k] = None
             row["overhead"] = overhead_for(d)
@@ -240,7 +252,8 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
             rows.append(row)
             continue
         # Статьи — свёрткой типов через TYPE_TO_EXPENSE: классификация у читателя, леджер её не знает.
-        articles = defaultdict(Decimal)
+        # «Отзывы» (95 + 96) — статья отчёта: articles держит полную свёртку (для сверки с marketplace_expenses), reviews_in — их долю по статьям.
+        articles, reviews_in = defaultdict(Decimal), defaultdict(Decimal)
         for type_id, v in ts.items():
             if type_id in accrual.AD_TYPE_IDS or type_id in accrual.UNCLASSIFIED_TYPE_IDS:
                 continue
@@ -249,20 +262,25 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
                 unknown[f"тип {type_id}"] += v      # незнакомый тип идёт в прочее И называется вслух
                 article = "other"
             articles[article] += v
+            if type_id in accrual.REVIEW_TYPE_IDS:
+                reviews_in[article] += v
         acq = ts.get(ACQUIRING_TYPE, Z)
         ads = sum((ts.get(t, Z) for t in accrual.AD_TYPE_IDS), Z)
         # types_by_day держит расход положительным; компенсация — деньги НАМ, в леджере она > 0, здесь < 0
         comp = -sum((ts.get(t, Z) for t in accrual.UNCLASSIFIED_TYPE_IDS), Z)
-        row["logistics"] = articles["logistics"] / vat
-        row["subscription"] = articles["subscription"] / vat
+        row["logistics"] = (articles["logistics"] - reviews_in["logistics"]) / vat
+        row["subscription"] = (articles["subscription"] - reviews_in["subscription"]) / vat
         row["acquiring"] = acq / vat
         row["ads"] = ads / vat
-        row["other"] = (articles["other"] + articles["external_promo"] - acq) / vat
+        row["reviews"] = sum(reviews_in.values(), Z) / vat
+        row["reviews_in_subscription"] = reviews_in["subscription"] / vat      # для сложения площадок: там отзывы внутри статей расходов по SKU
+        row["reviews_in_other"] = (reviews_in["other"] + reviews_in["external_promo"]) / vat
+        row["other"] = (articles["other"] + articles["external_promo"] - reviews_in["other"] - reviews_in["external_promo"] - acq) / vat
         row["compensations"] = comp / vat
         # у владельца в «Рекламе» — вся статья подписки (51, 52, 74), не только Premium: 2026-09-20 разница ровно 24 990,00 / 1,22
         row["ads_like_manual"] = (ads + articles["subscription"] + ts.get(REVIEWS_TYPE, Z)) / vat
         row["log_other_like_manual"] = (articles["logistics"] + articles["other"] - acq - ts.get(REVIEWS_TYPE, Z)) / vat
-        row["fin_result"] = row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["other"]
+        row["fin_result"] = row["margin"] - row["logistics"] - row["acquiring"] - row["subscription"] - row["ads"] - row["reviews"] - row["other"]
         row["fin_result_with_comp"] = row["fin_result"] + row["compensations"]
         row["overhead"] = overhead_for(d)
         row["ebitda"] = None if row["overhead"] is None else row["fin_result"] - row["overhead"]
@@ -282,7 +300,7 @@ def build_daily(days, buyouts, expenses, types_by_day, unit_cost, today):
     return rows, dict(unknown)
 
 
-MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "other",
+MONEY = ["turnover", "commission", "revenue", "cogs", "margin", "logistics", "acquiring", "subscription", "ads", "reviews", "reviews_in_subscription", "reviews_in_other", "other",
          "fin_result", "compensations", "fin_result_with_comp", "overhead", "ebitda", "ebitda_with_comp",
          "cogs_snapshot", "margin_snapshot", "fin_result_snapshot", "ebitda_snapshot",
          "ads_like_manual", "log_other_like_manual", "positions", "units", "coinvest"]
@@ -295,6 +313,7 @@ def add_ratios(row):
     row["logistics_pct"] = ratio(row["logistics"], rev)
     row["acquiring_pct"] = None if row.get("acquiring") is None else ratio(row["acquiring"], rev)
     row["drr_pct"] = drr(row.get("ads"), rev)
+    row["drr_reviews_pct"] = drr_with_reviews(row.get("ads"), row.get("reviews"), rev)
     row["drr_ozon_pct"] = drr_ozon_method(row.get("ads"), row["turnover"])
     row["fin_result_pct"] = None if row.get("fin_result") is None else ratio(row["fin_result"], rev)
     row["fin_result_with_comp_pct"] = None if row.get("fin_result_with_comp") is None else ratio(row["fin_result_with_comp"], rev)
@@ -422,9 +441,11 @@ def platform_addition(total, platform_totals):
     out = [(title, s(k), total[k], "те же строки выкупов — обязана быть 0,00") for title, k in exact]
     same_source = "площадки — marketplace_expenses по SKU, общий лист — типы начислений; разница = строки, застрявшие в расходах (upsert не удаляет)"
     out.append(("Логистика", s("logistics"), total["logistics"], same_source))
-    out.append(("Подписка", s("subscription"), total["subscription"], same_source))
-    both = None if total.get("acquiring") is None else total["other"] + total["acquiring"]
-    out.append(("Прочее + Эквайринг", s("other_with_acq"), both, same_source + "; по площадкам эквайринг от прочего не отделён — леджер без SKU"))
+    # «Отзывы» (95 + 96) по площадкам не выделены — в расходах по SKU они внутри подписки (95) и прочего (96): к общему листу их добавляем назад
+    rev_sub, rev_other = total.get("reviews_in_subscription"), total.get("reviews_in_other")
+    out.append(("Подписка (+ отзывы 95)", s("subscription"), None if rev_sub is None else total["subscription"] + rev_sub, same_source))
+    both = None if total.get("acquiring") is None or rev_other is None else total["other"] + total["acquiring"] + rev_other
+    out.append(("Прочее + Эквайринг (+ отзывы 96)", s("other_with_acq"), both, same_source + "; по площадкам эквайринг от прочего не отделён — леджер без SKU"))
     out.append(("Реклама", s("ads_perf"), total.get("ads"), "площадки — Performance по SKU, общий лист — начисления 41 + 54: источники разные по решению 5, разница названа на листе «По SKU»"))
     return [(title, a, b, None if b is None else q(a - b), why) for title, a, b, why in out]
 
@@ -600,7 +621,8 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
     cols = [("Дата реализации", "date", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС), руб.", "commission", money), ("Комиссия, %", "commission_pct", pct),
             ("Выручка, руб.", "revenue", money), ("Себестоимость, руб.", "cogs", money), ("Маржа, руб.", "margin", money), ("Мар-ть, %", "margin_pct", pct),
             ("Логистика, руб.", "logistics", money), ("% Логистики", "logistics_pct", pct), ("Эквайринг, руб.", "acquiring", money), ("% Эквайринга", "acquiring_pct", pct),
-            ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("% ДРР (от выручки)", "drr_pct", pct),
+            ("Подписка, руб.", "subscription", money), ("Реклама, руб.", "ads", money), ("Отзывы, руб.", "reviews", money),
+            ("% ДРР (реклама + отзывы), от выручки", "drr_reviews_pct", pct), ("справочно: % ДРР (только реклама)", "drr_pct", pct),
             ("справочно: ДРР по методике Ozon (реклама без НДС / оборот с НДС)", "drr_ozon_pct", pct),
             ("справочно: Реклама за счёт бонусов Ozon (не расход), руб.", "ads_bonus", money), ("Прочее, руб.", "other", money),
             ("Фин. рез., руб.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct),
@@ -1614,7 +1636,9 @@ def main():
              "Компенсации Ozon (типы 25 и 10) — отдельной строкой дохода, в расходы не входят; «Фин. рез. с компенсациями» сопоставим с «Фин. рез.» ручного листа.",
              "Реклама = начисления 41 + 54. «Реклама по образцу» = (41 + 54 + 96 + вся статья подписки: 51, 52, 74) / НДС — так считает ручной лист. "
              "«Логистика + Прочее по образцу» = (логистика + прочее − тип 1 − тип 96) / НДС.",
-             "«% ДРР» = Реклама / Выручка, обе без НДС (выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29, та же, что Z сводной «Фин рез»; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
+             "«Отзывы» = типы 95 «Отзывы за баллы» + 96 «Ускоренный сбор отзывов» / НДС — своя статья (слово владельца 2026-10-25), из «Подписки» (95) и «Прочего» (96) убраны; "
+             "фин. рез. тот же. «% ДРР (реклама + отзывы)» = (Реклама + Отзывы) / Выручка; справочно «% ДРР (только реклама)» = Реклама / Выручка, обе без НДС "
+             "(выручка = (оборот − комиссия) / НДС) — база владельца с 2026-09-29; «ДРР по методике Ozon» = Реклама без НДС / Оборот с НДС до комиссии — так Ozon считает долю рекламы для порога соинвеста, справочно.",
              overhead_note(days),
              cost_rate_note(days, args.snapshot, getattr(unit_cost, "history", None)),
              "Граница свёртки типов начислений — 24.08.2026: с 25.08 расходы лежат по справочнику владельца (типы 16, 17, 45, 62, 78, 82 — прочее; "
@@ -1658,6 +1682,7 @@ def main():
     print(f"\nитого: оборот {total['turnover']:,.2f}, комиссия {total['commission']:,.2f}, выручка {total['revenue']:,.2f}, СС {total['cogs']:,.2f}, маржа {total['margin']:,.2f}")
     if total["fin_result"] is not None:
         print(f"       логистика {total['logistics']:,.2f}, эквайринг {total['acquiring']:,.2f}, подписка {total['subscription']:,.2f}, реклама {total['ads']:,.2f}, "
+              f"отзывы (95 + 96) {total['reviews']:,.2f}, ДРР (реклама + отзывы) {pct_or_dash(total['drr_reviews_pct'])} / только реклама {pct_or_dash(total['drr_pct'])}, "
               f"прочее {total['other']:,.2f}, фин. рез. {total['fin_result']:,.2f}"
               + (f", накладные {total['overhead']:,.2f}, Ebitda {total['ebitda']:,.2f}" if total.get("ebitda") is not None else ", Ebitda — (накладные не заданы)")
               + (f"; по снимку без курса: СС {total['cogs_snapshot']:,.2f}, фин. рез. {total['fin_result_snapshot']:,.2f}" if total.get("fin_result_snapshot") is not None else ""))

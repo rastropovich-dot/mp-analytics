@@ -7,7 +7,7 @@ from supabase import create_client
 
 from decimal import Decimal
 
-from loaders import keyset, stale_keys
+from loaders import keyset, net_retry, stale_keys
 from loaders import wb_ads_allocation as alloc
 from loaders import wb_buyout_cohort as cohort
 from loaders import wb_money_rules as rules
@@ -149,11 +149,49 @@ def load_expenses():
 PLACEMENT_TABLE = "ozon_placement_by_product_daily"
 
 
+PLACEMENT_SELECT = "day,sku,warehouse,amount,offer_id"
+
+
+def read_placement_by_day(sb=None, page=PAGE_SIZE):
+    """Хранение Ozon по дням: на каждый день — запрос `day = D` (индекс первичного ключа day, sku, warehouse) и страницы внутри
+    дня по (sku, warehouse); каждая страница через net_retry.
+
+    Было (52-я … 56-я): read_all_by_key по всей таблице со смещением. После истории хранения 25.10 (апрель … июнь, +648 032 строки,
+    всего 679 919) глубокие страницы со смещением до ~679 000 упирались в statement_timeout 8 с (57014, ночь 26.10, 02:34:41 UTC) —
+    витрина собралась без хранения Ozon. Внутри дня строк ≤ ~7 000, смещение не глубже 7 страниц.
+    """
+    from datetime import date as _date
+    sb = sb or supabase
+    first = net_retry.execute(sb.table(PLACEMENT_TABLE).select("day").order("day").limit(1), f"{PLACEMENT_TABLE} первый день").data or []
+    if not first:
+        return []
+    last = net_retry.execute(sb.table(PLACEMENT_TABLE).select("day").order("day", desc=True).limit(1), f"{PLACEMENT_TABLE} последний день").data
+    day, end = _date.fromisoformat(str(first[0]["day"])[:10]), _date.fromisoformat(str(last[0]["day"])[:10])
+    rows, seen = [], set()
+    while day <= end:
+        start = 0
+        while True:
+            qb = (sb.table(PLACEMENT_TABLE).select(PLACEMENT_SELECT).eq("day", day.isoformat())
+                  .order("sku").order("warehouse").range(start, start + page - 1))
+            data = net_retry.execute(qb, f"{PLACEMENT_TABLE} {day} страница {start // page}").data or []
+            for r in data:
+                key = (str(r["day"])[:10], r["sku"], r["warehouse"])
+                if key in seen:
+                    raise RuntimeError(f"{PLACEMENT_TABLE}: повтор ключа {key} в чтении по дням — страницы съехали")
+                seen.add(key)
+            rows.extend(data)
+            if len(data) < page:
+                break
+            start += page
+        day += timedelta(days=1)
+    return rows
+
+
 def load_placement():
     """Хранение Ozon по товарам (52-я): строки (day, sku, warehouse) с amount со знаком леджера; таблицы нет или не прочиталась —
     источник помечается непрочитанным (чистка витрины не удаляет), колонка остаётся 0."""
     try:
-        rows = read_all_by_key(PLACEMENT_TABLE, ["day", "sku", "warehouse"])
+        rows = read_placement_by_day()
     except Exception as exc:  # noqa: BLE001
         SOURCE_READ_FAILURES.append(PLACEMENT_TABLE)
         print(f"⚠️ {PLACEMENT_TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost витрины за этот прогон не считается")
@@ -548,18 +586,59 @@ def build_kpi(wb_cohort=None, with_source=False):
     return rows
 
 
-def save_kpi(rows):
+# Источник не прочитан → его колонку у строк его площадки в upsert не слать: витрина сохраняет прежнее значение, а не пишет 0.
+# 26.10 хранение Ozon не прочиталось (57014), и upsert перезаписал storage_cost нулём у всех строк Ozon (ВБ 2: 20 … 24.10 меньше на
+# 4,40 … 13,25 ₽ в день, 25.10 — 0 из 266,88). Органика сюда не входит: от неё зависят производные доли, и она выключена.
+SOURCE_COLUMNS = {
+    PLACEMENT_TABLE: ("ozon", ("storage_cost",)),
+    WB_STORAGE_VIEW: ("wb", ("storage_cost",)),
+    WB_ADS_TABLE: ("wb", ("ad_spend",)),
+    WB_REPORT_TABLE: ("wb", ("other_expenses_amount",)),
+}
+
+
+def columns_to_keep(failures):
+    """{площадка: колонки, которые не слать} по непрочитанным источникам."""
+    keep = defaultdict(set)
+    for source in failures or ():
+        if source in SOURCE_COLUMNS:
+            marketplace, columns = SOURCE_COLUMNS[source]
+            keep[marketplace].update(columns)
+    return keep
+
+
+def upsert_batches(rows, failures=None, size=500):
+    """Пачки для upsert: строки без колонок непрочитанных источников; в пачке у всех строк одинаковый набор полей (PostgREST
+    требует одинаковые ключи в массовой вставке). → [(список строк, набор опущенных колонок)]."""
+    keep = columns_to_keep(failures)
+    groups = defaultdict(list)
+    for row in rows:
+        omit = keep.get(str(row.get("marketplace_code")), set()) & set(row)
+        out = {k: v for k, v in row.items() if k not in omit} if omit else row
+        groups[tuple(sorted(out))].append(out)
+    batches = []
+    for _fields, group in groups.items():
+        omitted = keep.get(str(group[0].get("marketplace_code")), set()) - set(group[0])
+        for i in range(0, len(group), size):
+            batches.append((group[i:i + size], omitted))
+    return batches
+
+
+def save_kpi(rows, failures=None):
     if not rows:
         print("Нет KPI для записи")
         return
-
-    for i in range(0, len(rows), 500):
-        batch = rows[i:i + 500]
+    failures = SOURCE_READ_FAILURES if failures is None else failures
+    kept = defaultdict(int)
+    for batch, omitted in upsert_batches(rows, failures):
         supabase.table("daily_sku_kpi").upsert(
             batch,
             on_conflict="kpi_date,marketplace_code,marketplace_sku"
         ).execute()
-
+        for column in omitted:
+            kept[column] += len(batch)
+    for column, n in sorted(kept.items()):
+        print(f"⚠️ {column}: у {n} строк не отправлена — источник не прочитан, в витрине осталось прежнее значение")
     print(f"✅ daily_sku_kpi обновлена: {len(rows)} строк")
 
 

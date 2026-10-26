@@ -155,7 +155,7 @@ class KpiTests(unittest.TestCase):
         self.assertEqual(kpi.empty_kpi_row("2026-10-20", "ozon", "1")["storage_cost"], 0)
 
     def test_unreadable_placement_table_marks_the_source_and_yields_no_rows(self):
-        with mock.patch.object(kpi, "read_all_by_key", side_effect=RuntimeError("PGRST205 нет таблицы")), mock.patch("builtins.print"):
+        with mock.patch.object(kpi, "read_placement_by_day", side_effect=RuntimeError("PGRST205 нет таблицы")), mock.patch("builtins.print"):
             before = len(kpi.SOURCE_READ_FAILURES)
             self.assertEqual(kpi.load_placement(), [])
             self.assertEqual(kpi.SOURCE_READ_FAILURES[before:], [kpi.PLACEMENT_TABLE])

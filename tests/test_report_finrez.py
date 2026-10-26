@@ -313,7 +313,7 @@ class CoefBySku(unittest.TestCase):
     def test_thresholds_and_fallback(self):
         coef = fr.coefficients(self.orders(), self.buyouts(), DAYS, by_sku=self.BY)
         self.assertEqual(coef["buyout_sku"], {"11": D("0.8")})               # 22 — 5 шт < 20; 33 — дни моложе 21 суток не в счёт
-        self.assertEqual(coef["commission_sku"], {"11": D("0.4")})           # 22 — 3 выкупленных шт < 10
+        self.assertEqual(coef["commission_sku"], {("сен", "11"): D("0.4")})  # по месяцу; 22 — 3 выкупленных шт < 10
         self.assertEqual(coef["buyout"]["все"], D(850) / D(1100))            # кабинет — как прежде (только зрелые)
         self.assertEqual(fr.sku_coef(coef["buyout_sku"], "11", D("0.5")), (D("0.8"), fr.COEF_SKU))
         self.assertEqual(fr.sku_coef(coef["buyout_sku"], "22", D("0.5")), (D("0.5"), fr.COEF_CABINET))
@@ -325,12 +325,12 @@ class CoefBySku(unittest.TestCase):
                   {"nm_id": 5, "mature": True, "sold_sum": "100", "created_sum": "200", "created_qty": 10},
                   {"nm_id": 5, "mature": False, "sold_sum": "0", "created_sum": "5000", "created_qty": 90},
                   {"nm_id": 6, "mature": True, "sold_sum": "10", "created_sum": "20", "created_qty": 3}]
-        rows = [{"nm_id": 5, "sales": "1000", "commission": "430", "qty": 11}, {"nm_id": 6, "sales": "500", "commission": "200", "qty": 2},
-                {"nm_id": None, "sales": "1", "commission": "1", "qty": 99}]
+        rows = [{"month": "сен", "nm_id": 5, "sales": "1000", "commission": "430", "qty": 11}, {"month": "сен", "nm_id": 6, "sales": "500", "commission": "200", "qty": 2},
+                {"month": "окт", "nm_id": 5, "sales": "100", "commission": "50", "qty": 1}, {"month": "сен", "nm_id": None, "sales": "1", "commission": "1", "qty": 99}]
         out = fr.wb_sku_coefficients(rows, cohort, self.BY)
         self.assertEqual(out["buyout_sku"], {"5": D(800) / D(1200)})          # незрелый день не входит; 6 — 3 шт
-        self.assertEqual(out["commission_sku"], {"5": D("0.43")})
-        self.assertEqual(out["sku_tested"], {"buyout": 2, "commission": 2})
+        self.assertEqual(out["commission_sku"], {("сен", "5"): D("0.43")})   # октябрь — 1 шт < 10, по кабинету
+        self.assertEqual(out["sku_tested"], {"buyout": 2, "commission": 3})
 
 
 class CoefBySkuRows(unittest.TestCase):
@@ -340,7 +340,7 @@ class CoefBySkuRows(unittest.TestCase):
         days = ["2026-08-01", "2026-09-01"]
         coef = fr.coefficients(rows, [], days)
         coef["commission"] = {"сен": D("0.4"), "авг": D("0.4"), "все": D("0.4")}
-        coef["buyout_sku"], coef["commission_sku"] = {"11": D("0.9")}, {"11": D("0.5")}
+        coef["buyout_sku"], coef["commission_sku"] = {"11": D("0.9")}, {("сен", "11"): D("0.5")}
         with mock.patch.object(fr, "COEF_BY_SKU", {"min_orders": 1, "min_buyout_units": 1}):
             data, stats = fr.build_order_data_rows(rows, None, coef, days)
         r11 = next(x for x in data if x["date"] == "2026-09-01" and x["sku"] == "11")

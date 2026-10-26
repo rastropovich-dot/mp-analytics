@@ -673,8 +673,9 @@ def build_order_rows(days, order_rows, kpi_rows, daily_rows, unit_cost, sku2art,
 def coefficients(order_rows_data, buyout_rows, days, by_sku=None):
     """Наши коэффициенты: выкуп (подтверждённые / созданные ₽ по дозревшим дням, по площадке и все) и комиссия по месяцам (из выкупов).
     by_sku ({"min_orders", "min_buyout_units"}, профиль BOOK_COEF_BY_SKU) — ещё по SKU: выкуп SKU = подтверждённые / созданные ₽ его дозревших
-    дней, если заказов там не меньше min_orders шт; комиссия SKU = Σ комиссии / Σ оборота его выкупов за окно, если выкуплено не меньше
-    min_buyout_units шт. SKU без порога в словари не входит — строки берут коэффициент кабинета."""
+    дней, если заказов там не меньше min_orders шт; комиссия (месяц, SKU) = Σ комиссии / Σ оборота его выкупов за МЕСЯЦ, если выкуплено в нём
+    не меньше min_buyout_units шт — по месяцу, как кабинетная: комиссия Ozon менялась между месяцами (rbh1: август 42 %, сентябрь — октябрь 51 %),
+    и ставка за всё окно переносила бы поздние тарифы на ранние дни. Ключ без порога в словари не входит — строки берут коэффициент кабинета."""
     conf, created = defaultdict(Decimal), defaultdict(Decimal)
     for r in order_rows_data:
         if r["age"] >= MATURE_AGE and r["sku"] != NO_SKU:
@@ -696,15 +697,16 @@ def coefficients(order_rows_data, buyout_rows, days, by_sku=None):
         c = defaultdict(lambda: [Z, Z, Z])
         for r in buyout_rows:
             if r["sku"] != NO_SKU:
-                x = c[r["sku"]]; x[0] += r["turnover"]; x[1] += -r["commission"]; x[2] += D(r["units"])
-        out["commission_sku"] = {sku: x[1] / x[0] for sku, x in c.items() if x[2] >= by_sku["min_buyout_units"] and x[0] > 0}
+                x = c[(r["month"], r["sku"])]; x[0] += r["turnover"]; x[1] += -r["commission"]; x[2] += D(r["units"])
+        out["commission_sku"] = {key: x[1] / x[0] for key, x in c.items() if x[2] >= by_sku["min_buyout_units"] and x[0] > 0}
         out["sku_tested"] = {"buyout": len(b), "commission": len(c)}
     return out
 
 
-def sku_coef(table, sku, fallback):
-    """Коэффициент строки: свой у SKU, если он есть в table (порог пройден), иначе fallback кабинета; (значение, источник)."""
-    v = table.get(str(sku or "")) if table else None
+def sku_coef(table, key, fallback):
+    """Коэффициент строки: свой у ключа (SKU или (месяц, SKU)), если он есть в table (порог пройден), иначе fallback кабинета; (значение, источник)."""
+    key = tuple(str(k or "") for k in key) if isinstance(key, tuple) else str(key or "")
+    v = table.get(key) if table else None
     return (v, COEF_SKU) if v is not None else (fallback, COEF_CABINET)
 
 
@@ -911,7 +913,8 @@ def _build_wb_parts_once(month_from, month_to, date_to, d1, d2, days):
 def wb_sku_coefficients(rows, cohort, by_sku):
     """WB по nmId (решение владельца 25.10): выкуп = Σ продаж / Σ заказов ₽ когорты дня заказа (wb_buyout_cohort_sku_daily) по ЗРЕЛЫМ дням —
     то же определение, что у итога модуля, — если заказов там не меньше min_orders шт; комиссия = Σ комиссии / Σ продаж строк «Данных WB выкупы»
-    окна, если продано не меньше min_buyout_units шт. Ключ — nmId строкой (как sku строк заказов). Возвращает buyout_sku, commission_sku, sku_tested."""
+    МЕСЯЦА, если продано в нём не меньше min_buyout_units шт (ключ (месяц, nmId), как у Ozon). Ключ — nmId строкой (как sku строк заказов).
+    Возвращает buyout_sku, commission_sku, sku_tested."""
     b = defaultdict(lambda: [Z, Z, Z])
     for r in cohort:
         if r.get("mature"):
@@ -920,7 +923,7 @@ def wb_sku_coefficients(rows, cohort, by_sku):
     for r in rows:
         if r.get("nm_id") is None or r.get("commission") is None or r.get("sales") is None:
             continue
-        x = c[str(r["nm_id"])]; x[0] += D(r["sales"]); x[1] += D(r["commission"]); x[2] += D(r.get("qty"))
+        x = c[(r["month"], str(r["nm_id"]))]; x[0] += D(r["sales"]); x[1] += D(r["commission"]); x[2] += D(r.get("qty"))
     return {"buyout_sku": {k: x[0] / x[1] for k, x in b.items() if x[2] >= by_sku["min_orders"] and x[1] > 0},
             "commission_sku": {k: x[1] / x[0] for k, x in c.items() if x[2] >= by_sku["min_buyout_units"] and x[0] > 0},
             "sku_tested": {"buyout": len(b), "commission": len(c)}}
@@ -1205,7 +1208,7 @@ def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
         return row
 
     for r in order_rows:
-        comm, c_src = sku_coef(coef.get("commission_sku"), r["sku"], order_commission(coef, r["date"]))
+        comm, c_src = sku_coef(coef.get("commission_sku"), (month_label(r["date"]), r["sku"]), order_commission(coef, r["date"]))
         bo, b_src = sku_coef(coef.get("buyout_sku"), r["sku"], buyout_all)
         keep(with_source(order_data_row(r, comm, comm_all, bo, "Ozon", SHOP, fill=fill_for("Ozon", r["date"])), b_src, c_src), "Ozon")
     if wb_parts and not wb_parts.get("error"):
@@ -1217,7 +1220,7 @@ def build_order_data_rows(order_rows, wb_parts, coef, days, shares=None):
             if r["cogs_created"] is None:
                 stats["wb_rows_without_cost"] += 1
             ads_in_rows[r["date"]] += r["ads"] or Z
-            comm, c_src = sku_coef(wb_parts.get("commission_sku"), r["sku"], wb_comm)
+            comm, c_src = sku_coef(wb_parts.get("commission_sku"), (month_label(r["date"]), r["sku"]), wb_comm)
             bo, b_src = sku_coef(wb_parts.get("buyout_sku"), r["sku"], wb_buyout)
             keep(with_source(order_data_row(r, comm, wb_comm, bo, "WB", wbfin.SHOP, fill=fill_for("WB", r["date"])), b_src, c_src), "WB")
         for d in days:
@@ -1707,8 +1710,8 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     if COEF_BY_SKU:
         # РБХ (решение владельца 25.10): строки «Данных заказы» берут % выкупа и комиссию своего SKU, где данных хватает, иначе — кабинета
         r += 1
-        for j, h in enumerate(["По SKU (порог: выкуп — от {min_orders} заказов шт на зрелых днях, комиссия — от {min_buyout_units} выкупленных шт за окно)".format(**COEF_BY_SKU),
-                               "SKU со своим", "SKU проверено", "доля созданного ₽ на своём (строки «Данных заказы»)"], 1):
+        for j, h in enumerate(["По SKU (порог: выкуп — от {min_orders} заказов шт на зрелых днях окна, комиссия — от {min_buyout_units} выкупленных шт в месяце)".format(**COEF_BY_SKU),
+                               "ключей со своим (выкуп — SKU, комиссия — месяц × SKU)", "ключей проверено", "доля созданного ₽ на своём (строки «Данных заказы»)"], 1):
             g.set(r, j, h, bold=True, fill=True)
         r += 1
         cov = {mp_: coef_coverage(order_data_rows or [], mp_) for mp_ in ("Ozon", "WB")}
@@ -1884,7 +1887,7 @@ def main(argv=None):
               "category": pivot_buyouts(buyout_rows, days, lambda r: r["category"])}
     phase("выкупы: длинные строки из сырья и сводные")
     order_data, ostats = build_order_rows(days, order_rows, kpi, daily_rows, unit_cost, sku2art, catalog, names, today)
-    coef = coefficients(order_data, buyout_rows, days)
+    coef = coefficients(order_data, buyout_rows, days, by_sku=COEF_BY_SKU)
     phase("заказы Ozon: строки, коэффициенты")
     residual_note = "; ".join(f"{OWNER_ARTICLE[k]} — дней {bstats.get(f'residual_{k}_days', 0)}, Σ {bstats.get(f'residual_{k}_sum', Z):,.2f}"
                               for k in WIDE_KEYS if bstats.get(f"residual_{k}_days"))

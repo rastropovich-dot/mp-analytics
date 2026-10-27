@@ -4829,6 +4829,9 @@ def aggregate_rows(rows):
         if not grouped[key].get("article") and row.get("article"):
             grouped[key]["article"] = row.get("article")
 
+    # до копейки при записи: сумма float по строкам отчёта давала хвосты (9 674,919999999993 — RBH 27.10, п. 2 (г)); история не переписывается
+    for item in grouped.values():
+        item["expense_amount"] = round(item["expense_amount"], 2)
     return list(grouped.values())
 
 

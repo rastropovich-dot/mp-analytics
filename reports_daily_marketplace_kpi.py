@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client
 
+from loaders import peak_memory
 from loaders import wb_buyout_cohort as cohort
 from reports_daily_sku_kpi import buyout_rate, created_orders_qty, read_all_by_id
 
@@ -175,3 +176,4 @@ def save_marketplace_kpi(rows):
 if __name__ == "__main__":
     rows = build_marketplace_kpi(with_source=cohort.table_has_column(supabase, "daily_marketplace_kpi", "buyout_rate_source"))
     save_marketplace_kpi(rows)
+    print(peak_memory.line("KPI: расчет маркетплейсов"))

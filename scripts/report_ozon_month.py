@@ -732,7 +732,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         wsg["A1"] = "Выкупы Ozon по группам единых категорий РБХ (итог окна листа)"; wsg["A1"].font = bold
         gcols = [("Группа", "name", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money),
                  ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct), ("Логистика", "logistics", money),
-                 ("Подписка", "subscription", money), ("Реклама (Performance)", "ads_perf", money), ("Отзывы", "reviews", money), ("% ДРР (реклама + отзывы)", "drr_pct", pct),
+                 ("Подписка", "subscription", money), ("Реклама (Performance)", "ads_perf", money), ("% ДРР (от выручки)", "drr_pct", pct),
                  ("Прочее с эквайрингом", "other_with_acq", money), ("Фин. рез.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), ("Позиций", "positions", "#,##0")]
         for j, (head, _k, _f) in enumerate(gcols, 1):
             c = wsg.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
@@ -742,7 +742,7 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         for k in PLATFORM_MONEY:
             gsum[k] = sum((r[k] for r in grows), Z)
         gsum["margin_pct"], gsum["fin_result_pct"] = ratio(gsum["margin"], gsum["revenue"]), ratio(gsum["fin_result"], gsum["revenue"])
-        gsum["drr_pct"] = drr_with_reviews(gsum["ads_perf"], gsum["reviews"], gsum["revenue"])
+        gsum["drr_pct"] = drr(gsum["ads_perf"], gsum["revenue"])
         for i, r in enumerate(grows + [gsum], 4):
             for j, (_h, k, fmt) in enumerate(gcols, 1):
                 v = r.get(k)

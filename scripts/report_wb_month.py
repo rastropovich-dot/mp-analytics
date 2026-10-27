@@ -195,6 +195,8 @@ def cost_bases(vendor_codes):
         code = str(code or "").strip().lower()
         if code:
             out.add(code.split("-", 1)[0])
+            if nosuffix_digits(code):                       # ступень nosuffix_digits: строку прайса без хвоста тоже читаем
+                out.add(nosuffix_digits(code).split("-", 1)[0])
     return out
 
 
@@ -248,9 +250,19 @@ def load_costs_for(sb, vendor_codes, snapshot=SNAP, batch=COST_BATCH, page=1000,
 # (unit_cost_history: ≤ D, иначе ближайший более поздний, после последнего — последний).
 
 SIZE_SEGMENT = re.compile(r"^\d+(,\d+)?$")
-COST_STEPS = ("exact", "size", "size_nosuffix", "uniform_id", "uniform_base", "none")
+COST_STEPS = ("exact", "size", "size_nosuffix", "uniform_id", "uniform_base", "nosuffix_digits", "none")
 COST_STEP_TEXT = {"exact": "точная строка", "size": "строка по размеру", "size_nosuffix": "строка по размеру без суффикса",
-                  "uniform_id": "«единая» по идентификатору", "uniform_base": "«единая» по базе", "none": "нет"}
+                  "uniform_id": "«единая» по идентификатору", "uniform_base": "«единая» по базе",
+                  "nosuffix_digits": "точная строка без хвоста «_цифры»", "none": "нет"}
+# Хвост «_<цифры>» артикула WB (РБХ-1: мочалки 71862 … 71865_16333 — та же позиция прайса без хвоста; «догнать KARATOV» п. 2, 26.10):
+# последняя ступень лестницы — только если ни одна прежняя не нашла, поэтому СС может лишь добавиться, не смениться.
+NOSUFFIX_DIGITS_RE = re.compile(r"_\d+$")
+
+
+def nosuffix_digits(code):
+    """Код без хвоста «_<цифры>» или None, если хвоста нет."""
+    stripped = NOSUFFIX_DIGITS_RE.sub("", code)
+    return stripped if stripped and stripped != code else None
 
 
 def wb_size_key(code, size, keep_suffix=True):
@@ -303,6 +315,8 @@ class WbCostHistory:
         if size and size != "0":
             ladder += [("size", self.exact, wb_size_key(code, size)), ("size_nosuffix", self.exact, wb_size_key(code, size, keep_suffix=False))]
         ladder += [("uniform_id", self.uniform_id, code), ("uniform_base", self.uniform_base, base)]
+        if nosuffix_digits(code):
+            ladder += [("nosuffix_digits", self.exact, nosuffix_digits(code))]
         for step, hist, key in ladder:
             adjusted, base_cost, d, kind, info = hist.lookup_by_rate(key, day)
             if adjusted is not None:

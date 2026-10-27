@@ -110,6 +110,36 @@ def read_all_by_id(table, columns="*"):
     return rows
 
 
+def iter_by_id(table, columns="*"):
+    """Та же таблица страницами по id, но строка за строкой: в памяти — одна страница (59-я, запас памяти шагов витрины).
+    Повтор id невозможен при id > последнего; если страница пришла не по возрастанию — чтение сломано, RuntimeError."""
+    last_id = None
+    while True:
+        query = supabase.table(table).select(columns).order("id").limit(PAGE_SIZE)
+        if last_id is not None:
+            query = query.gt("id", last_id)
+        page = query.execute().data or []
+        for row in page:
+            if last_id is not None and row["id"] <= last_id:
+                raise RuntimeError(f"{table}: id {row['id']} после {last_id} в постраничном чтении — повтор или беспорядок")
+            last_id = row["id"]
+            yield row
+        if len(page) < PAGE_SIZE:
+            return
+
+
+def read_period_by_id(table, date_col, columns, day_from, day_to):
+    """Строки date_col ∈ [day_from, day_to] — страницами по индексу (дата, …) через keyset (дата, id), затем по id: тот же
+    порядок, что у read_all_by_id, отфильтрованный по датам, поэтому суммы по ключу витрины складываются в том же порядке
+    и совпадают с целым прогоном до бита (59-я, сборка по месяцам)."""
+    rows = keyset.read_keyset(supabase, table, columns, day_from, day_to, day_col=date_col, id_col="id")
+    rows.sort(key=lambda r: r["id"])
+    ids = [row["id"] for row in rows]
+    if len(set(ids)) != len(ids):
+        raise RuntimeError(f"{table}: {len(ids) - len(set(ids))} повторов id в чтении {day_from} … {day_to}")
+    return rows
+
+
 def read_all_by_key(table, key_columns):
     """Таблица без id: range() с сортировкой по ПОЛНОМУ первичному ключу — порядок однозначен."""
     rows, start = [], 0
@@ -128,22 +158,32 @@ def read_all_by_key(table, key_columns):
     return rows
 
 
-def load_orders():
-    all_rows = read_all_by_id("marketplace_orders")
-    print(f"Загружено заказов: {len(all_rows)}")
+# 59-я: только колонки, которые витрина читает (было select * — у заказов 15 колонок, у выкупов 16)
+ORDERS_COLUMNS = "id,order_date,marketplace_code,marketplace_sku,article,product_name,orders_qty,orders_amount_seller,cancelled_orders_qty"
+BUYOUTS_COLUMNS = "id,buyout_date,marketplace_code,marketplace_sku,article,product_name,buyouts_qty,buyouts_amount_seller"
+EXPENSES_COLUMNS = "id,expense_date,marketplace_code,marketplace_sku,article,expense_type,expense_amount"
+ARTICLE_MAP_COLUMNS = "id,marketplace_code,marketplace_sku,article,product_name,orders_qty,cancelled_orders_qty"
+
+
+def _load(table, date_col, columns, title, day_from=None, day_to=None):
+    if day_from is None:
+        all_rows = read_all_by_id(table, columns)
+    else:
+        all_rows = read_period_by_id(table, date_col, columns, day_from, day_to)
+    print(f"Загружено {title}: {len(all_rows)}")
     return all_rows
 
 
-def load_buyouts():
-    all_rows = read_all_by_id("marketplace_buyouts")
-    print(f"Загружено выкупов: {len(all_rows)}")
-    return all_rows
+def load_orders(day_from=None, day_to=None):
+    return _load("marketplace_orders", "order_date", ORDERS_COLUMNS, "заказов", day_from, day_to)
 
 
-def load_expenses():
-    all_rows = read_all_by_id("marketplace_expenses")
-    print(f"Загружено расходов: {len(all_rows)}")
-    return all_rows
+def load_buyouts(day_from=None, day_to=None):
+    return _load("marketplace_buyouts", "buyout_date", BUYOUTS_COLUMNS, "выкупов", day_from, day_to)
+
+
+def load_expenses(day_from=None, day_to=None):
+    return _load("marketplace_expenses", "expense_date", EXPENSES_COLUMNS, "расходов", day_from, day_to)
 
 
 PLACEMENT_TABLE = "ozon_placement_by_product_daily"
@@ -152,7 +192,7 @@ PLACEMENT_TABLE = "ozon_placement_by_product_daily"
 PLACEMENT_SELECT = "day,sku,warehouse,amount,offer_id"
 
 
-def read_placement_by_day(sb=None, page=PAGE_SIZE, keep=None):
+def read_placement_by_day(sb=None, page=PAGE_SIZE, keep=None, day_from=None, day_to=None):
     """Хранение Ozon по дням, свёрнутое в базе памяти до (день, SKU) на лету: сырые строки по складам живут только в пределах
     одной страницы. → (rows, day_totals, skipped):
         rows        [{day, sku, amount, offer_id}] — Σ по складам со знаком таблицы (списание < 0), только пары, для которых keep(day, sku)
@@ -170,6 +210,8 @@ def read_placement_by_day(sb=None, page=PAGE_SIZE, keep=None):
         return [], {}, [0, Decimal(0)]
     last = net_retry.execute(sb.table(PLACEMENT_TABLE).select("day").order("day", desc=True).limit(1), f"{PLACEMENT_TABLE} последний день").data
     day, end = _date.fromisoformat(str(first[0]["day"])[:10]), _date.fromisoformat(str(last[0]["day"])[:10])
+    if day_from is not None:                   # 59-я: месяц сборки — только его дни
+        day, end = max(day, _date.fromisoformat(day_from)), min(end, _date.fromisoformat(day_to))
     rows, day_totals, skipped = [], {}, [0, Decimal(0)]
     while day <= end:
         d = day.isoformat()
@@ -201,11 +243,11 @@ def read_placement_by_day(sb=None, page=PAGE_SIZE, keep=None):
     return rows, day_totals, skipped
 
 
-def load_placement(keep=None):
+def load_placement(keep=None, day_from=None, day_to=None):
     """Хранение Ozon по товарам (52-я) свёрнутое до (день, SKU) — см. read_placement_by_day; таблицы нет или не прочиталась —
     источник помечается непрочитанным (чистка витрины не удаляет, колонка не уходит в upsert), [] вслух."""
     try:
-        rows, day_totals, skipped = read_placement_by_day(keep=keep)
+        rows, day_totals, skipped = read_placement_by_day(keep=keep, day_from=day_from, day_to=day_to)
     except Exception as exc:  # noqa: BLE001
         SOURCE_READ_FAILURES.append(PLACEMENT_TABLE)
         print(f"⚠️ {PLACEMENT_TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost витрины за этот прогон не считается")
@@ -282,12 +324,15 @@ WB_REPORT_TABLE = "wb_sales_report_rows"               # штрафы с nmId, �
 WB_SOURCES_FROM = "2026-01-01"                         # данные WB в базе — с 2026-02-01; раньше в источниках пусто, страница одна и пустая
 
 
-def load_wb_storage(today=None):
+def load_wb_storage(today=None, day_from=None, day_to=None):
     """[{day, nm_id, warehouse_price, vendor_code}] из вьюхи по (день, nmId): страницы по ключу (day, nm_id) через keyset;
-    с НДС, сторно со знаком минус. Вьюхи нет / не прочиталась → источник помечен, [] вслух."""
-    day_to = (today or date.today()).isoformat()
+    с НДС, сторно со знаком минус. Вьюхи нет / не прочиталась → источник помечен, [] вслух. day_from / day_to — месяц сборки (59-я)."""
+    lo = max(WB_SOURCES_FROM, day_from or WB_SOURCES_FROM)
+    hi = min((today or date.today()).isoformat(), day_to or "9999-12-31")
+    if lo > hi:
+        return []
     try:
-        rows = keyset.read_keyset(supabase, WB_STORAGE_VIEW, "day,nm_id,warehouse_price,vendor_code", WB_SOURCES_FROM, day_to, day_col="day", id_col="nm_id")
+        rows = keyset.read_keyset(supabase, WB_STORAGE_VIEW, "day,nm_id,warehouse_price,vendor_code", lo, hi, day_col="day", id_col="nm_id")
     except Exception as exc:  # noqa: BLE001
         SOURCE_READ_FAILURES.append(WB_STORAGE_VIEW)
         print(f"⚠️ {WB_STORAGE_VIEW} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost WB за этот прогон не считается")
@@ -344,11 +389,29 @@ def load_wb_costs(today=None):
     """Три источника WB одним вызовом (тесты витрины подменяют его): storage — строки вьюхи, ads — {(день, nmId): ₽},
     other — [(день, nmId, ₽, вид)], articles — {nmId: артикул продавца} из таблицы хранения (откат для ключей без заказов)."""
     storage = load_wb_storage(today)
+    return {"storage": storage, "ads": load_wb_ads(today), "other": load_wb_sku_other(today), "articles": wb_articles_of(storage)}
+
+
+def wb_articles_of(storage_rows):
+    """{nmId: артикул продавца} — первый непустой vendor_code в порядке (день, nmId)."""
     articles = {}
-    for r in storage:
+    for r in storage_rows:
         if r.get("vendor_code") and int(r["nm_id"]) not in articles:
             articles[int(r["nm_id"])] = str(r["vendor_code"]).strip()
-    return {"storage": storage, "ads": load_wb_ads(today), "other": load_wb_sku_other(today), "articles": articles}
+    return articles
+
+
+def load_wb_articles(today=None):
+    """Артикулы WB из хранения за всю глубину — для сборки по месяцам (59-я): карта та же, что у целого прогона, хотя хранение
+    читается по месяцу. В памяти — узкие строки (день, nmId, артикул) одного чтения; отказ — как у хранения: источник помечен, {}."""
+    try:
+        rows = keyset.read_keyset(supabase, WB_STORAGE_VIEW, "day,nm_id,vendor_code", WB_SOURCES_FROM, (today or date.today()).isoformat(),
+                                  day_col="day", id_col="nm_id")
+    except Exception as exc:  # noqa: BLE001
+        SOURCE_READ_FAILURES.append(WB_STORAGE_VIEW)
+        print(f"⚠️ {WB_STORAGE_VIEW} (артикулы) не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost WB за этот прогон не считается")
+        return {}
+    return wb_articles_of(rows)
 
 
 def fill_wb_articles(grouped, articles):
@@ -461,12 +524,24 @@ def load_wb_cohort():
         return {}, {}
 
 
-def build_kpi(wb_cohort=None, with_source=False, today=None):
-    orders = load_orders()
-    buyouts = load_buyouts()
-    expenses = load_expenses()
-    ozon_organic = load_ozon_organic()
-    wb_costs = load_wb_costs()
+def build_kpi(wb_cohort=None, with_source=False, today=None, period=None, shared=None):
+    """Строки витрины. Без period — вся история одним куском (как до 59-й; тесты). С period=(день от, день до) и shared из
+    load_shared — один месяц сборки по месяцам: заказы / выкупы / расходы / хранение — только его дни, остальное из shared."""
+    day_from, day_to = period or (None, None)
+    orders = load_orders(day_from, day_to)
+    buyouts = load_buyouts(day_from, day_to)
+    expenses = load_expenses(day_from, day_to)
+    if shared is None:
+        ozon_organic = load_ozon_organic()
+        wb_costs = load_wb_costs()
+    else:
+        def in_period(day):
+            return day_from <= str(day)[:10] <= day_to
+        ozon_organic = [r for r in shared["organic"] if in_period(r["sale_date"])]
+        wb_costs = {"storage": load_wb_storage(today, day_from, day_to),
+                    "ads": {k: v for k, v in shared["wb_ads"].items() if in_period(k[0])},
+                    "other": [r for r in shared["wb_other"] if in_period(r[0])],
+                    "articles": shared["wb_articles"]}
 
     grouped = {}
 
@@ -551,7 +626,7 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
     def keep_storage(day, sku):
         return day >= storage_only_from or (day, "ozon", sku) in grouped
 
-    loaded = load_placement(keep=keep_storage)
+    loaded = load_placement(keep=keep_storage) if period is None else load_placement(keep=keep_storage, day_from=day_from, day_to=day_to)
     if isinstance(loaded, tuple):
         placement, placement_day_totals, _skipped = loaded
     else:                      # тесты и отказ чтения: список строк — фильтр и итоги дня считаются здесь
@@ -569,7 +644,7 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
             grouped[key] = empty_kpi_row(key[0], "ozon", key[2], row.get("offer_id") or "", None)
         grouped[key]["storage_cost"] += -float(row.get("amount") or 0)
     if placement:
-        move_placement_into_sku_logistics(grouped, placement, load_ledger_type46(), day_totals=placement_day_totals)
+        move_placement_into_sku_logistics(grouped, placement, load_ledger_type46() if shared is None else shared["ledger46"], day_totals=placement_day_totals)
 
     # 20-я WB: хранение, реклама и «прочее» по артикулу у WB — с НДС и положительные, как остальные колонки расходов витрины
     wb_new_keys = 0
@@ -624,7 +699,7 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
         if not grouped[key].get("product_name") and row.get("product_name"):
             grouped[key]["product_name"] = row.get("product_name")
 
-    filled = fill_articles(grouped, build_article_map(orders))
+    filled = fill_articles(grouped, build_article_map(orders) if shared is None else shared["article_map"])
     filled_wb = fill_wb_articles(grouped, wb_costs["articles"])
     with_article = sum(1 for row in grouped.values() if str(row.get("article") or "").strip())
     print(f"Артикул: дописан по карте sku → article из заказов у {filled} строк, по артикулу продавца из хранения WB у {filled_wb}; с артикулом {with_article} из {len(grouped)}")
@@ -678,6 +753,74 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
     return rows
 
 
+# ---- 59-я: сборка и запись по календарным месяцам ----
+# Ночь 27.10 Render убил шаг на > 2 ГиБ; после 58-й пик на Mac 1,51 ГБ, из них ≈ 0,9 ГБ — сама витрина (497 тыс. dict) и ≈ 0,4 ГБ —
+# источники целиком. По месяцам в памяти живёт один месяц (крупнейший — май, 17 % строк); числа те же до бита: строки месяца
+# суммируются в том же порядке id, общие источники (карта артикулов, когорта, тип 46, органика, реклама и «прочее» WB, артикулы
+# WB) читаются один раз и режутся по месяцу. Режим не меняется: ночь по-прежнему пересобирает всю историю.
+BOUNDS_TABLES = (("marketplace_orders", "order_date"), ("marketplace_buyouts", "buyout_date"), ("marketplace_expenses", "expense_date"),
+                 ("ozon_daily_sku_organic", "sale_date"), (PLACEMENT_TABLE, "day"))
+
+
+def load_shared(today):
+    """Источники на всю глубину, нужные каждому месяцу: малые или свёрнутые при чтении."""
+    shared = {"wb_cohort": load_wb_cohort(), "ledger46": load_ledger_type46(), "organic": load_ozon_organic(),
+              "article_map": build_article_map(iter_by_id("marketplace_orders", ARTICLE_MAP_COLUMNS)),
+              "wb_ads": load_wb_ads(today), "wb_other": load_wb_sku_other(today), "wb_articles": load_wb_articles(today)}
+    print(f"Общие источники: карта артикулов {len(shared['article_map'])} SKU, органика {len(shared['organic'])} строк, "
+          f"реклама WB {len(shared['wb_ads'])} ключей, «прочее» WB {len(shared['wb_other'])}, артикулы WB {len(shared['wb_articles'])}")
+    return shared
+
+
+def source_bounds(today):
+    """(первый день, последний день) источников витрины: по запросу на конец каждой таблицы (индексы по дате) + WB от
+    WB_SOURCES_FROM до сегодня (так читает целый прогон)."""
+    firsts, lasts = [WB_SOURCES_FROM], [today.isoformat()]
+    for table, col in BOUNDS_TABLES:
+        for desc, out in ((False, firsts), (True, lasts)):
+            data = net_retry.execute(supabase.table(table).select(col).order(col, desc=desc).limit(1), f"{table} {'последний' if desc else 'первый'} день").data
+            if data:
+                out.append(str(data[0][col])[:10])
+    return min(firsts), max(lasts)
+
+
+def month_periods(day_from, day_to):
+    """[(первый день, последний день)] календарных месяцев, накрывающих [day_from, day_to], границы включительно."""
+    out, d, end = [], date.fromisoformat(day_from).replace(day=1), date.fromisoformat(day_to)
+    while d <= end:
+        nxt = (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+        out.append((max(d, date.fromisoformat(day_from)).isoformat(), min(nxt - timedelta(days=1), end).isoformat()))
+        d = nxt
+    return out
+
+
+def build_by_month(with_source=False, today=None, write=True, sink=None):
+    """Витрина по месяцам: собрать месяц → записать (write) / отдать (sink) → забыть. → (строк всего, ключи окна чистки Ozon).
+    Непрочитанный источник месяца не трогает колонку только в своём месяце; отказ общего источника — во всех."""
+    today = today or date.today()
+    shared = load_shared(today)
+    shared_failures = list(SOURCE_READ_FAILURES)
+    lo, hi = source_bounds(today)
+    window_from = (today - timedelta(days=STALE_WINDOW_DAYS)).isoformat()
+    total, window_keys = 0, []
+    for m_from, m_to in month_periods(lo, hi):
+        print(f"— месяц {m_from[:7]} ({m_from} … {m_to})")
+        mark = len(SOURCE_READ_FAILURES)
+        rows = build_kpi(wb_cohort=shared["wb_cohort"], with_source=with_source, today=today, period=(m_from, m_to), shared=shared)
+        if write:
+            save_kpi(rows, failures=shared_failures + SOURCE_READ_FAILURES[mark:], final=False)
+        if sink:
+            sink(rows)
+        total += len(rows)
+        window_keys.extend({"kpi_date": r["kpi_date"], "marketplace_code": r["marketplace_code"], "marketplace_sku": r["marketplace_sku"]}
+                           for r in rows if r["marketplace_code"] == STALE_MARKETPLACE and str(r["kpi_date"]) >= window_from)
+        print(f"  строк месяца {len(rows)}; {peak_memory.line('KPI: расчет SKU')}")
+        del rows
+    if write:
+        print(f"✅ daily_sku_kpi обновлена: {total} строк (по месяцам: {len(month_periods(lo, hi))}, {lo} … {hi})")
+    return total, window_keys
+
+
 # Источник не прочитан → его колонку у строк его площадки в upsert не слать: витрина сохраняет прежнее значение, а не пишет 0.
 # 26.10 хранение Ozon не прочиталось (57014), и upsert перезаписал storage_cost нулём у всех строк Ozon (ВБ 2: 20 … 24.10 меньше на
 # 4,40 … 13,25 ₽ в день, 25.10 — 0 из 266,88). Органика сюда не входит: от неё зависят производные доли, и она выключена.
@@ -716,7 +859,7 @@ def upsert_batches(rows, failures=None, size=500):
     return batches
 
 
-def save_kpi(rows, failures=None):
+def save_kpi(rows, failures=None, final=True):
     if not rows:
         print("Нет KPI для записи")
         return
@@ -731,7 +874,7 @@ def save_kpi(rows, failures=None):
             kept[column] += len(batch)
     for column, n in sorted(kept.items()):
         print(f"⚠️ {column}: у {n} строк не отправлена — источник не прочитан, в витрине осталось прежнее значение")
-    print(f"✅ daily_sku_kpi обновлена: {len(rows)} строк")
+    print(f"✅ daily_sku_kpi обновлена: {len(rows)} строк" if final else f"  записано строк месяца: {len(rows)}")
 
 
 def kpi_key(row):
@@ -782,14 +925,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="собрать витрину и план чистки ключей; в БД не писать ни строки")
     args = ap.parse_args()
-    rows = build_kpi(with_source=cohort.table_has_column(supabase, "daily_sku_kpi", "buyout_rate_source"))
-    print(peak_memory.line("KPI: расчет SKU") + " — после сборки, до записи")
+    total, window_keys = build_by_month(with_source=cohort.table_has_column(supabase, "daily_sku_kpi", "buyout_rate_source"),
+                                        write=not args.dry_run)
     if args.dry_run:
-        print(f"--dry-run: витрина собрана ({len(rows)} строк), не записываю")
-    else:
-        save_kpi(rows)
+        print(f"--dry-run: витрина собрана ({total} строк), не записываю")
     try:
-        cleanup_stale_kpi_keys(rows, apply=not args.dry_run)
+        cleanup_stale_kpi_keys(window_keys, apply=not args.dry_run)
     except Exception as exc:  # витрина уже записана; отказ чистки не должен ронять фатальный шаг KPI
         print(f"⚠️ Чистка ключей витрины не выполнена: {type(exc).__name__}: {exc}")
     if args.dry_run:

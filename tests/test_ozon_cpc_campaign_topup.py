@@ -152,5 +152,49 @@ class NightlyArbiter(unittest.TestCase):
         self.assertIn("записи за эту ночь нет", at.click_arbiter_line({"finished_at": "2026-10-26T01:10:00+00:00", "line": None}, now))
 
 
+class ScopeByAccruals(unittest.TestCase):
+    def test_files_to_ids_and_absent_days(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            json.dump({"date": "2026-10-20", "accruals": [acc41("2026-10-20", "30580019", 10), acc41("2026-10-20", "1", 0)]},
+                      open(os.path.join(d, "2026-10-20.json"), "w"))
+            ids, absent = arb.campaigns_from_accrual_files(d, "2026-10-20", "2026-10-21")
+        self.assertEqual((ids, absent), ({"30580019"}, ["2026-10-21"]))
+
+    def test_selection_takes_stopped_campaign_updated_after_window(self):
+        from loaders import ozon_performance_ads_loader as ads
+        camps = [{"id": "30580019", "state": "CAMPAIGN_STATE_INACTIVE", "PaymentType": "CPC", "updatedAt": "2026-10-27T06:28:23Z", "fromDate": "2026-06-28"},
+                 {"id": "42573900", "state": "CAMPAIGN_STATE_RUNNING", "PaymentType": "CPC"},
+                 {"id": "777", "state": "CAMPAIGN_STATE_INACTIVE", "PaymentType": "CPM"}]
+        recent = [c["id"] for c in ads.filter_cpc_campaigns(camps, "2026-08-23", "2026-10-21", "recent")]
+        self.assertNotIn("30580019", recent)                       # так его потерял O11
+        selected, not_listed = ads.select_cpc_campaigns_by_accruals(camps, {"30580019", "777", "555"})
+        self.assertEqual([c["id"] for c in selected], ["30580019"])
+        self.assertEqual(selected[0]["_cpc_activity_markers"], ["accrual_type41"])
+        self.assertEqual(not_listed, ["555"])
+
+
+class RecoveryIncompleteList(unittest.TestCase):
+    def test_foreign_campaign_on_sku_is_named(self):
+        from loaders import ozon_performance_ads_loader as ads
+
+        class Sb(FakeSb):
+            def in_(self, field, values):
+                self.filters[field] = set(values); return self
+
+            def execute(self):
+                self.data = [r for r in self.attribution if r["sale_date"] == self.filters.get("sale_date")
+                             and r["marketplace_sku"] in self.filters.get("marketplace_sku", set())]
+                return self
+
+        attr = [{"sale_date": "2026-10-08", "marketplace_sku": "863885383", "campaign_id": "42573900", "ad_spend": 1164.65},
+                {"sale_date": "2026-10-08", "marketplace_sku": "863885383", "campaign_id": "30580019", "ad_spend": 0},
+                {"sale_date": "2026-10-08", "marketplace_sku": "1", "campaign_id": "9", "ad_spend": 5}]
+        rows = [{"expense_date": "2026-10-08", "marketplace_sku": "863885383", "expense_amount": 1676.17}]
+        self.assertEqual(ads.foreign_campaigns_on_skus(Sb(attr), "2026-10-08", rows, ["30580019"]), {"863885383": ["42573900"]})
+        self.assertEqual(ads.foreign_campaigns_on_skus(Sb(attr), "2026-10-08", rows, ["30580019", "42573900"]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

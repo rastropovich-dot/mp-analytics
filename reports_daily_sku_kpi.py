@@ -7,7 +7,7 @@ from supabase import create_client
 
 from decimal import Decimal
 
-from loaders import keyset, net_retry, stale_keys
+from loaders import keyset, net_retry, peak_memory, stale_keys
 from loaders import wb_ads_allocation as alloc
 from loaders import wb_buyout_cohort as cohort
 from loaders import wb_money_rules as rules
@@ -783,6 +783,7 @@ if __name__ == "__main__":
     ap.add_argument("--dry-run", action="store_true", help="собрать витрину и план чистки ключей; в БД не писать ни строки")
     args = ap.parse_args()
     rows = build_kpi(with_source=cohort.table_has_column(supabase, "daily_sku_kpi", "buyout_rate_source"))
+    print(peak_memory.line("KPI: расчет SKU") + " — после сборки, до записи")
     if args.dry_run:
         print(f"--dry-run: витрина собрана ({len(rows)} строк), не записываю")
     else:
@@ -793,3 +794,4 @@ if __name__ == "__main__":
         print(f"⚠️ Чистка ключей витрины не выполнена: {type(exc).__name__}: {exc}")
     if args.dry_run:
         print("db_writes = 0")
+    print(peak_memory.line("KPI: расчет SKU"))

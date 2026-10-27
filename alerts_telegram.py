@@ -10,7 +10,7 @@ from supabase import create_client
 
 load_dotenv()
 import cabinet  # noqa: E402
-from loaders import ozon_ad_bonus  # noqa: E402
+from loaders import ozon_ad_bonus, stale_keys  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -307,26 +307,29 @@ def get_ozon_reviews_lines(target_date, sb=None):
             "в «Рекламе» не учтены, входят в «прочие» ниже (витрина не менялась); в ДРР листов — «(реклама + отзывы)»."]
 
 
-def get_ozon_ads_breakdown(expense_date):
-    result = (
-        supabase
-        .table("marketplace_expenses")
-        .select("expense_type,expense_amount")
-        .eq("marketplace_code", "ozon")
-        .eq("expense_date", expense_date)
-        .execute()
-    )
+def get_ozon_ads_breakdown(expense_date, sb=None):
+    """Реклама Ozon за день по видам (marketplace_expenses). Страницами по полному ключу дня (sku, тип) и только типы рекламы.
+
+    Было (до 59-й): один запрос без страниц и сортировки — PostgREST отдаёт не больше 1 000 строк, а строк расходов Ozon за день
+    с 01.10.2026 больше 1 000 (1 096 … 1 876, все дни октября, кроме 07.10): строка «Реклама» складывалась из случайной тысячи
+    (26.10: клики 71 401 вместо 131 175,85, CPO 5 % — 0 вместо 26 657,00).
+    """
+    rows = stale_keys.read_window_rows(
+        sb or supabase, "marketplace_expenses", "marketplace_sku,expense_type,expense_amount",
+        [("eq", "marketplace_code", "ozon"), ("eq", "expense_date", str(expense_date)), ("like", "expense_type", "advertising%")],
+        ["marketplace_sku", "expense_type"])
 
     grouped = {
         "advertising_clicks": 0,
         "advertising_order_10": 0,
         "advertising_order_5": 0,
         "advertising_order_other": 0,
+        "advertising_order_selected_cpo": 0,
         "advertising_order_unknown": 0,
         "advertising_other": 0,
     }
 
-    for row in result.data or []:
+    for row in rows:
         expense_type = str(row.get("expense_type") or "")
         if not expense_type.startswith("advertising"):
             continue
@@ -921,10 +924,9 @@ def build_executive_summary(kpi_rows, target_date=None):
             # advertising_order_other — CPO «Все» со ставкой вне 5 / 10 % (с 20.10.2026 — 6 %): ставка известна из
             # отчёта, трата входит в тип 54 и в ad_spend витрины (56-я). «Не распознано» — только тип без ставки
             # и реклама без типа кампании.
-            ads_unknown = (
-                ads["advertising_order_unknown"]
-                + ads["advertising_other"]
-            )
+            known = ("advertising_clicks", "advertising_order_10", "advertising_order_5", "advertising_order_other",
+                     "advertising_order_selected_cpo")
+            ads_unknown = sum(v for k, v in ads.items() if k not in known)   # незнакомый вид рекламы — вслух, не мимо строки
             ads_line = (
                 f"Реклама: клики {fmt_money(ads['advertising_clicks'])}, "
                 f"заказ 10% {fmt_money(ads['advertising_order_10'])}, "
@@ -932,9 +934,11 @@ def build_executive_summary(kpi_rows, target_date=None):
             )
             if ads["advertising_order_other"] > 0:
                 ads_line += f", заказ другая ставка {fmt_money(ads['advertising_order_other'])}"
+            if ads.get("advertising_order_selected_cpo", 0) > 0:
+                ads_line += f", Selected CPO {fmt_money(ads['advertising_order_selected_cpo'])}"
             if ads_unknown > 0:
                 ads_line += f", не распознано/прочее {fmt_money(ads_unknown)}"
-            ads_line += "."
+            ads_line += f"; итого {fmt_money(sum(ads.values()))}."
             reviews_lines = get_ozon_reviews_lines(target_date)
             if reviews_lines:
                 ads_line += "\n" + "\n".join(reviews_lines)

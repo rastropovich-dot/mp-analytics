@@ -55,6 +55,7 @@ COST_SNAPSHOT_EFFECTIVE = {"2026-10-15": "2026-09-01"}
 BOOK_WB_BUYOUT_MONTH_FROM = "2026-09"   # % выкупа WB (когорта) — с первого полного месяца данных; август 23 … 31 — краевой эффект окна §5.4 (п. 2 ответа 23.10)
 BOOK_BRAND_SOURCE = "price"          # бренд строк книг — из прайса (article_unit_costs.analytics_group, 42 бренда); карточки Ozon везде Beautyhome.me (решение советника 23.10)
 BOOK_CATEGORY_SOURCE = "platform"      # категория строк книг — тип карточки Ozon (ozon_products.type_name) и предмет WB как есть (решение владельца 22.10)
+CATEGORY_RULES = "rbh"   # единые категории РБХ (loaders/rbh_categories, согласованы владельцем 26.10): книги, листы, алерт
 CATEGORY_TREE_FILE = "ozon_products/category_tree.json"     # относительно DATA_DIR
 CATALOG_FILE = "ozon_products/catalog_latest.json"
 OWNER_PIVOT_FILES = {"ozon_buyouts": "owner_finrez_ozon_buyouts_pivot.xlsx",   # форма книги «Фин рез» — одна на кабинеты

@@ -152,39 +152,67 @@ PLACEMENT_TABLE = "ozon_placement_by_product_daily"
 PLACEMENT_SELECT = "day,sku,warehouse,amount,offer_id"
 
 
-def read_placement_by_day(sb=None, page=PAGE_SIZE):
-    """Хранение Ozon по дням: на каждый день — запрос `day = D` (индекс первичного ключа day, sku, warehouse) и страницы внутри
-    дня по (sku, warehouse); каждая страница через net_retry.
+def read_placement_by_day(sb=None, page=PAGE_SIZE, keep=None):
+    """Хранение Ozon по дням, свёрнутое в базе памяти до (день, SKU) на лету: сырые строки по складам живут только в пределах
+    одной страницы. → (rows, day_totals, skipped):
+        rows        [{day, sku, amount, offer_id}] — Σ по складам со знаком таблицы (списание < 0), только пары, для которых keep(day, sku)
+        day_totals  {day: Σ хранения дня по ВСЕМ SKU, положительно} — для сверки с типом 46 леджера (п. 1 57-й)
+        skipped     [строк хранения, ₽ положительно] — пары, отброшенные keep
 
-    Было (52-я … 56-я): read_all_by_key по всей таблице со смещением. После истории хранения 25.10 (апрель … июнь, +648 032 строки,
-    всего 679 919) глубокие страницы со смещением до ~679 000 упирались в statement_timeout 8 с (57014, ночь 26.10, 02:34:41 UTC) —
-    витрина собралась без хранения Ozon. Внутри дня строк ≤ ~7 000, смещение не глубже 7 страниц.
+    Запрос на день — `day = D` (индекс PK day, sku, warehouse), страницы внутри дня по (sku, warehouse), каждая через net_retry.
+    Было (57-я, 04a385b): все строки по складам в список — 1 366 492 dict-а; ночь 27.10 Render убил шаг KPI на > 2 ГиБ (03:25:06 UTC,
+    во время записи витрины, после сборки). Было до того (52-я … 56-я): offset-страницы по всей таблице — 57014 на 679 919 строках.
     """
     from datetime import date as _date
     sb = sb or supabase
     first = net_retry.execute(sb.table(PLACEMENT_TABLE).select("day").order("day").limit(1), f"{PLACEMENT_TABLE} первый день").data or []
     if not first:
-        return []
+        return [], {}, [0, Decimal(0)]
     last = net_retry.execute(sb.table(PLACEMENT_TABLE).select("day").order("day", desc=True).limit(1), f"{PLACEMENT_TABLE} последний день").data
     day, end = _date.fromisoformat(str(first[0]["day"])[:10]), _date.fromisoformat(str(last[0]["day"])[:10])
-    rows, seen = [], set()
+    rows, day_totals, skipped = [], {}, [0, Decimal(0)]
     while day <= end:
-        start = 0
+        d = day.isoformat()
+        by_sku, offer, seen, start = {}, {}, set(), 0
         while True:
-            qb = (sb.table(PLACEMENT_TABLE).select(PLACEMENT_SELECT).eq("day", day.isoformat())
+            qb = (sb.table(PLACEMENT_TABLE).select(PLACEMENT_SELECT).eq("day", d)
                   .order("sku").order("warehouse").range(start, start + page - 1))
-            data = net_retry.execute(qb, f"{PLACEMENT_TABLE} {day} страница {start // page}").data or []
+            data = net_retry.execute(qb, f"{PLACEMENT_TABLE} {d} страница {start // page}").data or []
             for r in data:
-                key = (str(r["day"])[:10], r["sku"], r["warehouse"])
+                key = (r["sku"], r["warehouse"])
                 if key in seen:
-                    raise RuntimeError(f"{PLACEMENT_TABLE}: повтор ключа {key} в чтении по дням — страницы съехали")
+                    raise RuntimeError(f"{PLACEMENT_TABLE}: повтор ключа {(d,) + key} в чтении по дням — страницы съехали")
                 seen.add(key)
-            rows.extend(data)
+                sku = str(r["sku"])
+                by_sku[sku] = by_sku.get(sku, Decimal(0)) + Decimal(str(r.get("amount") or 0))
+                if r.get("offer_id") and sku not in offer:
+                    offer[sku] = r["offer_id"]
             if len(data) < page:
                 break
             start += page
+        if by_sku:
+            day_totals[d] = -sum(by_sku.values(), Decimal(0))
+            for sku, amount in by_sku.items():
+                if keep is None or keep(d, sku):
+                    rows.append({"day": d, "sku": sku, "amount": amount, "offer_id": offer.get(sku, "")})
+                else:
+                    skipped[0] += 1; skipped[1] += -amount
         day += timedelta(days=1)
-    return rows
+    return rows, day_totals, skipped
+
+
+def load_placement(keep=None):
+    """Хранение Ozon по товарам (52-я) свёрнутое до (день, SKU) — см. read_placement_by_day; таблицы нет или не прочиталась —
+    источник помечается непрочитанным (чистка витрины не удаляет, колонка не уходит в upsert), [] вслух."""
+    try:
+        rows, day_totals, skipped = read_placement_by_day(keep=keep)
+    except Exception as exc:  # noqa: BLE001
+        SOURCE_READ_FAILURES.append(PLACEMENT_TABLE)
+        print(f"⚠️ {PLACEMENT_TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost витрины за этот прогон не считается")
+        return []
+    print(f"Загружено хранения: дней {len(day_totals)}, пар (день, SKU) в витрину {len(rows)}"
+          + (f"; без строки витрины (ключ только с хранением старше окна) {skipped[0]} пар, {skipped[1]:,.2f} ₽ — остаются в логистике без SKU" if skipped[0] else ""))
+    return rows, day_totals, skipped
 
 
 LEDGER_TABLE = "ozon_accrual_daily_types"
@@ -205,7 +233,7 @@ def load_ledger_type46():
     return {str(r["accrual_date"])[:10]: -Decimal(str(r["amount"])) for r in rows}
 
 
-def move_placement_into_sku_logistics(grouped, placement, ledger46):
+def move_placement_into_sku_logistics(grouped, placement, ledger46, day_totals=None):
     """57-я §2 п. 1: размещение (тип 46) — не дважды. Ночь пишет его в marketplace_expenses строкой logistics без SKU (у Ozon в
     by-day нет SKU), а витрина с 52-й держит его же по SKU в storage_cost — сумма logistics + storage_cost считала 46 дважды.
     На день, где Σ хранения по SKU = типу 46 леджера до копейки и в строке без SKU логистики не меньше этой суммы, сумма
@@ -217,7 +245,8 @@ def move_placement_into_sku_logistics(grouped, placement, ledger46):
         by_day[str(row["day"])[:10]][str(row["sku"])] += -Decimal(str(row.get("amount") or 0))
     stats = {"moved_days": 0, "moved": Decimal(0), "no_ledger": [], "mismatch": [], "short": []}
     for day, skus in sorted(by_day.items()):
-        total = sum(skus.values(), Decimal(0)).quantize(Decimal("0.01"))
+        # итог дня — по ВСЕМ SKU хранения (day_totals от читателя), а не только по заведённым: сверка с типом 46 леджера
+        total = (Decimal(str(day_totals[day])) if day_totals and day in day_totals else sum(skus.values(), Decimal(0))).quantize(Decimal("0.01"))
         ledger = ledger46.get(day)
         if ledger is None:
             stats["no_ledger"].append(day); continue
@@ -238,19 +267,6 @@ def move_placement_into_sku_logistics(grouped, placement, ledger46):
           + (f"; Σ хранения ≠ типу 46: {', '.join(f'{d} {t} / {l}' for d, t, l in stats['mismatch'][:5])}" if stats["mismatch"] else "")
           + (f"; в строке без SKU меньше хранения: {', '.join(f'{d} {t}' for d, t, _ in stats['short'][:5])}" if stats["short"] else ""))
     return stats
-
-
-def load_placement():
-    """Хранение Ozon по товарам (52-я): строки (day, sku, warehouse) с amount со знаком леджера; таблицы нет или не прочиталась —
-    источник помечается непрочитанным (чистка витрины не удаляет), колонка остаётся 0."""
-    try:
-        rows = read_placement_by_day()
-    except Exception as exc:  # noqa: BLE001
-        SOURCE_READ_FAILURES.append(PLACEMENT_TABLE)
-        print(f"⚠️ {PLACEMENT_TABLE} не прочитана ({type(exc).__name__}: {str(exc)[:120]}) — storage_cost витрины за этот прогон не считается")
-        return []
-    print(f"Загружено строк хранения: {len(rows)}")
-    return rows
 
 
 # ---- WB: хранение, реклама и «прочее» по артикулу (двадцатая WB, слово владельца 2026-10-23: А1 / Б / В) ----
@@ -450,7 +466,6 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
     buyouts = load_buyouts()
     expenses = load_expenses()
     ozon_organic = load_ozon_organic()
-    placement = load_placement()
     wb_costs = load_wb_costs()
 
     grouped = {}
@@ -527,23 +542,34 @@ def build_kpi(wb_cohort=None, with_source=False, today=None):
         grouped[key][bucket] += amount
 
     # 57-я, слово 2026-10-26: строка витрины «только хранение» (ключ без продаж, расходов и органики) — только за последние
-    # STORAGE_ONLY_DAYS дней (окно ночи); старше — хранение идёт только в ключи, у которых есть другой источник. Иначе история хранения
-    # с 01.04 удваивала витрину (сухая сборка 26.10: 470 996 → 946 728 строк). Хранение таких ключей остаётся в строке без SKU (п. 1).
+    # STORAGE_ONLY_DAYS дней (окно ночи); старше — хранение идёт только в ключи, у которых есть другой источник. Хранение
+    # незаведённых ключей остаётся в логистике без SKU (п. 1 переносит только часть заведённых SKU).
+    # 58-я: хранение читается ПОСЛЕ сборки ключей из заказов / выкупов / расходов / органики и сворачивается до (день, SKU) с этим
+    # же фильтром на лету — в памяти нет сырых строк по складам (ночь 27.10: 1 366 492 строки → OOM > 2 ГиБ).
     storage_only_from = ((today or date.today()) - timedelta(days=STORAGE_ONLY_DAYS)).isoformat()
-    skipped_storage_only = [0, 0.0]
+
+    def keep_storage(day, sku):
+        return day >= storage_only_from or (day, "ozon", sku) in grouped
+
+    loaded = load_placement(keep=keep_storage)
+    if isinstance(loaded, tuple):
+        placement, placement_day_totals, _skipped = loaded
+    else:                      # тесты и отказ чтения: список строк — фильтр и итоги дня считаются здесь
+        placement = [r for r in loaded if keep_storage(str(r["day"])[:10], str(r["sku"]))]
+        placement_day_totals = None
+        dropped = [r for r in loaded if not keep_storage(str(r["day"])[:10], str(r["sku"]))]
+        if dropped:
+            placement_day_totals = defaultdict(Decimal)
+            for r in loaded:
+                placement_day_totals[str(r["day"])[:10]] += -Decimal(str(r.get("amount") or 0))
+            print(f"Хранение без строки витрины (ключ только с хранением старше {storage_only_from}): строк хранения {len(dropped)} — остаются в логистике без SKU")
     for row in placement:      # 52-я: хранение по SKU за день = Σ по складам, положительно (в таблице знак леджера)
         key = (str(row["day"])[:10], "ozon", str(row["sku"]))
         if key not in grouped:
-            if key[0] < storage_only_from:
-                skipped_storage_only[0] += 1; skipped_storage_only[1] += -float(row.get("amount") or 0)
-                continue
             grouped[key] = empty_kpi_row(key[0], "ozon", key[2], row.get("offer_id") or "", None)
         grouped[key]["storage_cost"] += -float(row.get("amount") or 0)
-    if skipped_storage_only[0]:
-        print(f"Хранение без строки витрины (ключ только с хранением старше {storage_only_from}): строк хранения {skipped_storage_only[0]}, "
-              f"{skipped_storage_only[1]:,.2f} ₽ — остаются в логистике без SKU")
     if placement:
-        move_placement_into_sku_logistics(grouped, placement, load_ledger_type46())
+        move_placement_into_sku_logistics(grouped, placement, load_ledger_type46(), day_totals=placement_day_totals)
 
     # 20-я WB: хранение, реклама и «прочее» по артикулу у WB — с НДС и положительные, как остальные колонки расходов витрины
     wb_new_keys = 0

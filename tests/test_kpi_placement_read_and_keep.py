@@ -1,5 +1,6 @@
 """57-я: хранение Ozon читается по дням (без глубокого смещения), непрочитанный источник не затирает свою колонку нулём."""
 import unittest
+from decimal import Decimal
 from unittest import mock
 
 import reports_daily_sku_kpi as kpi
@@ -47,17 +48,27 @@ def _rows():
 
 
 class PlacementByDayTests(unittest.TestCase):
-    def test_reads_every_day_with_shallow_pages(self):
-        sb = _SB(_rows())
-        got = kpi.read_placement_by_day(sb=sb, page=10)
-        self.assertEqual(len(got), 32)
-        self.assertEqual({r["day"] for r in got}, {"2026-04-01", "2026-04-03"})
+    def test_reads_every_day_with_shallow_pages_and_folds_to_day_sku(self):
+        rows = _rows() + [{"day": "2026-04-01", "sku": 1000, "warehouse": "Z", "amount": "-1.00", "offer_id": "A0"}]   # второй склад того же SKU
+        sb = _SB(rows)
+        got, totals, skipped = kpi.read_placement_by_day(sb=sb, page=10)
+        self.assertEqual(len(got), 32)                                    # пары (день, SKU), не строки по складам
+        by = {(r["day"], r["sku"]): r["amount"] for r in got}
+        self.assertEqual(by[("2026-04-01", "1000")], Decimal("-1.50"))    # Σ по складам
+        self.assertEqual(totals, {"2026-04-01": Decimal("13.50"), "2026-04-03": Decimal("3.50")})
+        self.assertEqual(skipped, [0, Decimal(0)])
         day_queries = [f for f, span in sb.log if span is not None]
         self.assertTrue(all(f and f[0][0] == "day" for f in day_queries))
-        self.assertEqual(sum(1 for f in day_queries if f[0][1] == "2026-04-01"), 3)   # 25 строк, страницы по 10
+        self.assertEqual(sum(1 for f in day_queries if f[0][1] == "2026-04-01"), 3)   # 26 строк, страницы по 10
+
+    def test_keep_filter_drops_pairs_but_day_totals_count_everything(self):
+        got, totals, skipped = kpi.read_placement_by_day(sb=_SB(_rows()), page=10, keep=lambda d, sku: d == "2026-04-03" or sku == "1000")
+        self.assertEqual(len(got), 8)                                     # 1 пара 01.04 + 7 пар 03.04
+        self.assertEqual(totals["2026-04-01"], Decimal("12.50"))          # итог дня — по всем SKU
+        self.assertEqual(skipped, [24, Decimal("12.00")])
 
     def test_empty_table(self):
-        self.assertEqual(kpi.read_placement_by_day(sb=_SB([]), page=10), [])
+        self.assertEqual(kpi.read_placement_by_day(sb=_SB([]), page=10), ([], {}, [0, Decimal(0)]))
 
 
 def _kpi(mp, sku, storage, ad=1.0):

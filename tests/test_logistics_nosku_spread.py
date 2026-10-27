@@ -1,5 +1,6 @@
 """57-я §2: размещение (тип 46) не дважды; rFBS без SKU — на SKU отправления."""
 import unittest
+from collections import defaultdict
 from decimal import Decimal
 
 import reports_daily_sku_kpi as kpi
@@ -103,3 +104,36 @@ class StorageOnlyWindowTests(unittest.TestCase):
         self.assertAlmostEqual(rows[("2026-10-20", "")]["logistics_amount"], 0.0)
         for day in ("2026-06-10", "2026-10-20"):                          # итог логистики дня не меняется
             self.assertAlmostEqual(sum(r["logistics_amount"] for (d, _), r in rows.items() if d == day), 13.0)
+
+
+class StorageTuplePathTests(unittest.TestCase):
+    """58-я: загрузчик хранения отдаёт (пары, итоги дня, отброшенное) и фильтрует сам — результат витрины тот же, что у списка."""
+
+    def test_tuple_path_equals_list_path(self):
+        from unittest import mock
+        placement = [{"day": d, "sku": s, "warehouse": "A", "amount": a, "offer_id": ""}
+                     for d in ("2026-06-10", "2026-10-20") for s, a in ((1, "-2.00"), (2, "-1.00"))]
+        expenses = [{"id": i, "expense_date": d, "marketplace_code": "ozon", "marketplace_sku": sku, "expense_type": "logistics", "expense_amount": v}
+                    for i, (d, sku, v) in enumerate((("2026-06-10", "1", 10), ("2026-06-10", "", 3), ("2026-10-20", "1", 10), ("2026-10-20", "", 3)))]
+
+        def fake_loader(keep=None):
+            rows, totals, skipped = [], defaultdict(Decimal), [0, Decimal(0)]
+            for r in placement:
+                d, sku = r["day"], str(r["sku"])
+                totals[d] += -Decimal(r["amount"])
+                if keep(d, sku):
+                    rows.append({"day": d, "sku": sku, "amount": Decimal(r["amount"]), "offer_id": ""})
+                else:
+                    skipped[0] += 1; skipped[1] += -Decimal(r["amount"])
+            return rows, dict(totals), skipped
+
+        def build(loader):
+            with mock.patch.object(kpi, "load_orders", return_value=[]), mock.patch.object(kpi, "load_buyouts", return_value=[]), \
+                 mock.patch.object(kpi, "load_expenses", return_value=expenses), mock.patch.object(kpi, "load_ozon_organic", return_value=[]), \
+                 mock.patch.object(kpi, "load_placement", side_effect=loader), \
+                 mock.patch.object(kpi, "load_ledger_type46", return_value={"2026-06-10": Decimal("3.00"), "2026-10-20": Decimal("3.00")}), \
+                 mock.patch.object(kpi, "load_wb_costs", return_value={"storage": [], "ads": {}, "other": [], "articles": {}}), \
+                 mock.patch.object(kpi, "load_wb_cohort", return_value=({}, {})), mock.patch("builtins.print"):
+                return {(r["kpi_date"], r["marketplace_sku"]): (r["logistics_amount"], r["storage_cost"]) for r in kpi.build_kpi(today=kpi.date(2026, 10, 26))}
+
+        self.assertEqual(build(fake_loader), build(lambda keep=None: list(placement)))

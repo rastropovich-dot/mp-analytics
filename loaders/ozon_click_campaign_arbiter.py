@@ -8,7 +8,10 @@
 
 Знак: начисление Ozon отрицательное, здесь — трата (> 0). Чистые функции + одно чтение атрибуции по дням.
 """
+import json
+import os
 from collections import defaultdict
+from datetime import date, timedelta
 from decimal import Decimal
 
 CLICKS_TYPE_ID = 41
@@ -28,6 +31,22 @@ def campaign_spend_from_accruals(accruals, day=None):
             continue
         out[(d, campaign)] += -Decimal(str((fee.get("accrued") or {}).get("amount") or 0))
     return dict(out)
+
+
+def campaigns_from_accrual_files(accrual_dir, date_from, date_to):
+    """Кампании с начислением типа 41 за окно по файлам `accrual/by-day` (fetch_accrual_history_range.py) → (множество id, дни без файла)."""
+    d0, d1 = date.fromisoformat(date_from), date.fromisoformat(date_to)
+    ids, absent = set(), []
+    for i in range((d1 - d0).days + 1):
+        day = (d0 + timedelta(days=i)).isoformat()
+        path = os.path.join(accrual_dir, f"{day}.json")
+        if not os.path.exists(path):
+            absent.append(day)
+            continue
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        ids |= {c for (_d, c), v in campaign_spend_from_accruals(doc.get("accruals"), day=day).items() if v > 0}
+    return ids, absent
 
 
 def attribution_campaign_spend(sb, days, marketplace_code="ozon"):

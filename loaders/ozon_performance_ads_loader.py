@@ -1232,9 +1232,13 @@ def parse_args():
     )
     parser.add_argument(
         "--campaign-scope",
-        choices=("recent", "all"),
+        choices=("recent", "all", "accruals"),
         default=DEFAULT_CAMPAIGN_SCOPE,
-        help="recent = active or recently updated campaigns in the period; all = all campaigns",
+        help=(
+            "recent = active or recently updated campaigns in the period; all = all campaigns; "
+            "accruals = CPC campaigns with type 41 accruals in the window (unit_number), for past windows — "
+            "needs data/<cabinet>/accrual_history files"
+        ),
     )
     parser.add_argument(
         "--campaign-selection",
@@ -1492,6 +1496,24 @@ def cpc_activity_markers(campaign, date_from, date_to):
         markers.append("created_in_period")
 
     return markers
+
+
+def select_cpc_campaigns_by_accruals(campaigns, accrual_ids):
+    """Отбор для прошлого окна (RBH 27.10, п. 2 (а)): CPC-кампании, у которых в окне есть начисление типа 41 (номер в unit_number).
+    `recent` берёт кампанию, только если она RUNNING в момент списка или её updatedAt внутри окна, — и теряет кампании, тративших
+    в окне, но остановленных к моменту сбора и правленых после окна (23.10: −103 821,45 у РБХ-1, −63 290,01 у РБХ-2).
+    Возвращает (кампании с маркером accrual_type41, id из начислений, которых нет в списке Performance)."""
+    accrual_ids = {str(c) for c in accrual_ids}
+    by_id = {str(c.get("id") or c.get("campaignId")): c for c in campaigns or []}
+    selected = []
+    for campaign_id in sorted(accrual_ids & set(by_id)):
+        campaign = by_id[campaign_id]
+        if not is_cpc_campaign(campaign):
+            continue
+        prepared = dict(campaign)
+        prepared["_cpc_activity_markers"] = ["accrual_type41"]
+        selected.append(prepared)
+    return selected, sorted(accrual_ids - set(by_id))
 
 
 def filter_cpc_campaigns(campaigns, date_from, date_to, scope):
@@ -6215,6 +6237,17 @@ def run_cpc_recovery_mode(
         summary["attribution_rows_count"] = 0
         return summary
 
+    if write and campaign_ids:
+        foreign = foreign_campaigns_on_skus(db_client or supabase, target_date, expense_rows, campaign_ids)
+        if foreign:
+            summary["status"] = "refused_incomplete_campaign_list"
+            summary["foreign_campaigns_on_skus"] = foreign
+            raise RuntimeError(
+                "cpc-recovery --campaign-id: у SKU этих строк в этот день тратили кампании вне списка "
+                f"{foreign} — upsert по (дата, SKU, тип) заменил бы их клики; добирать scripts/ozon_cpc_campaign_topup.py "
+                "(прибавлением) или всеми кампаниями дня"
+            )
+
     if write:
         save_rows(expense_rows)
         save_ad_attribution_rows(ad_attribution_rows)
@@ -6238,6 +6271,23 @@ def run_cpc_recovery_mode(
     summary["marketplace_expenses_rows"] = expense_rows
     summary["ad_attribution_rows"] = ad_attribution_rows
     return summary
+
+
+def foreign_campaigns_on_skus(db_client, target_date, expense_rows, campaign_ids):
+    """RBH 27.10, п. 2 (в): {SKU: [кампании]} — кампании ВНЕ списка с тратой > 0 в атрибуции CPC за день на SKU строк расходов.
+    Непустой ответ — список неполный: запись cpc-recovery заменила бы клики SKU только запрошенными кампаниями."""
+    skus = sorted({str(r.get("marketplace_sku")) for r in expense_rows or [] if r.get("marketplace_sku")})
+    if not skus:
+        return {}
+    wanted = {str(c) for c in campaign_ids or []}
+    res = (db_client.table("ozon_daily_sku_ad_attribution").select("marketplace_sku,campaign_id,ad_spend")
+           .eq("marketplace_code", "ozon").eq("ad_source", "cpc").eq("sale_date", target_date).in_("marketplace_sku", skus)
+           .limit(5000).execute())
+    out = defaultdict(set)
+    for r in res.data or []:
+        if float(r.get("ad_spend") or 0) > 0 and str(r.get("campaign_id")) not in wanted:
+            out[str(r["marketplace_sku"])].add(str(r["campaign_id"]))
+    return {sku: sorted(c) for sku, c in sorted(out.items())}
 
 
 def build_cpc_recovery_usage_context(target_date, batch_index, campaign_batch):
@@ -7600,7 +7650,8 @@ def run():
     campaigns = client.list_campaigns()
     print(f"Ozon Performance campaigns total: {len(campaigns)}")
 
-    period_campaigns = filter_campaigns(campaigns, date_from, date_to, args.campaign_scope)
+    # accruals — отбор CPC по начислениям; кампании для CPO / контекста — все, что пересекают окно
+    period_campaigns = filter_campaigns(campaigns, date_from, date_to, "all" if args.campaign_scope == "accruals" else args.campaign_scope)
     print(
         f"Ozon Performance campaigns after {args.campaign_scope} period filter: "
         f"{len(period_campaigns)}"
@@ -7649,6 +7700,19 @@ def run():
     elif args.mode == "cpc-backfill":
         daily_selection_mode = "complete"
         cpc_campaigns = []
+    elif args.campaign_scope == "accruals":
+        from loaders import ozon_click_campaign_arbiter as click_arbiter
+        accrual_ids, absent_days = click_arbiter.campaigns_from_accrual_files(cabinet.data_path("accrual_history", prof=CABINET), date_from, date_to)
+        if absent_days:
+            raise RuntimeError(
+                f"--campaign-scope accruals: нет файлов accrual/by-day за {absent_days} — снять scripts/fetch_accrual_history_range.py"
+            )
+        cpc_campaigns, not_listed = select_cpc_campaigns_by_accruals(campaigns, accrual_ids)
+        print(
+            f"Ozon Performance CPC campaigns by type 41 accruals: {len(cpc_campaigns)} "
+            f"(в начислениях {len(accrual_ids)}, нет в списке Performance {len(not_listed)}"
+            + (f": {not_listed[:20]}" if not_listed else "") + ")"
+        )
     else:
         cpc_campaigns = filter_cpc_campaigns(campaigns, date_from, date_to, args.campaign_scope)
         print(f"Ozon Performance CPC campaigns after activity filter: {len(cpc_campaigns)}")

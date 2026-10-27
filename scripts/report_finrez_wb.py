@@ -63,6 +63,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402
+from loaders import rbh_categories as rbh_cat  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import keyset, stale_keys  # noqa: E402
@@ -185,7 +186,11 @@ def brand_rule_text():
     return ", ".join(f"{k} → {v}" for k, v in sorted(BRAND_BY_LETTER.items())) + f", иначе {BRAND_DEFAULT}"
 
 
-def category_of(subject_name):
+def category_of(subject_name, title=None):
+    """Категория строки: KARATOV — словарь владельца по предмету; «platform» — предмет как есть; «rbh» — единые категории РБХ
+    (loaders/rbh_categories: предмет, для расплывчатых — название товара; сирота без предмета — по названию)."""
+    if CATEGORY_SOURCE == "rbh":
+        return rbh_cat.label(subject_name, title)[1]
     if not subject_name or not str(subject_name).strip():
         return CATEGORY_UNKNOWN
     if CATEGORY_SOURCE == "platform":
@@ -231,6 +236,23 @@ def fetch_subjects_for(sb, nm_ids, batch=200):
             nm = int(r["nm_id"])
             if nm not in out:
                 out[nm] = {"subject": r.get("subject_name"), "brand": r.get("brand_name")}
+    return out
+
+
+def fetch_titles_for(sb, nm_ids, batch=100):
+    """Название карточки для nmId-сирот (в отчёте есть, в текущих карточках нет): последнее из истории воронки wb_funnel_products_daily.
+    Нужно единым категориям РБХ (п. (5), слово 27.10): у расплывчатого предмета категорию решает название. {nmId: название}."""
+    out = {}
+    ids = sorted({int(n) for n in nm_ids})
+    for i in range(0, len(ids), batch):
+        try:
+            data = (sb.table("wb_funnel_products_daily").select("nm_id,title,day").in_("nm_id", ids[i:i + batch])
+                    .not_.is_("title", "null").order("nm_id").order("day", desc=True).limit(DICT_PAGE).execute().data or [])
+        except Exception as error:
+            print(f"название сироты из wb_funnel_products_daily: не прочитать — {str(error)[:120]}", flush=True)
+            return out
+        for r in data:
+            out.setdefault(int(r["nm_id"]), r.get("title"))
     return out
 
 
@@ -557,6 +579,12 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     fetched = fetch_subjects_for(sb, missing) if (missing and hasattr(sb, "table")) else {}
     if missing:
         print(f"предмет не найден ни в строках окна, ни в воронке у {len(missing)} nmId; адресно из отчёта добрано {len(fetched)}", flush=True)
+    orphan_titles = {}
+    if CATEGORY_SOURCE == "rbh" and hasattr(sb, "table"):           # (5): сироты без карточки — название из истории воронки
+        orphans = sorted({nm for (_d, nm) in acc if nm is not None and not products.get(nm, {}).get("title")})
+        orphan_titles = fetch_titles_for(sb, orphans) if orphans else {}
+        if orphans:
+            print(f"сирот WB (nmId без карточки): {len(orphans)}; название из истории воронки у {len(orphan_titles)}", flush=True)
     out = []
     for (day, nm), a in sorted(acc.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         p = products.get(nm, {}) if nm is not None else {}
@@ -569,7 +597,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                "article": (vendor.upper() or None) if nm is not None else NO_PRODUCT, "nm_id": nm,
                "title": p.get("title") if nm is not None else NO_PRODUCT,
                "brand": brand_of(vendor, a["brand"] or p.get("brand")) if nm is not None else NO_PRODUCT,
-               "category": category_of(a["subject"] or p.get("subject")) if nm is not None else NO_PRODUCT,
+               "category": category_of(a["subject"] or p.get("subject"), p.get("title") or orphan_titles.get(nm)) if nm is not None else NO_PRODUCT,
                "ads_allocated": (ads_source.get(day) if (ads_by_day is not None and a["ads"]) else ""), "qty": a["qty"], "no_cost_qty": a["no_cost_qty"],
                "cost_source": "; ".join(sorted(a["cost_sources"]))}
         for k in MONEY_KEYS:
@@ -636,11 +664,12 @@ def build_month_sheet(rows):
 
 def build_split(rows, by="brand"):
     """Разрез группа × месяц (+ «Итого» группы), группа — brand или category; колонки те же, плюс «Группа»."""
-    if by not in ("brand", "category"):
-        raise ValueError("by: brand | category")
+    if by not in ("brand", "category", "group"):
+        raise ValueError("by: brand | category | group")
     groups = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        groups[r.get(by) or "—"][str(r["date"])[:7]].append(r)
+        key = rbh_cat.group_of(r.get("category")) if by == "group" else r.get(by)      # group — группа единой категории РБХ
+        groups[key or "—"][str(r["date"])[:7]].append(r)
     out = []
     for g in sorted(groups):
         all_rows = []
@@ -737,7 +766,7 @@ def orders_rows_for_finrez(date_from, date_to, sb=None, funnel_rows=None, costs=
         after[day[:7]] += order_sum
         out.append({"date": day, "month": month_label(day), "month_no": int(day[5:7]), "platform": PLATFORM, "shop": SHOP, "article": (str(r.get("vendor_code") or "").upper() or None),
                     "nm_id": int(r["nm_id"]), "title": r.get("title"), "brand": brand_of(r.get("vendor_code"), r.get("brand")),
-                    "category": category_of(r.get("subject_name")), "orders_qty": qty, "orders_sum": order_sum, "ads": ads,
+                    "category": category_of(r.get("subject_name"), r.get("title")), "orders_qty": qty, "orders_sum": order_sum, "ads": ads,
                     "revenue": (order_sum * k_after / vat) if k_after is not None else None, "cogs": (cost * qty) if cost is not None else None,
                     "no_cost": cost is None and qty > 0, "cost_source": cost_src if cost is not None else "",
                     "funnel_buyouts_qty": int(r.get("buyout_count") or 0), "funnel_buyouts_sum": D(r.get("buyout_sum")),
@@ -1306,7 +1335,7 @@ def main(argv=None):
     cat_ok = set(cat_by_month) == set(by_month_total) and all(cat_by_month[m] == v for m, v in by_month_total.items())
     print(f"Σ категорий по месяцам = общему по месяцам: {'да' if cat_ok else 'НЕТ'} — " + ", ".join(f"{m} {v:,.2f}" for m, v in by_month_total.items()))
     labels_b, labels_c = set(bstats.get("brands", {})), set(bstats.get("categories", {}))
-    labels_ok = (BRAND_SOURCE == "price" or labels_b <= BRAND_LABELS) and (CATEGORY_SOURCE == "platform" or labels_c <= CATEGORY_LABELS)   # прайс / предмет площадки — ярлыки свои
+    labels_ok = (BRAND_SOURCE == "price" or labels_b <= BRAND_LABELS) and (CATEGORY_SOURCE in ("platform", "rbh") or labels_c <= CATEGORY_LABELS)   # прайс / предмет площадки — ярлыки свои
     print(f"ярлыки (WB-9 §2): бренды {sorted(labels_b)} ⊆ владельца — {'да' if labels_b <= BRAND_LABELS else 'НЕТ'}; категории {sorted(labels_c)} ⊆ владельца — "
           f"{'да' if labels_c <= CATEGORY_LABELS else 'НЕТ'}; строк «{CATEGORY_UNKNOWN}» {bstats.get('rows_unknown_category', 0)}; «{UNIDENTIFIED}»: строк отчёта {bstats.get('unidentified', {}).get('rows', 0)}")
     code = 0 if (cat_ok and labels_ok) else 1

@@ -314,3 +314,19 @@ class OrdersSheetTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=4).value, "Выручка (× 0,58 / НДС), руб.")
         self.assertAlmostEqual(ws.cell(row=4, column=4).value, float(D("250000") * D("0.58") / D("1.22")), places=2)
         self.assertEqual(ws.cell(row=5, column=1).value, "Итого")
+
+
+class Groups(unittest.TestCase):
+    """РБХ, слово владельца 27.10: срез «Группы» листа WB — строки товаров по группе единой категории, строки без товара — отдельно,
+    Σ групп = итогу листа по денежным колонкам до рекламы."""
+
+    def test_groups_add_up(self):
+        rows = [dict(r) for r in ROWS] + [row("2026-09-01", nm_id=2, retail_price_with_disc="500", for_pay="300", commission_percent="40", rrd_id=7),
+                                           row("2026-09-01", oper="Хранение", nm_id=None, paid_storage="61", rrd_id=8)]
+        cards = {"1": ("Пудры", "Пудра"), "2": ("Кремы", "Крем для рук")}
+        g = rep.build_groups(rows, ["2026-09-01"], cost_base, date(2026, 9, 10), cards)
+        self.assertEqual(list(g), ["Макияж лица", "Уход за телом и гигиена", rep.NO_GROUP])
+        t = rep.total_row(rep.build_daily(rows, ["2026-09-01"], cost_base, {}, date(2026, 9, 10)))
+        for k in rep.GROUP_KEYS:
+            self.assertEqual(sum((x[k] for x in g.values()), D(0)), t[k], k)
+        self.assertEqual(g[rep.NO_GROUP]["storage_cost"], D("50"))                 # 61 / 1,22 — хранение без товара

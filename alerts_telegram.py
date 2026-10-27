@@ -1145,6 +1145,44 @@ def catalog_line(payload, now=None):
     return text
 
 
+UNRESOLVED_LIST = 10
+
+
+def unresolved_categories_line(ozon_items, wb_items, limit=UNRESOLVED_LIST):
+    """РБХ (слово владельца 27.10): «⚠️ нерешённые категории: N SKU (Ozon a, WB b): тип / предмет — SKU — название; …» — товары, у которых
+    тип карточки Ozon / предмет WB вне справочника единых категорий или расплывчатый без подсказки в названии. Нет таких — пусто.
+    ozon_items / wb_items — [(sku, тип / предмет, название)]."""
+    from loaders import rbh_categories as rc
+    bad = {mp: [(sku, src, name) for sku, src, name in items if rc.classify(src, name)[1] is None] for mp, items in (("Ozon", ozon_items), ("WB", wb_items))}
+    n = sum(len(v) for v in bad.values())
+    if not n:
+        return ""
+    sample = [f"{src or '(нет)'} — {sku} — {str(name or '')[:40]}" for mp in ("Ozon", "WB") for sku, src, name in bad[mp]][:limit]
+    return (f"⚠️ нерешённые категории: {n} SKU (Ozon {len(bad['Ozon'])}, WB {len(bad['WB'])}) — не в «Прочем», нужен справочник: "
+            + "; ".join(sample) + (" …" if n > limit else ""))
+
+
+def get_unresolved_categories_line():
+    """Строка нерешённых категорий по карточкам кабинета (ozon_products, wb_funnel_products_current); только у профиля CATEGORY_RULES = rbh."""
+    if getattr(CABINET, "CATEGORY_RULES", None) != "rbh":
+        return ""
+
+    def paged(table, select, key):
+        out, start = [], 0
+        while True:
+            data = supabase.table(table).select(select).order(key).range(start, start + 999).execute().data or []
+            out.extend(data)
+            if len(data) < 1000:
+                return out
+            start += 1000
+    try:
+        oz = [(str(r["sku"]), r.get("type_name"), r.get("name")) for r in paged("ozon_products", "sku,type_name,name", "sku")]
+        wb = [(str(r["nm_id"]), r.get("subject_name"), r.get("title")) for r in paged("wb_funnel_products_current", "nm_id,subject_name,title", "nm_id")]
+    except Exception as exc:  # noqa: BLE001
+        return f"категории: карточки не прочитаны — {type(exc).__name__}"
+    return unresolved_categories_line(oz, wb)
+
+
 def finrez_book_line(payload, now=None):
     """«книга Фин рез: собрана hh:mm UTC …» по итогу ночной сборки на машине владельца; строки нет — launchd не установлен, молчим."""
     if not payload:
@@ -1230,7 +1268,7 @@ def build_message(target_date=None, skip_snapshot=False):
     if run_line:
         lines.extend([run_line, ""])
     extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), fbo_buyer_line(get_state_payload(FBO_BUYER_STATE_KEY)),
-                               finrez_book_line(get_state_payload(FINREZ_STATE_KEY))) if line]
+                               finrez_book_line(get_state_payload(FINREZ_STATE_KEY)), get_unresolved_categories_line()) if line]
     if extra:
         lines.extend(extra + [""])
 

@@ -264,7 +264,8 @@ def coverage_check(sb, snapshot_date, marketplace_code, days=90, today=None):
 
 def print_plan_rbh(rows, conflicts, stats, path):
     print(f"=== прайс РБХ {os.path.basename(path)}: колонки {stats['columns']}")
-    print(f"строк прочитано {stats['rows_read']}; пропущено: пустой артикул {stats['empty_article']}, пустая/нулевая цена {stats['empty_cost']}; "
+    print(f"строк прочитано {stats['rows_read']}; пропущено: пустой артикул {stats['empty_article']}, пустая/нулевая цена {stats['empty_cost']}, "
+          f"артикул «0» {stats.get('zero_article', 0)} (из них с Sku OZ {stats.get('zero_article_sku_oz', 0)}); "
           f"конфликтных артикулов {stats['conflicts']}, дублей с той же ценой {stats['duplicates_same_cost']}")
     print(f"к записи: {len(rows)} строк; НДС: ставка {stats['vat_rate']} — unit_cost = цена ÷ ставка (без НДС), цена с НДС в таблицу не пишется (восстановима как unit_cost × ставка; источник — файл)")
     print(f"Σ без НДС {stats['sum_without_vat']:,.2f}; Σ с НДС {stats['sum_with_vat']:,.2f}; Sku OZ заполнен у {stats['sku_oz_filled']}, "
@@ -356,6 +357,8 @@ def main():
     parser.add_argument("--format", choices=("1c", "rbh"), default=getattr(CABINET, "COST_PRICE_FORMAT", "1c") or "1c",
                         help="1c — файл 1С (TDSheet, F/S/T); rbh — прайс РБХ (Артикул / Бренд / «С-ть до МП» с НДС / Sku OZ); умолчание — COST_PRICE_FORMAT профиля")
     parser.add_argument("--vat-rate", default=None, help="формат rbh: цена с НДС ÷ ставка → unit_cost; умолчание — COST_PRICE_VAT_RATE профиля (1,22)")
+    parser.add_argument("--side-block", action="store_true", help="формат rbh: добавить боковой блок «Артикул поставщика | … | Себестоимость по "
+                        "умолчанию» — только артикулы, которых нет в основном, с одной ценой (прайс «до 01.09», слово 27.10)")
     parser.add_argument("--analytics-group", action="store_true", help="писать «Аналитическая группа» (нужна миграция 20260916_add_analytics_group_*)")
     args = parser.parse_args()
     date.fromisoformat(args.snapshot_date)
@@ -372,6 +375,12 @@ def main():
         vat = Decimal(str(args.vat_rate)) if args.vat_rate else getattr(CABINET, "COST_PRICE_VAT_RATE", None)
         price_rows, conflicts, stats = rbh_cost_price.read_price(args.file, args.snapshot_date, args.marketplace_code, vat_rate=vat)
         print_plan_rbh(price_rows, conflicts, stats, args.file)
+        if args.side_block:                              # прайс «до 01.09»: карта артикулов WB с суффиксами (слово владельца 27.10)
+            side, sst = rbh_cost_price.read_side_block(args.file, {r["offer_id_norm"] for r in price_rows}, args.snapshot_date,
+                                                       args.marketplace_code, vat_rate=vat)
+            print(f"=== боковой блок: шапка {sst['header']}, строк {sst['side_rows']}, артикулов {sst['side_keys']}; есть в основном {sst['in_main']}; "
+                  f"двойная цена {len(sst['double_price'])} (не грузятся): {sst['double_price'][:8]}; к записи {sst['added']}")
+            price_rows = price_rows + side
         rows = rbh_cost_price.db_rows(price_rows)
         sb = supabase_client()
         coverage_check_rbh(sb, price_rows, args.marketplace_code)

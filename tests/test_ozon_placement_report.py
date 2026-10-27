@@ -190,3 +190,29 @@ class PipelineStepTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpsertRetry(unittest.TestCase):
+    """26.10: запись истории rbh2 трижды падала на 503 прокси / сбросе потока посреди файла — повторяется пачка, не весь файл."""
+
+    def test_flaky_batch_is_retried_and_rows_are_written_once(self):
+        import httpx
+        from unittest import mock
+        from loaders import ozon_placement_report as opr
+        calls = []
+
+        class Q:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def execute(self):
+                calls.append(len(self.rows))
+                if len(calls) == 2:
+                    raise httpx.ProxyError("503 Service Unavailable")
+                return mock.Mock(data=[])
+
+        sb = mock.Mock()
+        sb.table.return_value.upsert.side_effect = lambda rows, on_conflict: Q(rows)
+        rows = [{"day": "2026-09-01", "sku": i, "warehouse": "w"} for i in range(opr.BATCH + 10)]
+        self.assertEqual(opr.upsert(sb, rows, pause=0, sleep_fn=lambda s: None), opr.BATCH + 10)
+        self.assertEqual(calls, [opr.BATCH, 10, 10])                       # вторая пачка — повтор её одной

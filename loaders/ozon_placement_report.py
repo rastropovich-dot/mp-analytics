@@ -219,11 +219,19 @@ def fetch_report(date_from, date_to, post=None, get=None, sleep_fn=time.sleep, c
 
 # ---------------------------------------------------------------- база
 
-def upsert(sb, db_rows):
+def upsert(sb, db_rows, tries=None, pause=None, sleep_fn=None):
+    """upsert пачками по BATCH; пачка — через net_retry (транзиентный отказ прокси / обрыв — повтор той же пачки, а не всего файла:
+    26.10 запись истории rbh2 трижды падала на 503 / сбросе потока посреди 168 тыс. строк). Ключ (day, sku, warehouse) — повтор безопасен."""
+    try:
+        from loaders import net_retry
+    except ImportError:
+        import net_retry
+    kw = {k: v for k, v in (("tries", tries), ("pause", pause), ("sleep_fn", sleep_fn)) if v is not None}
     n = 0
     for i in range(0, len(db_rows), BATCH):
-        sb.table(TABLE).upsert(db_rows[i:i + BATCH], on_conflict="day,sku,warehouse").execute()
-        n += len(db_rows[i:i + BATCH])
+        chunk = db_rows[i:i + BATCH]
+        net_retry.call(lambda c=chunk: sb.table(TABLE).upsert(c, on_conflict="day,sku,warehouse").execute(), f"{TABLE}: пачка {i // BATCH + 1}", **kw)
+        n += len(chunk)
     return n
 
 

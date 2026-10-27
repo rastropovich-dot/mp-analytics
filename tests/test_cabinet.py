@@ -350,7 +350,7 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
         os.environ["SUPABASE_URL"] = "http://supabase.tests.invalid"
         os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
         sys.path.insert(0, os.path.join(ROOT, "scripts"))
-        names = ["ozon_orders_forecast", "ozon_product_catalog", "report_ozon_month", "report_wb_month", "report_finrez_wb", "finrez_pivots"]
+        names = ["ozon_orders_forecast", "ozon_product_catalog", "report_ozon_month", "report_wb_month", "report_finrez_wb", "finrez_pivots", "report_finrez"]
         cls.before = {n: sys.modules.pop(n, None) for n in names}
         cls.mods = {n: importlib.import_module(n) for n in names}
 
@@ -398,8 +398,24 @@ class RbhProfilesGiveNotSetTests(unittest.TestCase):
         fw = self.mods["report_finrez_wb"]
         self.assertEqual((fw.SHOP, fw.brand_of("t1"), fw.brand_of("", "КОЮЗ Топаз")), ("РБХ-1", "Beautyhome.me", "Beautyhome.me"))
         self.assertEqual(fw.BRAND_LABELS, {"Beautyhome.me", "(без товара)"})
-        self.assertEqual((fw.OWNER_CATEGORIES, fw.category_of("Ювелирные кольца"), fw.category_of(" Тени ")), ((), "Ювелирные кольца", "Тени"))   # предмет WB как есть (23.10)
-        self.assertEqual((fw.BRAND_SOURCE, fw.CATEGORY_SOURCE), ("price", "platform"))
+        # единые категории РБХ (27.10): предмет WB → категория справочника; незнакомый — «(нерешённая) …», не «Прочее»
+        self.assertEqual((fw.OWNER_CATEGORIES, fw.category_of(" Тени "), fw.category_of("Кремы", "Крем для рук")), ((), "Тени для век", "Кремы для рук"))
+        self.assertEqual(fw.category_of("Ювелирные кольца"), "(нерешённая) Ювелирные кольца")
+        self.assertEqual((fw.BRAND_SOURCE, fw.CATEGORY_SOURCE), ("price", "rbh"))
+
+    def test_book_groups_from_unified_categories(self):
+        """Слово владельца 27.10: у РБХ «Статус» книги — единая категория, справа от источника сводной — «Группа», срезы «по группам»."""
+        from decimal import Decimal as D
+        fr, fw = self.mods["report_finrez"], self.mods["report_finrez_wb"]
+        self.assertTrue(fr.GROUPS_ON)
+        self.assertEqual((fr.LONG_COLS[-1][0], fr.ORDER_DATA_COLS[-1][0], fr.wb_data_cols()[-1][0]), ("Группа", "Группа", "Группа"))
+        self.assertEqual(fr.describe("1", {}, {"1": {"type_name": "Пудра", "name": "Пудра X", "offer_id": "A1"}}, {})[1], "Пудры")
+        get = {"category": "Пудры"}.get
+        self.assertEqual(fr.GROUP_COL[1](get), "Макияж лица")
+        rows = [{"date": "2026-10-01", "category": "Пудры", "sales": D(100)}, {"date": "2026-10-01", "category": "Румяна", "sales": D(50)},
+                {"date": "2026-10-01", "category": "Шампуни", "sales": D(10)}]
+        self.assertEqual(sorted(fr.wb_pivots_by_group(rows, ["2026-10-01"], "group")), ["Макияж лица", "Уход за волосами и укладка"])
+        self.assertEqual(sorted({r["group"] for r in fw.build_split(rows, "group")}), ["Макияж лица", "Уход за волосами и укладка"])
 
     def test_pivot_samples_in_cabinet_data_dir(self):
         fp = self.mods["finrez_pivots"]

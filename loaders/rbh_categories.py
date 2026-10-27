@@ -125,6 +125,13 @@ def classify(source, name=""):
     return None, None, "none"
 
 
+def group_of(category):
+    """Группа категории; нерешённая («(нерешённая) …») — «(нерешённая)»; пусто — ""."""
+    if not category:
+        return ""
+    return CAT2G.get(category) or (UNRESOLVED if str(category).startswith(UNRESOLVED) else "")
+
+
 def label(source, name=""):
     """(группа, категория) для листа: нерешённая — ("(нерешённая)", "(нерешённая) <источник>")."""
     g, c, _how = classify(source, name)

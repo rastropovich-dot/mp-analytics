@@ -52,6 +52,7 @@ from loaders import ozon_ad_bonus  # noqa: E402
 from loaders import net_retry  # noqa: E402
 from loaders import ozon_finance_accrual as accrual_mod  # noqa: E402
 from loaders import unit_cost_history as uch  # noqa: E402
+from loaders import rbh_categories as rbh_cat  # noqa: E402
 import ozon_product_catalog as catalog_rules  # noqa: E402
 try:
     import report_finrez_wb as wbfin  # noqa: E402  — модуль WB-сессии (договор в его docstring): листы «Выкупы WB», «Данные WB выкупы», заказы WB
@@ -66,7 +67,8 @@ ARTICLES = ("Комиссия", "Логистика", "Отзывы", "Проч�
 NO_SKU = "(без SKU)"
 PLATFORM = "Ozon"
 BRAND_SOURCE = getattr(CABINET, "BOOK_BRAND_SOURCE", "catalog")        # "catalog" — карточка / буква артикула (KARATOV); "price" — прайс (РБХ)
-CATEGORY_SOURCE = getattr(CABINET, "BOOK_CATEGORY_SOURCE", "owner")    # "owner" — словарь владельца (KARATOV); "platform" — тип карточки Ozon (РБХ)
+CATEGORY_SOURCE = getattr(CABINET, "BOOK_CATEGORY_SOURCE", "owner")    # "owner" — словарь владельца (KARATOV); "platform" — тип карточки; "rbh" — единые категории РБХ
+GROUPS_ON = CATEGORY_SOURCE == "rbh"                                     # РБХ (слово владельца 27.10): колонка «Группа» и листы «× группа»
 PRICE_BRANDS = {}                                                       # артикул (lower) → бренд прайса; заполняется в main при BRAND_SOURCE == "price"
 NO_TYPE = "(без типа карточки)"
 OWNER_COEF = dict(CABINET.OWNER_COEF)        # коэффициенты листа владельца «Коэффициенты» — из профиля; пусто — колонка «образец» пуста
@@ -134,7 +136,9 @@ def describe(sku, sku2art, catalog, names):
         brand = PRICE_BRANDS.get(str(article).strip().lower()) or c.get("brand") or ""
     else:
         brand = c.get("brand") or catalog_rules.brand_of(article) or ""
-    if CATEGORY_SOURCE == "platform":                                      # РБХ: тип карточки Ozon как есть (решение владельца 22.10)
+    if CATEGORY_SOURCE == "rbh":                                           # РБХ: единые категории (loaders/rbh_categories, слово 27.10)
+        category = rbh_cat.label(c.get("type_name"), name)[1]
+    elif CATEGORY_SOURCE == "platform":                                    # тип карточки Ozon как есть (решение владельца 22.10)
         category = (c.get("type_name") or "").strip() or NO_TYPE
     else:
         category = c.get("category") or catalog_rules.category_by_name(name)
@@ -971,10 +975,12 @@ def wb_pivot(rows, days):
 
 
 def wb_pivots_by_group(rows, days, by):
-    """{группа: ({метка: строка}, порядок)} — блоки «по брендам» / «по категориям»; группа — brand / category строки модуля («—» если пусто)."""
+    """{группа: ({метка: строка}, порядок)} — блоки «по брендам» / «по категориям» / «по группам» (РБХ); группа — brand / category строки модуля,
+    group — группа единой категории строки («—» если пусто)."""
     groups = defaultdict(list)
     for r in rows:
-        groups[r.get(by) or "—"].append(r)
+        key = rbh_cat.group_of(r.get("category")) if by == "group" else r.get(by)
+        groups[key or "—"].append(r)
     return {g: wb_pivot(rs, days) for g, rs in groups.items()}
 
 
@@ -1113,7 +1119,7 @@ def wb_data_cols():
     acq = [c for c in cols[14:] if c[1] == "acquiring"]
     if len(acq) != 1:
         raise SystemExit(f"в DATA_COLS модуля WB нет одной колонки acquiring: {[c[0] for c in cols]}")
-    return cols[:14] + acq + [c for c in cols[14:] if c[1] != "acquiring"]
+    return cols[:14] + acq + [c for c in cols[14:] if c[1] != "acquiring"] + ([GROUP_COL] if GROUPS_ON else [])
 
 
 LONG_COLS = [("ID начисления", "accrual_id", None), ("Дата начисления", "date", "date"), ("Артикул", "article", None), ("SKU", "sku", None),
@@ -1122,6 +1128,9 @@ LONG_COLS = [("ID начисления", "accrual_id", None), ("Дата нач�
              ("Наименование", "name", None), ("Дни (Дата начисления)", "day_num", "int"), ("Месяцы (Дата начисления)", "month_num", "int"),
              ("Соинвест (баллы + зелёные цены)", "coinvest", "money"), ("Площадка", "platform", None),
              ("СС источник", "cost_source", None)]          # 15 полей владельца + 3 наших справа (источник СС — сорок шестая §3)
+GROUP_COL = ("Группа", lambda get: rbh_cat.group_of(get("category")), None)   # РБХ: группа единой категории — правее источника сводной
+if GROUPS_ON:
+    LONG_COLS = LONG_COLS + [GROUP_COL]
 ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Магазин", "shop", None), ("Артикул поставщика", "article", None),
                    ("Заказы, ₽", "created_a", "money"), ("Заказы, шт", "created_q", "int"), ("Реклама, ₽", "ads", "money"), ("Себ-ть Реал", "cogs_real", "money"),
                    ("Наименование", "name", None), ("Бренд", "brand", None), ("Статус", "category", None), ("Заказы, руб без НДС", "created_net", "money"),
@@ -1135,6 +1144,8 @@ ORDER_DATA_COLS = [("Дата", "date", "date"), ("МП", "mp", None), ("Маг�
                    ("СПП источник", "spp_source", None),   # 29 владельца + «Месяцы» + 5 наших («СПП источник» — сорок первая §4: измерено / по выкупам месяца)
                    ("СС источник", "cost_source", None),   # источник себестоимости строки: дата снимка 1С / «после последнего снимка …» (сорок шестая §3)
                    ("Коэф. источник", "coef_source", None)]  # РБХ (25.10): % выкупа и комиссия строки — свои у SKU или кабинета; у KARATOV пусто
+if GROUPS_ON:
+    ORDER_DATA_COLS = ORDER_DATA_COLS + [GROUP_COL]
 ORDER_CHECK_COLS = [("Оборот (с НДС)", "created_a"), ("Заказы, шт", "created_q"), ("Цена продавца", "price"), ("Комиссия %", "commission_pct"), ("Выручка", "revenue"),
                     ("Себестоимость", "cogs"), ("Маржа", "margin"), ("М-ть, %", "margin_pct"), ("Реклама", "ads_net"), ("ДДР, %", "drr_pct"),
                     ("Соинвест, %", "coinvest_pct"), ("Гр.фин.рез", "gross_fin"), ("Гр.фин.рез, %", "gross_fin_pct")]
@@ -1407,7 +1418,7 @@ def write_data_sheet(wb, title, cols, rows, widths=None, freeze="A2"):
         get = r.get if isinstance(r, dict) else (lambda k, _r=r: getattr(_r, k, None))
         out = []
         for k, f in getters:
-            v = get(k)
+            v = k(get) if callable(k) else get(k)            # вычисляемая колонка (группа РБХ — из категории строки)
             if v is None or v == "":
                 out.append(None)
                 continue
@@ -1595,7 +1606,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
     for n, line in enumerate(notes["buyouts"]):
         g.set(nxt + 1 + n, 1, line, note=True)
     _grid_sheet(wb, "Выкупы Ozon", g, freeze="B4")
-    for title, key in (("Выкупы Ozon × бренд", "brand"), ("Выкупы Ozon × категория", "category")):
+    for title, key in (("Выкупы Ozon × бренд", "brand"),) + ((("Выкупы Ozon × группа", "group"),) if GROUPS_ON else ()) + (("Выкупы Ozon × категория", "category"),):
         g = Grid()
         g.set(1, 1, title + " — блоки по группе; дни каждого месяца — под ним, раскрываются «+»", bold=True, note=True)
         r_cols, piv, order = 2, pivots[key][0], pivots[key][1]
@@ -1614,7 +1625,7 @@ def write_book(path, days, long_rows, pivots, order_rows_data, orders_pivot, coe
         for n, line in enumerate(notes.get("wb") or ()):
             g.set(nxt + 1 + n, 1, line, note=True)
         _grid_sheet(wb, "Выкупы WB", g, freeze="B3")
-        for title, by in (("Выкупы WB по брендам", "brand"), ("Выкупы WB по категориям", "category")):
+        for title, by in (("Выкупы WB по брендам", "brand"),) + ((("Выкупы WB по группам", "group"),) if GROUPS_ON else ()) + (("Выкупы WB по категориям", "category"),):
             g = Grid()
             g.set(1, 1, title + " — блоки по группе; дни каждого месяца — под ним, «+»", bold=True, note=True)
             r_cols = 2
@@ -1885,6 +1896,8 @@ def main(argv=None):
     young_days = [d for d in days if (date.today() - date.fromisoformat(d)).days < rep.YOUNG_DAYS]
     pivots = {"all": pivot_buyouts(buyout_rows, days), "brand": pivot_buyouts(buyout_rows, days, lambda r: r["brand"]),
               "category": pivot_buyouts(buyout_rows, days, lambda r: r["category"])}
+    if GROUPS_ON:
+        pivots["group"] = pivot_buyouts(buyout_rows, days, lambda r: rbh_cat.group_of(r["category"]))
     phase("выкупы: длинные строки из сырья и сводные")
     order_data, ostats = build_order_rows(days, order_rows, kpi, daily_rows, unit_cost, sku2art, catalog, names, today)
     coef = coefficients(order_data, buyout_rows, days, by_sku=COEF_BY_SKU)
@@ -2099,14 +2112,14 @@ def main(argv=None):
                       f"{(coef['buyout'].get('все') if mp_ == 'Ozon' else (wb_parts.get('buyout') or {}).get('итого', Decimal(1))) or Z:.6f}")
         # §3: Σ дней каждого месяца = строке месяца на всех листах формы
         days_checks = [("Выкупы Ozon", pivots["all"][0]["Ozon"], pivots["all"][1], BUYOUT_KEYS[:9])]
-        for key in ("brand", "category"):
+        for key in ("brand", "category") + (("group",) if GROUPS_ON else ()):
             for name, pv in pivots[key][0].items():
                 days_checks.append((f"Выкупы Ozon × {key} / {name or '(без признака)'}", pv, pivots[key][1], BUYOUT_KEYS[:9]))
         if not wb_parts.get("error"):
             wb_keys = ("sales", "commission", "cogs", "ads", "storage", "logistics", "other", "acquiring")
             pw, ow = wb_pivot(wb_parts["rows"], days)
             days_checks.append(("Выкупы WB", pw, ow, wb_keys))
-            for by in ("brand", "category"):
+            for by in ("brand", "category") + (("group",) if GROUPS_ON else ()):
                 for name, (p_, o_) in wb_pivots_by_group(wb_parts["rows"], days, by).items():
                     days_checks.append((f"Выкупы WB по {by} / {name}", p_, o_, wb_keys))
             days_checks.append(("Заказы / WB", wb_parts["orders_pivot"], orders_pivot[1], ("created_a", "created_q", "revenue", "cogs", "ads_net", "buyout_rub")))
@@ -2138,7 +2151,7 @@ def main(argv=None):
             print(f"{t:40}{a:>18,.2f}{b:>18,.2f}{diff:>14,.2f}   {why}")
             bad += 1 if diff != 0 else 0
         ok_sum = all(q(sum((pivots[k][0][n]["Общий итог"][f] for n in pivots[k][0]), Z) - tot[f]) == 0
-                     for k in ("brand", "category") for f in ("turnover", "commission", "logistics", "ads", "acquiring", "other", "cogs"))
+                     for k in ("brand", "category") + (("group",) if GROUPS_ON else ()) for f in ("turnover", "commission", "logistics", "ads", "acquiring", "other", "cogs"))
         print(f"Σ брендов = Σ категорий = общий по всем статьям: {'да' if ok_sum else 'НЕТ'}; строк данных {len(long_rows)}")
         print(f"колонок с разницей: {bad}")
         code = 1 if bad or not ok_sum else code

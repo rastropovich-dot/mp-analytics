@@ -60,6 +60,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
+from loaders import rbh_categories as rbh_cat  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 
 from loaders import stale_keys  # noqa: E402
@@ -926,7 +927,42 @@ COLS = [("Дата реализации", "date", None), ("Оборот (с НД
         ("строк отчёта", "rows", "int"), ("Примечание", "note", None)]
 
 
-def write_xlsx(path, month, rows, total, notes, orders=None):
+NO_GROUP = "Без группы (строки без товара)"
+GROUP_KEYS = ("turnover", "commission", "revenue", "cogs", "margin", "logistics", "storage_cost", "acquiring", "other")
+
+
+def build_groups(rows, days, cost_fn, today, cards):
+    """РБХ (слово владельца 27.10): {группа: итог build_daily по строкам товаров группы}; nm → (предмет, название) из карточек (cards),
+    без карточки — предмет строки отчёта; строки без товара (хранение, удержания) — «Без группы». Реклама и нетто аванса — дневные, по
+    группам не делятся: «Фин. рез.» групп — до рекламы. Σ групп по GROUP_KEYS = итогу листа без рекламы."""
+    by = defaultdict(list)
+    for r in rows:
+        nm = str(r.get("nm_id") or "")
+        if not nm or nm == "0":
+            by[NO_GROUP].append(r); continue
+        subj, title = cards.get(nm, (r.get("subject_name"), None))
+        by[rbh_cat.group_of(rbh_cat.label(subj or r.get("subject_name"), title)[1]) or rbh_cat.UNRESOLVED].append(r)
+    out = {}
+    for g in list(rbh_cat.G) + [rbh_cat.UNRESOLVED, NO_GROUP]:
+        if by.get(g):
+            t = total_row(build_daily(by[g], days, cost_fn, {}, today, ads_known=False))
+            t["fin_before_ads"] = t["margin"] - t["logistics"] - t["storage_cost"] - t["acquiring"] - t["other"]
+            out[g] = t
+    return out
+
+
+def load_wb_cards(sb):
+    """{nm_id: (предмет, название)} из wb_funnel_products_current, страницами по ключу."""
+    out, start = {}, 0
+    while True:
+        data = sb.table("wb_funnel_products_current").select("nm_id,subject_name,title").order("nm_id").range(start, start + 999).execute().data or []
+        out.update({str(r["nm_id"]): (r.get("subject_name"), r.get("title")) for r in data})
+        if len(data) < 1000:
+            return out
+        start += 1000
+
+
+def write_xlsx(path, month, rows, total, notes, orders=None, groups=None):
     """Книга месяца: лист «WB - <месяц>» и, если переданы, листы заказов (orders — [(название, строки, итог, подвал)])."""
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -972,6 +1008,31 @@ def write_xlsx(path, month, rows, total, notes, orders=None):
     for j in range(1, len(COLS) + 1):
         ws.column_dimensions[get_column_letter(j)].width = 15 if j > 1 else 16
     ws.column_dimensions[get_column_letter(len(COLS))].width = 60
+    if groups:
+        wsg = wb.create_sheet("Группы")
+        wsg["A1"] = "Выкупы WB по группам единых категорий РБХ (итог окна листа)"; wsg["A1"].font = bold
+        gcols = [("Группа", "name", None), ("Оборот (с НДС)", "turnover", "money"), ("Комиссия (с НДС)", "commission", "money"), ("Выручка", "revenue", "money"),
+                 ("Себестоимость", "cogs", "money"), ("Маржа", "margin", "money"), ("Логистика", "logistics", "money"), ("Хранение", "storage_cost", "money"),
+                 ("Эквайринг", "acquiring", "money"), ("Прочее", "other", "money"), ("Фин. рез. до рекламы", "fin_before_ads", "money"), ("Позиций", "positions", "int")]
+        for j, (head, _k, _f) in enumerate(gcols, 1):
+            c = wsg.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
+            c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        grows = [dict(t, name=n) for n, t in groups.items()]
+        gsum = {"name": "Итого", **{k: sum((r[k] for r in grows), Decimal(0)) for k in GROUP_KEYS + ("fin_before_ads",)}, "positions": sum(r["positions"] for r in grows)}
+        for i, r in enumerate(grows + [gsum], 4):
+            for j, (_h, k, f) in enumerate(gcols, 1):
+                v = r.get(k)
+                c = wsg.cell(row=i, column=j, value=float(v) if isinstance(v, Decimal) else v)
+                if f:
+                    c.number_format = fmt[f]
+                if r["name"] == "Итого":
+                    c.font = bold
+        ads_t = "—" if total.get("ads") is None else f"{total['ads']:,.2f}"
+        wsg.cell(row=len(grows) + 6, column=1, value="Группа — единые категории РБХ (loaders/rbh_categories): предмет WB, для расплывчатых — название карточки. «Фин. рез. до "
+                 f"рекламы»: реклама WB (итог листа {ads_t}) и нетто аванса — дневные, по группам не делятся; строки без товара — «{NO_GROUP}».")
+        wsg.freeze_panes = "B4"; wsg.row_dimensions[3].height = 45; wsg.column_dimensions["A"].width = 34
+        for j in range(2, len(gcols) + 1):
+            wsg.column_dimensions[get_column_letter(j)].width = 15
     for o_title, o_rows, o_total, o_notes in (orders or []):
         _write_orders_sheet(wb, o_title, o_rows, o_total, o_notes)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1241,7 +1302,13 @@ def main(argv=None):
                        f"Жёлтым — дни моложе {YOUNG_DAYS} суток: воронка пересматривает день задним числом."]
             orders.append((title, o_rows, o_total, o_notes))
     out = args.out or os.path.join(OUT_DIR, f"{CABINET.REPORT_PREFIX}wb_{args.month}_to_{days[-1]}.xlsx")
-    write_xlsx(out, args.month, daily, total, notes, orders=orders)
+    groups = None
+    if CABINET.CATEGORY_RULES == "rbh":             # РБХ: срез по группам единых категорий (слово владельца 27.10)
+        groups = build_groups(rows, days, cost_fn, today, load_wb_cards(sb))
+        diff = {k: sum((g[k] for g in groups.values()), Decimal(0)) - total[k] for k in GROUP_KEYS}
+        print("группы единых категорий: " + ", ".join(f"{n} {g['turnover']:,.0f}" for n, g in groups.items())
+              + "; Σ групп − итог листа по " + ", ".join(f"{k} {v:+,.2f}" for k, v in diff.items()))
+    write_xlsx(out, args.month, daily, total, notes, orders=orders, groups=groups)
     for title, _r, o_total, _n in orders:
         # выручка и маржа — None, когда множитель владельца (OWNER_ORDERS_AFTER_COMMISSION_WB) в профиле не задан (РБХ, 23.10): печатаем «—», не падаем
         fmt = lambda v: "—" if v is None else f"{v:,.2f}"  # noqa: E731

@@ -165,6 +165,19 @@ class PlatformTests(unittest.TestCase):
         self.kpi = [{"kpi_date": DAY, "marketplace_sku": "1", "ad_spend": "122"}, {"kpi_date": DAY, "marketplace_sku": "9", "ad_spend": "12.2"}]
         self.platforms = rep.build_platform_daily([DAY], self.buyouts, self.expenses, self.kpi, self.sku2art, lambda sku, day=None, qty=None: D("100"))
 
+    def test_groups_of_unified_categories_add_up(self):
+        """РБХ, слово владельца 27.10: срез по группам единых категорий — SKU по типу карточки, без карточки — по названию, расходы без SKU —
+        «Без группы»; Σ групп = Σ площадок (те же строки) по каждой колонке."""
+        cards = {"1": ("Пудра", "Пудра X"), "2": ("Шампунь для волос", "Шампунь"), "3": ("Кремы", "без подсказки"), "4": (None, "Палетка теней для век")}
+        groups = rep.build_group_daily([DAY], self.buyouts, self.expenses, self.kpi, cards, lambda sku, day=None, qty=None: D("100"))
+        t = {n: rep.platform_total(r) for n, r in groups.items()}
+        self.assertEqual((t["Макияж лица"]["turnover"], t["Уход за волосами и укладка"]["turnover"], t["Макияж глаз"]["turnover"]), (D("1220"), D("2440"), D("122")))
+        self.assertEqual(t["(нерешённая)"]["turnover"], D("610") + D("244"))         # «Кремы» без подсказки и SKU 5 без карточки и названия
+        self.assertEqual(t[rep.NO_GROUP]["other_with_acq"] + t[rep.NO_GROUP]["subscription"], (D("12.2") + D("24.4")) / D("1.22"))
+        p = {n: rep.platform_total(r) for n, r in self.platforms.items()}
+        for k in rep.PLATFORM_MONEY:
+            self.assertEqual(sum((x[k] for x in t.values()), D(0)), sum((x[k] for x in p.values()), D(0)), k)
+
     def test_platform_is_the_first_letter_of_the_article(self):
         self.assertEqual([rep.platform_of(a) for a in ("F000283615", "s-1", "T9", "X1", "", None)],
                          ["Основная", "Селект", "Дискаунтер", "Без площадки", "Без площадки", "Без площадки"])

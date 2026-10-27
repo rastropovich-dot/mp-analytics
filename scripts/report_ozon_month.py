@@ -69,6 +69,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 from loaders import ozon_ad_bonus  # noqa: E402
 from loaders import net_retry  # noqa: E402
+from loaders import rbh_categories as rbh_cat  # noqa: E402
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
 from loaders import ozon_finance_accrual as accrual  # noqa: E402
 from loaders import unit_cost_history  # noqa: E402
@@ -363,6 +364,23 @@ def metal_of(product_name):
     return NO_METAL
 
 
+NO_GROUP = "Без группы (расходы без SKU)"
+
+
+def build_group_daily(days, buyouts, expenses, kpi_rows, sku_cards, unit_cost):
+    """{группа единой категории РБХ: [строки по дням]} — колонки площадок; SKU → (тип карточки, название) из ozon_products (sku_cards),
+    SKU без карточки — по названию из витрины («(нет)» в правилах); расходы без SKU — «Без группы»; нерешённая — «(нерешённая)»."""
+    names = list(rbh_cat.G) + [rbh_cat.UNRESOLVED, NO_GROUP]
+
+    def classify(sku):
+        sku = str(sku or "")
+        if not sku:
+            return NO_GROUP
+        t, n = sku_cards.get(sku, (None, None))
+        return rbh_cat.group_of(rbh_cat.label(t, n)[1]) or rbh_cat.UNRESOLVED
+    return build_platform_daily(days, buyouts, expenses, kpi_rows, {}, unit_cost, classify=classify, names=names)
+
+
 def build_metal_daily(days, buyouts, expenses, kpi_rows, sku2name, unit_cost):
     """{металл: [строки по дням]} — те же колонки, что у площадок, разрез — по названию товара из витрины."""
     names = [label for _p, label in METALS] + [NO_METAL]
@@ -609,7 +627,7 @@ def overhead_note(days):
 
 
 def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=None, addition=None, orders=None, orders_error=None,
-               segments=None, types_summary=None):
+               segments=None, types_summary=None, groups=None):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -708,6 +726,38 @@ def write_xlsx(path, month, rows, total, sku_rows, notes, sku_notes, platforms=N
         wsp.freeze_panes = "B4"; wsp.row_dimensions[3].height = 45
         for j in range(1, len(pcols) + 1):
             wsp.column_dimensions[get_column_letter(j)].width = 15
+    if groups:
+        # РБХ (слово владельца 27.10): срез «группа» единых категорий — итог месяца по группе одной строкой, колонки площадок
+        wsg = wb.create_sheet("Группы")
+        wsg["A1"] = "Выкупы Ozon по группам единых категорий РБХ (итог окна листа)"; wsg["A1"].font = bold
+        gcols = [("Группа", "name", None), ("Оборот - выкупы", "turnover", money), ("Комиссия (с НДС)", "commission", money), ("Выручка", "revenue", money),
+                 ("Себестоимость", "cogs", money), ("Маржа", "margin", money), ("Мар-ть, %", "margin_pct", pct), ("Логистика", "logistics", money),
+                 ("Подписка", "subscription", money), ("Реклама (Performance)", "ads_perf", money), ("Отзывы", "reviews", money), ("% ДРР (реклама + отзывы)", "drr_pct", pct),
+                 ("Прочее с эквайрингом", "other_with_acq", money), ("Фин. рез.", "fin_result", money), ("% Фин. рез.", "fin_result_pct", pct), ("Позиций", "positions", "#,##0")]
+        for j, (head, _k, _f) in enumerate(gcols, 1):
+            c = wsg.cell(row=3, column=j, value=head); c.font = bold; c.fill = head_fill
+            c.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+        grows = [dict(t, name=n) for n, t in groups.items() if any(t[k] for k in PLATFORM_MONEY)]
+        gsum = {"name": "Итого"}
+        for k in PLATFORM_MONEY:
+            gsum[k] = sum((r[k] for r in grows), Z)
+        gsum["margin_pct"], gsum["fin_result_pct"] = ratio(gsum["margin"], gsum["revenue"]), ratio(gsum["fin_result"], gsum["revenue"])
+        gsum["drr_pct"] = drr_with_reviews(gsum["ads_perf"], gsum["reviews"], gsum["revenue"])
+        for i, r in enumerate(grows + [gsum], 4):
+            for j, (_h, k, fmt) in enumerate(gcols, 1):
+                v = r.get(k)
+                c = wsg.cell(row=i, column=j, value=float(v) if isinstance(v, Decimal) else v)
+                if fmt:
+                    c.number_format = fmt
+                if r["name"] == "Итого":
+                    c.font = bold
+        wsg.cell(row=len(grows) + 6, column=1, value="Группа — единые категории РБХ (loaders/rbh_categories, согласованы владельцем 26.10): тип карточки Ozon, для "
+                                                       "расплывчатых — название товара. Источники колонок — как у листов площадок: выкупы по SKU, расходы marketplace_expenses "
+                                                       "по SKU (эквайринг от прочего не отделён), реклама Performance по SKU; расходы без SKU — «" + NO_GROUP + "».")
+        wsg.freeze_panes = "B4"; wsg.row_dimensions[3].height = 45
+        wsg.column_dimensions["A"].width = 34
+        for j in range(2, len(gcols) + 1):
+            wsg.column_dimensions[get_column_letter(j)].width = 15
     if addition:
         wsa = wb.create_sheet("Сложение площадок")
         for j, head in enumerate(("Колонка", "Σ листов площадок", "Общий лист", "Разница", "Чем объясняется"), 1):
@@ -1582,6 +1632,13 @@ def main():
         if r.get("product_name") and str(r["marketplace_sku"]) not in sku2name:
             sku2name[str(r["marketplace_sku"])] = r["product_name"]
     metals = build_metal_daily(days, buyouts, expenses, kpi, sku2name, unit_cost)
+    group_totals, group_addition = None, None
+    if CABINET.CATEGORY_RULES == "rbh":           # РБХ: срез по группам единых категорий (слово владельца 27.10)
+        cards = {str(c["sku"]): (c.get("type_name"), c.get("name")) for c in fetch(sb, "ozon_products", "sku,type_name,name", [], ["sku"])}
+        for sku, name in sku2name.items():
+            cards.setdefault(sku, (None, name))      # SKU без карточки — по названию из витрины
+        group_totals = {name: platform_total(prows) for name, prows in build_group_daily(days, buyouts, expenses, kpi, cards, unit_cost).items()}
+        group_addition = platform_addition(total, group_totals)
     metal_totals = {name: platform_total(prows) for name, prows in metals.items()}
     metal_addition = platform_addition(total, metal_totals)
     types_summary = build_types_summary(types_by_day, days)
@@ -1668,7 +1725,12 @@ def main():
     notes.append(bonus_note or (f"Реклама за счёт бонусов Ozon (не расход): {total['ads_bonus']:,.2f} без НДС за окно, кампаний {len(bonus_camps)}"
                                 + (" (" + ", ".join(bonus_camps) + ")" if bonus_camps else "") + " — автосозданные кампании Ozon (isAutocreated), крутятся на "
                                 "начисленных бонусах продвижения; в «Реклама», ДРР и фин. рез. не входят, тип 41 их не содержит (пятьдесят третья)."))
-    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error, segments=metals, types_summary=types_summary)
+    write_xlsx(out, args.month, rows, total, sku_rows, notes, sku_notes, platforms, addition, orders, orders_error, segments=metals, types_summary=types_summary,
+               groups=group_totals)
+    if group_addition:
+        print("сложение групп единых категорий в общий лист (как у площадок):")
+        for title, a, b, diff, why in group_addition:
+            print(f"    {title:28}{a:>18,.2f}{('—' if b is None else f'{b:,.2f}'):>18}{('—' if diff is None else f'{diff:,.2f}'):>14}" + (f"   {why}" if diff else ""))
     print("  " + cogs_note)
     print(f"\nплощадки (по первой букве артикула):")
     print(f"  {'площадка':14}{'оборот':>18}{'выручка':>18}{'СС':>18}{'маржа':>16}{'логистика':>13}{'прочее+экв.':>14}{'реклама Perf.':>16}{'фин. рез.':>16}")

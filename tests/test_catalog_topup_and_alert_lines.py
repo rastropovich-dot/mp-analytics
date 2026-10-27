@@ -103,6 +103,12 @@ class CatalogTopupStepTests(unittest.TestCase):
 
 
 class AlertLinesTests(unittest.TestCase):
+    def test_unresolved_categories_line(self):
+        self.assertEqual(at.unresolved_categories_line([("1", "Пудра", "x")], [("2", "Кремы", "Крем для рук")]), "")
+        line = at.unresolved_categories_line([("1", "Новый тип", "x")], [("2", "Кремы", "без подсказки"), ("3", "Пудры", "")])
+        self.assertEqual(line, "⚠️ нерешённые категории: 2 SKU (Ozon 1, WB 1) — не в «Прочем», нужен справочник: Новый тип — 1 — x; Кремы — 2 — без подсказки")
+        self.assertEqual(at.get_unresolved_categories_line(), "")                 # профиль тестов — KARATOV: строки нет, база не читается
+
     def test_catalog_line(self):
         self.assertEqual(at.catalog_line(None, NOW), "")
         fresh = {"finished_at": "2026-09-28T00:36:10+00:00", "missing_after": 0, "written": 9}

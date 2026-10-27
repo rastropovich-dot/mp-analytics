@@ -239,6 +239,23 @@ def fetch_subjects_for(sb, nm_ids, batch=200):
     return out
 
 
+def fetch_titles_for(sb, nm_ids, batch=100):
+    """Название карточки для nmId-сирот (в отчёте есть, в текущих карточках нет): последнее из истории воронки wb_funnel_products_daily.
+    Нужно единым категориям РБХ (п. (5), слово 27.10): у расплывчатого предмета категорию решает название. {nmId: название}."""
+    out = {}
+    ids = sorted({int(n) for n in nm_ids})
+    for i in range(0, len(ids), batch):
+        try:
+            data = (sb.table("wb_funnel_products_daily").select("nm_id,title,day").in_("nm_id", ids[i:i + batch])
+                    .not_.is_("title", "null").order("nm_id").order("day", desc=True).limit(DICT_PAGE).execute().data or [])
+        except Exception as error:
+            print(f"название сироты из wb_funnel_products_daily: не прочитать — {str(error)[:120]}", flush=True)
+            return out
+        for r in data:
+            out.setdefault(int(r["nm_id"]), r.get("title"))
+    return out
+
+
 FUNNEL_CURRENT_TABLE = "wb_funnel_products_current"   # sql/20260928_create_wb_funnel_products_current.sql — по слову; пишет шаг воронки в конце окна (WB-12 §3)
 FUNNEL_LATEST_VIEW = "wb_funnel_products_latest"   # sql/20260926_create_wb_funnel_products_latest.sql — по слову; нет вьюхи → чтение таблицы окном
 
@@ -562,6 +579,12 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
     fetched = fetch_subjects_for(sb, missing) if (missing and hasattr(sb, "table")) else {}
     if missing:
         print(f"предмет не найден ни в строках окна, ни в воронке у {len(missing)} nmId; адресно из отчёта добрано {len(fetched)}", flush=True)
+    orphan_titles = {}
+    if CATEGORY_SOURCE == "rbh" and hasattr(sb, "table"):           # (5): сироты без карточки — название из истории воронки
+        orphans = sorted({nm for (_d, nm) in acc if nm is not None and not products.get(nm, {}).get("title")})
+        orphan_titles = fetch_titles_for(sb, orphans) if orphans else {}
+        if orphans:
+            print(f"сирот WB (nmId без карточки): {len(orphans)}; название из истории воронки у {len(orphan_titles)}", flush=True)
     out = []
     for (day, nm), a in sorted(acc.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         p = products.get(nm, {}) if nm is not None else {}
@@ -574,7 +597,7 @@ def build_rows(month_from, month_to, date_to=None, sb=None, rows=None, costs=Non
                "article": (vendor.upper() or None) if nm is not None else NO_PRODUCT, "nm_id": nm,
                "title": p.get("title") if nm is not None else NO_PRODUCT,
                "brand": brand_of(vendor, a["brand"] or p.get("brand")) if nm is not None else NO_PRODUCT,
-               "category": category_of(a["subject"] or p.get("subject"), p.get("title")) if nm is not None else NO_PRODUCT,
+               "category": category_of(a["subject"] or p.get("subject"), p.get("title") or orphan_titles.get(nm)) if nm is not None else NO_PRODUCT,
                "ads_allocated": (ads_source.get(day) if (ads_by_day is not None and a["ads"]) else ""), "qty": a["qty"], "no_cost_qty": a["no_cost_qty"],
                "cost_source": "; ".join(sorted(a["cost_sources"]))}
         for k in MONEY_KEYS:

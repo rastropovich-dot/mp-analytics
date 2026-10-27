@@ -220,3 +220,47 @@ class SourceNoteTests(unittest.TestCase):
         self.assertEqual(h.cost_pair("930281", "2026-09-10")[2], note)
         h0 = uch.CostHistory({"2026-10-15": {"930281": D("149.06")}})
         self.assertEqual(h0.cost_pair("930281", "2026-10-20")[2], "после последнего снимка 2026-10-15")   # день после снимка — правило сорок шестой
+
+
+
+class EffectiveBoundary(unittest.TestCase):
+    """РБХ, слово владельца 27.10 (вариант (А)): прайс «до 01.09» — снимком 2026-04-01, прайс 15.10 действует с 01.09; продажи до 31.08
+    включительно — по старому, с 01.09 — по 15.10; артикул без цены в 15.10 после 01.09 — последняя известная цена с пометкой (вариант (б))."""
+    NOTE = {"2026-10-15": "прайс РБХ 15.10", "2026-04-01": "прайс РБХ до 01.09"}
+
+    def h(self):
+        return uch.CostHistory({"2026-04-01": {"a": D("100"), "old_only": D("70")}, "2026-10-15": {"a": D("108"), "new_only": D("50")}},
+                               effective={"2026-10-15": "2026-09-01"}, source_note=self.NOTE)
+
+    def test_three_dates_and_the_edges(self):
+        h = self.h()
+        self.assertEqual(h.lookup("a", "2026-08-31"), (D("100"), "2026-04-01", "exact"))
+        self.assertEqual(h.lookup("a", "2026-09-01"), (D("108"), "2026-10-15", "exact"))       # наружу — дата снимка, не «действует с»
+        self.assertEqual(h.lookup("a", "2026-10-15"), (D("108"), "2026-10-15", "exact"))
+        self.assertEqual(h.lookup("a", "2026-08-23"), (D("100"), "2026-04-01", "exact"))
+        self.assertEqual(h.lookup("a", "2026-03-30"), (D("100"), "2026-04-01", "later"))       # раньше первого — первый
+        self.assertEqual(h.lookup("new_only", "2026-08-25"), (D("50"), "2026-10-15", "later"))  # нет в старом — 15.10
+        self.assertEqual(h.lookup("old_only", "2026-09-05"), (D("70"), "2026-04-01", "earlier"))  # (б): последняя известная цена
+
+    def test_labels_name_the_price(self):
+        h = self.h()
+        self.assertEqual(h.cost_source("a", "2026-09-01")[1], "прайс РБХ 15.10")
+        self.assertEqual(h.cost_source("old_only", "2026-09-05")[1], "прайс РБХ до 01.09")
+        self.assertIn("2026-10-15 (действует с 2026-09-01)", h.note())
+
+    def test_without_the_map_nothing_changes(self):
+        h = uch.CostHistory({"2026-04-01": {"a": D("100")}, "2026-10-15": {"a": D("108")}})
+        self.assertEqual(h.lookup("a", "2026-09-05"), (D("100"), "2026-04-01", "exact"))       # KARATOV: снимок действует со своей даты
+        with self.assertRaises(ValueError):
+            uch.CostHistory({"2026-04-01": {}, "2026-10-15": {}}, effective={"2026-10-15": "2026-04-01"})
+
+    def test_wb_history_takes_the_profile_map(self):
+        import sys, os
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import report_wb_month as wbm
+        from unittest import mock
+        with mock.patch.object(wbm, "COST_SNAPSHOT_EFFECTIVE", {"2026-10-15": "2026-09-01"}):
+            h = wbm.WbCostHistory({"2026-04-01": {"71862": D("117.4")}, "2026-10-15": {"71862": D("130")}})
+        self.assertEqual(h.lookup("71862_16333", "0", "2026-08-31")[::3], (D("117.4"), "nosuffix_digits"))
+        self.assertEqual(h.lookup("71862", "0", "2026-09-01")[0], D("130"))
+        self.assertEqual(h.dates, ["2026-04-01", "2026-10-15"])

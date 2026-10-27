@@ -74,6 +74,7 @@ from report_ozon_month import COST_RATE_K, MONTHS, VAT_RATES, load_rates_for, va
 Z = Decimal(0)
 C = Decimal("0.01")
 SNAP = CABINET.COST_SNAPSHOT_DATE              # снимок 1С себестоимости — из профиля; None — не задан, СС не считается
+COST_SNAPSHOT_EFFECTIVE = dict(CABINET.COST_SNAPSHOT_EFFECTIVE)   # «действует с» по снимкам (РБХ: 15.10 — с 01.09); у KARATOV пусто
 COST_SOURCE_NOTE = getattr(CABINET, "COST_SOURCE_NOTE", None)   # подпись источника СС: у РБХ «прайс РБХ 15.10, с НДС ÷ 1,22», у KARATOV — None
 OUT_DIR = cabinet.data_path("reports", prof=CABINET)
 YOUNG_DAYS = 2
@@ -290,10 +291,11 @@ class WbCostHistory:
     CostHistory.lookup_by_rate каждой из трёх историй; без rates / k — СС снимка, как в WB-17 §2."""
 
     def __init__(self, costs, uniform_id=None, uniform_base=None, meta=None, meta_id=None, meta_base=None, rates=None, k_table=None):
-        self.exact = uch.CostHistory(costs, meta=meta, rates=rates, k_table=k_table, source_note=COST_SOURCE_NOTE)
-        self.uniform_id = uch.CostHistory(uniform_id or {}, meta=meta_id, rates=rates, k_table=k_table, source_note=COST_SOURCE_NOTE)
-        self.uniform_base = uch.CostHistory(uniform_base or {}, meta=meta_base, rates=rates, k_table=k_table, source_note=COST_SOURCE_NOTE)
-        self.dates = sorted(set(self.exact.dates) | set(self.uniform_id.dates) | set(self.uniform_base.dates))
+        kw = {"rates": rates, "k_table": k_table, "source_note": COST_SOURCE_NOTE, "effective": COST_SNAPSHOT_EFFECTIVE}
+        self.exact = uch.CostHistory(costs, meta=meta, **kw)
+        self.uniform_id = uch.CostHistory(uniform_id or {}, meta=meta_id, **kw)
+        self.uniform_base = uch.CostHistory(uniform_base or {}, meta=meta_base, **kw)
+        self.dates = sorted(set(self.exact.orig.values()) | set(self.uniform_id.orig.values()) | set(self.uniform_base.orig.values()))   # даты снимков, не «действует с»
         self.rates, self.k_table = rates, (k_table or {})
         self.counters = Counter()
         self.kinds = Counter()

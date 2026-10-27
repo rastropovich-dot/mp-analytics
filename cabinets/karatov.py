@@ -131,6 +131,7 @@ COST_PRICE_FORMAT = "1c"                           # файл 1С (лист TDSh
 COST_PRICE_VAT_RATE = None                         # себестоимость 1С пишется как есть (без деления); вопрос «с НДС ли она» — вторая задача RBH, в отчёт
 BOOK_WB_BUYOUT_MONTH_FROM = None   # % выкупа WB (когорта) — с первого месяца книги, как прежде
 COST_SOURCE_NOTE = None   # суффикс к источнику СС в листах и книгах (unit_cost_history.source_label); None — как раньше
+COST_SNAPSHOT_EFFECTIVE = {}      # «действует с» по снимкам (РБХ 27.10); у KARATOV снимок действует со своей даты, как прежде
 BOOK_BRAND_SOURCE = "catalog"        # бренд строк книг: карточка Ozon / буква артикула (KARATOV)
 BOOK_CATEGORY_SOURCE = "owner"       # категория строк книг: словарь владельца по типу карточки / предмету (KARATOV)
 CATEGORY_TREE_FILE = "ozon_products/category_tree.json"

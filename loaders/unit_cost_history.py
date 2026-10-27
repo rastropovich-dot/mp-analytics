@@ -66,6 +66,8 @@ def source_label(snapshot_date, kind, note=None):
     note (профиль кабинета COST_SOURCE_NOTE, у РБХ «прайс РБХ 15.10») — подпись целиком вместо даты и вида снимка (ответ советника 23.10, п. 5:
     у РБХ один снимок, «ключа нет в снимке ≤ даты, взят более поздний» на каждой строке — шум); «нет снимка» остаётся.
     Параметр, не состояние модуля: один процесс может держать истории разных кабинетов (тесты)."""
+    if isinstance(note, dict):                      # подпись по снимку (РБХ 27.10: «прайс РБХ до 01.09» / «прайс РБХ 15.10»)
+        note = note.get(str(snapshot_date)[:10]) if snapshot_date is not None else None
     note = (str(note).strip() or None) if note else None
     if note and snapshot_date is not None:
         return note
@@ -240,11 +242,20 @@ def k_for(k_table, fineness, kind):
 
 
 class CostHistory:
-    def __init__(self, snapshots, meta=None, rates=None, k_table=None, stale_days=STALE_DAYS, source_note=None):
+    def __init__(self, snapshots, meta=None, rates=None, k_table=None, stale_days=STALE_DAYS, source_note=None, effective=None):
         """snapshots — {snapshot_date 'YYYY-MM-DD': {offer_id_norm: Decimal}}; meta — {snapshot_date: {norm: (metal_fineness, product_kind)}};
-        rates — MetalRates | None; k_table — COST_RATE_K профиля ({} / None → без поправки)."""
-        self.dates = sorted(str(d) for d in snapshots)
-        self.snaps = {str(d): snapshots[d] for d in snapshots}
+        rates — MetalRates | None; k_table — COST_RATE_K профиля ({} / None → без поправки); source_note — подпись источника строкой или
+        картой {снимок: подпись}; effective — {snapshot_date: «действует с»} (профиль COST_SNAPSHOT_EFFECTIVE, РБХ 27.10: прайс 15.10
+        действует с 01.09, прайс «до 01.09» — снимком 2026-04-01): подбор снимка ≤ дня идёт по датам «действует с», наружу отдаётся
+        дата самого снимка. Без карты — как прежде."""
+        eff = {str(k)[:10]: str(v)[:10] for k, v in (effective or {}).items()}
+        self.orig, self.snaps = {}, {}                         # дата «действует с» → дата снимка / его строки
+        for d in snapshots:
+            e = eff.get(str(d), str(d))
+            if e in self.orig:
+                raise ValueError(f"два снимка действуют с одной даты {e}: {self.orig[e]} и {d}")
+            self.orig[e], self.snaps[e] = str(d), snapshots[d]
+        self.dates = sorted(self.orig)
         self.meta = {str(d): meta[d] for d in (meta or {})}
         self.rates = rates
         self.k_table = k_table or {}
@@ -261,25 +272,26 @@ class CostHistory:
         """(себестоимость | None, дата снимка | None, kind) — без учёта в счётчиках."""
         if not self.dates or not norm:
             return None, None, "none"
+        o = self.orig                                          # даты подбора — «действует с», наружу — дата снимка
         if day is None:
             d = self.dates[-1]
             c = self.snaps[d].get(norm)
-            return (c, d, "latest") if c is not None else (None, None, "none")
+            return (c, o[d], "latest") if c is not None else (None, None, "none")
         day = str(day)[:10]
-        i = bisect_right(self.dates, day)                      # self.dates[:i] — снимки ≤ day
+        i = bisect_right(self.dates, day)                      # self.dates[:i] — снимки, действующие на day
         if i > 0:
             d = self.dates[i - 1]
             c = self.snaps[d].get(norm)
             if c is not None:
-                return c, d, ("after" if day > self.dates[-1] else "exact")   # «after»: день позже последнего снимка — взят последний
+                return c, o[d], ("after" if day > o[self.dates[-1]] else "exact")   # «after»: день позже даты последнего снимка — взят последний
         for d in self.dates[i:]:                               # ближайший более поздний
             c = self.snaps[d].get(norm)
             if c is not None:
-                return c, d, "later"
-        for d in reversed(self.dates[:max(i - 1, 0)]):         # более ранние (кроме уже проверенного)
-            c = self.snaps[d].get(norm)
+                return c, o[d], "later"
+        for d in reversed(self.dates[:max(i - 1, 0)]):         # более ранние (кроме уже проверенного): у РБХ — «цена до 01.09» для артикула,
+            c = self.snaps[d].get(norm)                        # которого нет в прайсе 15.10 (слово владельца 27.10, вариант (б))
             if c is not None:
-                return c, d, "earlier"
+                return c, o[d], "earlier"
         return None, None, "none"
 
     def rate_adjust(self, cost, snapshot_date, day, fineness, kind):
@@ -386,11 +398,12 @@ class CostHistory:
             if self.counters.get(kind):
                 rub = f", {self.rubles[kind]:,.2f} ₽" if self.rubles.get(kind) else ""
                 parts.append(f"{KIND_TEXT[kind]}: {self.counters[kind]} строк{rub}")
-        return ("Себестоимость по дате продажи — снимки " + ", ".join(self.dates) + "; " + ("; ".join(parts) if parts else "обращений не было") + ". "
+        dates = [o + (f" (действует с {e})" if e != o else "") for e, o in sorted(self.orig.items())]
+        return ("Себестоимость по дате продажи — снимки " + ", ".join(dates) + "; " + ("; ".join(parts) if parts else "обращений не было") + ". "
                 + self.rate_note())
 
 
-def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, rates=None, k_table=None, source_note=None):
+def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, rates=None, k_table=None, source_note=None, effective=None):
     """Все снимки таблицы по ключам norms: {snapshot_date: {norm: Decimal}} + проба и вид изделия строки (для поправки по курсу). Ключи — кусками
     по chunk (снимков может быть несколько на ключ, а PostgREST отдаёт не больше page_cap строк на ответ — ответ ровно в page_cap строк
     считается обрезанным и роняет чтение вслух). rates / k_table — курсы 1С и k профиля; без них история считает как сорок шестая."""
@@ -406,7 +419,7 @@ def load_history(sb, norms, marketplace_code="ozon", chunk=120, page_cap=1000, r
             d, n = str(r["snapshot_date"]), str(r["offer_id_norm"])
             out[d][n] = Decimal(str(r["unit_cost"]))
             meta[d][n] = (r.get("metal_fineness"), r.get("product_kind"))
-    return CostHistory(out, meta=meta, rates=rates, k_table=k_table, source_note=source_note)
+    return CostHistory(out, meta=meta, rates=rates, k_table=k_table, source_note=source_note, effective=effective)
 
 
 def load_brand_map(sb, marketplace_code="ozon", page=1000):

@@ -55,6 +55,14 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(self.h.lookup("t000000001", "17", "2026-06-01"), (None, None, "none", "none"))
         self.assertEqual(self.h.lookup("", "17", "2026-06-01"), (None, None, "none", "none"))
 
+    def test_nosuffix_digits_is_the_last_step(self):
+        """«догнать KARATOV» п. 2 (26.10): хвост «_<цифры>» (РБХ-1, мочалки 71864_16333) — последняя ступень, только если прежние не нашли."""
+        self.assertEqual(self.h.lookup("f000009483_16333", "0", "2026-06-01")[::3], (D("45"), "nosuffix_digits"))
+        self.assertEqual(self.h.lookup("F000009483", "0", "2026-06-01")[::3], (D("45"), "exact"))       # без хвоста — как прежде
+        self.assertEqual(self.h.lookup("f000009483_x1", "0", "2026-06-01")[::3], (None, "none"))        # хвост не из цифр — нет
+        self.assertEqual(wbm.nosuffix_digits("71864_16333"), "71864"); self.assertIsNone(wbm.nosuffix_digits("71864"))
+        self.assertEqual(wbm.cost_bases(["71864_16333", "f1-жм"]), {"71864_16333", "71864", "f1"})   # строка прайса без хвоста читается
+
     def test_snapshot_follows_the_sale_day(self):
         c, d, kind, step = self.h.lookup("f000078698", "23.5", "2026-04-25")
         self.assertEqual((c, d, kind, step), (D("5000"), "2026-04-20", "exact", "size"))     # снимок ≤ даты

@@ -95,5 +95,62 @@ class RowsAndTargets(unittest.TestCase):
             topup.main(["--date-from", "2026-10-22", "--date-to", "2026-10-22", "--write"])
 
 
+class FakeSb:
+    """Таблица атрибуции по дням (select … eq … execute) и upsert итога."""
+    def __init__(self, attribution):
+        self.attribution, self.upserts, self.filters = attribution, [], {}
+
+    def table(self, name):
+        self.name, self.filters = name, {}; return self
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, field, value):
+        self.filters[field] = value; return self
+
+    def limit(self, _n):
+        return self
+
+    def upsert(self, row, on_conflict=None):
+        self.upserts.append((self.name, row, on_conflict)); return self
+
+    def execute(self):
+        day = self.filters.get("sale_date")
+        self.data = [r for r in self.attribution if r["sale_date"] == day] if day else []
+        return self
+
+
+class NightlyArbiter(unittest.TestCase):
+    def setUp(self):
+        from loaders import ozon_expenses_loader as exp
+        self.exp = exp
+        self.window = {"day_from": "2026-10-20", "day_to": "2026-10-23"}
+
+    def test_last_two_days_are_not_judged(self):
+        self.assertEqual(self.exp.click_arbiter_days(self.window), ["2026-10-20", "2026-10-21"])
+        self.assertEqual(self.exp.click_arbiter_days({"day_from": "2026-10-23", "day_to": "2026-10-23"}), [])
+
+    def test_missing_campaign_named_and_state_written_only_on_apply(self):
+        accruals = [acc41("2026-10-20", "42573900", 1164.65), acc41("2026-10-20", "30580019", 1676.17), acc41("2026-10-22", "999", 5)]
+        attr = [{"sale_date": "2026-10-20", "campaign_id": "42573900", "ad_spend": 1164.65}]
+        sb = FakeSb(attr)
+        p = self.exp.run_click_arbiter(accruals, self.window, apply=False, sb=sb)
+        self.assertEqual((p["equal"], p["missing_pairs"], p["missing_campaigns"]), (1, 1, ["30580019"]))
+        self.assertIn("30580019 1 676,17", p["line"])
+        self.assertEqual(sb.upserts, [])
+        self.exp.run_click_arbiter(accruals, self.window, apply=True, sb=sb)
+        self.assertEqual(sb.upserts[0][1]["state_key"], "ozon_click_campaign_arbiter:last")
+
+    def test_alert_line(self):
+        import alerts_telegram as at
+        from datetime import datetime, timezone
+        now = datetime(2026, 10, 28, 7, 30, tzinfo=timezone.utc)
+        self.assertEqual(at.click_arbiter_line(None, now), "")
+        self.assertEqual(at.click_arbiter_line({"finished_at": "2026-10-28T01:10:00+00:00", "line": None}, now), "")
+        self.assertTrue(at.click_arbiter_line({"finished_at": "2026-10-28T01:10:00+00:00", "line": "клики: …"}, now).startswith("⚠️ клики"))
+        self.assertIn("записи за эту ночь нет", at.click_arbiter_line({"finished_at": "2026-10-26T01:10:00+00:00", "line": None}, now))
+
+
 if __name__ == "__main__":
     unittest.main()

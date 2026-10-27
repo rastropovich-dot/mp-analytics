@@ -1107,6 +1107,7 @@ def get_last_pipeline_run(client=None):
 CATALOG_STATE_KEY = "ozon_catalog_topup:last"    # пишет scripts/ozon_catalog_topup_step.py (сорок третья §4)
 FBO_BUYER_STATE_KEY = "ozon_fbo_buyer_prices:last"  # пишет scripts/ozon_fbo_orders_step.py (сорок пятая §3)
 FINREZ_STATE_KEY = "finrez_nightly:last"          # пишет scripts/finrez_nightly_status.py с машины владельца (сорок третья §5)
+CLICK_ARBITER_STATE_KEY = "ozon_click_campaign_arbiter:last"  # пишет loaders/ozon_expenses_loader.run_click_arbiter (RBH 27.10, п. 2 (б))
 STATE_MAX_AGE_HOURS = 20
 
 
@@ -1143,6 +1144,17 @@ def catalog_line(payload, now=None):
     if payload.get("error"):
         text = "⚠️ " + text + f"; ошибка шага: {payload['error']}"
     return text
+
+
+def click_arbiter_line(payload, now=None):
+    """«⚠️ клики: кампании без атрибуции — …» по итогу ночного арбитра; всё сошлось — молчим; строки нет — шаг ещё не в проде, молчим;
+    итог старый — говорим."""
+    if not payload:
+        return ""
+    now = now or datetime.now(timezone.utc)
+    if _fresh(payload, now) is False:
+        return f"арбитр кликов по кампаниям: записи за эту ночь нет (последняя — {str(payload.get('finished_at'))[:16]} UTC)"
+    return f"⚠️ {payload['line']}" if payload.get("line") else ""
 
 
 def finrez_book_line(payload, now=None):
@@ -1230,7 +1242,8 @@ def build_message(target_date=None, skip_snapshot=False):
     if run_line:
         lines.extend([run_line, ""])
     extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), fbo_buyer_line(get_state_payload(FBO_BUYER_STATE_KEY)),
-                               finrez_book_line(get_state_payload(FINREZ_STATE_KEY))) if line]
+                               finrez_book_line(get_state_payload(FINREZ_STATE_KEY)),
+                               click_arbiter_line(get_state_payload(CLICK_ARBITER_STATE_KEY))) if line]
     if extra:
         lines.extend(extra + [""])
 

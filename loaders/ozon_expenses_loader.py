@@ -19,6 +19,11 @@ try:
 except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
     import stale_keys
 
+try:
+    from loaders import ozon_click_campaign_arbiter as click_arbiter
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import ozon_click_campaign_arbiter as click_arbiter
+
 load_dotenv()
 try:
     import cabinet
@@ -334,6 +339,44 @@ def cleanup_stale_ledger(window, ledger_rows, apply):
         lambda sb, stale: stale_keys.delete_by_date_and_column(sb, "ozon_accrual_daily_types", stale, "accrual_date", "type_id"), apply)
 
 
+CLICK_ARBITER_STATE_KEY = "ozon_click_campaign_arbiter:last"   # читает alerts_telegram.click_arbiter_line (RBH 27.10, п. 2 (б))
+CLICK_ARBITER_LAG_DAYS = 2   # последние два дня окна не судим: атрибуцию D−1 ночь пишет после этого шага, начисления доезжают двое суток
+
+
+def click_arbiter_days(window, lag_days=CLICK_ARBITER_LAG_DAYS):
+    """Дни окна, которые арбитр судит: от начала окна до day_to − lag_days."""
+    first = datetime.fromisoformat(window["day_from"]).date()
+    last = datetime.fromisoformat(window["day_to"]).date() - timedelta(days=lag_days)
+    return [(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)] if last >= first else []
+
+
+def run_click_arbiter(accruals, window, apply, sb=None, now=None):
+    """Тип 41 по кампаниям (unit_number) против атрибуции CPC — из ТЕХ ЖЕ начислений окна, без обращений к API.
+    Печатает строку в отчёт прогона; при apply кладёт итог в pipeline_runtime_state для утреннего алерта. Только чтение таблиц."""
+    sb = sb or supabase
+    days = click_arbiter_days(window)
+    if not days:
+        return None
+    acc = {k: v for k, v in click_arbiter.campaign_spend_from_accruals(accruals).items() if k[0] in set(days)}
+    result = click_arbiter.compare(acc, click_arbiter.attribution_campaign_spend(sb, days))
+    line = click_arbiter.summary_line(result)
+    missing_total = sum(result["missing"].values(), click_arbiter.Decimal(0))
+    mismatch_delta = sum((b - a for a, b in result["mismatch"].values()), click_arbiter.Decimal(0))
+    print(f"Арбитр кликов по кампаниям ({days[0]} … {days[-1]}): пар равны {result['equal']}, без атрибуции {len(result['missing'])} "
+          f"на {click_arbiter.money(missing_total)}, атрибуция ≠ начислению {len(result['mismatch'])} (Δ {click_arbiter.money(mismatch_delta)}), "
+          f"атрибуция без начисления {len(result['extra'])}" + (f"\n  ⚠️ {line}" if line else ""))
+    finished = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+    campaigns = sorted({c for _d, c in result["missing"]})
+    payload = {"finished_at": finished, "day_from": days[0], "day_to": days[-1], "equal": result["equal"], "missing_pairs": len(result["missing"]),
+               "missing_campaigns": campaigns[:20], "missing_amount": str(missing_total), "mismatch_pairs": len(result["mismatch"]),
+               "mismatch_delta": str(mismatch_delta), "extra_pairs": len(result["extra"]), "line": line}
+    if apply:
+        sb.table("pipeline_runtime_state").upsert(
+            {"state_key": CLICK_ARBITER_STATE_KEY, "state_type": "ozon_click_campaign_arbiter", "account_signature": None,
+             "payload": payload, "updated_at": finished}, on_conflict="state_key").execute()
+    return payload
+
+
 def run(days_back=30, apply=True):
     # Источник расходов — /v1/finance/accrual/by-day. Разбор построчный по
     # услугам: старое operation_type из новых данных не восстанавливается,
@@ -387,6 +430,11 @@ def run(days_back=30, apply=True):
         cleanup_stale_ledger(window, ledger, apply)
     except Exception as exc:  # noqa: BLE001
         print(f"⚠️  чистка застрявших ключей ozon_accrual_daily_types не выполнена{', леджер записан' if apply else ''}: {type(exc).__name__}: {exc}", flush=True)
+    # Арбитр кликов «день × кампания» — справочно: отказ не роняет шаг, но называется.
+    try:
+        run_click_arbiter(accruals, window, apply)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  арбитр кликов по кампаниям не выполнен (расходы и леджер записаны): {type(exc).__name__}: {exc}", flush=True)
 
 
 if __name__ == "__main__":

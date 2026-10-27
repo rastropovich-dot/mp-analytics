@@ -111,7 +111,7 @@ class MarketplaceShowcase(unittest.TestCase):
     def test_created_is_read_with_the_ordered_reader_and_summed_per_day(self):
         orders = [{"id": 1, "order_date": DAY, "marketplace_code": "ozon", "orders_qty": 2, "cancelled_orders_qty": 1},
                   {"id": 2, "order_date": DAY, "marketplace_code": "ozon", "orders_qty": 3, "cancelled_orders_qty": None}]
-        with mock.patch.object(mkpi, "read_all_by_id", return_value=orders) as reader:
+        with mock.patch.object(mkpi, "iter_by_id", return_value=iter(orders)) as reader:   # 59-я: генератор, тот же порядок id
             self.assertEqual(mkpi.load_created_orders_qty(), {(DAY, "ozon"): 6})
         self.assertEqual(reader.call_args[0][0], "marketplace_orders")
         self.assertIn("cancelled_orders_qty", reader.call_args[0][1])

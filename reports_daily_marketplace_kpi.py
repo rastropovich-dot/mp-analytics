@@ -4,7 +4,7 @@ from supabase import create_client
 
 from loaders import peak_memory
 from loaders import wb_buyout_cohort as cohort
-from reports_daily_sku_kpi import buyout_rate, created_orders_qty, read_all_by_id
+from reports_daily_sku_kpi import buyout_rate, created_orders_qty, iter_by_id
 
 load_dotenv()
 import cabinet  # noqa: E402
@@ -21,13 +21,20 @@ def chunks(items, size):
         yield items[i:i + size]
 
 
+# 59-я: только колонки, которые сводная суммирует, и строка за строкой — витрина (497 тыс. строк) списком держала 1,06 ГБ
+SKU_KPI_COLUMNS = ("id,kpi_date,marketplace_code,orders_qty,orders_amount_seller,buyouts_qty,buyouts_amount_seller,ad_spend,"
+                   "ad_orders_qty,ad_orders_revenue,organic_orders_qty,organic_orders_revenue,commission_amount,logistics_amount,"
+                   "other_expenses_amount,gross_margin_amount,ebitda_amount")
+
+
 def load_daily_sku_kpi():
-    """Вся витрина SKU страницами по ключу id, с сортировкой — тот же читатель, что у KPI по SKU.
+    """Вся витрина SKU страницами по ключу id, с сортировкой — тот же читатель, что у KPI по SKU, но генератором (59-я): суммы
+    складываются по мере чтения в том же порядке id, в памяти одна страница.
 
     Было range() без order(): PostgREST без сортировки не обещает порядка, и сумма по площадке
     могла собраться из страниц с повторами и пропусками (how-we-work, 15 сентября).
     """
-    return read_all_by_id("daily_sku_kpi")
+    return iter_by_id("daily_sku_kpi", SKU_KPI_COLUMNS)
 
 
 def load_created_orders_qty():
@@ -37,7 +44,7 @@ def load_created_orders_qty():
     тем же читателем по id, только нужные колонки. Правило — reports_daily_sku_kpi.buyout_rate.
     """
     out = {}
-    for row in read_all_by_id("marketplace_orders", "id,order_date,marketplace_code,orders_qty,cancelled_orders_qty"):
+    for row in iter_by_id("marketplace_orders", "id,order_date,marketplace_code,orders_qty,cancelled_orders_qty"):
         key = (row["order_date"], row["marketplace_code"])
         out[key] = out.get(key, 0) + created_orders_qty(row)
     return out
@@ -55,14 +62,14 @@ def load_wb_cohort_daily():
 
 
 def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
-    sku_rows = load_daily_sku_kpi()
-    print(f"Строк daily_sku_kpi загружено: {len(sku_rows)}")
     created = load_created_orders_qty() if created is None else created
     wb_cohort = load_wb_cohort_daily() if wb_cohort is None else wb_cohort
 
     grouped = {}
+    read = 0
 
-    for row in sku_rows:
+    for row in load_daily_sku_kpi():
+        read += 1
         kpi_date = row.get("kpi_date")
         marketplace_code = row.get("marketplace_code")
 
@@ -122,6 +129,7 @@ def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
         grouped[key]["gross_margin_amount"] += float(row.get("gross_margin_amount") or 0)
         grouped[key]["ebitda_amount"] += float(row.get("ebitda_amount") or 0)
 
+    print(f"Строк daily_sku_kpi загружено: {read}")
     rows = []
 
     sources = {"cohort": 0, "cohort_forecast": 0, "calendar": 0}

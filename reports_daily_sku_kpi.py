@@ -274,7 +274,7 @@ PLACEMENT_TYPE_ID = 46
 ORPHAN_STORAGE_DAYS = 7
 STORAGE_ONLY_ZERO_COLUMNS = ("orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "ad_spend",
                              "commission_amount", "other_expenses_amount", "product_cost", "ad_orders_qty", "ad_orders_revenue",
-                             "organic_orders_qty", "organic_orders_revenue")
+                             "organic_orders_qty", "organic_orders_revenue", "reviews_spend")   # «Отзывы» (26.10): строка с отзывами — не «только хранение»
 
 
 def load_ledger_type46():

@@ -13,7 +13,7 @@ TODAY = date(2026, 10, 27)
 
 def _orders():
     rows, i = [], 0
-    for day in ("2026-08-30", "2026-08-31", "2026-09-01", "2026-09-30", "2026-10-01", "2026-10-26"):
+    for day in ("2026-08-30", "2026-08-31", "2026-09-01", "2026-09-22", "2026-09-30", "2026-10-01", "2026-10-26"):
         for sku in ("100", "200"):
             for schema, qty, amount in (("fbo", 1, 1000.1), ("fbs", 2, 2000.2), ("fbo2", 1, 0.3)):
                 i += 1
@@ -123,8 +123,9 @@ class ByMonthEqualsWhole(unittest.TestCase):
             self.assertEqual(months[key], row, key)          # dict ==: float до бита, все поля
         self.assertEqual(len(saved), 10)                      # январь … октябрь, пустые месяцы — пустая запись
         self.assertGreater(len([1 for rows, _f in saved if rows]), 2)
-        # окно чистки: только Ozon, только последние 30 дней — те же ключи, что у целого прогона
-        expected = {k for k in whole if k[1] == "ozon" and k[0] >= "2026-09-27"}
+        # ключи чисток: только Ozon, окно 30 дней и 7 дней перед ним (строки «только хранение» выпавших дней, 09-22 — там)
+        expected = {k for k in whole if k[1] == "ozon" and k[0] >= "2026-09-20"}
+        self.assertIn(("2026-09-22", "ozon", "100"), expected)
         self.assertEqual({(r["kpi_date"], r["marketplace_code"], r["marketplace_sku"]) for r in window_keys}, expected)
 
     def test_type46_moved_the_same(self):

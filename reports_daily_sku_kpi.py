@@ -267,6 +267,15 @@ LEDGER_TABLE = "ozon_accrual_daily_types"
 STORAGE_ONLY_DAYS = 30      # = STALE_WINDOW_DAYS: ключ «только хранение» витрина заводит не глубже окна ночи
 PLACEMENT_TYPE_ID = 46
 
+# 59-я, слово 2026-10-28 (вариант А): день, выпавший из окна STORAGE_ONLY_DAYS, оставлял в таблице свои строки «только хранение» —
+# ночь их больше не строит (хранение незаведённых ключей уходит в логистику без SKU), а чистка застрявших смотрит только окно.
+# Ночь 28.10: 27.09 — 2 739 таких строк, логистика витрины = расходам + 534,08 (хранение дважды). Чистка — за ORPHAN_STORAGE_DAYS
+# дней перед окном (запас на пропущенные ночи), см. cleanup_storage_only_orphans.
+ORPHAN_STORAGE_DAYS = 7
+STORAGE_ONLY_ZERO_COLUMNS = ("orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "ad_spend",
+                             "commission_amount", "other_expenses_amount", "product_cost", "ad_orders_qty", "ad_orders_revenue",
+                             "organic_orders_qty", "organic_orders_revenue")
+
 
 def load_ledger_type46():
     """{день: тип 46 «Размещение» положительно} из леджера начислений; не прочитался — {} (перенос п. 1 57-й в этот прогон не делается)."""
@@ -864,7 +873,8 @@ def build_by_month(with_source=False, today=None, write=True, sink=None):
     shared = load_shared(today)
     shared_failures = list(SOURCE_READ_FAILURES)
     lo, hi = source_bounds(today)
-    window_from = (today - timedelta(days=STALE_WINDOW_DAYS)).isoformat()
+    # ключи для двух чисток: окно застрявших и ORPHAN_STORAGE_DAYS дней перед ним (строки «только хранение» выпавших дней)
+    window_from = (today - timedelta(days=STALE_WINDOW_DAYS + ORPHAN_STORAGE_DAYS)).isoformat()
     total, window_keys = 0, []
     for m_from, m_to in month_periods(lo, hi):
         print(f"— месяц {m_from[:7]} ({m_from} … {m_to})")
@@ -984,6 +994,74 @@ def cleanup_stale_kpi_keys(rows, today=None, apply=True, sb=None):
         lambda client, stale: stale_keys.delete_by_id(client, KPI_TABLE, stale), apply)
 
 
+def is_storage_only(row):
+    """Строка витрины Ozon, в которой нет ничего, кроме хранения: продажи, реклама, комиссия, прочее, органика — нули, логистика =
+    хранению (перенос типа 46 кладёт хранение в logistics_amount) до копейки."""
+    if not str(row.get("marketplace_sku") or ""):
+        return False
+    if any(float(row.get(c) or 0) != 0 for c in STORAGE_ONLY_ZERO_COLUMNS):
+        return False
+    return round(float(row.get("logistics_amount") or 0), 2) == round(float(row.get("storage_cost") or 0), 2)
+
+
+def cleanup_storage_only_orphans(rows, today=None, apply=True, sb=None, days=None):
+    """Строки «только хранение» за дни, выпавшие из окна, — удалить (59-я, вариант А). Возвращает число удалённых.
+
+    rows — ключи, построенные этим прогоном. Дни — ORPHAN_STORAGE_DAYS перед окном STORAGE_ONLY_DAYS (или days=(с, по), тоже только
+    старше окна). Удаляется ключ Ozon, которого прогон не построил и у которого в таблице ничего, кроме хранения (is_storage_only):
+    ночь такой ключ не строит по правилу 57-й, его хранение уже в логистике без SKU того же дня. Защиты: не прочитан хоть один
+    источник — ничего; день без единого построенного ключа не трогается; ключ без источника, но не «только хранение», не трогается и
+    называется (общий механизм застрявших за окно не заглядывает). Список: итог по дням и каждая строка с хранением ≠ 0; нулевые —
+    числом (их ~2 600 в день).
+    """
+    sb = sb or supabase
+    today = today or date.today()
+    window_from = today - timedelta(days=STORAGE_ONLY_DAYS)
+    if days is None:
+        days = ((window_from - timedelta(days=ORPHAN_STORAGE_DAYS)).isoformat(), (window_from - timedelta(days=1)).isoformat())
+    day_from, day_to = days
+    if day_to >= window_from.isoformat():
+        raise ValueError(f"чистка «только хранение» — только дни старше окна (< {window_from.isoformat()}), запрошено по {day_to}")
+    built = [r for r in rows if str(r["marketplace_code"]) == STALE_MARKETPLACE and day_from <= str(r["kpi_date"]) <= day_to]
+    built_keys, built_days = {kpi_key(r) for r in built}, {str(r["kpi_date"]) for r in built}
+    print(f"Строки «только хранение» старше окна: дни {day_from} … {day_to}, построено ключей {len(built_keys)}, "
+          f"дней с построенными строками {len(built_days)}")
+    if SOURCE_READ_FAILURES:
+        print(f"  не прочитаны источники {', '.join(SOURCE_READ_FAILURES)} — ничего не удаляю")
+        return 0
+    existing = stale_keys.read_window_rows(
+        sb, KPI_TABLE, "id,kpi_date,marketplace_code,marketplace_sku,logistics_amount,storage_cost," + ",".join(STORAGE_ONLY_ZERO_COLUMNS),
+        [("eq", "marketplace_code", STALE_MARKETPLACE), ("gte", "kpi_date", day_from), ("lte", "kpi_date", day_to)],
+        ["kpi_date", "marketplace_code", "marketplace_sku"])
+    stale, skipped_days = stale_keys.plan(existing, built_keys, built_days, kpi_key, lambda r: str(r["kpi_date"]))
+    if skipped_days:
+        print(f"  дни со строками в таблице, но без единой построенной строки — НЕ трогаю: {', '.join(skipped_days)}")
+    orphans = [r for r in stale if is_storage_only(r)]
+    others = [r for r in stale if not is_storage_only(r)]
+    if others:
+        print(f"  ключи без источника, но не «только хранение» — НЕ трогаю ({len(others)}): "
+              + ", ".join(f"{r['kpi_date']} sku {r['marketplace_sku']} (id {r['id']})" for r in others[:20]) + (" …" if len(others) > 20 else ""))
+    if not orphans:
+        print("  строк «только хранение» вне окна нет")
+        return 0
+    by_day = defaultdict(lambda: [0, 0, Decimal(0)])
+    for r in orphans:
+        d = by_day[str(r["kpi_date"])]
+        d[0] += 1; d[1] += float(r.get("storage_cost") or 0) != 0; d[2] += Decimal(str(r.get("storage_cost") or 0))
+    print(f"  к удалению {len(orphans)}, хранение {sum(d[2] for d in by_day.values()):,.2f} ₽ (уже в логистике без SKU тех же дней):")
+    for day, (n, n_money, money) in sorted(by_day.items()):
+        print(f"    {day}: строк {n}, с хранением ≠ 0 — {n_money}, Σ {money:,.2f}")
+    for r in orphans:
+        if float(r.get("storage_cost") or 0) != 0:
+            print(f"    {r['kpi_date']} sku {r['marketplace_sku']} хранение {float(r['storage_cost']):,.2f} (id {r['id']})")
+    if not apply:
+        print("  --dry-run: не удаляю")
+        return 0
+    n = stale_keys.delete_by_id(sb, KPI_TABLE, orphans)
+    print(f"  ✅ удалено {n} из {len(orphans)}")
+    return n
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="собрать витрину и план чистки ключей; в БД не писать ни строки")
@@ -996,6 +1074,10 @@ if __name__ == "__main__":
         cleanup_stale_kpi_keys(window_keys, apply=not args.dry_run)
     except Exception as exc:  # витрина уже записана; отказ чистки не должен ронять фатальный шаг KPI
         print(f"⚠️ Чистка ключей витрины не выполнена: {type(exc).__name__}: {exc}")
+    try:
+        cleanup_storage_only_orphans(window_keys, apply=not args.dry_run)
+    except Exception as exc:  # то же: витрина записана, отказ чистки шаг не роняет
+        print(f"⚠️ Чистка строк «только хранение» старше окна не выполнена: {type(exc).__name__}: {exc}")
     if args.dry_run:
         print("db_writes = 0")
     print(peak_memory.line("KPI: расчет SKU"))

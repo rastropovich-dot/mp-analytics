@@ -238,6 +238,10 @@ def build_steps(args=None):
         # Каталог карточек: SKU базы без строки в ozon_products (новые товары) — карточки только недостающих, ≤ 2 обращения
         # (info/list по 1 000 SKU + дерево категорий), запись upsert; нефатален по правилу FATAL_STEPS; итог — строкой в алерте (сорок третья §4).
         ("Ozon: каталог, добор недостающих", "python3 scripts/ozon_catalog_topup_step.py"),
+        # Участники «Ускоренного сбора отзывов» (слово владельца 26.10): снимок promotions REVIEWS_PROMO всех SKU каталога, 1 обращение на
+        # 1 000 SKU, ozon_reviews_promo_daily; только у кабинета с REVIEWS_96_RULE = participants (РБХ), у KARATOV — пропуск без обращений.
+        # Нефатален по правилу FATAL_STEPS: витрина берёт последний снимок ≤ дате, пропущенная ночь — вчерашний снимок.
+        ("Ozon: участники ускоренного сбора отзывов", "python3 scripts/ozon_reviews_promo_step.py"),
         ("Ozon: лог статусов отправлений", "python3 scripts/ozon_posting_status_log.py --apply"),
         ("Ozon: дневные финоперации", "python3 loaders/ozon_finance_transactions_loader.py"),
         ("Ozon: штуки выкупов", "python3 scripts/ozon_buyout_units_step.py"),

@@ -332,6 +332,7 @@ def detect_anomalies(wb_rows, ozon_realization_rows, ozon_orders_rows):
             safe_num(last.get("commission_amount"))
             + safe_num(last.get("logistics_amount"))
             + safe_num(last.get("other_expenses_amount"))
+            + safe_num(last.get("reviews_spend"))          # отзывы 95 + 96 — своя колонка витрины с 26.10
             + safe_num(last.get("ad_spend"))
         )
 
@@ -552,7 +553,7 @@ def print_ozon_economics_table(rows):
         revenue = float(row.get("buyouts_amount_seller") or 0)
         commission = float(row.get("commission_amount") or 0)
         logistics = float(row.get("logistics_amount") or 0)
-        other = float(row.get("other_expenses_amount") or 0)
+        other = float(row.get("other_expenses_amount") or 0) + float(row.get("reviews_spend") or 0)   # отзывы (26.10) — в прочих, как прежде
         ad_spend = float(row.get("ad_spend") or 0)
         total_expenses = ad_spend + commission + logistics + other
         net_after_expenses = revenue - total_expenses

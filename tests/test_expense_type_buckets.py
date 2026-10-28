@@ -43,7 +43,7 @@ class ExpenseBucketTests(unittest.TestCase):
             self.assertEqual(kpi.EXPENSE_TYPE_BUCKETS.get(expense_type), "ad_spend", f"{rate} -> {expense_type}")
 
     def test_buckets_are_real_columns(self):
-        allowed = {"commission_amount", "logistics_amount", "ad_spend", "other_expenses_amount"}
+        allowed = {"commission_amount", "logistics_amount", "ad_spend", "other_expenses_amount", "reviews_spend"}   # reviews_spend — 26.10
         for expense_type, bucket in kpi.EXPENSE_TYPE_BUCKETS.items():
             self.assertIn(bucket, allowed, f"{expense_type} -> {bucket}")
 

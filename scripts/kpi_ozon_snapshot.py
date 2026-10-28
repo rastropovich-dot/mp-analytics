@@ -29,7 +29,7 @@ load_dotenv(os.path.join(ROOT, ".env"))
 import cabinet  # noqa: E402
 _PROFILE = cabinet.profile()   # каталоги данных и логов кабинета (MP_CABINET); guard — у загрузчика / точки входа, здесь только профиль
 
-COLS = ("orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "ad_spend", "commission_amount", "logistics_amount", "other_expenses_amount")
+COLS = ("orders_qty", "orders_amount_seller", "buyouts_qty", "buyouts_amount_seller", "ad_spend", "commission_amount", "logistics_amount", "other_expenses_amount", "reviews_spend")   # reviews_spend — 26.10
 OUT_DIR = cabinet.data_path("snapshots", prof=_PROFILE)
 
 

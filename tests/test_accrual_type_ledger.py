@@ -75,10 +75,10 @@ class LedgerRowsTests(unittest.TestCase):
         by_type = defaultdict(Decimal)
         for r in expense_rows:
             by_type[r["expense_type"]] += Decimal(str(r["expense_amount"]))
-        self.assertEqual(set(by_type), {"commission", "logistics", "other", "subscription", "unknown_777"})
-        # логистика 50,10 + 49,90 + 1,00; прочее — типы 1 и 96 (тип 38 свернулся в ноль); 41, 54, 25, 10 сюда не попали
-        self.assertEqual((by_type["logistics"], by_type["other"], by_type["subscription"], by_type["unknown_777"]),
-                         (Decimal("101.00"), Decimal("24.40"), Decimal("24.40"), Decimal("5.55")))
+        self.assertEqual(set(by_type), {"commission", "logistics", "other", "subscription", "reviews", "unknown_777"})
+        # логистика 50,10 + 49,90 + 1,00; прочее — тип 1 (тип 38 свернулся в ноль); 96 — статья reviews с 26.10; 41, 54, 25, 10 сюда не попали
+        self.assertEqual((by_type["logistics"], by_type["other"], by_type["subscription"], by_type["reviews"], by_type["unknown_777"]),
+                         (Decimal("101.00"), Decimal("12.20"), Decimal("24.40"), Decimal("12.20"), Decimal("5.55")))
         rows = ledger()
         self.assertEqual((rows[(DAY, 41)]["amount"], rows[(DAY, 54)]["amount"]), (-300.00, -200.00))
 

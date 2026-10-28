@@ -102,7 +102,7 @@ class ByMonthEqualsWhole(unittest.TestCase):
         from contextlib import ExitStack
         shared = {"wb_cohort": ({}, {}), "ledger46": dict(LEDGER46), "organic": list(ORGANIC),
                   "article_map": kpi.build_article_map(_orders()), "wb_ads": dict(WB_ADS), "wb_other": list(WB_OTHER),
-                  "wb_articles": kpi.wb_articles_of(WB_STORAGE)}
+                  "wb_articles": kpi.wb_articles_of(WB_STORAGE), "reviews_participants": kpi.load_reviews_participants()}
         with ExitStack() as stack:
             _common(stack)
             stack.enter_context(mock.patch.object(kpi, "load_shared", return_value=shared))
@@ -140,6 +140,40 @@ class ByMonthEqualsWhole(unittest.TestCase):
         saved = []
         self.by_month(saved, failures=["wb_paid_storage_nm_daily"])
         self.assertTrue(all(f == ["wb_paid_storage_nm_daily"] for _rows, f in saved))
+
+
+class ReviewsByMonth(ByMonthEqualsWhole):
+    """«Отзывы» (26.10) поверх 59-й: тип 96 без SKU разносится по участникам и в сборке по месяцам — участники читаются один раз
+    в общих источниках (load_shared), строки те же до бита, Σ дня не меняется."""
+    PARTICIPANTS = {"2026-08-30": {"200"}, "2026-10-01": {"100", "200"}}
+
+    def setUp(self):
+        extra = [{"id": 900 + i, "expense_date": d, "marketplace_code": "ozon", "marketplace_sku": sku, "article": "",
+                  "expense_type": "reviews", "expense_amount": a}
+                 for i, (d, sku, a) in enumerate((("2026-08-30", "", 33.33), ("2026-09-01", "", 12.0), ("2026-09-01", "100", 4.0),
+                                                  ("2026-10-26", "", 7.77)))]
+        base = _expenses
+        patches = (mock.patch(f"{__name__}._expenses", side_effect=lambda: base() + extra),
+                   mock.patch.object(kpi.CABINET, "REVIEWS_96_RULE", "participants"),
+                   mock.patch.object(kpi, "load_reviews_participants", return_value=self.PARTICIPANTS))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_reviews_allocated_the_same_and_day_sums_kept(self):
+        whole = _by_key(self.whole())
+        saved = []
+        self.by_month(saved)
+        months = _by_key([r for rows, _f in saved for r in rows])
+        for day, total in (("2026-08-30", 33.33), ("2026-09-01", 16.0), ("2026-10-26", 7.77)):
+            got = [r["reviews_spend"] for k, r in months.items() if k[0] == day and k[1] == "ozon"]
+            self.assertAlmostEqual(sum(got), total, places=6, msg=day)
+            self.assertEqual({k: r["reviews_spend"] for k, r in months.items() if k[0] == day},
+                             {k: r["reviews_spend"] for k, r in whole.items() if k[0] == day})
+        self.assertEqual(months[("2026-08-30", "ozon", "200")]["reviews_spend"], 33.33)     # участник 30.08 — только SKU 200
+        self.assertEqual(months[("2026-08-30", "ozon", "")]["reviews_spend"], 0.0)
+        self.assertEqual(months[("2026-09-01", "ozon", "")]["reviews_spend"], 0.0)          # 01.09: снимок 30.08 → SKU 200
+        self.assertEqual(kpi.load_reviews_participants.call_count, 2)                        # целиком — 1, по месяцам — 1 (общие источники)
 
 
 class MonthPeriods(unittest.TestCase):

@@ -612,7 +612,7 @@ def build_fast_sku_rows(date_from, date_to, sku_filter):
 
     commission_rate_30d = safe_div(sum(num(item.get("commission_amount")) for item in window_30), buyouts_rev_30) or 0
     logistics_rate_30d = safe_div(sum(num(item.get("logistics_amount")) for item in window_30), buyouts_rev_30) or 0
-    other_rate_30d = safe_div(sum(num(item.get("other_expenses_amount")) for item in window_30), buyouts_rev_30) or 0
+    other_rate_30d = safe_div(sum(num(item.get("other_expenses_amount")) + num(item.get("reviews_spend")) for item in window_30), buyouts_rev_30) or 0   # отзывы (26.10) — в прочих, как прежде
 
     orders_revenue = num(row.get("orders_amount_seller"))
     ad_attributed_revenue = num(row.get("ad_orders_revenue"))
@@ -755,7 +755,7 @@ def build_fast_sku_rows(date_from, date_to, sku_filter):
         "organic_share_revenue": round(organic_revenue / orders_revenue, 4) if orders_revenue > 0 else None,
         "commission": num(row.get("commission_amount")),
         "logistics": num(row.get("logistics_amount")),
-        "other_expenses": num(row.get("other_expenses_amount")),
+        "other_expenses": num(row.get("other_expenses_amount")) + num(row.get("reviews_spend")),
         "expected_revenue_after_buyout": expected_revenue_after_buyout,
         "expected_margin_after_ads": expected_margin_after_ads,
         "stock_qty": None if stock_qty_value is None else num(stock_qty_value),
@@ -923,7 +923,7 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
 
         commission_rate_30d = safe_div(sum(num(item.get("commission_amount")) for item in window_30), buyouts_rev_30) or 0
         logistics_rate_30d = safe_div(sum(num(item.get("logistics_amount")) for item in window_30), buyouts_rev_30) or 0
-        other_rate_30d = safe_div(sum(num(item.get("other_expenses_amount")) for item in window_30), buyouts_rev_30) or 0
+        other_rate_30d = safe_div(sum(num(item.get("other_expenses_amount")) + num(item.get("reviews_spend")) for item in window_30), buyouts_rev_30) or 0   # отзывы (26.10) — в прочих, как прежде
 
         orders_revenue = num(row.get("orders_amount_seller"))
         ad_attributed_revenue = num(row.get("ad_orders_revenue"))
@@ -1063,7 +1063,7 @@ def build_rows(date_from, date_to, sku_filter=None, sku_offset=0, sku_batch_size
             "organic_share_revenue": round(organic_revenue / orders_revenue, 4) if orders_revenue > 0 else None,
             "commission": num(row.get("commission_amount")),
             "logistics": num(row.get("logistics_amount")),
-            "other_expenses": num(row.get("other_expenses_amount")),
+            "other_expenses": num(row.get("other_expenses_amount")) + num(row.get("reviews_spend")),
             "expected_revenue_after_buyout": expected_revenue_after_buyout,
             "expected_margin_after_ads": expected_margin_after_ads,
             "stock_qty": (

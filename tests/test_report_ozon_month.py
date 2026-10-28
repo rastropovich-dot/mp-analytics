@@ -30,7 +30,7 @@ def expense(kind, amount, day=DAY):
 
 # расход положителен, как внутри листа: 32 — логистика; 1, 96, 38 — статья other; 51 — подписка; 25 — компенсация нам (в леджере +61)
 TYPES = {1: D("12.2"), 41: D("61"), 54: D("61"), 51: D("24.4"), 96: D("12.2"), 38: D("12.2"), 32: D("122"), 25: D("-61")}
-EXPENSES = [expense("logistics", "122"), expense("other", "36.6"), expense("subscription", "24.4"),
+EXPENSES = [expense("logistics", "122"), expense("other", "24.4"), expense("reviews", "12.2"), expense("subscription", "24.4"),   # 96 — статья reviews с 26.10
             expense("advertising_clicks", "999"), expense("commission", "777")]
 
 
@@ -69,14 +69,13 @@ class DailyFormulaTests(unittest.TestCase):
 
     def test_reviews_95_leave_subscription_96_leave_other_and_fin_result_is_unchanged(self):
         before, _ = one_day()
-        r, _ = one_day(types={**TYPES, 95: D("36.6")})                 # 95 «Отзывы за баллы» — по TYPE_TO_EXPENSE подписка
+        r, _ = one_day(types={**TYPES, 95: D("36.6")})                 # 95 «Отзывы за баллы» — с 26.10 статья reviews
         self.assertEqual(r["subscription"], before["subscription"])    # 95 не в подписке листа
         self.assertEqual(r["reviews"], D("40"))                        # (36,6 + 12,2) / 1,22
-        self.assertEqual((r["reviews_in_subscription"], r["reviews_in_other"]), (D("30"), D("10")))
         self.assertEqual(r["fin_result"], before["fin_result"] - D("30"))   # 95 — новый расход, ровно на свою сумму
         self.assertEqual(r["drr_pct"], D("0.1")); self.assertEqual(r["drr_reviews_pct"], D("0.14"))
         self.assertEqual(r["ads_like_manual"], before["ads_like_manual"] + D("30"))   # «по образцу» — как прежде: вся подписка (с 95) + 96
-        self.assertEqual(r["db_minus_raw"], {"subscription": D("-36.60")})   # сверка с расходами — по полной статье (в базе 95 внутри subscription)
+        self.assertEqual(r["db_minus_raw"], {"reviews": D("-36.60")})   # сверка с расходами — по статье базы (95 нет в фикстуре расходов)
         t = rep.total_row([r])
         self.assertEqual(t["reviews"], D("40")); self.assertEqual(t["drr_reviews_pct"], D("0.14"))
 
@@ -114,7 +113,8 @@ class DailyFormulaTests(unittest.TestCase):
         r, _ = one_day(types=None)
         for k in ("acquiring", "ads", "compensations", "fin_result", "fin_result_with_comp", "drr_pct"):
             self.assertIsNone(r[k], k)
-        self.assertEqual(r["other"], D("30"))                      # запасной путь — статья из расходов; эквайринг не отделить
+        self.assertEqual(r["other"], D("20"))                      # запасной путь — статья из расходов; эквайринг не отделить
+        self.assertEqual(r["reviews"], D("10"))                    # статья reviews базы (96 из фикстуры расходов)
         self.assertIsNone(rep.total_row([r])["fin_result"])        # итог неполон, и это видно
 
     def test_position_without_cost_is_counted_not_priced_at_zero(self):
@@ -160,7 +160,7 @@ class PlatformTests(unittest.TestCase):
         self.sku2art = {"1": "F001", "2": "S002", "3": "T003", "4": "X004"}
         self.buyouts = [buyout("1220", "122", sku="1"), buyout("2440", "0", sku="2"), buyout("610", "0", sku="3"), buyout("122", "0", sku="4"), buyout("244", "0", sku="5")]
         self.expenses = [dict(expense("logistics", "122"), marketplace_sku="1"), dict(expense("other", "61"), marketplace_sku="2"),
-                         dict(expense("other", "12.2"), marketplace_sku=""), dict(expense("subscription", "24.4"), marketplace_sku=""),
+                         dict(expense("reviews", "12.2"), marketplace_sku=""), dict(expense("subscription", "24.4"), marketplace_sku=""),
                          dict(expense("advertising_clicks", "999"), marketplace_sku="1"), dict(expense("commission", "777"), marketplace_sku="1")]
         self.kpi = [{"kpi_date": DAY, "marketplace_sku": "1", "ad_spend": "122"}, {"kpi_date": DAY, "marketplace_sku": "9", "ad_spend": "12.2"}]
         self.platforms = rep.build_platform_daily([DAY], self.buyouts, self.expenses, self.kpi, self.sku2art, lambda sku, day=None, qty=None: D("100"))
@@ -173,7 +173,7 @@ class PlatformTests(unittest.TestCase):
         t = {n: rep.platform_total(r) for n, r in groups.items()}
         self.assertEqual((t["Макияж лица"]["turnover"], t["Уход за волосами и укладка"]["turnover"], t["Макияж глаз"]["turnover"]), (D("1220"), D("2440"), D("122")))
         self.assertEqual(t["(нерешённая)"]["turnover"], D("610") + D("244"))         # «Кремы» без подсказки и SKU 5 без карточки и названия
-        self.assertEqual(t[rep.NO_GROUP]["other_with_acq"] + t[rep.NO_GROUP]["subscription"], (D("12.2") + D("24.4")) / D("1.22"))
+        self.assertEqual((t[rep.NO_GROUP]["subscription"], t[rep.NO_GROUP]["reviews"]), (D("24.4") / D("1.22"), D("12.2") / D("1.22")))   # 96 без SKU — «Отзывы»
         p = {n: rep.platform_total(r) for n, r in self.platforms.items()}
         for k in rep.PLATFORM_MONEY:
             self.assertEqual(sum((x[k] for x in t.values()), D(0)), sum((x[k] for x in p.values()), D(0)), k)
@@ -186,7 +186,8 @@ class PlatformTests(unittest.TestCase):
         t = {n: rep.platform_total(r) for n, r in self.platforms.items()}
         self.assertEqual([t[n]["turnover"] for n in ("Основная", "Селект", "Дискаунтер", "Без площадки")], [D("1220"), D("2440"), D("610"), D("366")])
         self.assertEqual((t["Основная"]["revenue"], t["Основная"]["logistics"], t["Основная"]["ads_perf"]), (D("900"), D("100"), D("100")))
-        self.assertEqual((t["Селект"]["other_with_acq"], t["Без площадки"]["other_with_acq"], t["Без площадки"]["subscription"]), (D("50"), D("10"), D("20")))
+        self.assertEqual((t["Селект"]["other_with_acq"], t["Без площадки"]["other_with_acq"], t["Без площадки"]["subscription"]), (D("50"), D("0"), D("20")))
+        self.assertEqual(t["Без площадки"]["reviews"], D("10"))      # 96 без SKU — статья reviews, в «Без площадки»
         self.assertEqual(t["Без площадки"]["ads_perf"], D("10"))      # реклама SKU, которого нет в заказах, не теряется
 
     def test_platform_sheets_add_up_to_the_general_sheet(self):
@@ -194,7 +195,7 @@ class PlatformTests(unittest.TestCase):
         rows, _ = rep.build_daily([DAY], self.buyouts, self.expenses, {DAY: types}, lambda sku, day=None, qty=None: D("100"), "2026-09-19")
         total = rep.total_row([rep.add_ratios(r) for r in rows])
         add = {title: (diff, why) for title, _a, _b, diff, why in rep.platform_addition(total, {n: rep.platform_total(r) for n, r in self.platforms.items()})}
-        for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка (+ отзывы 95)", "Прочее + Эквайринг (+ отзывы 96)"):
+        for title in ("Оборот", "Комиссия", "Выручка", "Себестоимость", "Маржа", "Логистика", "Подписка", "Прочее + Эквайринг", "Отзывы"):
             self.assertEqual(add[title][0], D("0.00"), title)
         self.assertEqual(add["Реклама"][0], q_(D("110") - D("200") / D("1.22")))   # Performance против начислений — источники разные
 

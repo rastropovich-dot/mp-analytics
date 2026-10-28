@@ -104,6 +104,8 @@ def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
                 "commission_amount": 0,
                 "logistics_amount": 0,
                 "other_expenses_amount": 0,
+                "reviews_spend": 0,                 # отзывы Ozon 95 + 96 (26.10)
+                "ads_reviews_share_of_orders": 0,   # ДРР (реклама + отзывы)
 
                 "gross_margin_amount": 0,
                 "gross_margin_percent": 0,
@@ -126,6 +128,7 @@ def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
         grouped[key]["commission_amount"] += float(row.get("commission_amount") or 0)
         grouped[key]["logistics_amount"] += float(row.get("logistics_amount") or 0)
         grouped[key]["other_expenses_amount"] += float(row.get("other_expenses_amount") or 0)
+        grouped[key]["reviews_spend"] += float(row.get("reviews_spend") or 0)
         grouped[key]["gross_margin_amount"] += float(row.get("gross_margin_amount") or 0)
         grouped[key]["ebitda_amount"] += float(row.get("ebitda_amount") or 0)
 
@@ -148,6 +151,7 @@ def build_marketplace_kpi(created=None, wb_cohort=None, with_source=False):
 
         if row["orders_amount_seller"] > 0:
             row["ad_share_of_orders"] = round(row["ad_spend"] / row["orders_amount_seller"], 4)
+            row["ads_reviews_share_of_orders"] = round((row["ad_spend"] + row["reviews_spend"]) / row["orders_amount_seller"], 4)
             row["ad_share_revenue"] = round(row["ad_orders_revenue"] / row["orders_amount_seller"], 4)
         else:
             row["ad_share_revenue"] = 0

@@ -94,6 +94,7 @@ class IsStorageOnly(unittest.TestCase):
         self.assertTrue(kpi.is_storage_only(kpi_row("2026-09-27", "1", 1, storage=0.004, logistics=0.0)))   # до копейки
         self.assertFalse(kpi.is_storage_only(kpi_row("2026-09-27", "", 1)))                                  # строка без SKU — никогда
         self.assertFalse(kpi.is_storage_only(kpi_row("2026-09-27", "1", 1, organic_orders_qty=1)))
+        self.assertFalse(kpi.is_storage_only(kpi_row("2026-09-27", "1", 1, storage=1.5, reviews_spend=7.78)))   # отзывы 95 / 96 у SKU — не сирота
 
 
 if __name__ == "__main__":

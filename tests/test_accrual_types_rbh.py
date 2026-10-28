@@ -9,7 +9,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "loaders"))
 import ozon_finance_accrual as accrual  # noqa: E402
 
-RBH_TYPES = {12: "logistics", 30: "logistics", 19: "external_promo", 95: "subscription", 50: "other", 84: "other", 116: "other"}
+RBH_TYPES = {12: "logistics", 30: "logistics", 19: "external_promo", 95: "reviews", 50: "other", 84: "other", 116: "other"}
 
 
 class RbhAccrualTypesTests(unittest.TestCase):

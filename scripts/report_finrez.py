@@ -209,6 +209,8 @@ def build_buyout_rows(days, buyouts, expenses, kpi_rows, daily_rows, unit_cost, 
         a = acc[(d, sku)]
         if t == "logistics":
             a["logistics"] -= D(r["expense_amount"])
+        elif t == accrual_mod.REVIEWS_ARTICLE:
+            a["reviews"] -= D(r["expense_amount"])           # статья reviews (95 + 96) с 26.10; до пересборки истории 95 — внутри «Прочего» строки
         else:
             a["other"] -= D(r["expense_amount"])           # other + external_promo + subscription — у владельца одна статья «Прочее»
             if t not in rep.KNOWN_ARTICLES:

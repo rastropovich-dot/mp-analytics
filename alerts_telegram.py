@@ -352,19 +352,15 @@ def parse_warning_tokens(value):
     return {token.strip() for token in str(value).split(",") if token and token.strip()}
 
 
-def get_ozon_organic_reconciliation(sale_date):
+def get_ozon_organic_reconciliation(sale_date, sb=None):
+    """Органика за день страницами по SKU (59-я: было одним запросом — PostgREST отдаёт не больше 1 000 строк, а аналитика с
+    24.10 даёт ~8 900 ключей в день). ad_exceeds_total — реклама больше всех заказов товара, органика по нему отрицательная."""
     try:
-        result = (
-            supabase
-            .table("ozon_daily_sku_organic")
-            .select(
-                "marketplace_sku,total_orders_revenue,ad_orders_revenue,"
-                "organic_orders_revenue,calculation_status,warning"
-            )
-            .eq("marketplace_code", "ozon")
-            .eq("sale_date", sale_date)
-            .execute()
-        )
+        rows = stale_keys.read_window_rows(
+            sb or supabase, "ozon_daily_sku_organic",
+            "marketplace_sku,total_orders_qty,total_orders_revenue,ad_orders_qty,ad_orders_revenue,"
+            "organic_orders_revenue,calculation_status,warning,ad_exceeds_total",
+            [("eq", "marketplace_code", "ozon"), ("eq", "sale_date", str(sale_date))], ["marketplace_sku"])
     except Exception as e:
         print(f"Не удалось загрузить Ozon organic reconciliation: {e}")
         return {
@@ -387,7 +383,6 @@ def get_ozon_organic_reconciliation(sale_date):
             "raw_organic_revenue": 0.0,
         }
 
-    rows = result.data or []
     if not rows:
         return {
             "available": False,
@@ -417,6 +412,8 @@ def get_ozon_organic_reconciliation(sale_date):
     ad_attribution_without_total_count = 0
     ad_revenue_exceed_total_count = 0
     ad_orders_exceed_total_count = 0
+    ad_exceeds_total_count = 0
+    ad_exceeds_total_excess_qty = 0.0
 
     raw_total_revenue = 0.0
     raw_ad_revenue = 0.0
@@ -458,6 +455,9 @@ def get_ozon_organic_reconciliation(sale_date):
 
         if "ad_orders_exceed_total" in warning_tokens:
             ad_orders_exceed_total_count += 1
+        if row.get("ad_exceeds_total"):
+            ad_exceeds_total_count += 1
+            ad_exceeds_total_excess_qty += num(row.get("ad_orders_qty")) - num(row.get("total_orders_qty"))
 
         exclude_from_reconciled = (
             calculation_status == "missing_total"
@@ -479,6 +479,8 @@ def get_ozon_organic_reconciliation(sale_date):
         "ad_attribution_without_total_count": ad_attribution_without_total_count,
         "ad_revenue_exceed_total_count": ad_revenue_exceed_total_count,
         "ad_orders_exceed_total_count": ad_orders_exceed_total_count,
+        "ad_exceeds_total_count": ad_exceeds_total_count,
+        "ad_exceeds_total_excess_qty": round(ad_exceeds_total_excess_qty, 2),
         "unreconciled_revenue": round(unreconciled_revenue, 2),
         "reconciled_total_revenue": round(reconciled_total_revenue, 2),
         "reconciled_ad_revenue": round(reconciled_ad_revenue, 2),
@@ -500,7 +502,21 @@ def format_ozon_attribution_without_organic(raw_ad_revenue=None):
     return f"Атрибуция (рекламные заказы / органика / доля рекламы): {ORGANIC_NOT_COUNTED}."
 
 
+def format_ozon_ad_exceeds_total(reconciliation):
+    """Строка 59-й: органика не режется в ноль — где рекламных заказов больше всех заказов товара, это называется вслух."""
+    count = int(reconciliation.get("ad_exceeds_total_count") or 0)
+    if count <= 0:
+        return ""
+    return (f"\n⚠️ Реклама больше всех заказов товара: {count} SKU, лишних {num(reconciliation.get('ad_exceeds_total_excess_qty')):.0f} шт — "
+            "органика по ним отрицательная, не обрезана.")
+
+
 def format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation):
+    return _format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation) + (
+        format_ozon_ad_exceeds_total(reconciliation) if reconciliation.get("available") else "")
+
+
+def _format_ozon_attribution_summary(raw_ad_revenue, raw_organic_revenue, fallback_ad_share_revenue, reconciliation):
     if not reconciliation.get("available"):
         return "Атрибуция Ozon: данные organic attribution недоступны."
 

@@ -100,12 +100,13 @@ class ByMonthEqualsWhole(unittest.TestCase):
 
     def by_month(self, saved, failures=()):
         from contextlib import ExitStack
-        shared = {"wb_cohort": ({}, {}), "ledger46": dict(LEDGER46), "organic": list(ORGANIC),
+        shared = {"wb_cohort": ({}, {}), "ledger46": dict(LEDGER46),
                   "article_map": kpi.build_article_map(_orders()), "wb_ads": dict(WB_ADS), "wb_other": list(WB_OTHER),
                   "wb_articles": kpi.wb_articles_of(WB_STORAGE), "reviews_participants": kpi.load_reviews_participants()}
         with ExitStack() as stack:
             _common(stack)
             stack.enter_context(mock.patch.object(kpi, "load_shared", return_value=shared))
+            stack.enter_context(mock.patch.object(kpi, "load_ozon_organic", side_effect=_period(ORGANIC, "sale_date")))
             stack.enter_context(mock.patch.object(kpi, "source_bounds", return_value=("2026-01-01", "2026-10-27")))
             stack.enter_context(mock.patch.object(kpi, "load_wb_storage", side_effect=lambda today, f, t: [r for r in WB_STORAGE if f <= r["day"] <= t]))
             stack.enter_context(mock.patch.object(kpi, "SOURCE_READ_FAILURES", list(failures)))

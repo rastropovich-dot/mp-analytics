@@ -146,11 +146,14 @@ def read_period_by_id(table, date_col, columns, day_from, day_to):
     return rows
 
 
-def read_all_by_key(table, key_columns):
-    """Таблица без id: range() с сортировкой по ПОЛНОМУ первичному ключу — порядок однозначен."""
+def read_all_by_key(table, key_columns, day_col=None, day_from=None, day_to=None):
+    """Таблица без id: range() с сортировкой по ПОЛНОМУ первичному ключу — порядок однозначен. day_col с границами — только дни
+    [day_from, day_to] (59-я: органика по месяцу)."""
     rows, start = [], 0
     while True:
         query = supabase.table(table).select("*")
+        if day_col and day_from is not None:
+            query = query.gte(day_col, day_from).lte(day_col, day_to)
         for column in key_columns:
             query = query.order(column)
         page = query.range(start, start + PAGE_SIZE - 1).execute().data or []
@@ -445,10 +448,13 @@ def fill_wb_articles(grouped, articles):
     return filled
 
 
-def load_ozon_organic():
+def load_ozon_organic(day_from=None, day_to=None):
+    """Органика целиком или за дни [day_from, day_to] (59-я: сборка по месяцам читает её помесячно — после снятия --skip-organic
+    в ней будут все дни с 22.05, а не 23 500 строк по 21.05)."""
     try:
         # id у таблицы нет; первичный ключ — (sale_date, marketplace_code, marketplace_sku)
-        all_rows = read_all_by_key("ozon_daily_sku_organic", ("sale_date", "marketplace_code", "marketplace_sku"))
+        all_rows = read_all_by_key("ozon_daily_sku_organic", ("sale_date", "marketplace_code", "marketplace_sku"),
+                                   "sale_date", day_from, day_to)
     except RuntimeError:
         raise
     except Exception as e:
@@ -604,7 +610,7 @@ def build_kpi(wb_cohort=None, with_source=False, today=None, period=None, shared
     else:
         def in_period(day):
             return day_from <= str(day)[:10] <= day_to
-        ozon_organic = [r for r in shared["organic"] if in_period(r["sale_date"])]
+        ozon_organic = load_ozon_organic(day_from, day_to)
         wb_costs = {"storage": load_wb_storage(today, day_from, day_to),
                     "ads": {k: v for k, v in shared["wb_ads"].items() if in_period(k[0])},
                     "other": [r for r in shared["wb_other"] if in_period(r[0])],
@@ -835,11 +841,11 @@ BOUNDS_TABLES = (("marketplace_orders", "order_date"), ("marketplace_buyouts", "
 
 def load_shared(today):
     """Источники на всю глубину, нужные каждому месяцу: малые или свёрнутые при чтении."""
-    shared = {"wb_cohort": load_wb_cohort(), "ledger46": load_ledger_type46(), "organic": load_ozon_organic(),
+    shared = {"wb_cohort": load_wb_cohort(), "ledger46": load_ledger_type46(),
               "article_map": build_article_map(iter_by_id("marketplace_orders", ARTICLE_MAP_COLUMNS)),
               "wb_ads": load_wb_ads(today), "wb_other": load_wb_sku_other(today), "wb_articles": load_wb_articles(today),
               "reviews_participants": load_reviews_participants()}
-    print(f"Общие источники: карта артикулов {len(shared['article_map'])} SKU, органика {len(shared['organic'])} строк, "
+    print(f"Общие источники: карта артикулов {len(shared['article_map'])} SKU, "
           f"реклама WB {len(shared['wb_ads'])} ключей, «прочее» WB {len(shared['wb_other'])}, артикулы WB {len(shared['wb_articles'])}")
     return shared
 

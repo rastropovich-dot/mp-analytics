@@ -38,6 +38,7 @@ except ImportError:  # запуск как python3 loaders/<файл>.py: кор
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     import cabinet
 CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPABASE_URL) должны совпасть — до чтения ключей и создания клиента
+from loaders import ozon_cpo_order_lines as cpo_order_lines  # noqa: E402 — после cabinet: корень проекта в sys.path
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -8628,6 +8629,7 @@ def run():
                 if guard_summary.get("status_override"):
                     run_summary["cpc"]["status"] = guard_summary["status_override"]
 
+    cpo_csv = None   # 59-я: строки ОЗЗ с номером заказа пишутся рядом с атрибуцией (loaders/ozon_cpo_order_lines.py)
     cpo_skip_reason = cpo_stage_skip_reason(args)
     if cpo_skip_reason:
         run_summary["cpo"] = empty_stage_status("skipped", reason=cpo_skip_reason)
@@ -8898,6 +8900,9 @@ def run():
         try:
             written_expense_rows = save_rows(rows)
             save_ad_attribution_rows(ad_attribution_rows)
+            if cpo_csv is not None:
+                # органика берёт ОЗЗ по дню создания заказа; ошибка здесь — предупреждение внутри store, не падение шага
+                run_summary["cpo_order_lines"] = cpo_order_lines.store(supabase, cpo_csv)
         except Exception as exc:
             cpc_progress_snapshot = client.get_cpc_progress(progress_key)
             build_partial_failure_status(

@@ -97,7 +97,8 @@ class OzonSkuOrganicSummaryTests(unittest.TestCase):
         self.assertEqual(breakdown["unexplained_gap_orders_revenue"], 0.0)
         self.assertEqual(breakdown["reconciled_rows_count"], 1)
 
-    def test_calculate_row_logic_is_unchanged_for_missing_total(self):
+    def test_calculate_row_missing_total_is_raw_negative(self):
+        # 59-я: без обрезки в ноль — реклама без заказов даёт отрицательную органику и флаг
         row = organic.calculate_row(
             total_row=None,
             ad_row={"ad_orders_qty": 1, "ad_orders_revenue": 112863},
@@ -105,8 +106,9 @@ class OzonSkuOrganicSummaryTests(unittest.TestCase):
         )
 
         self.assertEqual(row["calculation_status"], "missing_total")
-        self.assertEqual(row["organic_orders_qty"], 0)
-        self.assertEqual(row["organic_orders_revenue"], 0)
+        self.assertEqual(row["organic_orders_qty"], -1)
+        self.assertEqual(row["organic_orders_revenue"], -112863)
+        self.assertTrue(row["ad_exceeds_total"])
         self.assertEqual(row["ad_orders_qty"], 1)
         self.assertEqual(row["ad_orders_revenue"], 112863)
 
@@ -119,8 +121,9 @@ class OzonSkuOrganicSummaryTests(unittest.TestCase):
 
         self.assertEqual(row["calculation_status"], "missing_total")
         self.assertEqual(row["warning"], "zero_total_with_ad_attribution")
-        self.assertEqual(row["organic_orders_qty"], 0)
-        self.assertEqual(row["organic_orders_revenue"], 0)
+        self.assertEqual(row["organic_orders_qty"], -2)
+        self.assertEqual(row["organic_orders_revenue"], -15530)
+        self.assertTrue(row["ad_exceeds_total"])
         self.assertEqual(row["ad_orders_qty"], 2)
         self.assertEqual(row["ad_orders_revenue"], 15530)
 
@@ -151,7 +154,7 @@ class OzonSkuOrganicSummaryTests(unittest.TestCase):
         ]
 
         with mock.patch.object(organic, "fetch_all", return_value=rows):
-            grouped, attribution_dates = organic.load_ad_attribution("2026-05-12", "2026-05-12")
+            grouped, attribution_dates, _cpo_by_charge = organic.load_ad_attribution("2026-05-12", "2026-05-12")
 
         key = ("2026-05-12", "1300079194")
         self.assertIn(key, grouped)

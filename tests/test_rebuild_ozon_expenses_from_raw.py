@@ -65,6 +65,18 @@ class PlanTests(unittest.TestCase):
         p2 = rb.plan(existing, {"2026-05-06": [row("2026-05-06", "7", "other", "3.00")]}, ["2026-05-06"], first_write=True)
         self.assertEqual((p2["days_ok"], len(p2["skipped_days"]), p2["first_write_days"]), ([], 1, []))
 
+    def test_only_types_keeps_other_articles_out_of_plan_and_day_control(self):
+        # 28.10: у KARATOV пересборка «Отзывов» тянет и логистику rFBS (без SKU → SKU, 57-я); --only-types берёт только свои статьи
+        existing = [row("2026-05-05", "", "other", "10.00", 1), row("2026-05-05", "", "logistics", "7.00", 2)]
+        built = {"2026-05-05": [row("2026-05-05", "", "reviews", "10.00"), row("2026-05-05", "9", "logistics", "7.00")]}
+        full = rb.plan(existing, built, ["2026-05-05"])
+        self.assertEqual(sorted(r["expense_type"] for r in full["delete"]), ["logistics", "other"])
+        e, b = rb.only_types(existing, built, {"other", "reviews", "subscription"})
+        p = rb.plan(e, b, ["2026-05-05"])
+        self.assertEqual(p["days_ok"], ["2026-05-05"])
+        self.assertEqual(([r["expense_type"] for r in p["add"]], [r["expense_type"] for r in p["delete"]]), (["reviews"], ["other"]))
+        self.assertEqual(rb.only_types(existing, built, set()), (existing, built))
+
     def test_key_normalises_sku_to_text(self):
         existing = [row("2026-05-05", 7, "other", "1.00", 1)]
         built = {"2026-05-05": [row("2026-05-05", "7", "other", "1.00")]}

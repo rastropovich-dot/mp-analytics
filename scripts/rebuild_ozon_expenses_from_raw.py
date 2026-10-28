@@ -99,6 +99,16 @@ def read_existing(d1, d2):
         last = page[-1]["id"]
 
 
+def only_types(existing, built, types):
+    """--only-types (RBH 28.10, «Отзывы» у KARATOV): план и запись — только ключи этих статей; прочие статьи дня не читаются в план и
+    не пишутся. Контроль «Σ до = Σ после» — по отобранным статьям: перекладка внутри них (other / subscription → reviews) его держит,
+    а перекладка в чужой статье (логистика rFBS 57-й: без SKU → SKU) в план не попадает вовсе."""
+    if not types:
+        return existing, built
+    return ([r for r in existing if r["expense_type"] in types],
+            {d: [r for r in rows if r["expense_type"] in types] for d, rows in built.items()})
+
+
 def key_of(r):
     return (r["expense_date"], r["marketplace_code"], str(r["marketplace_sku"] or ""), r["expense_type"])
 
@@ -176,7 +186,7 @@ def print_plan(p, d1, d2):
             print(f"  {title}, первые 5: " + "; ".join(f"{r['expense_date']} sku {r['marketplace_sku']} {r['expense_type']} {D(r['expense_amount']):,.2f}" for r in rows[:5]))
 
 
-def apply(p, built, d1, d2):
+def apply(p, built, d1, d2, types=None):
     now = datetime.now(timezone.utc)
     if in_nightly_run_window(now):
         raise SystemExit(f"окно ночного прогона {window_text()} — не пишу")
@@ -198,7 +208,7 @@ def apply(p, built, d1, d2):
         res = client.table(TABLE).delete().in_("id", ids[i:i + 200]).execute()
         deleted += len(res.data or [])
     # контроль: в таблице за дни плана — те же ключи и Σ по статьям, что в плане
-    after = [r for r in read_existing(d1, d2) if r["expense_date"] in set(p["days_ok"])]
+    after = [r for r in read_existing(d1, d2) if r["expense_date"] in set(p["days_ok"]) and (not types or r["expense_type"] in types)]
     want = {key_of(r): D(r["expense_amount"]).quantize(C) for r in rows}
     have = {key_of(r): D(r["expense_amount"]).quantize(C) for r in after}
     wrong = [k for k in want if have.get(k) != want[k]]
@@ -215,6 +225,8 @@ def main(argv=None):
     ap.add_argument("--approve-ozon-expenses-write", action="store_true")
     ap.add_argument("--first-write", action="store_true",
                     help="дни без единой строки в таблице — писать (первая запись кабинета, РБХ §5.4); без флага такие дни пропускаются контролем суммы")
+    ap.add_argument("--only-types", default="",
+                    help="только эти статьи через запятую (например other,reviews,subscription) — остальные ключи не трогаются")
     args = ap.parse_args(argv)
     if args.apply and not args.approve_ozon_expenses_write:
         raise SystemExit("--apply требует --approve-ozon-expenses-write (слово владельца по плану с числами)")
@@ -224,12 +236,16 @@ def main(argv=None):
           f"свёртка: {len(accrual.TYPE_TO_EXPENSE)} типов TYPE_TO_EXPENSE")
     existing = read_existing(args.date_from, args.date_to)
     print(f"таблица: строк своих статей за окно {len(existing)}")
+    types = {t.strip() for t in args.only_types.split(",") if t.strip()}
+    if types:
+        existing, built = only_types(existing, built, types)
+        print(f"--only-types {', '.join(sorted(types))}: строк таблицы {len(existing)}, построено {sum(len(v) for v in built.values())}; прочие статьи не трогаются")
     p = plan(existing, built, days, first_write=bool(args.first_write))
     print_plan(p, args.date_from, args.date_to)
     if not args.apply:
         print("\ndb_writes = 0")
         return 0
-    apply(p, built, args.date_from, args.date_to)
+    apply(p, built, args.date_from, args.date_to, types=types)
     return 0
 
 

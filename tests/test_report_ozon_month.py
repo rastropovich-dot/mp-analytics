@@ -173,7 +173,7 @@ class PlatformTests(unittest.TestCase):
         t = {n: rep.platform_total(r) for n, r in groups.items()}
         self.assertEqual((t["Макияж лица"]["turnover"], t["Уход за волосами и укладка"]["turnover"], t["Макияж глаз"]["turnover"]), (D("1220"), D("2440"), D("122")))
         self.assertEqual(t["(нерешённая)"]["turnover"], D("610") + D("244"))         # «Кремы» без подсказки и SKU 5 без карточки и названия
-        self.assertEqual(t[rep.NO_GROUP]["other_with_acq"] + t[rep.NO_GROUP]["subscription"], (D("12.2") + D("24.4")) / D("1.22"))
+        self.assertEqual((t[rep.NO_GROUP]["subscription"], t[rep.NO_GROUP]["reviews"]), (D("24.4") / D("1.22"), D("12.2") / D("1.22")))   # 96 без SKU — «Отзывы»
         p = {n: rep.platform_total(r) for n, r in self.platforms.items()}
         for k in rep.PLATFORM_MONEY:
             self.assertEqual(sum((x[k] for x in t.values()), D(0)), sum((x[k] for x in p.values()), D(0)), k)

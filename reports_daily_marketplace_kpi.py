@@ -22,9 +22,10 @@ def chunks(items, size):
 
 
 # 59-я: только колонки, которые сводная суммирует, и строка за строкой — витрина (497 тыс. строк) списком держала 1,06 ГБ
+# (reviews_spend добавлен 29.10: «Отзывы» 26.10 суммируют колонку, а узкий список её не читал — сводная писала 0; тест колонок ниже)
 SKU_KPI_COLUMNS = ("id,kpi_date,marketplace_code,orders_qty,orders_amount_seller,buyouts_qty,buyouts_amount_seller,ad_spend,"
                    "ad_orders_qty,ad_orders_revenue,organic_orders_qty,organic_orders_revenue,commission_amount,logistics_amount,"
-                   "other_expenses_amount,gross_margin_amount,ebitda_amount")
+                   "other_expenses_amount,reviews_spend,gross_margin_amount,ebitda_amount")
 
 
 def load_daily_sku_kpi():

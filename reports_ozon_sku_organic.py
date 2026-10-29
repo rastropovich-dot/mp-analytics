@@ -135,70 +135,17 @@ def load_total_orders_from_marketplace_orders(date_from, date_to):
     return grouped
 
 
-def load_total_orders_from_seller_analytics(date_from, date_to):
-    try:
-        rows = fetch_all(
-            "ozon_daily_sku_total_orders",
-            filters=[
-                ("marketplace_code", "eq", "ozon"),
-                ("total_revenue_source", "eq", "seller_analytics"),
-                ("sale_date", "gte", date_from),
-                ("sale_date", "lte", date_to),
-                ("or_", "total_orders_qty.gt.0,total_orders_revenue.gt.0"),   # нулевые строки аналитики — не заказы
-            ],
-            order=ORGANIC_KEY,
-        )
-    except Exception as e:
-        print(
-            "Не удалось загрузить ozon_daily_sku_total_orders. "
-            "Проверьте миграцию sql/20260506_create_ozon_daily_sku_total_orders.sql. "
-            f"Ошибка: {e}"
-        )
-        return {}
-
-    grouped = {}
-
-    for row in rows:
-        sale_date = row.get("sale_date")
-        sku = str(row.get("marketplace_sku") or "")
-        if not sale_date or not sku:
-            continue
-
-        key = (sale_date, sku)
-        if key not in grouped:
-            grouped[key] = {
-                "sale_date": sale_date,
-                "marketplace_code": "ozon",
-                "marketplace_sku": sku,
-                "article": row.get("article") or "",
-                "product_name": row.get("product_name") or "",
-                "total_orders_qty": 0.0,
-                "total_orders_revenue": 0.0,
-                "total_revenue_source": row.get("total_revenue_source") or "seller_analytics",
-            }
-
-        grouped[key]["total_orders_qty"] += float(row.get("total_orders_qty") or 0)
-        grouped[key]["total_orders_revenue"] += float(row.get("total_orders_revenue") or 0)
-        if not grouped[key].get("article") and row.get("article"):
-            grouped[key]["article"] = row.get("article")
-        if not grouped[key].get("product_name") and row.get("product_name"):
-            grouped[key]["product_name"] = row.get("product_name")
-
-    return grouped
-
-
 def load_total_orders(date_from, date_to):
-    analytics_by_key = load_total_orders_from_seller_analytics(date_from, date_to)
-    marketplace_by_key = load_total_orders_from_marketplace_orders(date_from, date_to)
+    """Все заказы = созданные из своих отправлений (marketplace_orders, FBO + FBS, подтверждённые + отменённые).
 
-    grouped = dict(analytics_by_key)
-    for key, row in marketplace_by_key.items():
-        if key in grouped:
-            continue
+    Аналитика Ozon (ozon_daily_sku_total_orders, шаг «total orders analytics по SKU») больше не читается: за 24.09 … 26.10
+    она совпала с marketplace_orders по каждому (день, SKU) — штуки и рубли, 8 642 ключа из 8 643 (29.10, 59-я; расходится один — 08.10, FBO, у нас 2 шт из 3), — а ночной
+    шаг аналитики падает на 429 per-second и обрезался на 1 000 строк. Совет чата разработчиков тот же (инбокс 28.10)."""
+    grouped = {}
+    for key, row in load_total_orders_from_marketplace_orders(date_from, date_to).items():
         row_copy = dict(row)
         row_copy["total_revenue_source"] = "marketplace_orders"
         grouped[key] = row_copy
-
     return grouped
 
 
@@ -526,7 +473,6 @@ def build_organic_rows(date_from, date_to, cpo_lines_rows=None):
             "organic_orders_revenue": round(sum(float(row.get("organic_orders_revenue") or 0) for row in rows), 2),
         },
         "total_source_counts": {
-            "seller_analytics": sum(1 for row in rows if row.get("total_revenue_source") == "seller_analytics"),
             "marketplace_orders": sum(1 for row in rows if row.get("total_revenue_source") == "marketplace_orders"),
             "missing_total": sum(1 for row in rows if row.get("calculation_status") == "missing_total"),
         },
@@ -617,7 +563,7 @@ def main():
     if not (args.from_db_only or args.no_api):
         print(
             "reports_ozon_sku_organic.py использует только DB sources. "
-            "Приоритет total source: ozon_daily_sku_total_orders(seller_analytics) -> marketplace_orders."
+            "Total source: marketplace_orders (созданные = подтверждённые + отменённые)."
         )
 
     if args.mode == "daily-yesterday":

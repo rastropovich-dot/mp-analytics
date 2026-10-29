@@ -235,6 +235,14 @@ class TotalsCreated(unittest.TestCase):
         self.assertEqual((grouped[("2026-10-23", "100")]["total_orders_qty"], grouped[("2026-10-23", "100")]["total_orders_revenue"]),
                          (3.0, 2900.0))
 
+    def test_total_reads_only_marketplace_orders(self):
+        """Аналитика = marketplace_orders на 8 642 ключах из 8 643 (24.09 … 26.10) — таблица аналитики не читается."""
+        rows = [{"id": 1, "order_date": "2026-10-23", "marketplace_sku": "100", "orders_qty": 1, "orders_amount_seller": 1000}]
+        with mock.patch.object(organic, "fetch_all", return_value=rows) as fa:
+            grouped = organic.load_total_orders("2026-10-23", "2026-10-23")
+        self.assertEqual([c[0][0] for c in fa.call_args_list], ["marketplace_orders"])
+        self.assertEqual(grouped[("2026-10-23", "100")]["total_revenue_source"], "marketplace_orders")
+
     def test_fetch_all_orders_by_full_key_and_maps_filters(self):
         with mock.patch.object(organic.stale_keys, "read_window_rows", return_value=[]) as rw:
             organic.fetch_all("t", [("sale_date", "gte", "2026-10-01"), ("or_", "a.gt.0")], ("sale_date", "marketplace_sku"))

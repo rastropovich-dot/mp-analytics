@@ -342,7 +342,8 @@ def main(argv=None):
             n = upsert(sb, db_rows)
             print(f"✅ {TABLE}: upsert {n} строк за {d1} … {d2}")
         else:
-            print(f"dry-run: строк к upsert {len(db_rows)}; db_writes = 0")
+            # счётчик ведёт настоящие create (лимит 5 в сутки на кабинет), поэтому dry-run с create его пишет — вслух (59-я, слово 28.10)
+            print(f"dry-run: строк к upsert {len(db_rows)}; " + ("db_writes = 0 (кроме счётчика квоты)" if quota_note else "db_writes = 0"))
     except ReportError as exc:
         rc, error = 1, str(exc)
         print(f"❌ хранение по товарам: {error}")

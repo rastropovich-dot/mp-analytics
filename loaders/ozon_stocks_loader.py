@@ -28,10 +28,16 @@ OZON_API_KEY = os.getenv("OZON_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-DEFAULT_SKU_CATALOG_PAGE_SIZE = int(os.getenv("OZON_STOCKS_SKU_CATALOG_PAGE_SIZE", "1000"))
-DEFAULT_STOCK_API_BATCH_SIZE = int(os.getenv("OZON_STOCKS_API_BATCH_SIZE", "100"))
 DEFAULT_IDENTITY_LOOKBACK_DAYS = int(os.getenv("OZON_STOCKS_IDENTITY_LOOKBACK_DAYS", "90"))
+
+STOCKS_URL = "https://api-seller.ozon.ru/v4/product/info/stocks"
+STOCKS_PAGE_LIMIT = 1000   # максимум метода
+# Товары берутся из самого метода, а не из sku_catalog (RBH 2026-10-31, вариант (в)): каталог Ozon хранит product_id и
+# ночью никем не пишется — у KARATOV он с 2026-04-25, и 225 SKU с заказами недели 22–28.10 (9,9 % ₽) не получали строки
+# остатка. `ALL` по спеке — «все товары, кроме архивных», поэтому второй проход `ARCHIVED`: из архива пишутся только
+# товары с остатком или резервом (архив РБХ-1 — 3 776 карточек, почти все пустые).
+STOCKS_VISIBILITY_PASSES = ("ALL", "ARCHIVED")
+STOCKS_MAX_PAGES_PER_PASS = 200   # страховка от зацикливания курсора: 200 000 товаров
 
 
 def ozon_headers():
@@ -42,109 +48,20 @@ def ozon_headers():
     }
 
 
-def chunks(items, size):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Load Ozon stocks into stock_daily")
     parser.add_argument(
         "--plan-only",
         action="store_true",
-        help="Read and summarize sku_catalog pagination plan without calling Ozon API or writing to DB.",
-    )
-    parser.add_argument(
-        "--sku-catalog-page-size",
-        type=int,
-        default=DEFAULT_SKU_CATALOG_PAGE_SIZE,
-        help=f"Pagination size for reading sku_catalog from Supabase (default: {DEFAULT_SKU_CATALOG_PAGE_SIZE}).",
-    )
-    parser.add_argument(
-        "--stock-api-batch-size",
-        type=int,
-        default=DEFAULT_STOCK_API_BATCH_SIZE,
-        help=f"Batch size for POST /v4/product/info/stocks product_ids (default: {DEFAULT_STOCK_API_BATCH_SIZE}).",
+        help="Print what the step would request (visibility passes, page size) without calling Ozon API or writing to DB.",
     )
     parser.add_argument(
         "--identity-lookback-days",
         type=int,
         default=DEFAULT_IDENTITY_LOOKBACK_DAYS,
-        help=f"Lookback window for article -> decision SKU mapping (default: {DEFAULT_IDENTITY_LOOKBACK_DAYS}).",
+        help=f"Lookback window for the fallback article -> decision SKU mapping (default: {DEFAULT_IDENTITY_LOOKBACK_DAYS}).",
     )
     return parser.parse_args()
-
-
-def load_ozon_products_from_db(page_size):
-    rows = []
-    offset = 0
-    page_count = 0
-
-    while True:
-        page = (
-            supabase
-            .table("sku_catalog")
-            .select("marketplace_sku, article, product_name")
-            .eq("marketplace_code", "ozon")
-            .range(offset, offset + page_size - 1)
-            .execute()
-            .data
-            or []
-        )
-        rows.extend(page)
-        page_count += 1
-
-        if len(page) < page_size:
-            break
-
-        offset += page_size
-
-    return rows, page_count
-
-
-def build_ozon_products(rows):
-    products = []
-    duplicate_articles = 0
-    duplicate_product_ids = 0
-    seen_articles = set()
-    seen_product_ids = set()
-
-    for row in rows:
-        article = row.get("article")
-        if article:
-            if article in seen_articles:
-                duplicate_articles += 1
-            else:
-                seen_articles.add(article)
-
-        if str(row.get("marketplace_sku", "")).isdigit():
-            product_id = int(row["marketplace_sku"])
-            if product_id in seen_product_ids:
-                duplicate_product_ids += 1
-            else:
-                seen_product_ids.add(product_id)
-
-            products.append({
-                "product_id": product_id,
-                "offer_id": article,
-                "product_name": row.get("product_name"),
-            })
-
-    return {
-        "products": products,
-        "distinct_articles": len(seen_articles),
-        "distinct_product_ids": len(seen_product_ids),
-        "duplicate_articles": duplicate_articles,
-        "duplicate_product_ids": duplicate_product_ids,
-    }
-
-
-def get_ozon_products_from_db(page_size):
-    rows, page_count = load_ozon_products_from_db(page_size)
-    summary = build_ozon_products(rows)
-    summary["sku_catalog_rows_loaded"] = len(rows)
-    summary["page_count"] = page_count
-    return summary
 
 
 def fetch_all(table, filters=None, order=None):
@@ -229,88 +146,90 @@ def build_decision_sku_by_article_map(lookback_days):
     }
 
 
-def get_ozon_stocks(products, stock_api_batch_size):
-    url = "https://api-seller.ozon.ru/v4/product/info/stocks"
-    all_items = []
-    batch_count = 0
-
-    for batch in chunks(products, stock_api_batch_size):
-        batch_count += 1
-        product_ids = [p["product_id"] for p in batch]
-        offer_ids = [p["offer_id"] for p in batch if p.get("offer_id")]
-
-        payload = {
-            "filter": {
-                "product_id": product_ids,
-                "offer_id": offer_ids,
-                "visibility": "ALL"
-            },
-            "last_id": "",
-            "limit": 1000
-        }
-
-        response = http_retry.post(url, label="Ozon stocks",
-                                   headers=ozon_headers(), json=payload, timeout=60)
-
-        if response.status_code != 200:
-            print("Ошибка Ozon stocks API:")
-            print(response.status_code)
-            print(response.text[:2000])
-            continue
-
-        data = response.json()
-        items = data.get("items", []) or data.get("result", {}).get("items", [])
-
-        all_items.extend(items)
-        print(
-            json.dumps(
-                {
-                    "event": "ozon_stock_api_batch",
-                    "batch_index": batch_count,
-                    "product_ids_count": len(product_ids),
-                    "offer_ids_count": len(offer_ids),
-                    "items_returned": len(items),
-                    "items_accumulated": len(all_items),
-                },
-                ensure_ascii=False,
-            )
-        )
-
-        time.sleep(0.25)
-
-    return all_items, batch_count
+def item_has_stock(item):
+    return any((s.get("present") or 0) or (s.get("reserved") or 0) for s in item.get("stocks") or [])
 
 
-def save_stocks(items, identity_columns_enabled, decision_sku_by_article):
-    today = date.today().isoformat()
+def get_ozon_stocks(post=None, sleep=time.sleep, passes=STOCKS_VISIBILITY_PASSES):
+    """Все товары кабинета из /v4/product/info/stocks по курсору, по проходам видимости.
 
+    Проход ALL пишется целиком (как раньше весь каталог), из ARCHIVED — только товары с остатком или резервом и не
+    встреченные в ALL. Ответ не 200 — RuntimeError: незаконченный курсор не продолжить, а частичный список остатков
+    читался бы как нули (шаг нефатальный — прогон идёт дальше, тревога в Telegram). Возвращает (items, summary)."""
+    post = post or (lambda payload: http_retry.post(STOCKS_URL, label="Ozon stocks", headers=ozon_headers(), json=payload, timeout=60))
+    items, seen, summary = [], set(), {"requests": 0}
+    for visibility in passes:
+        cursor, pages, returned, kept = "", 0, 0, 0
+        while True:
+            payload = {"filter": {"visibility": visibility}, "limit": STOCKS_PAGE_LIMIT, "cursor": cursor}
+            response = post(payload)
+            summary["requests"] += 1
+            pages += 1
+            if response.status_code != 200:
+                raise RuntimeError(f"Ozon stocks API {visibility}, страница {pages}: HTTP {response.status_code} {response.text[:500]}")
+            data = response.json()
+            page_items = data.get("items") or []
+            returned += len(page_items)
+            for item in page_items:
+                pid = str(item.get("product_id") or "")
+                if not pid or pid in seen:
+                    continue
+                if visibility != "ALL" and not item_has_stock(item):
+                    continue
+                seen.add(pid)
+                items.append(item)
+                kept += 1
+            cursor = data.get("cursor") or ""
+            if not cursor or not page_items:
+                break
+            if pages >= STOCKS_MAX_PAGES_PER_PASS:
+                raise RuntimeError(f"Ozon stocks API {visibility}: курсор не кончился за {pages} страниц")
+            sleep(0.25)
+        summary[visibility] = {"pages": pages, "items_returned": returned, "items_kept": kept}
+        print(json.dumps({"event": "ozon_stock_api_pass", "visibility": visibility, "pages": pages,
+                          "items_returned": returned, "items_kept": kept}, ensure_ascii=False))
+    summary["items"] = len(items)
+    return items, summary
+
+
+def stock_api_sku(stock):
+    sku = str(stock.get("sku") or "").strip()
+    return "" if sku in ("", "0") else sku
+
+
+def build_stock_rows(items, identity_columns_enabled, decision_sku_by_article, today):
+    """Строки stock_daily: ключ (дата, ozon, product_id, тип склада) — хранение не меняется, marketplace_sku = product_id.
+
+    decision_marketplace_sku — SKU из того же ответа (`stocks[].sku`, «идентификатор товара в системе Ozon — SKU»): на
+    ответах РБХ 29.10 он есть у 2 089 / 1 888 записей из 2 089 / 1 888, по одному на товар. Догадка по артикулу (ровно
+    один SKU у артикула в заказах и атрибуции) — только если поля нет; из-за неё на 28.10 без SKU было РБХ-1 1 425,
+    РБХ-2 242, KARATOV 33 218 шт."""
     grouped = {}
+    counters = Counter()
 
     for item in items:
         product_id = item.get("product_id")
         offer_id = item.get("offer_id")
-        stocks = item.get("stocks", [])
 
-        for stock in stocks:
+        for stock in item.get("stocks") or []:
             stock_type = stock.get("type", "unknown")
-            decision_sku = decision_sku_by_article.get(str(offer_id or "").strip())
+            api_sku = stock_api_sku(stock)
+            if api_sku:
+                decision_sku, status = api_sku, "sku_from_api"
+            else:
+                decision_sku = (decision_sku_by_article or {}).get(str(offer_id or "").strip())
+                status = "mapped_by_article" if decision_sku else "unresolved"
 
             present = stock.get("present", 0) or 0
             reserved = stock.get("reserved", 0) or 0
 
-            key = (
-                today,
-                "ozon",
-                str(product_id),
-                stock_type
-            )
+            key = (today, "ozon", str(product_id), stock_type)
 
             if key not in grouped:
                 grouped[key] = {
                     "stock_date": today,
                     "marketplace_code": "ozon",
-                    # TODO: stock_daily.marketplace_sku currently stores Ozon product_id.
-                    # Keep this column backward-compatible even after identity normalization.
+                    # stock_daily.marketplace_sku хранит product_id Ozon — ключ таблицы, не менять (RBH 2026-10-31, вариант (б)).
                     "marketplace_sku": str(product_id),
                     "article": str(offer_id or ""),
                     "product_name": None,
@@ -323,23 +242,28 @@ def save_stocks(items, identity_columns_enabled, decision_sku_by_article):
                     grouped[key]["product_id"] = str(product_id)
                     grouped[key]["stock_marketplace_sku"] = str(product_id)
                     grouped[key]["decision_marketplace_sku"] = decision_sku or None
-                    grouped[key]["stock_identity_status"] = (
-                        "mapped_by_article" if decision_sku else "unresolved"
-                    )
+                    grouped[key]["stock_identity_status"] = status
+                counters[status] += 1
 
             grouped[key]["stock_qty"] += present
             grouped[key]["reserved_qty"] += reserved
             grouped[key]["available_qty"] = grouped[key]["stock_qty"] - grouped[key]["reserved_qty"]
 
-    rows = list(grouped.values())
+    return list(grouped.values()), counters
 
+
+def needs_article_fallback(items):
+    return any(not stock_api_sku(s) for item in items for s in item.get("stocks") or [])
+
+
+def save_stocks(rows):
     if not rows:
         print("Нет остатков для записи")
         return
 
-    for batch in chunks(rows, 500):
+    for i in range(0, len(rows), 500):
         supabase.table("stock_daily").upsert(
-            batch,
+            rows[i:i + 500],
             on_conflict="stock_date,marketplace_code,marketplace_sku,warehouse_name"
         ).execute()
 
@@ -348,48 +272,35 @@ def save_stocks(items, identity_columns_enabled, decision_sku_by_article):
 
 if __name__ == "__main__":
     args = parse_args()
-    catalog = get_ozon_products_from_db(args.sku_catalog_page_size)
-    products = catalog["products"]
-    planned_stock_api_batches = (
-        (len(products) + args.stock_api_batch_size - 1) // args.stock_api_batch_size
-        if products
-        else 0
-    )
-
     plan_summary = {
-        "sku_catalog_rows_loaded": catalog["sku_catalog_rows_loaded"],
-        "page_count": catalog["page_count"],
-        "distinct_articles": catalog["distinct_articles"],
-        "distinct_product_ids": catalog["distinct_product_ids"],
-        "duplicate_articles": catalog["duplicate_articles"],
-        "duplicate_product_ids": catalog["duplicate_product_ids"],
-        "planned_stock_api_batches": planned_stock_api_batches,
-        "stock_api_batch_size": args.stock_api_batch_size,
-        "expected_coverage_improvement_vs_1000_rows": max(catalog["sku_catalog_rows_loaded"] - 1000, 0),
+        "source": "/v4/product/info/stocks, cursor",
+        "visibility_passes": list(STOCKS_VISIBILITY_PASSES),
+        "page_limit": STOCKS_PAGE_LIMIT,
+        "archived_written": "only items with present or reserved > 0",
     }
-
     identity_columns_enabled = stock_identity_columns_supported()
-    decision_sku_by_article = build_decision_sku_by_article_map(args.identity_lookback_days) if identity_columns_enabled else {}
     plan_summary["stock_identity_columns_enabled"] = identity_columns_enabled
-    plan_summary["decision_sku_by_article_count"] = len(decision_sku_by_article)
-
     print(json.dumps(plan_summary, ensure_ascii=False, indent=2))
 
     if args.plan_only:
         raise SystemExit(0)
 
-    stocks, batch_count = get_ozon_stocks(products, args.stock_api_batch_size)
+    stocks, api_summary = get_ozon_stocks()
+    decision_sku_by_article = {}
+    if identity_columns_enabled and needs_article_fallback(stocks):
+        decision_sku_by_article = build_decision_sku_by_article_map(args.identity_lookback_days)
+    rows, identity_counters = build_stock_rows(stocks, identity_columns_enabled, decision_sku_by_article, date.today().isoformat())
     print(
         json.dumps(
             {
                 "event": "ozon_stock_api_summary",
-                "product_ids_count": len(products),
-                "stock_api_batches_count": batch_count,
-                "items_returned": len(stocks),
+                **api_summary,
+                "rows": len(rows),
                 "identity_columns_enabled": identity_columns_enabled,
+                "identity_status_rows": dict(identity_counters),
                 "decision_sku_by_article_count": len(decision_sku_by_article),
             },
             ensure_ascii=False,
         )
     )
-    save_stocks(stocks, identity_columns_enabled, decision_sku_by_article)
+    save_stocks(rows)

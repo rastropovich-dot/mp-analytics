@@ -176,6 +176,24 @@ class FileModeTests(unittest.TestCase):
         self.assertTrue(any("дни 2026-10-20 … 2026-10-20" in l for l in printed), printed)
         last = next(l for l in printed if l.startswith(P.STATE_KEY))
         self.assertIn('"date_from": "2026-10-20", "date_to": "2026-10-20"', last); self.assertIn('"mode": "dry-run"', last)
+        self.assertIn("dry-run: строк к upsert 4; db_writes = 0", printed)          # файл: ни create, ни счётчика
+
+    def test_dry_run_with_create_names_the_quota_counter_write(self):
+        """59-я: dry-run с create пишет счётчик квоты (он ведёт настоящие create) — строка вывода это называет."""
+        printed, states = [], []
+        fake_sb = mock.Mock()
+        with mock.patch.object(P.cabinet, "assert_env", return_value=P.cabinet.profile()), \
+             mock.patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))), \
+             mock.patch.dict(os.environ, {"SUPABASE_URL": "https://x.supabase.co", "SUPABASE_SERVICE_KEY": "k"}), \
+             mock.patch("supabase.create_client", return_value=fake_sb), \
+             mock.patch.object(P, "read_quota", return_value={}), \
+             mock.patch.object(P, "write_state", side_effect=lambda sb, key, kind, payload: states.append(key)), \
+             mock.patch.object(P, "ledger_46", return_value={}), \
+             mock.patch.object(P, "fetch_report", return_value=(P.parse_xlsx(xlsx_bytes()), {"create": 1, "code": "c"}, b"")):
+            rc = P.main(["--date", "2026-10-20", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(states, [P.QUOTA_KEY])                                      # только счётчик; ozon_placement:last в dry-run не пишется
+        self.assertIn("dry-run: строк к upsert 4; db_writes = 0 (кроме счётчика квоты)", printed)
 
 
 class PipelineStepTests(unittest.TestCase):

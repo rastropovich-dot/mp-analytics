@@ -17,6 +17,49 @@
 
 ---
 
+## 2026-11-05 (поздний вечер), решения владельца 05.11 — книга KARATOV перенесена на 07:35 МСК (агент launchd перезагружен, первая сборка — 06.11); уборка снята; блок советника в `how-we-work.md`; `~/mp-analytics` = `a9b561d`; fetch к GitHub не прошёл (SSH), RBH `main` не двигала
+
+Записей в базы 0, Render 0, Telegram 0. Изменено на Mac: агент `com.mp-analytics.finrez-nightly` (bootout / bootstrap). Всё ниже —
+одним коммитом в `ozon-60` (outbox, STATUS.md, §0 CLAUDE.md, how-we-work.md, plist и комментарий `finrez_nightly.sh`); мерж — по слову.
+
+**(3) Книга KARATOV — 07:35 МСК (04:35 UTC).** `ops/launchd/com.mp-analytics.finrez-nightly.plist`: `StartCalendarInterval` 06:00 → Hour 7 /
+Minute 35 (`plutil -lint` OK), комментарий о причине; строка-комментарий в `scripts/finrez_nightly.sh`. Установка 05.11 18:47:59 UTC
+(21:48 МСК, вне ночного окна 00:15 … 04:30 UTC; книга в ту минуту не шла — `launchctl list`: PID «-», последний код 0): прежний файл
+сохранён в scratchpad, `launchctl bootout gui/$(id -u)/com.mp-analytics.finrez-nightly` rc 0 → `cp` файла ветки в
+`~/Library/LaunchAgents/` → `launchctl bootstrap` rc 0; `launchctl print` — `calendarinterval` Hour 7 / Minute 35. Агенты rbh1 (06:40) и
+rbh2 (07:20) не трогал. **Первая сборка в новое время — 06.11 в 07:35 МСК** (агент перезагружен сегодня; в задаче — «07.11», если бы
+перезагрузка была 06.11 днём), её итог — в отчёте утра 06.11. Окно: rbh2 05.11 шла 04:20 → 04:29 UTC, KARATOV 04:35 → ~05:20 UTC
+(сборка 05.11 — 2 741 с); шаг «KPI: расчет SKU» ночей 01–05.11 кончался до 03:52 UTC; утренний алерт KARATOV в 07:30 UTC читает
+`finrez_nightly:last` после книги. **Пока ветка не слита, plist в `main` (и в `~/mp-analytics/ops/launchd/`) — 06:00:** установка оттуда
+вернула бы старое время.
+
+**(1) Уборка (§2д) снята.** Ветки и worktree не удалялись; из «ждёт слова» в STATUS.md и §0 убрано, решение записано.
+
+**(4) Документы.** STATUS.md: строка книги (время трёх книг), новые строки «Код книг launchd» (ff после push, HEAD `a9b561d`) и «Уборка — снята»;
+из «Ждёт слова» уборка и перенос убраны. §0 CLAUDE.md: время книги KARATOV, блок «Решения владельца 05.11» (уборка, 07:35, ff
+`~/mp-analytics` после каждого push). Строки RBH и WB в обоих файлах — как в `main` (RBH `main` с 31.10 не двигала, см. ниже).
+`docs/how-we-work.md`, раздел «О советнике» (последний в файле) — в конец блок из `~/mp-analytics/Claude outputs/how-we-work-советник-2026-11-05.md`
+как есть: 15 строк, `diff` хвоста файла с источником — пусто.
+
+**`~/mp-analytics` и параллельная RBH-сессия.** `git fetch origin` — дважды отказ (18:47 и ~18:55 UTC): «Connection closed … port 22 / Could
+not read from remote repository» — SSH к GitHub через VPN (как 22.10), сеть не обходил. По локальным ссылкам (у worktree общие с `~/mp-analytics`):
+`origin/main` = `a9b561d` (наш push 15:33 UTC); RBH-сессия работает в `~/mp-analytics-wt/rbh-3` (ветка `rbh-3` `82a8430`, 18:55 МСК, ветка
+`rbh-3-stock` `ce45ddd`), в `main` не сливала; строки «main сдвинут на …» в `outbox_rbh.md` нет. `~/mp-analytics`: HEAD **`a9b561d`**,
+`GIT_OPTIONAL_LOCKS=0 git status --porcelain` — только три прежних неотслеживаемых (`Claude outputs/`, `data/checks/`,
+`data/ozon_placement_raw/`), то есть «не пусто» по правилу; ff не требовался. **Вопрос:** эти три каталога лежат там давно (`Claude outputs/` —
+ваш); считать ли их «чисто» для правила ff, или правило — `status --porcelain --untracked-files=no` пуст?
+
+**(2) Утро 06.11.** Будильник сессии переставлен на 06.11 11:07 МСК (одноразовый cron сессии; при закрытой сессии не сработает): лист месяца и
+алерт трёх кабинетов на `a9b561d` против 05.11, ночь 06.11, первая сборка книги KARATOV в 07:35, `git fetch` и ff `~/mp-analytics` по правилу.
+
+```
+git log main..HEAD (ozon-60)
+<этот коммит>  Sixtieth: owner decisions 05.11 — KARATOV book at 07:35 MSK, cleanup removed, advisor block in how-we-work
+3c40c5f        Sixtieth §1 after the word: outbox 05.11 evening — ozon-60 merged (a9b561d), KARATOV book for 04.11 rebuilt
+```
+
+---
+
 ## 2026-11-05 (вечер, после слова), шестидесятая §1 — `ozon-60` СЛИТА (`a9b561d`, Render live 15:34 UTC на шести сервисах); книга «Фин рез» KARATOV за 04.11 СОБРАНА вручную: код 0, 101 804 931 байт, копия в iCloud = sha256; §2 и перенос книги на 07:00 — не делал; уборка (§2д) снята владельцем
 
 Слово владельца 05.11: мерж `ozon-60` (`--no-ff`, полный набор на мерже, push), затем ручная пересборка книги KARATOV за 04.11 через

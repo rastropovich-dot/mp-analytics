@@ -153,6 +153,8 @@
 4. Первая ночь, все три кабинета: в логе шага «Ozon: загрузка остатков» — строки `ozon_stock_api_pass` и `identity_status_rows` (`sku_from_api`); шаг без «Шаг не выполнен»; число строк `stock_daily` за день против прошлых ночей.
 5. История `decision_marketplace_sku` (РБХ — строки без SKU по `ozon_products`, со снимком) — отдельным словом, план заново.
 
+**После проверки `main` сдвинулся** на `a9b561d` (Ozon, 60-я: `scripts/report_ozon_month.py`, `tests/test_fetch_anchor.py` — с пятью файлами ветки не пересекается). `git merge-tree main rbh-stock-sku` — снова без конфликтов; набор на новом `main` не гонял — его прогонит шаг 2.
+
 Ветка `rbh-3-stock` оставлена локально (не запушена) как след проверки. Удалить — по слову, или вместе с уборкой Ozon-потока.
 
 ### §3. launchd RBH — смотрит в `~/mp-analytics-rbh`; план переноса на `~/mp-analytics`

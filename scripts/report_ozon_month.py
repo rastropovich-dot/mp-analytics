@@ -523,18 +523,47 @@ def fetch(sb, table, select, filters, orders):
     индексу id через всю таблицу. Ключ (дата, площадка, sku[, …]) совпадает с уникальным индексом —
     он обслуживает и фильтр, и порядок.
     """
+    anchor = _anchor_column(select, filters, orders)
     out, page = [], 0
+    lo, skip = None, 0          # шестидесятая: якорный день и сколько строк этого дня уже прочитано
     while True:
         qb = sb.table(table).select(select)
         for f in filters:
+            if anchor and lo is not None and f[0] == "gte" and f[1] == anchor:
+                f = ("gte", anchor, lo)          # окно начинается с якорного дня, а не с начала
             qb = getattr(qb, f[0])(*f[1:])
         for col in orders:
             qb = qb.order(col)
-        res = net_retry.execute(qb.range(page * 1000, page * 1000 + 999), f"{table} страница {page}")   # 54-я: прокси / обрыв — повтор 3 × 20 с
+        start = skip if anchor and lo is not None else page * 1000
+        res = net_retry.execute(qb.range(start, start + 999), f"{table} страница {page}")   # 54-я: прокси / обрыв — повтор 3 × 20 с
         out.extend(res.data)
         if len(res.data) < 1000:
             return out
         page += 1
+        if anchor:
+            last = str(res.data[-1][anchor])
+            if last != lo:
+                lo, skip = last, 0
+            skip += sum(1 for r in res.data if str(r[anchor]) == last)
+
+
+def _anchor_column(select, filters, orders):
+    """Шестидесятая (05.11): колонка-якорь для чтения без глубокого OFFSET или None.
+
+    OFFSET N заставляет сервер пройти N строк индекса и кучи: у daily_sku_kpi страница 250 (окно 2026-04 … 11-04, 271 тыс.
+    строк Ozon) — 15,2 с при statement_timeout 8 с, страница 1 — 0,23 с (EXPLAIN ANALYZE 05.11); книга «Фин рез» падала
+    01–05.11 на страницах 135 / 270 / 225–246. С якорем каждая страница — тот же ORDER BY по полному ключу, но окно
+    начинается с дня последней прочитанной строки (gte), а OFFSET — только число строк этого дня, уже прочитанных
+    (не больше строк одного дня, ~3 тыс.). Порядок строк и число обращений — те же, что у OFFSET от начала окна.
+    Якорь — первая колонка сортировки, если на неё есть фильтр gte и она есть в select; иначе прежний OFFSET.
+    """
+    if not orders or select.strip() == "*":
+        return None
+    col = orders[0]
+    cols = {c.strip() for c in select.split(",")}
+    if col in cols and any(f[0] == "gte" and f[1] == col for f in filters):
+        return col
+    return None
 
 
 def load_day_raw(day, today, allow_fetch, counters):

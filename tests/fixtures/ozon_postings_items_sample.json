@@ -1,0 +1,2175 @@
+{
+ "source": "РБХ-1, сырьё history_<схема>_2026-08-23_2026-10-21.json: FBO дни 19–20.10, FBS 20–21.09; только поля, которые читают правила строк (61-я)",
+ "postings": {
+  "fbo": [
+   {
+    "posting_number": "0245521128-0039-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T01:34:02.278445Z",
+    "in_process_at": "2026-10-19T01:34:46.422062Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "542",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 542
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0245521128-0039-3",
+    "status": "cancelled",
+    "created_at": "2026-10-19T01:34:48.225759Z",
+    "in_process_at": "2026-10-19T01:34:46.422062Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "542",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 542
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "92033399-0165-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T02:25:55.531724Z",
+    "in_process_at": "2026-10-19T02:26:03.040399Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "495",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 495
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "42920991-0093-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T02:34:10.241703Z",
+    "in_process_at": "2026-10-19T02:34:19.546134Z",
+    "products": [
+     {
+      "sku": 3072989299,
+      "offer_id": "10656",
+      "name": "Мочалка для душа массажная двусторонняя Vival, средняя жесткость, для тела и спины, банная, мягкий пилинг кожи",
+      "quantity": 1,
+      "price": {
+       "amount": "664",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 3072989299,
+       "price": 664
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0112589095-1177-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T02:49:34.735621Z",
+    "in_process_at": "2026-10-19T02:50:04.287127Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "39998803-0816-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T03:05:48.813128Z",
+    "in_process_at": "2026-10-19T03:05:55.011393Z",
+    "products": [
+     {
+      "sku": 3521795288,
+      "offer_id": "227115",
+      "name": "Мочалка для тела Vival брикет для пилинга, массажная, с индикатором износа",
+      "quantity": 1,
+      "price": {
+       "amount": "772",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 3521795288,
+       "price": 772
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0136197732-0389-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T16:03:29.748192Z",
+    "in_process_at": "2026-10-20T16:03:40.119067Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0104513807-0538-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T15:12:27.328324Z",
+    "in_process_at": "2026-10-19T15:12:35.889462Z",
+    "products": [
+     {
+      "sku": 3378796645,
+      "offer_id": "6874298",
+      "name": "MAKEUP REVOLUTION Тени для век ICON PALETTE, палетка теней для макияжа глаз The Cherry Icon Palette",
+      "quantity": 1,
+      "price": {
+       "amount": "3612",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 3378796645,
+       "price": 3612
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0103087737-0353-3",
+    "status": "delivering",
+    "created_at": "2026-10-20T19:03:34.983274Z",
+    "in_process_at": "2026-10-20T19:03:31.824846Z",
+    "products": [
+     {
+      "sku": 1960095964,
+      "offer_id": "796718",
+      "name": "Vival японская массажная мочалка для душа и бани, антицеллюлитная, скрабирующая, длинная, для тела и спины, жесткая, из натуральных материалов",
+      "quantity": 1,
+      "price": {
+       "amount": "637",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1960095964,
+       "price": 637
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0119419784-1351-1",
+    "status": "delivered",
+    "created_at": "2026-10-19T17:32:57.481841Z",
+    "in_process_at": "2026-10-19T17:33:04.459496Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "491",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 491
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "69875556-0551-2",
+    "status": "delivered",
+    "created_at": "2026-10-20T04:49:21.181572Z",
+    "in_process_at": "2026-10-20T04:49:33.445012Z",
+    "products": [
+     {
+      "sku": 227239322,
+      "offer_id": "6085977",
+      "name": "MAKEUP REVOLUTION Хайлайтер для макияжа лица и тела HIGHLIGHT RELOADED, Raise the Bar: компактный, сухой, золотой",
+      "quantity": 1,
+      "price": {
+       "amount": "2076",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239322,
+       "price": 2076
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "10413130-0095-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T23:15:13.762756Z",
+    "in_process_at": "2026-10-19T23:15:28.453397Z",
+    "products": [
+     {
+      "sku": 227239493,
+      "offer_id": "6130998",
+      "name": "MAKEUP REVOLUTION Румяна для лица сухие матовые BLUSHER RELOADED Pink Lady, розовые",
+      "quantity": 1,
+      "price": {
+       "amount": "2044",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239493,
+       "price": 2044
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0158205859-0391-9",
+    "status": "delivering",
+    "created_at": "2026-10-20T04:50:07.657624Z",
+    "in_process_at": "2026-10-20T04:50:04.635634Z",
+    "products": [
+     {
+      "sku": 612065310,
+      "offer_id": "10670",
+      "name": "Мочалка для тела и спины VIVAL из конопли, натуральная, массажная, с длинными ручками, для душа и бани",
+      "quantity": 1,
+      "price": {
+       "amount": "993",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 612065310,
+       "price": 993
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0113554396-0192-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T05:22:17.228017Z",
+    "in_process_at": "2026-10-19T05:22:25.995767Z",
+    "products": [
+     {
+      "sku": 227239405,
+      "offer_id": "6108720",
+      "name": "MAKEUP REVOLUTION Румяна для лица сухие матовые BLUSHER RELOADED Rhubarb & Custard, розовые, персиковые",
+      "quantity": 1,
+      "price": {
+       "amount": "1377",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239405,
+       "price": 1377
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "37518098-0224-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T15:19:10.097942Z",
+    "in_process_at": "2026-10-20T15:19:19.507593Z",
+    "products": [
+     {
+      "sku": 227239348,
+      "offer_id": "6099448",
+      "name": "MAKEUP REVOLUTION Тени для век RELOADED PALETTE Iconic 3.0, палетка для глаз: матовые, блестящие, коричневые, с блёстками, белые, розовые",
+      "quantity": 1,
+      "price": {
+       "amount": "2866",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239348,
+       "price": 2866
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "55042395-0210-3",
+    "status": "delivering",
+    "created_at": "2026-10-20T07:24:32.931518Z",
+    "in_process_at": "2026-10-20T07:24:45.132344Z",
+    "products": [
+     {
+      "sku": 3521499335,
+      "offer_id": "227110",
+      "name": "Мочалка для тела Vival длинная с ручками, рельефная, массажная, с индикатором износа, 39 см",
+      "quantity": 1,
+      "price": {
+       "amount": "876",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 3521499335,
+       "price": 876
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0119850229-0317-2",
+    "status": "delivering",
+    "created_at": "2026-10-20T07:29:04.026233Z",
+    "in_process_at": "2026-10-20T07:29:13.378001Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0126904684-0818-1",
+    "status": "delivered",
+    "created_at": "2026-10-19T08:02:51.989437Z",
+    "in_process_at": "2026-10-19T08:02:58.025809Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "502",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 502
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "04562751-0699-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T10:13:11.952259Z",
+    "in_process_at": "2026-10-20T10:13:26.226965Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0137765184-0026-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T13:42:22.734070Z",
+    "in_process_at": "2026-10-20T13:43:09.209786Z",
+    "products": [
+     {
+      "sku": 227239201,
+      "offer_id": "6064958",
+      "name": "MAKEUP REVOLUTION Палетка хайлайтеров для лица CHEEK KIT Take A Breather, хайлайтер, бронзер, румяна, сухой, сияющий",
+      "quantity": 1,
+      "price": {
+       "amount": "2273",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239201,
+       "price": 2273
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0170962780-0374-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T05:33:03.800773Z",
+    "in_process_at": "2026-10-20T05:33:16.683560Z",
+    "products": [
+     {
+      "sku": 227241140,
+      "offer_id": "92200",
+      "name": "LV Easy Iron кондиционер-ополаскиватель для белья без запаха и отдушки, гипоаллергенный концентрат, антистатик, для детского белья и чувствительной кожи, 750 мл / 37 стирок",
+      "quantity": 1,
+      "price": {
+       "amount": "2902",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227241140,
+       "price": 2902
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0212177195-0457-621",
+    "status": "delivering",
+    "created_at": "2026-10-19T14:27:08.585015Z",
+    "in_process_at": "2026-10-19T14:27:01.076954Z",
+    "products": [
+     {
+      "sku": 227241140,
+      "offer_id": "92200",
+      "name": "LV Easy Iron кондиционер-ополаскиватель для белья без запаха и отдушки, гипоаллергенный концентрат, антистатик, для детского белья и чувствительной кожи, 750 мл / 37 стирок",
+      "quantity": 1,
+      "price": {
+       "amount": "3352.99",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227241140,
+       "price": 3352.99
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "95846110-0424-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T05:56:29.479614Z",
+    "in_process_at": "2026-10-20T05:56:58.888846Z",
+    "products": [
+     {
+      "sku": 3640806453,
+      "offer_id": "7935587",
+      "name": "VIVAL Beauty Сухой шампунь для волос с эффектом объема 75мл",
+      "quantity": 1,
+      "price": {
+       "amount": "604",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 3640806453,
+       "price": 604
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0216925256-0354-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T21:35:32.696675Z",
+    "in_process_at": "2026-10-20T21:35:40.954990Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "547",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 547
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0101428400-0172-4",
+    "status": "delivered",
+    "created_at": "2026-10-19T02:06:56.889490Z",
+    "in_process_at": "2026-10-19T02:07:07.105693Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "48691615-0310-3",
+    "status": "cancelled",
+    "created_at": "2026-10-20T16:31:00.844648Z",
+    "in_process_at": "2026-10-20T16:30:57.848060Z",
+    "products": [
+     {
+      "sku": 365076800,
+      "offer_id": "6479936",
+      "name": "RELOVE REVOLUTION Тени для век, палетка теней для макияжа глаз яркая COLOUR PLAY Empower, матовые и блестящие",
+      "quantity": 1,
+      "price": {
+       "amount": "1106",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 365076800,
+       "price": 1106
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0162674848-0096-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T10:06:25.750866Z",
+    "in_process_at": "2026-10-19T10:06:36.440726Z",
+    "products": [
+     {
+      "sku": 227239319,
+      "offer_id": "6085779",
+      "name": "MAKEUP REVOLUTION Бронзер для лица BRONZER RELOADED, Holiday Romance: компактный, сухой",
+      "quantity": 1,
+      "price": {
+       "amount": "1433",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239319,
+       "price": 1433
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "24522081-1278-3",
+    "status": "delivering",
+    "created_at": "2026-10-20T21:36:18.781890Z",
+    "in_process_at": "2026-10-20T21:36:16.741011Z",
+    "products": [
+     {
+      "sku": 1420747448,
+      "offer_id": "794926",
+      "name": "Маска для волос кератином восстанавливающая профессиональная VIVAL Beauty 500 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "547",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420747448,
+       "price": 547
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0198459908-0449-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T14:36:45.796017Z",
+    "in_process_at": "2026-10-19T14:37:02.013568Z",
+    "products": [
+     {
+      "sku": 640628909,
+      "offer_id": "16372",
+      "name": "Мочалка для тела и спины VIVAL из крапивного волокна, длинная с ручками, массажная, средней жесткости",
+      "quantity": 1,
+      "price": {
+       "amount": "949",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 640628909,
+       "price": 949
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0138897624-0122-5",
+    "status": "delivered",
+    "created_at": "2026-10-20T06:07:40.485384Z",
+    "in_process_at": "2026-10-20T06:07:38.938896Z",
+    "products": [
+     {
+      "sku": 396599356,
+      "offer_id": "6479264",
+      "name": "RELOVE REVOLUTION Палетка для макияжа лица, румяна и хайлайтер, сухие, для контуринга Colour Play Blushed Duo Wishful",
+      "quantity": 1,
+      "price": {
+       "amount": "717",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 396599356,
+       "price": 717
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0116552776-0204-1",
+    "status": "cancelled",
+    "created_at": "2026-10-19T05:16:27.293924Z",
+    "in_process_at": "2026-10-19T05:16:35.356823Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "51999532-0042-1",
+    "status": "cancelled",
+    "created_at": "2026-10-20T12:04:17.327438Z",
+    "in_process_at": "2026-10-20T12:04:26.808520Z",
+    "products": [
+     {
+      "sku": 227239201,
+      "offer_id": "6064958",
+      "name": "MAKEUP REVOLUTION Палетка хайлайтеров для лица CHEEK KIT Take A Breather, хайлайтер, бронзер, румяна, сухой, сияющий",
+      "quantity": 1,
+      "price": {
+       "amount": "2273",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239201,
+       "price": 2273
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "35649067-0553-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T13:13:26.437676Z",
+    "in_process_at": "2026-10-19T13:13:36.997050Z",
+    "products": [
+     {
+      "sku": 1262326877,
+      "offer_id": "794322",
+      "name": "VIVAL Мочалка детская для купания из хлопка, мягкая гипоаллергенная, для новорожденных и детей, с массажным эффектом",
+      "quantity": 1,
+      "price": {
+       "amount": "884",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1262326877,
+       "price": 884
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0125540578-0412-1",
+    "status": "delivering",
+    "created_at": "2026-10-19T12:12:57.033776Z",
+    "in_process_at": "2026-10-19T12:13:04.853980Z",
+    "products": [
+     {
+      "sku": 1232477943,
+      "offer_id": "1000000599",
+      "name": "LV Антиперспирант шариковый 48 часов, без запаха, для чувствительной кожи, с аллантоином, унисекс, 50 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "2561",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1232477943,
+       "price": 2561
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0171021232-0101-93",
+    "status": "delivering",
+    "created_at": "2026-10-20T10:05:21.653199Z",
+    "in_process_at": "2026-10-20T10:05:19.701209Z",
+    "products": [
+     {
+      "sku": 863885383,
+      "offer_id": "7930575",
+      "name": "Сухой шампунь для волос для объема с ароматом VIVAL Beauty 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "674",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863885383,
+       "price": 674
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0244481242-0148-1",
+    "status": "delivering",
+    "created_at": "2026-10-20T00:21:13.582382Z",
+    "in_process_at": "2026-10-20T00:21:21.425795Z",
+    "products": [
+     {
+      "sku": 227239320,
+      "offer_id": "6085823",
+      "name": "MAKEUP REVOLUTION Бронзер для лица BRONZER RELOADED, Take a Vacation: компактный, сухой",
+      "quantity": 1,
+      "price": {
+       "amount": "2039",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 227239320,
+       "price": 2039
+      }
+     ]
+    }
+   }
+  ],
+  "fbs": [
+   {
+    "posting_number": "18915645-1031-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T08:49:38Z",
+    "shipment_date": "2026-09-21T08:50:00Z",
+    "products": [
+     {
+      "sku": 824830417,
+      "offer_id": "6589567",
+      "name": "RELOVE BY REVOLUTION Подводка для глаз розовая, жидкая, стойкая, тонкая Dip Eyeliner",
+      "quantity": 1,
+      "price": {
+       "amount": "243.67",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "521.1",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "396.37",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 824830417,
+       "price": 243.67,
+       "customer_price": {
+        "amount": "157.99",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 863904039,
+       "price": 521.1,
+       "customer_price": {
+        "amount": "183.38",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 1420764520,
+       "price": 396.37,
+       "customer_price": {
+        "amount": "84.63",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "30358328-0126-3",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T09:05:04Z",
+    "shipment_date": "2026-09-21T09:05:00Z",
+    "products": [
+     {
+      "sku": 1643997048,
+      "offer_id": "795624",
+      "name": "Пилинг для кожи головы от жирности и перхоти профессиональный VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "573",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1643997048,
+       "price": 573,
+       "customer_price": {
+        "amount": "222.86",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "240.95",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "39903491-0206-2",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T14:57:44Z",
+    "shipment_date": "2026-09-21T14:58:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "643.83",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "402.13",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 643.83,
+       "customer_price": {
+        "amount": "138.7",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 1420764520,
+       "price": 402.13,
+       "customer_price": {
+        "amount": "86.44",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "64246819-0261-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T07:51:39Z",
+    "shipment_date": "2026-09-22T07:52:00Z",
+    "products": [
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "529",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "396",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863904039,
+       "price": 529,
+       "customer_price": {
+        "amount": "151.71",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 1420764520,
+       "price": 396,
+       "customer_price": {
+        "amount": "80.57",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0138965532-0156-3",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T13:35:42Z",
+    "shipment_date": "2026-09-22T13:36:00Z",
+    "products": [
+     {
+      "sku": 863895995,
+      "offer_id": "7930582",
+      "name": "VIVAL Beauty Сухой шампунь для волос для объема с ароматом 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "566",
+       "currency": "RUB"
+      }
+     },
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "583",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863895995,
+       "price": 566,
+       "customer_price": {
+        "amount": "211.43",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      },
+      {
+       "product_id": 863904039,
+       "price": 583,
+       "customer_price": {
+        "amount": "235.24",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "42123194-0618-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T06:09:49Z",
+    "shipment_date": "2026-09-21T06:10:00Z",
+    "products": [
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 2,
+      "price": {
+       "amount": "583",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863904039,
+       "price": 583,
+       "customer_price": {
+        "amount": "235",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "31245012-0218-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T11:31:19Z",
+    "shipment_date": "2026-09-21T11:31:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 2,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.37",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "66628081-0971-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T14:45:51Z",
+    "shipment_date": "2026-09-21T14:46:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 2,
+      "price": {
+       "amount": "396",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 396,
+       "customer_price": {
+        "amount": "80.57",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0232754705-0819-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T15:40:22Z",
+    "shipment_date": "2026-09-21T10:00:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 4,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "181.9",
+        "currency": "RUB"
+       },
+       "quantity": 4
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0224926491-0010-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T15:51:45Z",
+    "shipment_date": "2026-09-21T15:52:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 3,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "103.64",
+        "currency": "RUB"
+       },
+       "quantity": 3
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0206092435-1246-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T06:11:49Z",
+    "shipment_date": "2026-09-21T06:12:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "175.77",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0146554787-0013-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T06:43:57Z",
+    "shipment_date": "2026-09-21T06:44:00Z",
+    "products": [
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "583",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863904039,
+       "price": 583,
+       "customer_price": {
+        "amount": "275.24",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "41802268-0116-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T09:01:41Z",
+    "shipment_date": "2026-09-21T09:02:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.57",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "09248813-2079-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T07:10:20Z",
+    "shipment_date": "2026-09-22T07:10:00Z",
+    "products": [
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 2,
+      "price": {
+       "amount": "533",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863904039,
+       "price": 533,
+       "customer_price": {
+        "amount": "153.64",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0145606063-0026-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T15:02:43Z",
+    "shipment_date": "2026-09-21T15:03:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "139.87",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0193037737-0070-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T09:56:39Z",
+    "shipment_date": "2026-09-22T09:57:00Z",
+    "products": [
+     {
+      "sku": 1306182971,
+      "offer_id": "7930551",
+      "name": "Лак для волос профессиональный сильной фиксации 500 мл VIVAL Beauty",
+      "quantity": 2,
+      "price": {
+       "amount": "611",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1306182971,
+       "price": 611,
+       "customer_price": {
+        "amount": "193.33",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0149612439-0544-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T15:58:53Z",
+    "shipment_date": "2026-09-21T15:59:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 2,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "174.29",
+        "currency": "RUB"
+       },
+       "quantity": 2
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "80837145-0393-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T18:56:38Z",
+    "shipment_date": "2026-09-21T18:57:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "214.29",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0165893119-0124-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T17:45:05Z",
+    "shipment_date": "2026-09-21T17:45:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "125.71",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0187119677-0459-2",
+    "status": "cancelled",
+    "in_process_at": "2026-09-21T17:38:42Z",
+    "shipment_date": "2026-09-22T17:39:00Z",
+    "products": [
+     {
+      "sku": 936337230,
+      "offer_id": "7122940",
+      "name": "MAMAJOO Соска пустышка для новорожденных 6+ мес, 6-18 мес, набор 2 шт, силиконовая, ортодонтическая",
+      "quantity": 1,
+      "price": {
+       "amount": "557",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 936337230,
+       "price": 557,
+       "customer_price": {
+        "amount": "190.48",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "42706389-0299-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T06:09:56Z",
+    "shipment_date": "2026-09-21T06:10:00Z",
+    "products": [
+     {
+      "sku": 863904039,
+      "offer_id": "7930599",
+      "name": "Сухой шампунь для волос для объема VIVAL Beauty 200 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "583",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863904039,
+       "price": 583,
+       "customer_price": {
+        "amount": "181.9",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0258561782-0040-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T06:31:57Z",
+    "shipment_date": "2026-09-22T06:32:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.31",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "87529363-0053-1",
+    "status": "cancelled",
+    "in_process_at": "2026-09-20T20:19:20Z",
+    "shipment_date": "2026-09-21T20:19:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "124.53",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "86917941-0184-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T07:58:52Z",
+    "shipment_date": "2026-09-21T07:59:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "198.1",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "63004556-1748-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T22:34:56Z",
+    "shipment_date": "2026-09-21T22:35:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "390",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 390,
+       "customer_price": {
+        "amount": "97.12",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0150624193-1189-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T05:04:24Z",
+    "shipment_date": "2026-09-22T05:04:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.31",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "10867847-0678-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T19:09:09Z",
+    "shipment_date": "2026-09-21T19:09:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "113.33",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "91336848-0461-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T14:11:10Z",
+    "shipment_date": "2026-09-21T14:11:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "679",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 679,
+       "customer_price": {
+        "amount": "264.76",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "82330625-0115-2",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T19:11:00Z",
+    "shipment_date": "2026-09-21T19:11:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.57",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0180150374-0053-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T12:11:45Z",
+    "shipment_date": "2026-09-22T12:12:00Z",
+    "products": [
+     {
+      "sku": 863895995,
+      "offer_id": "7930582",
+      "name": "VIVAL Beauty Сухой шампунь для волос для объема с ароматом 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "566",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863895995,
+       "price": 566,
+       "customer_price": {
+        "amount": "188.39",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0101770417-0637-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T04:40:26Z",
+    "shipment_date": "2026-09-21T04:40:00Z",
+    "products": [
+     {
+      "sku": 1420740434,
+      "offer_id": "794925",
+      "name": "Бальзам для волос профессиональный 1000 мл увлажняющий VIVAL Beauty",
+      "quantity": 1,
+      "price": {
+       "amount": "627",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420740434,
+       "price": 627,
+       "customer_price": {
+        "amount": "148.95",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0131339340-0126-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T07:28:02Z",
+    "shipment_date": "2026-09-22T07:28:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "108.57",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0137598095-0247-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T17:36:12Z",
+    "shipment_date": "2026-09-22T17:36:00Z",
+    "products": [
+     {
+      "sku": 863895995,
+      "offer_id": "7930582",
+      "name": "VIVAL Beauty Сухой шампунь для волос для объема с ароматом 200мл",
+      "quantity": 1,
+      "price": {
+       "amount": "566",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 863895995,
+       "price": 566,
+       "customer_price": {
+        "amount": "145.71",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "71423082-0197-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T09:30:17Z",
+    "shipment_date": "2026-09-21T09:30:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "133.33",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "85722550-0374-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-21T12:32:26Z",
+    "shipment_date": "2026-09-22T12:32:00Z",
+    "products": [
+     {
+      "sku": 5621508738,
+      "offer_id": "6907125",
+      "name": "MAKEUP REVOLUTION Тональный крем для лица матирующий CONCEAL & DEFINE SOFT MATTE FULL COVERAGE F3N, тональная основа",
+      "quantity": 1,
+      "price": {
+       "amount": "1245",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 5621508738,
+       "price": 1245,
+       "customer_price": {
+        "amount": "510.54",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   },
+   {
+    "posting_number": "0211726630-0080-1",
+    "status": "delivered",
+    "in_process_at": "2026-09-20T19:11:46Z",
+    "shipment_date": "2026-09-21T19:12:00Z",
+    "products": [
+     {
+      "sku": 1420764520,
+      "offer_id": "794929",
+      "name": "Пенка для умывания лица увлажняющая от прыщей очищающая VIVAL Beauty 150 мл",
+      "quantity": 1,
+      "price": {
+       "amount": "424",
+       "currency": "RUB"
+      }
+     }
+    ],
+    "financial_data": {
+     "products": [
+      {
+       "product_id": 1420764520,
+       "price": 424,
+       "customer_price": {
+        "amount": "114",
+        "currency": "RUB"
+       },
+       "quantity": 1
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

@@ -10,6 +10,9 @@
 вспомогательное. Поэтому сначала запись заказов, потом сырьё, и отказ
 сохранения сырья печатает предупреждение, но шаг не роняет.
 
+Отправления × товар (61-я): тот же ответ пишется ещё и в ozon_posting_items (loaders/ozon_posting_items.py) — после заказов,
+нефатально; при отказе отчёта ЛК — без колонки buyer_price (прежнее измерение остаётся, как у заказов ниже).
+
 Цена покупателя FBO — из отчёта ЛК (loaders/ozon_postings_report.py). Отчёт не пришёл (сорок пятая §3, ночь 09-29: «не готов за
 180 с» обнулил цену на всём 30-дневном окне — 2 709 строк из 3 892) — строки пишутся БЕЗ колонок цены покупателя: upsert их не
 трогает, у ключа остаётся прежнее измерение, у нового ключа — null (default у колонок снят миграцией 2026-09-24). Итог шага
@@ -28,6 +31,7 @@ from loaders import ozon_fbo_orders_loader as fbo  # noqa: E402
 from loaders import ozon_orders_rows as rules  # noqa: E402
 from loaders import ozon_posting_status_log as log  # noqa: E402
 from loaders import ozon_postings_report as report  # noqa: E402
+from loaders import ozon_posting_items as items  # noqa: E402
 
 
 STATE_KEY = "ozon_fbo_buyer_prices:last"
@@ -80,16 +84,20 @@ def write_state(sb, payload):
         on_conflict="state_key").execute()
 
 
-def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=None, now=None, existing_fn=existing_buyer_keys, state_fn=write_state, dry_run=False):
+def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=None, now=None, existing_fn=existing_buyer_keys, state_fn=write_state, dry_run=False,
+        items_module=items):
     now = now or datetime.now(timezone.utc)
     postings = fbo_module.get_fbo_postings(days_back=days_back)
     buyer_prices, info = fetch_fbo_buyer_prices(days_back, report_module)
     rows = fbo_module.build_order_rows(postings, buyer_prices=buyer_prices or {})
+    order_rows = rows   # для тождества отправлений × товар (суммы продавца не зависят от того, пишется ли цена покупателя)
     info.update({"date": now.date().isoformat(), "started_at": now.isoformat(timespec="seconds"), "rows": len(rows)})
     if dry_run:   # §5.3 RBH: снять список и отчёт ЛК, посчитать строки, сырьё сохранить; заказы и итог в базу не писать
         with_price = sum(1 for r in rows if r.get("orders_amount_buyer") is not None)
         print(f"dry-run: FBO отправлений {len(postings)} за {days_back} дн., строк {len(rows)}, с ценой покупателя {with_price}; "
               f"отчёт ЛК: {'ок' if info.get('ok') else 'отказ: ' + str(info.get('error'))}; db_writes = 0", flush=True)
+        items_module.write(sb or getattr(fbo_module, "supabase", None), postings, "fbo", order_rows, days_back=days_back,
+                           buyer_prices=buyer_prices or {}, dry_run=True)
         try:
             path = log_module.dump_raw(postings, "fbo")
             print(f"Сырой ответ FBO сохранён: {path} ({len(postings)} отправлений)")
@@ -114,6 +122,9 @@ def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=N
         state_fn(sb or getattr(fbo_module, "supabase", None), info)
     except Exception as exc:  # итог для алерта — вспомогательный; заказы уже записаны
         print(f"⚠️  итог цены покупателя FBO не записан в pipeline_runtime_state: {type(exc).__name__}: {exc}", flush=True)
+    # отправления × товар (61-я) — нефатально, после заказов; write() наружу не бросает
+    items_module.write(sb or getattr(fbo_module, "supabase", None), postings, "fbo", order_rows, days_back=days_back,
+                       buyer_prices=buyer_prices or {}, keep_buyer=buyer_prices is None)
     try:
         path = log_module.dump_raw(postings, "fbo")
         print(f"Сырой ответ FBO сохранён: {path} ({len(postings)} отправлений)")

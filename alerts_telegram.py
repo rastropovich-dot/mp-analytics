@@ -1111,6 +1111,7 @@ CATALOG_STATE_KEY = "ozon_catalog_topup:last"    # пишет scripts/ozon_catal
 FBO_BUYER_STATE_KEY = "ozon_fbo_buyer_prices:last"  # пишет scripts/ozon_fbo_orders_step.py (сорок пятая §3)
 FINREZ_STATE_KEY = "finrez_nightly:last"          # пишет scripts/finrez_nightly_status.py с машины владельца (сорок третья §5)
 CLICK_ARBITER_STATE_KEY = "ozon_click_campaign_arbiter:last"  # пишет loaders/ozon_expenses_loader.run_click_arbiter (RBH 27.10, п. 2 (б))
+POSTING_ITEMS_STATE_KEYS = {"fbo": "ozon_posting_items:fbo", "fbs": "ozon_posting_items:fbs"}  # шаги заказов FBO / FBS (61-я)
 STATE_MAX_AGE_HOURS = 20
 
 
@@ -1235,6 +1236,12 @@ def fbo_buyer_line(payload, now=None):
     return text
 
 
+def posting_items_line(payloads, now=None):
+    """Отправления × товар Ozon (61-я): строка только при отказе записи или расхождении с заказами этой ночью."""
+    from loaders import ozon_posting_items
+    return ozon_posting_items.alert_line(payloads, now=now, max_age_hours=STATE_MAX_AGE_HOURS)
+
+
 def pipeline_run_line(run, now=None):
     """Одна строка про ночь: какие шаги не выполнены — или что итога нет. Всё прошло — пусто.
 
@@ -1284,7 +1291,8 @@ def build_message(target_date=None, skip_snapshot=False):
         lines.extend([run_line, ""])
     extra = [line for line in (catalog_line(get_state_payload(CATALOG_STATE_KEY)), fbo_buyer_line(get_state_payload(FBO_BUYER_STATE_KEY)),
                                finrez_book_line(get_state_payload(FINREZ_STATE_KEY)), get_unresolved_categories_line(),
-                               click_arbiter_line(get_state_payload(CLICK_ARBITER_STATE_KEY))) if line]
+                               click_arbiter_line(get_state_payload(CLICK_ARBITER_STATE_KEY)),
+                               posting_items_line({k: get_state_payload(v) for k, v in POSTING_ITEMS_STATE_KEYS.items()})) if line]
     if extra:
         lines.extend(extra + [""])
 

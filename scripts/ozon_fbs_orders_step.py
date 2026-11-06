@@ -7,6 +7,9 @@ scripts/ozon_posting_status_log.py. Ни одного дополнительно
 загрузчик не изменён — вызываются его функции. Окно 30 дней, как у FBO:
 отмены дозревают неделями (loaders/ozon_orders_rows.py).
 
+Отправления × товар (61-я): тот же ответ пишется ещё и в ozon_posting_items (loaders/ozon_posting_items.py) — после
+заказов, нефатально.
+
 Порядок важен: шаг ФАТАЛЬНЫЙ, сырьё — вспомогательное. Сначала запись заказов,
 потом сырьё; отказ сохранения сырья печатает предупреждение, шаг не роняет.
 """
@@ -19,14 +22,19 @@ CABINET = cabinet.assert_env()  # кабинет (MP_CABINET) и база (SUPAB
 
 from loaders import ozon_fbs_orders_loader as fbs  # noqa: E402
 from loaders import ozon_posting_status_log as log  # noqa: E402
+from loaders import ozon_orders_rows as rules  # noqa: E402
+from loaders import ozon_posting_items as items  # noqa: E402
 
 
-def run(fbs_module=fbs, log_module=log, days_back=fbs.DEFAULT_DAYS_BACK, dry_run=False):
+def run(fbs_module=fbs, log_module=log, days_back=fbs.DEFAULT_DAYS_BACK, dry_run=False, items_module=items, sb=None):
     postings = fbs_module.get_ozon_fbs_postings(days_back=days_back)
     if dry_run:   # §5.3 RBH: снять, посчитать, сырьё сохранить; в базу не писать
         print(f"dry-run: FBS отправлений {len(postings)} за {days_back} дн.; db_writes = 0", flush=True)
     else:
         fbs_module.save_ozon_orders(postings)
+    # отправления × товар (61-я) — нефатально, после заказов; строки заказов для тождества — то же чистое правило, без печати
+    order_rows, _ = rules.build_order_rows(postings, "fbs")
+    items_module.write(sb or getattr(fbs_module, "supabase", None), postings, "fbs", order_rows, days_back=days_back, dry_run=dry_run)
     try:
         path = log_module.dump_raw(postings, "fbs")
         print(f"Сырой ответ FBS сохранён: {path} ({len(postings)} отправлений)")

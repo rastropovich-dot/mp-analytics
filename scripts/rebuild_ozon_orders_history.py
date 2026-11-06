@@ -278,7 +278,7 @@ def plan(date_from, date_to, apply=False, delete_by_month=False):
 
 
 def main():
-    global CHUNK_DAYS
+    global CHUNK_DAYS, NET_RETRIES
     ap = argparse.ArgumentParser()
     ap.add_argument("--date-from", default="2026-03-28")
     ap.add_argument("--date-to", default=date.today().isoformat())
@@ -286,12 +286,15 @@ def main():
     g.add_argument("--estimate", action="store_true")
     g.add_argument("--fetch", action="store_true")
     ap.add_argument("--chunk-days", type=int, default=CHUNK_DAYS, help="окно одного запроса списка, дней (по умолчанию 30)")
+    ap.add_argument("--net-retries", type=int, default=NET_RETRIES,
+                    help="повторов сетевого обрыва на обращение (по умолчанию 3; 0 — одна попытка, обрыв останавливает сбор)")
     g.add_argument("--plan", action="store_true")
     g.add_argument("--apply", action="store_true")
     ap.add_argument("--delete-by-month", action="store_true",
                     help="с --apply: удалять помесячно — запасной путь, если delete одним запросом не уложился в statement_timeout")
     args = ap.parse_args()
     CHUNK_DAYS = max(1, int(args.chunk_days))
+    NET_RETRIES = max(0, int(args.net_retries))
     if args.estimate:
         estimate(args.date_from)
     elif args.fetch:

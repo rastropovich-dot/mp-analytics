@@ -3,7 +3,7 @@
 -- писали только день × SKU (marketplace_orders), а ozon_posting_status_log — отправление без товаров; сырьё на Render не живёт.
 --
 -- Источник — тот же ответ ночных шагов заказов (FBO /v3/posting/fbo/list, FBS /v4/posting/fbs/list), ни одного нового
--- обращения к Ozon. Разведка 2026-11-06 по сырью трёх кабинетов (391 тыс. отправлений): повторов sku внутри отправления 0,
+-- обращения к Ozon. Разведка 2026-11-06 по сырью трёх кабинетов (454 тыс. отправлений): повторов sku внутри отправления 0,
 -- родителей разделённых (cancelled_from_split_pending) 0 — ключ (posting_number, sku) однозначен.
 --
 -- Тождество: Σ quantity × seller_price по (order_date, sku, schema) = orders_amount_seller + cancelled_orders_amount_seller

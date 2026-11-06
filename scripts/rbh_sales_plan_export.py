@@ -547,7 +547,22 @@ def cmd_api(args):
 
 # ---------- сборка данных кабинета-площадки ----------
 
-MONTHS = (("2026-08", "август (23–31)"), ("2026-09", "сентябрь"), ("2026-10", "октябрь"))
+MONTH_NAMES = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
+
+
+def months_for(day_to, day_from=PERIOD_FROM):
+    """Месяцы периода с подписями: неполный первый и последний — с днями, «август (23–31)», «ноябрь (1–4)» (выгрузка 05.11:
+    прежде месяцы были зашиты август … октябрь, и последний подписывался числом конца периода)."""
+    a, b = date.fromisoformat(day_from), date.fromisoformat(day_to)
+    out, y, mo = [], a.year, a.month
+    while (y, mo) <= (b.year, b.month):
+        first = date(y, mo, 1)
+        last = (date(y + mo // 12, mo % 12 + 1, 1) - timedelta(days=1))
+        lo, hi = max(first, a), min(last, b)
+        label = MONTH_NAMES[mo - 1] + ("" if (lo, hi) == (first, last) else f" ({lo.day}–{hi.day})")
+        out.append((f"{y:04d}-{mo:02d}", label))
+        y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+    return out
 
 
 def days_between(a, b):
@@ -921,7 +936,7 @@ def cmd_book(args):
             skus = sorted({sku for (d, sku) in m.stock} | {sku for (d, sku) in m.sales})
             for sku in skus:
                 it = m.items.get(sku, {})
-                for mon, mon_label in MONTHS:
+                for mon, mon_label in months_for(day_to):
                     mdays = [d for d in m.days if d.startswith(mon)]
                     loaded = [d for d in mdays if d in m.stock_days]
                     key = "fbo_placement" if m.mp == "ozon" else "wb_storage"
@@ -978,6 +993,8 @@ def cmd_book(args):
                "«Подтверждённые» = созданные − отменённые на момент последнего сбора.")
 
     # 5. Месяцы: итоги и фактические цены по SKU
+    month_label = dict(months_for(day_to))
+
     def month_rows():
         for m in parts:
             agg = defaultdict(lambda: defaultdict(float))
@@ -985,13 +1002,13 @@ def cmd_book(args):
                 for k, v in s.items():
                     agg[(d[:7], sku)][k] += v
             for (mon, sku) in sorted(agg):
-                if mon not in ("2026-09", "2026-10"):
+                if mon not in month_label or mon == PERIOD_FROM[:7]:
                     continue
                 a = agg[(mon, sku)]
                 it = m.items.get(sku, {})
                 div = lambda x, y: R(x / y) if y else None  # noqa: E731
                 yield [m.label, sku, it.get("article", ""), it.get("brand_n", ""), it.get("group", ""), it.get("category", ""),
-                       "сентябрь" if mon == "2026-09" else f"октябрь (1–{date.fromisoformat(day_to).day})",
+                       month_label[mon],
                        a["ord_qty"] + a["cnl_qty"], a["ord_qty"], R(a["ord_seller"]), R(a["ord_buyer"]) if not a.get("buyer_unmeasured") else None,
                        div(a["ord_seller"], a["ord_qty"]), div(a["ord_buyer"], a["ord_qty"]) if not a.get("buyer_unmeasured") else None,
                        a["buy_qty"], R(a["buy_seller"]), R(a["buy_buyer"]), div(a["buy_seller"], a["buy_qty"]), div(a["buy_buyer"], a["buy_qty"])]
@@ -1010,9 +1027,9 @@ def cmd_book(args):
             for (d, sku), s in m.sales.items():
                 for k, v in s.items():
                     agg[d[:7]][k] += v
-            for mon, mon_label in MONTHS:
+            for mon, mon_label in months_for(day_to):
                 a = agg[mon]
-                yield [m.label, mon_label if mon != "2026-10" else f"октябрь (1–{date.fromisoformat(day_to).day})",
+                yield [m.label, mon_label,
                        a["ord_qty"] + a["cnl_qty"], a["ord_qty"], R(a["ord_seller"]), a["buy_qty"], R(a["buy_seller"]), R(a["buy_buyer"]),
                        len({sku for (d, sku), s in m.sales.items() if d.startswith(mon) and (s.get("buy_qty") or 0) > 0})]
     sheet("Итоги кабинетов",
@@ -1056,6 +1073,9 @@ def cmd_book(args):
 
     # сверки
     recon = reconcile(parts, day_to)
+    if getattr(args, "checks", None):
+        # сверки, снятые отдельно (выгрузка 05.11): строки готовым списком из JSON — база, книга «Фин рез», прежняя выгрузка
+        recon += [[""]] + json.load(open(args.checks, encoding="utf-8"))
     ws_src.column_dimensions["A"].width = 40
     for row in recon:
         ws_src.append(row)
@@ -1413,7 +1433,7 @@ def reconcile(parts, day_to):
             out.append([""])
             out.append(["Месяц", "Заказы созданные (supplier/orders), шт", "Воронка orderCount, шт", "Разница", "Выкупы таблицы, шт",
                         "Отчёт реализации продажи − возвраты, шт", "Разница", "Воронка buyoutCount (по дню заказа), шт"])
-            for mon, mon_label in MONTHS:
+            for mon, mon_label in months_for(day_to):
                 a = defaultdict(float)
                 for (d, sku), s in m.sales.items():
                     if d.startswith(mon):
@@ -1457,7 +1477,7 @@ def read_me(day_to, counts):
         "• Дни без остатка — SKU × месяц: дней с остатком и без, средние продажи в день с остатком, грубая оценка упущенного.",
         "• Продажи по дням — SKU × день: заказы созданные / отменённые / подтверждённые (шт, ₽ продавца и покупателя), выкупы (шт, ₽); "
         "для WB — сверочные колонки воронки и отчёта реализации.",
-        "• Месяцы и цены — SKU × сентябрь / октябрь: итоги и средние фактические цены заказа и выкупа (продавца и покупателя).",
+        "• Месяцы и цены — SKU × месяц, с сентября (последний месяц — по день выгрузки): итоги и средние фактические цены заказа и выкупа (продавца и покупателя).",
         "• Итоги кабинетов — по месяцам.",
         f"• Партии WB — остаток на {day_to} по поставкам (giId): штуки, даты из отчёта хранения, с какого дня партия видна у нас.",
         "• Склад РБХ — заготовка под файл владельца.",
@@ -1488,6 +1508,7 @@ def main():
     c.set_defaults(fn=cmd_api)
     b = sub.add_parser("book")
     b.add_argument("--date-to")
+    b.add_argument("--checks", help="JSON: список строк, дописываются в конец листа «Источники и сверки»")
     b.set_defaults(fn=cmd_book)
     args = ap.parse_args()
     args.fn(args)

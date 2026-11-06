@@ -1,0 +1,171 @@
+{
+ "source": "ответы /v4/product/info/stocks 2026-10-29 (filter visibility ALL, курсор), выгрузка плана продаж; товары с остатком без SKU в stock_daily 28.10 и по два обычных — с остатком и без",
+ "cabinets": {
+  "rbh1": [
+   {
+    "product_id": 53130305,
+    "offer_id": "6092739",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 1250,
+      "reserved": 0,
+      "sku": 227239336
+     },
+     {
+      "type": "fbs",
+      "present": 55,
+      "reserved": 0,
+      "sku": 227239336
+     }
+    ]
+   },
+   {
+    "product_id": 1066725241,
+    "offer_id": "6649056",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 60,
+      "reserved": 0,
+      "sku": 1587785614
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 1587785614
+     }
+    ]
+   },
+   {
+    "product_id": 1095358980,
+    "offer_id": "6823586",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 37,
+      "reserved": 0,
+      "sku": 1614147191
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 1614147191
+     }
+    ]
+   },
+   {
+    "product_id": 53129205,
+    "offer_id": "92200",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 69,
+      "reserved": 1,
+      "sku": 227241140
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 227241140
+     }
+    ]
+   },
+   {
+    "product_id": 53126980,
+    "offer_id": "15776348",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 0,
+      "reserved": 0,
+      "sku": 227237737
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 227237737
+     }
+    ]
+   }
+  ],
+  "rbh2": [
+   {
+    "product_id": 497061814,
+    "offer_id": "324517",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 191,
+      "reserved": 0,
+      "sku": 945083244
+     },
+     {
+      "type": "fbs",
+      "present": 9,
+      "reserved": 0,
+      "sku": 945083244
+     }
+    ]
+   },
+   {
+    "product_id": 1255250157,
+    "offer_id": "515547",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 1,
+      "reserved": 0,
+      "sku": 1753271582
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 1753271582
+     }
+    ]
+   },
+   {
+    "product_id": 436997702,
+    "offer_id": "340686",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 68,
+      "reserved": 0,
+      "sku": 836561454
+     },
+     {
+      "type": "fbs",
+      "present": 5,
+      "reserved": 0,
+      "sku": 836561454
+     }
+    ]
+   },
+   {
+    "product_id": 329095127,
+    "offer_id": "5535879",
+    "stocks": [
+     {
+      "type": "fbo",
+      "present": 0,
+      "reserved": 0,
+      "sku": 651898855
+     },
+     {
+      "type": "fbs",
+      "present": 0,
+      "reserved": 0,
+      "sku": 651898855
+     }
+    ]
+   }
+  ]
+ }
+}

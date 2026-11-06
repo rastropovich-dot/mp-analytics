@@ -197,17 +197,24 @@ def build_payload(date_from, date_to, page_size, offset):
     }
 
 
-def load_catalog():
+def load_catalog(client=None):
+    """SKU → {article, product_name} из ozon_products (sku, offer_id, name), постранично с сортировкой по sku.
+
+    Раньше читался sku_catalog, но его marketplace_sku — product_id Ozon (во всех трёх базах: 0 совпадений с SKU, RBH
+    2026-10-31), и поиск по SKU строки рекламы / аналитики не находил ничего: за 22–28.10 без артикула осталось
+    4 507 из 5 648 строк атрибуции KARATOV, 534 из 1 797 у РБХ-1, 254 из 1 264 у РБХ-2. ozon_products ведёт ночной шаг
+    «Ozon: каталог, добор недостающих»."""
+    client = client or supabase
     rows = []
     start = 0
     page_size = 1000
 
     while True:
         result = (
-            supabase
-            .table("sku_catalog")
-            .select("marketplace_sku,article,product_name")
-            .eq("marketplace_code", "ozon")
+            client
+            .table("ozon_products")
+            .select("sku,offer_id,name")
+            .order("sku")
             .range(start, start + page_size - 1)
             .execute()
         )
@@ -220,7 +227,10 @@ def load_catalog():
 
         start += page_size
 
-    return {str(row.get("marketplace_sku")): row for row in rows}
+    return {
+        str(row.get("sku")): {"article": row.get("offer_id") or "", "product_name": row.get("name") or ""}
+        for row in rows if row.get("sku")
+    }
 
 
 # ДВА РАЗНЫХ 429. Не смешивать — правила прямо противоположные.

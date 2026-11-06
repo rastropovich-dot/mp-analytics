@@ -70,7 +70,12 @@ if [ -n "${FINREZ_COPY_DIR:-}" ]; then
   # кабинеты РБХ (дополнение 23.10 п. 3): копия в подпапку <кабинет>/ папки владельца; KARATOV — в корень, как прежде
   COPY_TO="$FINREZ_COPY_DIR"
   if [ -n "${MP_CABINET:-}" ] && [ "${MP_CABINET}" != "karatov" ]; then COPY_TO="$FINREZ_COPY_DIR/$MP_CABINET"; mkdir -p "$COPY_TO" 2>/dev/null; fi
-  if [ -f "$OUT" ] && [ -d "$COPY_TO" ]; then
+  if [ "$RC" -ne 0 ]; then
+    # третья RBH 05.11 §1: при коде ≠ 0 на диске может лежать книга прошлой ночи с тем же именем — её не копируем,
+    # иначе время файла в iCloud обновится, а содержимое останется вчерашним
+    echo "копия пропущена: сборка с кодом $RC — книгу прошлой ночи в $COPY_TO не копирую"
+    ERROR="${ERROR:+$ERROR; }копия не делалась (код $RC)"
+  elif [ -f "$OUT" ] && [ -d "$COPY_TO" ]; then
     if cp "$OUT" "$COPY_TO/"; then COPIED="$COPY_TO/$(basename "$OUT")"; echo "копия → $COPIED"; else ERROR="${ERROR:+$ERROR; }копия в $COPY_TO не удалась"; fi
   else
     ERROR="${ERROR:+$ERROR; }копия пропущена: нет книги или каталога $FINREZ_COPY_DIR"

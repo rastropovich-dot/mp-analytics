@@ -54,5 +54,19 @@ class SupplyDay(unittest.TestCase):
         self.assertEqual(str(sp.supply_day({"state_updated_date": "2026-10-20T01:00:00Z"})), "2026-10-20")
 
 
+class MonthsForPeriod(unittest.TestCase):
+    """Выгрузка 05.11: месяцы из периода, а не зашитые август … октябрь."""
+
+    def test_period_into_november(self):
+        self.assertEqual(sp.months_for("2026-11-04"), [("2026-08", "август (23–31)"), ("2026-09", "сентябрь"),
+                                                       ("2026-10", "октябрь"), ("2026-11", "ноябрь (1–4)")])
+
+    def test_period_to_october_like_29_10(self):
+        self.assertEqual(sp.months_for("2026-10-28")[-1], ("2026-10", "октябрь (1–28)"))
+
+    def test_last_day_of_month_is_full(self):
+        self.assertEqual(sp.months_for("2026-10-31")[-1], ("2026-10", "октябрь"))
+
+
 if __name__ == "__main__":
     unittest.main()

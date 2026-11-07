@@ -28,10 +28,14 @@ from loaders import ozon_posting_items as items  # noqa: E402
 
 def run(fbs_module=fbs, log_module=log, days_back=fbs.DEFAULT_DAYS_BACK, dry_run=False, items_module=items, sb=None):
     postings = fbs_module.get_ozon_fbs_postings(days_back=days_back)
+    # 61-я §3а: отправления дня до окна в заказы не идут — их день целым записала прошлая ночь (сырьё и отправления × товар — все)
+    in_window, before = rules.drop_postings_before_window(postings, "fbs", days_back)
+    if before:
+        print(f"Ozon FBS: отправлений дня до окна в заказы не пишу: {len(before)} — их день целым записала прошлая ночь", flush=True)
     if dry_run:   # §5.3 RBH: снять, посчитать, сырьё сохранить; в базу не писать
         print(f"dry-run: FBS отправлений {len(postings)} за {days_back} дн.; db_writes = 0", flush=True)
     else:
-        fbs_module.save_ozon_orders(postings)
+        fbs_module.save_ozon_orders(in_window)
     # отправления × товар (61-я) — нефатально, после заказов; строки заказов для тождества — то же чистое правило, без печати
     order_rows, _ = rules.build_order_rows(postings, "fbs")
     items_module.write(sb or getattr(fbs_module, "supabase", None), postings, "fbs", order_rows, days_back=days_back, dry_run=dry_run)

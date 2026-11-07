@@ -91,6 +91,43 @@ def nightly_window(days_back, now_utc=None):
     return start, now_utc
 
 
+def drop_before_window(rows, days_back, now_utc=None):
+    """(строки с order_date ≥ первого дня ночного окна, отброшенные строки дня ДО окна).
+
+    Шестьдесят первая §3а: список отправлений отдаёт и часть отправлений дня, предшествующего первому дню окна (фильтр
+    since у Ozon — не по created_at). Строка (тот день, sku) строилась из этой части, и upsert замещал полную строку,
+    записанную прошлой ночью, когда день был первым днём окна: rbh1 30.09 и 01.10, SKU 365053838, −1 261,00 ₽ на двух ключах.
+    День до окна ночь не переписывает вовсе — его строки остаются от прошлой ночи, где он был целым.
+    """
+    start, _ = nightly_window(days_back, now_utc)
+    first_day = start.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
+    kept, dropped = [], []
+    for r in rows:
+        day = r.get("order_date")
+        (dropped if day and str(day) < first_day else kept).append(r)
+    return kept, dropped
+
+
+def drop_postings_before_window(postings, schema, days_back, now_utc=None):
+    """То же правило на уровне отправлений (FBS: строки строит загрузчик) — (оставленные, отброшенные отправления)."""
+    start, _ = nightly_window(days_back, now_utc)
+    first_day = start.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
+    kept, dropped = [], []
+    for p in postings:
+        day = order_date_of(p, schema)
+        (dropped if day and day < first_day else kept).append(p)
+    return kept, dropped
+
+
+def print_dropped(schema, dropped, days_back, now_utc=None):
+    if dropped:
+        start, _ = nightly_window(days_back, now_utc)
+        first_day = start.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
+        qty = sum(Decimal(str(r.get("orders_qty") or 0)) + Decimal(str(r.get("cancelled_orders_qty") or 0)) for r in dropped)
+        print(f"Ozon {schema.upper()}: строк дня до окна (order_date < {first_day}) не пишу: {len(dropped)}, штук {qty} — "
+              f"их день целым записала прошлая ночь", flush=True)
+
+
 def to_local_order_date(value):
     """UTC-время Ozon → локальная дата (Europe/Moscow), как и раньше у обоих загрузчиков."""
     if not value:

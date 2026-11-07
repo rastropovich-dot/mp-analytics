@@ -91,6 +91,8 @@ def run(fbo_module=fbo, log_module=log, days_back=30, report_module=report, sb=N
     buyer_prices, info = fetch_fbo_buyer_prices(days_back, report_module)
     rows = fbo_module.build_order_rows(postings, buyer_prices=buyer_prices or {})
     order_rows = rows   # для тождества отправлений × товар (суммы продавца не зависят от того, пишется ли цена покупателя)
+    rows, dropped = rules.drop_before_window(rows, days_back, now_utc=now)   # 61-я §3а: день до окна не переписываем частью его отправлений
+    rules.print_dropped("fbo", dropped, days_back, now_utc=now)
     info.update({"date": now.date().isoformat(), "started_at": now.isoformat(timespec="seconds"), "rows": len(rows)})
     if dry_run:   # §5.3 RBH: снять список и отчёт ЛК, посчитать строки, сырьё сохранить; заказы и итог в базу не писать
         with_price = sum(1 for r in rows if r.get("orders_amount_buyer") is not None)

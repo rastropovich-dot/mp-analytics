@@ -46,12 +46,15 @@ APP_TIMEZONE = rules.APP_TIMEZONE
 PAGE = 100                 # отправлений на страницу списка FBO /v3 и FBS /v4 (спека: maximum 100)
 
 
-def raw_files(raw_dir, schema):
-    """[(fetched_at, путь)] — history_* и ночные снимки одной схемы; part_* (куски history) и precheck_* не берутся."""
+def raw_files(raw_dir, schema, extra=()):
+    """[(fetched_at, путь)] — history_* и ночные снимки одной схемы; part_* (куски history) и precheck_* не берутся.
+    extra — отдельные файлы того же формата {schema, fetched_at, postings} из других мест (выгрузка RBH 06.11); берётся
+    файл своей схемы."""
     out = []
-    for path in glob.glob(os.path.join(raw_dir, f"*{schema}_*.json")):
+    paths = [(p, False) for p in glob.glob(os.path.join(raw_dir, f"*{schema}_*.json"))] + [(p, True) for p in extra]
+    for path, is_extra in paths:
         name = os.path.basename(path)
-        if not (name.startswith(f"history_{schema}_") or name.startswith(f"{schema}_")):
+        if not is_extra and not (name.startswith(f"history_{schema}_") or name.startswith(f"{schema}_")):
             continue
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -79,10 +82,10 @@ def local_day(ts):
     return dt.astimezone(ZoneInfo(APP_TIMEZONE)).date().isoformat()
 
 
-def build_rows(raw_dir, schema, date_from, date_to):
+def build_rows(raw_dir, schema, date_from, date_to, extra=()):
     """(строки окна, счётчики правила, файлы, полные дни). День полон, если его накрывает файл, снятый ПОСЛЕ конца дня
     (по МСК): файл, снятый днём, держит только часть заказов этого дня (KARATOV 22.09 — 23:14 МСК, 24.10 — 14:52 МСК)."""
-    files = raw_files(raw_dir, schema)
+    files = raw_files(raw_dir, schema, extra)
     by_file = defaultdict(list)
     for number, (p, fetched_at, name) in latest_postings(files).items():
         by_file[(fetched_at, name)].append(p)
@@ -174,9 +177,9 @@ def cancelled_by_month(item_rows_, order_rows, days):
     return dict(out)
 
 
-def plan(sb, schema, date_from, date_to, raw_dir, night_from=None, apply=False, out=print):
+def plan(sb, schema, date_from, date_to, raw_dir, night_from=None, apply=False, out=print, extra=()):
     """night_from — первый день окна первой ночи на новом коде: дни ≥ него пишет ночь, история их не берёт."""
-    rows_all, counters, files, complete = build_rows(raw_dir, schema, date_from, date_to)
+    rows_all, counters, files, complete = build_rows(raw_dir, schema, date_from, date_to, extra)
     out(f"=== {CABINET.DISPLAY_NAME} · {schema.upper()} · {date_from} … {date_to}"
         + (f" · дни с {night_from} пишет первая ночь" if night_from else ""))
     for fetched_at, name, n, d1, d2 in files:
@@ -257,13 +260,14 @@ def main(argv=None):
     ap.add_argument("--schema", choices=("fbo", "fbs", "both"), default="both")
     ap.add_argument("--raw-dir", default=RAW_DIR)
     ap.add_argument("--night-from", help="первый день окна первой ночи на новом коде (дни с него история не пишет)")
+    ap.add_argument("--extra-raw", nargs="*", default=[], help="ещё файлы сырья того же формата из других мест (берётся файл своей схемы)")
     ap.add_argument("--apply", action="store_true", help="записать (по слову владельца)")
     args = ap.parse_args(argv)
     if args.apply and in_nightly_run_window(datetime.now(timezone.utc)):
         raise SystemExit(f"окно ночного прогона ({window_text()}) — --apply не стартует")
     from loaders.ozon_fbo_orders_loader import supabase as sb
     for schema in (("fbo", "fbs") if args.schema == "both" else (args.schema,)):
-        plan(sb, schema, args.date_from, args.date_to, args.raw_dir, night_from=args.night_from, apply=args.apply)
+        plan(sb, schema, args.date_from, args.date_to, args.raw_dir, night_from=args.night_from, apply=args.apply, extra=args.extra_raw)
     if not args.apply:
         print("db_writes = 0")
     return 0

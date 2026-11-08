@@ -120,7 +120,8 @@ class Write(unittest.TestCase):
     def run_write(self, postings, order_rows, **kw):
         calls = {"upsert": [], "cleanup": [], "state": []}
         kw.setdefault("upsert_fn", lambda sb, rows: calls["upsert"].append(rows) or len(rows))
-        kw.setdefault("cleanup_fn", lambda sb, rows, schema, days_back, apply, now_utc=None: calls["cleanup"].append(apply) or 0)
+        kw.setdefault("report_fn", lambda sb, rows, schema, days_back, now_utc=None:
+                      calls["cleanup"].append("report") or {"candidates": 0, "examples": []})
         kw.setdefault("state_fn", lambda sb, schema, info: calls["state"].append((schema, info)))
         info = items.write(object(), postings, "fbo", order_rows, now_utc=self.NOW, **kw)
         return info, calls
@@ -131,7 +132,9 @@ class Write(unittest.TestCase):
         info, calls = self.run_write(p, order_rows)
         self.assertTrue(info["ok"])
         self.assertEqual((info["rows"], info["identity_diffs"], info["written"]), (1, 0, 1))
-        self.assertEqual(calls["cleanup"], [True])
+        self.assertEqual(calls["cleanup"], ["report"])   # 44-я: только отчёт о застрявших, без удаления
+        self.assertEqual((info["stale_candidates"], info["stale_examples"]), (0, []))
+        self.assertNotIn("stale_deleted", info)
         self.assertEqual(calls["state"][0][0], "fbo")
         self.assertIn("buyer_price", calls["upsert"][0][0])
 
@@ -139,7 +142,7 @@ class Write(unittest.TestCase):
         p = [posting("6-2", [product(62)])]
         info, calls = self.run_write(p, [], dry_run=True)
         self.assertEqual(info["identity_diffs"], 1)   # пустые заказы — расхождение названо, а не проглочено
-        self.assertEqual((calls["upsert"], calls["state"], calls["cleanup"]), ([], [], [False]))
+        self.assertEqual((calls["upsert"], calls["state"], calls["cleanup"]), ([], [], ["report"]))   # отчёт читает окно и в dry-run, как прежде
 
     def test_keep_buyer_strips_column(self):
         p = [posting("6-3", [product(63)])]
@@ -153,13 +156,13 @@ class Write(unittest.TestCase):
         info, calls = self.run_write([posting("6-4", [product(64)])], [], upsert_fn=boom)
         self.assertFalse(info["ok"])
         self.assertIn("does not exist", info["error"])
-        self.assertEqual(calls["cleanup"], [])           # без записи не чистим
+        self.assertEqual(calls["cleanup"], [])           # без записи отчёта о застрявших нет
         self.assertFalse(calls["state"][0][1]["ok"])     # отказ уходит в итог для алерта
 
     def test_cleanup_failure_named(self):
-        def bad_cleanup(sb, rows, schema, days_back, apply, now_utc=None):
+        def bad_cleanup(sb, rows, schema, days_back, now_utc=None):
             raise TimeoutError("57014")
-        info, _ = self.run_write([posting("6-5", [product(65)])], [], cleanup_fn=bad_cleanup)
+        info, _ = self.run_write([posting("6-5", [product(65)])], [], report_fn=bad_cleanup)
         self.assertTrue(info["ok"])
         self.assertIn("57014", info["stale_error"])
 
@@ -193,24 +196,116 @@ class Stale(unittest.TestCase):
         start, _ = rules.nightly_window(30, self.NOW)
         self.assertEqual(start.astimezone(timezone(timedelta(hours=3))).date().isoformat(), "2026-10-07")   # окно сбора — с 07.10
 
-    def test_cleanup_deletes_only_inside_window(self):
+    def test_report_names_only_inside_window(self):
         built = [{"posting_number": "A", "sku": 1, "order_date": "2026-10-20"},
                  {"posting_number": "B", "sku": 2, "order_date": "2026-10-21"}]
         table = [{"posting_number": "A", "sku": 1, "order_date": "2026-10-20", "status": "delivered"},
                  {"posting_number": "Z", "sku": 9, "order_date": "2026-10-20", "status": "awaiting_packaging"},   # застрял
-                 {"posting_number": "Y", "sku": 8, "order_date": "2026-10-25", "status": "delivering"}]           # день без строк — не трогаем
-        deleted = []
-        n = items.cleanup_stale(object(), built, "fbo", 30, apply=True, now_utc=self.NOW,
-                                read_fn=lambda sb, schema, a, b: [r for r in table if a <= r["order_date"] <= b],
-                                delete_fn=lambda sb, rows: deleted.extend(rows) or len(rows))
-        self.assertEqual(n, 1)
-        self.assertEqual([r["posting_number"] for r in deleted], ["Z"])
+                 {"posting_number": "Y", "sku": 8, "order_date": "2026-10-25", "status": "delivering"}]           # день без строк — не считаем
+        rep = items.report_stale(object(), built, "fbo", 30, now_utc=self.NOW,
+                                 read_fn=lambda sb, schema, a, b: [r for r in table if a <= r["order_date"] <= b])
+        self.assertEqual(rep["candidates"], 1)
+        self.assertEqual(rep["examples"], [{"posting_number": "Z", "sku": "9", "order_date": "2026-10-20"}])
+        self.assertEqual(rep["skipped_days"], ["2026-10-25"])
 
-    def test_cleanup_reads_only_inside_window(self):
+    def test_report_reads_only_inside_window(self):
         seen = []
-        items.cleanup_stale(object(), [], "fbs", 30, apply=False, now_utc=self.NOW,
-                            read_fn=lambda sb, schema, a, b: seen.append((schema, a, b)) or [], delete_fn=None)
+        items.report_stale(object(), [], "fbs", 30, now_utc=self.NOW,
+                           read_fn=lambda sb, schema, a, b: seen.append((schema, a, b)) or [])
         self.assertEqual(seen, [("fbs", "2026-10-08", "2026-11-05")])
+
+    def test_report_examples_capped_at_5_keys_only(self):
+        built = [{"posting_number": "A", "sku": 1, "order_date": "2026-10-20"}]
+        table = [{"posting_number": f"S{i}", "sku": 100 + i, "order_date": "2026-10-20", "status": "delivering", "quantity": 3}
+                 for i in range(8)]
+        rep = items.report_stale(object(), built, "fbo", 30, now_utc=self.NOW, read_fn=lambda sb, schema, a, b: table)
+        self.assertEqual(rep["candidates"], 8)
+        self.assertEqual(len(rep["examples"]), 5)
+        self.assertTrue(all(set(e) == {"posting_number", "sku", "order_date"} for e in rep["examples"]))
+
+
+class _Query:
+    """Подставной построитель PostgREST: каждое имя метода записывается; данные чтения — из таблицы по фильтрам eq."""
+
+    def __init__(self, sb, table):
+        self.sb, self.table, self.ops, self.filters, self.payload = sb, table, [], {}, None
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.ops.append(name)
+            self.sb.calls.append((self.table, name))
+            if name == "eq":
+                self.filters[args[0]] = args[1]
+            if name in ("upsert", "insert", "update", "delete"):
+                self.payload = args[0] if args else None
+            if name == "range":
+                self.range = args
+            return self
+        return call
+
+    def execute(self):
+        class R:
+            pass
+        r = R()
+        r.data = []
+        if "select" in self.ops and self.table == items.TABLE:
+            rows = [x for x in self.sb.rows if all(str(x.get(k)) == str(v) for k, v in self.filters.items())]
+            a, b = getattr(self, "range", (0, 10 ** 9))
+            r.data = rows[a:b + 1]
+        if "upsert" in self.ops and self.table == items.TABLE:
+            self.sb.upserted.extend(self.payload)
+        return r
+
+
+class FakeSb:
+    def __init__(self, rows):
+        self.rows, self.calls, self.upserted = rows, [], []
+
+    def table(self, name):
+        return _Query(self, name)
+
+
+class NoDelete(unittest.TestCase):
+    """44-я: в модуле нет пути удаления; запись с кандидатами не шлёт ни delete, ни update."""
+    NOW = datetime(2026, 11, 6, 0, 40, tzinfo=timezone.utc)
+
+    def test_static_no_delete_path_in_module(self):
+        with open(items.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        for bad in (".delete(", "delete_keys", "delete_fn", "delete_by_id", "delete_by_date_and_column", "stale_keys.cleanup",
+                    "cleanup_stale", ".truncate(", "truncate "):
+            self.assertNotIn(bad, src, bad)
+        self.assertFalse(hasattr(items, "delete_keys") or hasattr(items, "cleanup_stale"))
+
+    def test_write_not_dry_run_with_candidates_sends_no_delete_or_update(self):
+        p = [posting("7-1", [product(71, 2, "1000")], day="2026-10-20T10:00:00Z")]
+        order_rows, _ = rules.build_order_rows(p, "fbo", observed_at=OBSERVED)
+        old = [{"posting_number": f"OLD-{i}", "sku": 700 + i, "order_date": "2026-10-20", "schema": "fbo", "status": "awaiting_packaging"}
+               for i in range(7)]
+        sb = FakeSb(old)
+        info = items.write(sb, p, "fbo", order_rows, now_utc=self.NOW, observed_at=OBSERVED)
+        self.assertTrue(info["ok"], info.get("error"))
+        self.assertEqual((info["written"], info["stale_candidates"]), (1, 7))
+        self.assertEqual(len(info["stale_examples"]), 5)
+        self.assertEqual(info["stale_examples"][0], {"posting_number": "OLD-0", "sku": "700", "order_date": "2026-10-20"})
+        methods = {m for _t, m in sb.calls}
+        self.assertNotIn("delete", methods)
+        self.assertNotIn("update", methods)
+        self.assertEqual({t for t, m in sb.calls if m == "upsert"}, {items.TABLE, "pipeline_runtime_state"})
+        self.assertEqual([r["posting_number"] for r in sb.upserted], ["7-1"])   # записана строка ночи, старые ключи не тронуты
+        self.assertEqual(len(sb.rows), 7)
+        self.assertNotIn("stale_deleted", info)
+
+    def test_alert_line_candidates(self):
+        fresh = (self.NOW - timedelta(hours=1)).isoformat()
+        line = items.alert_line({"fbo": {"ok": True, "identity_diffs": 0, "stale_candidates": 3, "finished_at": fresh}}, now=self.NOW)
+        self.assertEqual(line, "⚠️ отправления × товар Ozon: FBO застрявшие ключи: кандидатов 3, не удалены (удаление запрещено)")
+        both = items.alert_line({"fbs": {"ok": True, "identity_diffs": 2, "identity_keys": 9, "stale_candidates": 1, "finished_at": fresh}},
+                                now=self.NOW)
+        self.assertIn("FBS расходятся с заказами на 2 ключах из 9", both)
+        self.assertIn("FBS застрявшие ключи: кандидатов 1, не удалены (удаление запрещено)", both)
+        self.assertEqual(items.alert_line({"fbo": {"ok": True, "identity_diffs": 0, "stale_candidates": 0, "finished_at": fresh}},
+                                          now=self.NOW), "")
 
 
 class Steps(unittest.TestCase):

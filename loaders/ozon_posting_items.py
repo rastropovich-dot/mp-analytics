@@ -13,10 +13,15 @@
 Запись нефатальна: заказы — база витрин, отправления × товар — справочная таблица. write() ничего не бросает наружу:
 отказ печатается строкой «⚠️ …», уходит в итог pipeline_runtime_state (ozon_posting_items:<схема>) и в строку алерта.
 
-Застрявшие ключи — правило loaders/stale_keys.py: после полного сбора окна (список либо получен целиком, либо шаг упал
-раньше) ключи окна, которых в ответе нет, удаляются. Окно чистки — дни строго ВНУТРИ окна сбора: первый день (граница
-фильтра since у Ozon не по created_at — в сырье РБХ-2 есть FBO с created_at раньше since) и сегодняшний (отправление
-могло ещё не попасть в список) не трогаются. Порог и печать списка до удаления — как у stale_keys.cleanup.
+Застрявшие ключи — ТОЛЬКО ОТЧЁТ (вариант без удалений, п. 44 08.11: удаление запрещено). После полного сбора окна ключи окна,
+которых в ответе нет, находятся тем же правилом stale_keys.plan, но ничего не удаляется и не изменяется — ни delete, ни update,
+ни перезапись строки статусом. Окно — дни строго ВНУТРИ окна сбора: первый день (граница фильтра since у Ozon не по created_at —
+в сырье РБХ-2 есть FBO с created_at раньше since) и сегодняшний (отправление могло ещё не попасть в список) не смотрятся. Итог —
+число кандидатов и до 5 примеров (posting_number / sku / order_date) в pipeline_runtime_state и строку алерта.
+
+Следствие: кандидаты остаются в таблице. Сумма таблицы по (order_date, sku) может быть больше заказов — родитель разделённого
+отправления (cancelled_from_split_pending) ночь не строит, его прежняя строка остаётся рядом со строками детей. Отличить: у живого
+ключа окна observed_at = последней полной ночи, у кандидата — старше.
 """
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -170,24 +175,31 @@ def read_window(sb, schema, day_from, day_to):
     return out
 
 
-def delete_keys(sb, rows):
-    n = 0
-    for r in rows:
-        res = sb.table(TABLE).delete().eq("posting_number", r["posting_number"]).eq("sku", r["sku"]).execute()
-        n += len(res.data or [])
-    return n
+STALE_EXAMPLES = 5
 
 
-def cleanup_stale(sb, rows, schema, days_back, apply, now_utc=None, read_fn=read_window, delete_fn=delete_keys):
+def report_stale(sb, rows, schema, days_back, now_utc=None, read_fn=read_window):
+    """Кандидаты в застрявшие ключи окна одной схемы — ТОЛЬКО отчёт: окно читается, в базе ничего не меняется.
+
+    Правило — stale_keys.plan: ключ есть в таблице за день окна, среди построенных этой ночью его нет, и за этот день ночь построила
+    хотя бы одну строку (день без единой построенной строки не считается — пустой ответ неотличим от дыры в API).
+    Возвращает {"candidates": N, "examples": [до 5 {posting_number, sku, order_date}], "skipped_days": [...], "day_from", "day_to"}.
+    """
     day_from, day_to = stale_window(days_back, now_utc)
     inside = [r for r in rows if day_from.isoformat() <= str(r["order_date"]) <= day_to.isoformat()]
     existing = read_fn(sb, schema, day_from.isoformat(), day_to.isoformat())
-    return stale_keys.cleanup(
-        sb, TABLE, {"day_from": day_from.isoformat(), "day_to": day_to.isoformat(), "complete": True}, existing,
-        {(str(r["posting_number"]), str(r["sku"])) for r in inside}, {str(r["order_date"]) for r in inside},
-        key_of=lambda r: (str(r["posting_number"]), str(r["sku"])), day_of=lambda r: str(r["order_date"]),
-        describe=lambda r: f"{r['order_date']} {schema} {r['posting_number']} sku {r['sku']} ({r.get('status')})",
-        delete_fn=delete_fn, apply=apply)
+    stale, skipped_days = stale_keys.plan(
+        existing, {(str(r["posting_number"]), str(r["sku"])) for r in inside}, {str(r["order_date"]) for r in inside},
+        key_of=lambda r: (str(r["posting_number"]), str(r["sku"])), day_of=lambda r: str(r["order_date"]))
+    examples = [{"posting_number": str(r["posting_number"]), "sku": str(r["sku"]), "order_date": str(r["order_date"])}
+                for r in stale[:STALE_EXAMPLES]]
+    print(f"Застрявшие ключи {TABLE} ({schema}): окно {day_from} … {day_to}, строк окна в таблице {len(existing)}, "
+          f"кандидатов {len(stale)} — не удалены (удаление запрещено)"
+          + (f"; дни без построенных строк не смотрю: {', '.join(skipped_days)}" if skipped_days else ""), flush=True)
+    for e in examples:
+        print(f"    {e['order_date']} {schema} {e['posting_number']} sku {e['sku']}", flush=True)
+    return {"candidates": len(stale), "examples": examples, "skipped_days": skipped_days,
+            "day_from": day_from.isoformat(), "day_to": day_to.isoformat()}
 
 
 def write_state(sb, schema, payload):
@@ -197,7 +209,7 @@ def write_state(sb, schema, payload):
 
 
 def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, keep_buyer=False, observed_at=None, dry_run=False,
-          now_utc=None, upsert_fn=upsert, cleanup_fn=cleanup_stale, state_fn=write_state):
+          now_utc=None, upsert_fn=upsert, report_fn=report_stale, state_fn=write_state):
     """Нефатальная запись отправлений × товар одной схемы. Возвращает итог (dict); исключений наружу не бросает.
 
     keep_buyer — отчёт ЛК FBO этой ночью не пришёл (сорок пятая §3): строки пишутся БЕЗ buyer_price, upsert его не трогает —
@@ -230,8 +242,11 @@ def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, kee
         info["error"] = f"{type(exc).__name__}: {exc}"[:500]
         print(f"⚠️  {label} НЕ записаны: {info['error']} — заказы записаны, шаг продолжен", flush=True)
     if info["ok"]:
-        try:   # чистка — после записи, не до; её отказ строки ночи не отменяет, но называется
-            info["stale_deleted"] = cleanup_fn(sb, rows, schema, days_back, apply=not dry_run, now_utc=now_utc)
+        try:   # застрявшие ключи — только отчёт, после записи; ничего не удаляет и не меняет; отказ строки ночи не отменяет
+            rep = report_fn(sb, rows, schema, days_back, now_utc=now_utc)
+            info["stale_candidates"] = int(rep["candidates"])
+            info["stale_examples"] = [{k: str(e[k]) for k in ("posting_number", "sku", "order_date")}
+                                      for e in rep["examples"][:STALE_EXAMPLES]]
         except Exception as exc:  # noqa: BLE001
             info["stale_error"] = f"{type(exc).__name__}: {exc}"[:500]
             print(f"⚠️  {label}: застрявшие ключи не проверены: {info['stale_error']}", flush=True)
@@ -245,7 +260,7 @@ def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, kee
 
 
 def alert_line(payloads, now=None, max_age_hours=20):
-    """Строка утреннего алерта — только при отказе или расхождении тождества этой ночью; иначе пусто."""
+    """Строка утреннего алерта — при отказе, расхождении тождества или кандидатах в застрявшие ключи этой ночью; иначе пусто."""
     now = now or datetime.now(timezone.utc)
     bad = []
     for schema in ("fbo", "fbs"):
@@ -262,8 +277,11 @@ def alert_line(payloads, now=None, max_age_hours=20):
             continue
         if not p.get("ok"):
             bad.append(f"{schema.upper()} не записаны ({p.get('error') or 'причина не записана'})")
-        elif p.get("identity_diffs"):
+            continue
+        if p.get("identity_diffs"):
             bad.append(f"{schema.upper()} расходятся с заказами на {p['identity_diffs']} ключах из {p.get('identity_keys', '?')}")
-        elif p.get("stale_error"):
+        if p.get("stale_error"):
             bad.append(f"{schema.upper()} записаны, застрявшие ключи не проверены ({p['stale_error']})")
+        elif p.get("stale_candidates"):
+            bad.append(f"{schema.upper()} застрявшие ключи: кандидатов {p['stale_candidates']}, не удалены (удаление запрещено)")
     return ("⚠️ отправления × товар Ozon: " + "; ".join(bad)) if bad else ""

@@ -28,6 +28,7 @@ OZON_API_KEY = os.getenv("OZON_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 DEFAULT_IDENTITY_LOOKBACK_DAYS = int(os.getenv("OZON_STOCKS_IDENTITY_LOOKBACK_DAYS", "90"))
 
 STOCKS_URL = "https://api-seller.ozon.ru/v4/product/info/stocks"

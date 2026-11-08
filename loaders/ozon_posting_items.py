@@ -148,11 +148,34 @@ def check_identity(item_rows_, order_rows):
     return diffs
 
 
+BUYER_COLUMN = "buyer_price"
+
+
+def buyer_groups(rows):
+    """(строки с ценой покупателя — все колонки, строки без цены — БЕЗ колонки buyer_price), п. 44а.
+
+    Зачем две группы: postgrest-py (2.29.0, pre_upsert) шлёт у пачки columns = объединение ключей всех строк и при
+    merge-duplicates обновляет каждую из этих колонок; ключ, которого у строки нет, уходит как null. Строка «без цены» в общей
+    пачке со строками «с ценой» затёрла бы измеренную buyer_price. Поэтому пачка всегда однородна: либо у всех строк есть
+    buyer_price (не null), либо ни у одной нет этой колонки — тогда upsert её не трогает (у ключа остаётся прежнее измерение,
+    у нового ключа — null, default колонки).
+    """
+    with_price = [r for r in rows if r.get(BUYER_COLUMN) is not None]
+    without = [{k: v for k, v in r.items() if k != BUYER_COLUMN} for r in rows if r.get(BUYER_COLUMN) is None]
+    return with_price, without
+
+
 def upsert(sb, rows):
+    """upsert по (posting_number, sku) однородными пачками (buyer_groups). Контракт прежний: возвращает число отправленных строк."""
     n = 0
-    for i in range(0, len(rows), BATCH):
-        sb.table(TABLE).upsert(rows[i:i + BATCH], on_conflict=KEY).execute()
-        n += len(rows[i:i + BATCH])
+    for group in buyer_groups(rows):
+        for i in range(0, len(group), BATCH):
+            batch = group[i:i + BATCH]
+            cols = set(batch[0])
+            if any(set(r) != cols for r in batch):     # одна пачка — один набор колонок, иначе PostgREST допишет null
+                raise ValueError(f"{TABLE}: в пачке разные наборы колонок — не отправляю")
+            sb.table(TABLE).upsert(batch, on_conflict=KEY).execute()
+            n += len(batch)
     return n
 
 
@@ -213,7 +236,8 @@ def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, kee
     """Нефатальная запись отправлений × товар одной схемы. Возвращает итог (dict); исключений наружу не бросает.
 
     keep_buyer — отчёт ЛК FBO этой ночью не пришёл (сорок пятая §3): строки пишутся БЕЗ buyer_price, upsert его не трогает —
-    у ключа остаётся прежнее измерение, у нового ключа — null.
+    у ключа остаётся прежнее измерение, у нового ключа — null. И без keep_buyer строка, у которой цены этой ночью нет (частичный
+    отчёт ЛК, FBS без customer_price, чужая валюта), уходит без колонки buyer_price — upsert делит пачки (buyer_groups, п. 44а).
     """
     label = f"Ozon {schema.upper()}: отправления × товар"
     observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -233,10 +257,13 @@ def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, kee
         if dry_run:
             print(f"{label}: dry-run — в базу не пишу (db_writes = 0)", flush=True)
         else:
-            to_write = [{k: v for k, v in r.items() if k != "buyer_price"} for r in rows] if keep_buyer else rows
+            to_write = [{k: v for k, v in r.items() if k != BUYER_COLUMN} for r in rows] if keep_buyer else rows
+            with_price, without = buyer_groups(to_write)
             info["written"] = upsert_fn(sb, to_write)
             info["buyer_price_kept"] = bool(keep_buyer)
-            print(f"✅ {label}: записано {info['written']} строк в {TABLE}", flush=True)
+            info["buyer_written"], info["buyer_untouched"] = len(with_price), len(without)
+            print(f"✅ {label}: записано {info['written']} строк в {TABLE} — с ценой покупателя {len(with_price)}, "
+                  f"без колонки цены (прежнее измерение не трогается) {len(without)}", flush=True)
         info["ok"] = True
     except Exception as exc:  # noqa: BLE001 — справочная таблица: заказы уже записаны, шаг не роняем
         info["error"] = f"{type(exc).__name__}: {exc}"[:500]
@@ -247,6 +274,9 @@ def write(sb, postings, schema, order_rows, days_back=30, buyer_prices=None, kee
             info["stale_candidates"] = int(rep["candidates"])
             info["stale_examples"] = [{k: str(e[k]) for k in ("posting_number", "sku", "order_date")}
                                       for e in rep["examples"][:STALE_EXAMPLES]]
+            # 44б: окно и пропущенные дни — в итог, чтобы «кандидатов 0» при пропущенном дне не читалось как «чисто»
+            info["stale_window"] = [str(rep.get("day_from")), str(rep.get("day_to"))]
+            info["stale_skipped_days"] = [str(d) for d in rep.get("skipped_days") or []]
         except Exception as exc:  # noqa: BLE001
             info["stale_error"] = f"{type(exc).__name__}: {exc}"[:500]
             print(f"⚠️  {label}: застрявшие ключи не проверены: {info['stale_error']}", flush=True)
@@ -284,4 +314,6 @@ def alert_line(payloads, now=None, max_age_hours=20):
             bad.append(f"{schema.upper()} записаны, застрявшие ключи не проверены ({p['stale_error']})")
         elif p.get("stale_candidates"):
             bad.append(f"{schema.upper()} застрявшие ключи: кандидатов {p['stale_candidates']}, не удалены (удаление запрещено)")
+        if not p.get("stale_error") and p.get("stale_skipped_days"):
+            bad.append(f"{schema.upper()} проверка застрявших ключей неполная: пропущено дней {len(p['stale_skipped_days'])}")
     return ("⚠️ отправления × товар Ozon: " + "; ".join(bad)) if bad else ""

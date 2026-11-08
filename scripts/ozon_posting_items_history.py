@@ -177,6 +177,30 @@ def cancelled_by_month(item_rows_, order_rows, days):
     return dict(out)
 
 
+# П. 44а / 46а п. 4: исключения сверки «сырьё − заказы» — только точные ключи с точной дельтой (кабинет, схема, день, sku,
+# Δ штук, Δ ₽ продавца = отправления − заказы). Это 61-я §3а: заказы rbh1 30.09 / 01.10 потеряли часть отправлений дня до окна.
+# Отправления этих дней из истории не выкидываются — исключение действует только в сверке. Любое иное расхождение — стоп до записи.
+ALLOWED_DIFFS = frozenset({
+    ("rbh1", "fbo", "2026-09-30", "365053838", Decimal("1"), Decimal("602.00")),
+    ("rbh1", "fbo", "2026-10-01", "365053838", Decimal("1"), Decimal("659.00")),
+})
+
+
+def key_diffs(item_rows_, order_rows, days):
+    """[(день, sku, схема, Δ штук, Δ ₽)] по ключам (день, sku, схема) дней `days`: отправления × товар − заказы (созданные)."""
+    days = set(days)
+    out = []
+    for (day, sku, schema), x, y in items.check_identity([r for r in item_rows_ if r["order_date"] in days],
+                                                        [r for r in order_rows if str(r["order_date"]) in days]):
+        out.append((day, sku, schema, x[0] - y[0], (x[1] - y[1]).quantize(CENT)))
+    return out
+
+
+def blocking_diffs(cabinet_code, diffs):
+    """Расхождения, которых нет среди точных исключений ALLOWED_DIFFS (совпадение всех шести полей)."""
+    return [d for d in diffs if (cabinet_code, d[2], d[0], d[1], d[3], d[4]) not in ALLOWED_DIFFS]
+
+
 def plan(sb, schema, date_from, date_to, raw_dir, night_from=None, apply=False, out=print, extra=()):
     """night_from — первый день окна первой ночи на новом коде: дни ≥ него пишет ночь, история их не берёт."""
     rows_all, counters, files, complete = build_rows(raw_dir, schema, date_from, date_to, extra)
@@ -213,6 +237,12 @@ def plan(sb, schema, date_from, date_to, raw_dir, night_from=None, apply=False, 
     for x in differ[:15]:
         v = days[x]
         out(f"    {x}: ключей {v[0]}, с расхождением {v[1]}; штук {v[2]} / {v[3]} (Δ {v[2] - v[3]}), ₽ {v[4]} / {v[5]} (Δ {v[4] - v[5]})")
+    diffs = key_diffs(rows_all, orders, good)
+    blocking = blocking_diffs(CABINET.CODE, diffs)
+    out(f"  сверка по ключам (день, sku): расхождений {len(diffs)}, из них точных исключений {len(diffs) - len(blocking)}, "
+        f"вне исключений {len(blocking)}")
+    for d_, sku, sch, dq, da in blocking[:15]:
+        out(f"    ⛔ {d_} {sch} sku {sku}: Δ {dq} шт / {da} ₽")
     need = sorted(set(no_raw) | set(incomplete))
     if incomplete:
         out(f"  дни с неполным сырьём (файл снят в тот же день) — из сырья НЕ пишутся: {_ranges(incomplete)}")
@@ -230,12 +260,16 @@ def plan(sb, schema, date_from, date_to, raw_dir, night_from=None, apply=False, 
     keep, skip = newer_in_table(rows, existing)
     out(f"  таблица: " + ("нет (миграция не применена) — к записи все строки" if existing is None else
                           f"ключей окна {len(existing)}; к записи {len(keep)}, не писать (в таблице свежее) {len(skip)}"))
-    if apply:
-        n = items.upsert(sb, keep)
+    blocked = bool(blocking)
+    if apply and blocked:
+        out(f"  ⛔ расхождения с заказами вне точных исключений: {len(blocking)} — стоп до записи, --apply не выполняется")
+    elif apply:
+        n = items.upsert(sb, keep)   # однородные пачки: строки без цены покупателя — без колонки buyer_price (п. 44а)
         out(f"  ✅ записано {n} строк")
     else:
         out("  план; без --apply ничего не пишется (db_writes 0)")
-    return {"rows": len(rows), "to_write": len(keep), "skip_newer": len(skip), "days_differ": differ, "days_need_api": need}
+    return {"rows": len(rows), "to_write": len(keep), "skip_newer": len(skip), "days_differ": differ, "days_need_api": need,
+            "diff_keys": len(diffs), "blocking_diffs": len(blocking), "blocked": blocked}
 
 
 def _ranges(days):
@@ -266,11 +300,15 @@ def main(argv=None):
     if args.apply and in_nightly_run_window(datetime.now(timezone.utc)):
         raise SystemExit(f"окно ночного прогона ({window_text()}) — --apply не стартует")
     from loaders.ozon_fbo_orders_loader import supabase as sb
+    blocked = False
     for schema in (("fbo", "fbs") if args.schema == "both" else (args.schema,)):
-        plan(sb, schema, args.date_from, args.date_to, args.raw_dir, night_from=args.night_from, apply=args.apply, extra=args.extra_raw)
+        res = plan(sb, schema, args.date_from, args.date_to, args.raw_dir, night_from=args.night_from, apply=args.apply, extra=args.extra_raw)
+        if res["blocked"] and args.apply:
+            blocked = True
+            break                           # первый отказ — стоп: следующая схема не пишется
     if not args.apply:
         print("db_writes = 0")
-    return 0
+    return 2 if blocked else 0
 
 
 if __name__ == "__main__":

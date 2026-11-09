@@ -282,6 +282,36 @@ def cleanup_raw(today, raw_dir=RAW_DIR, keep_days=RAW_RETENTION_DAYS, apply=True
 
 # ---------- база ----------
 
+def table_pairs_present(sb, day, pairs):
+    """Только чтение: (строк в таблице за день, есть ли хоть одна строка с парой (office_id, warehouse) из pairs, пример пары таблицы).
+    HEAD count=exact — без чтения строк; пример — одна строка limit 1."""
+    total = sb.table(TABLE).select("day", count="exact", head=True).eq("day", day).execute().count or 0
+    if not total:
+        return 0, False, None
+    for office, wh in sorted(pairs, key=lambda x: (x[0], str(x[1]))):
+        q = sb.table(TABLE).select("day", count="exact", head=True).eq("day", day).eq("office_id", office)
+        q = q.is_("warehouse", "null") if wh is None else q.eq("warehouse", wh)
+        if (q.execute().count or 0) > 0:
+            return total, True, None
+    sample = sb.table(TABLE).select("office_id,warehouse").eq("day", day).limit(1).execute().data or []
+    return total, False, ((sample[0].get("office_id"), sample[0].get("warehouse")) if sample else None)
+
+
+def rekeyed_days(sb, rows):
+    """Дни окна, у которых в таблице есть строки, а множества (office_id, warehouse) свежего ответа и таблицы не пересекаются
+    (ни одна свежая пара не встречается в таблице за этот день). → {день: (строк в таблице, свежие пары, пример пары таблицы)}.
+    Такой день, записанный upsert-ом поверх, дал бы двойной счёт: старые ключи остались бы рядом с новыми (п. 29, 08.11)."""
+    fresh = defaultdict(set)
+    for r in rows:
+        fresh[r["day"]].add((r["office_id"], r.get("warehouse")))
+    out = {}
+    for day in sorted(fresh):
+        total, hit, sample = table_pairs_present(sb, day, fresh[day])
+        if total and not hit:
+            out[day] = (total, sorted(fresh[day], key=lambda x: (x[0], str(x[1]))), sample)
+    return out
+
+
 def upsert_rows(sb, rows, batch=500):
     written = 0
     for i in range(0, len(rows), batch):
@@ -323,14 +353,27 @@ def run(sb, days_back=DEFAULT_DAYS_BACK, today=None, dry_run=False, sleep_fn=tim
     print(f"обращений {counters['requests']}, 429 — {counters['429']}, сетевых отказов {counters['transient']}", flush=True)
     rows = build_rows(items, observed_at, task_id, d1, d2)
     total = print_summary(rows, len(items))
-    written = 0
+    written, failure, rekeyed = 0, None, {}
+    if rows and sb is not None:
+        rekeyed = rekeyed_days(sb, rows)   # только чтение; дни, где склады WB сменили ключи (п. 29, 08.11)
+        for day, (total_rows, now_pairs, was) in sorted(rekeyed.items()):
+            print(f"⚠️ {TABLE} {day}: склады перекодированы WB — в таблице {total_rows} строк с другими складами "
+                  f"(например {was}), в ответе {now_pairs[:5]}{' …' if len(now_pairs) > 5 else ''}", flush=True)
+        if rekeyed:   # пути замены (удаления) нет: день не пишется, строки таблицы не трогаются, шаг с отказом (RBH п. 65)
+            rows = [r for r in rows if r["day"] not in rekeyed]
+            failure = (f"{len(rekeyed)} дн. с перекодированными складами не записаны ({', '.join(sorted(rekeyed))}): "
+                       f"upsert поверх дал бы двойной счёт; строки таблицы не тронуты, решение — по слову")
+            print(f"⚠️ {failure}", flush=True)
+    elif rows and dry_run:
+        print("проверка перекодировки складов пропущена: dry-run без базы", flush=True)
     if rows and not dry_run:
         written = upsert_rows(sb, rows)
         print(f"✅ {TABLE}: upsert {written} строк", flush=True)
     elif not rows:
         print(f"{TABLE}: строк нет — писать нечего", flush=True)
     print(f"db_writes = {written}", flush=True)
-    return {"window": (d1, d2), "task_id": task_id, "items": len(items), "rows": len(rows), "written": written, "requests": counters["requests"],
+    return {"window": (d1, d2), "task_id": task_id, "items": len(items), "rows": len(rows), "written": written,
+            "rekeyed": sorted(rekeyed), "failure": failure, "requests": counters["requests"],
             "429": counters["429"], "transient": counters["transient"], "by_day": summarize(rows), "total": total, "raw": raw_file}
 
 
@@ -346,6 +389,9 @@ def main(argv=None):
         raise SystemExit("нет WB_API_KEY в окружении")
     sb = None if args.dry_run else _client()
     passport = run(sb, days_back=args.days_back, dry_run=args.dry_run, from_file=args.from_file, date_from=args.date_from, date_to=args.date_to, keep_raw=args.keep_raw)
+    if passport.get("failure"):
+        print(f"Шаг с отказом: {passport['failure']}", flush=True)
+        return 1
     return 0 if passport["items"] >= 0 else 1
 
 

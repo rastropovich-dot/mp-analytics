@@ -228,6 +228,12 @@ def describe_rows(rows):
 
     if warehouses == [AGGREGATE_WAREHOUSE]:
         lines.append("⚠️ Разбивки по складам нет: эндпоинт отдаёт агрегат «Склад WB».")
+    elif len(warehouses) > 1:
+        lines.append(f"Складов в ответе: {len(warehouses)} — формат WB изменился (с 09-03 был один агрегат «Склад WB»)")
+        mixed = sorted({r["marketplace_sku"] for r in rows if r["warehouse_name"] == AGGREGATE_WAREHOUSE}
+                       & {r["marketplace_sku"] for r in rows if r["warehouse_name"] != AGGREGATE_WAREHOUSE})
+        if mixed:
+            lines.append(f"⚠️ Агрегат «Склад WB» и склады вместе у {len(mixed)} SKU — Σ по SKU задвоится, например {mixed[:3]}")
 
     if without_article:
         lines.append(

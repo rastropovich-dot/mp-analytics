@@ -163,8 +163,14 @@ class FakeSB:
             def upsert(self, rows, on_conflict=None):
                 sb.upserts.append((list(rows), on_conflict)); return self
 
+            # чтения проверки перекодировки складов (п. 61, 08.11): таблица пуста — день не перекодирован
+            def select(self, *a, **k): return self
+            def eq(self, *a, **k): return self
+            def is_(self, *a, **k): return self
+            def limit(self, *a, **k): return self
+
             def execute(self):
-                return type("R", (), {"data": []})()
+                return type("R", (), {"data": [], "count": 0})()
         return Q()
 
 

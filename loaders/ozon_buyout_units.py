@@ -14,8 +14,10 @@ accrual/postings: строка типа 69 SaleCommission несёт seller_pric
 
 Знак штук — как у позиций: продажа +, возврат − (по знаку sale_amount).
 """
+import os
 import time
 from collections import defaultdict
+from datetime import date, timedelta
 from decimal import Decimal
 
 try:
@@ -26,11 +28,55 @@ except ImportError:  # пайплайн зовёт как скрипт
     import ozon_finance_accrual as accrual
 
 SALE_TYPE = 69
-CHUNK = 200                      # номеров отправлений за вызов accrual/postings
-PAUSE_SECONDS = 1.5
+CHUNK = 200                      # номеров отправлений за вызов accrual/postings (maxItems спеки — 200)
+# Пауза перед каждым обращением к accrual/postings. 1,5 с — как было; запасной рычаг (вариант A разбора 08.11) — env, без правки кода:
+# сухая история RBH O7 с паузой 12 с — 260 пачек, 0 антиспам-пауз.
+PAUSE_SECONDS = float(os.getenv("OZON_BUYOUT_UNITS_PAUSE_SECONDS", "1.5"))
 ANTISPAM_PAUSE_SECONDS = 60      # CLAUDE.md §2: не суточный лимит → пауза 60 с, не больше трёх попыток
 ANTISPAM_MAX_ATTEMPTS = 3
 BATCH = 500
+# Вариант C (08.11): по accrual/postings спрашиваем только отправления ключей (день, sku), где штуки ещё не измерены
+# (строки нет или buyouts_units null), и ключей последних RECENT_DAYS дней окна — начисления доезжают (правило двух суток).
+# Измеренные ключи старше этих дней не запрашиваются и не перезаписываются. Замер rbh1 08.11: 24 549 отправлений → 123 обращения
+# за окно 30 дней каждую ночь, хотя почти все ключи уже измерены.
+RECENT_DAYS = int(os.getenv("OZON_BUYOUT_UNITS_RECENT_DAYS", "3"))
+# Вариант D (08.11): бюджет шага. Ожидания по 429 (антиспам-паузы) — не больше WAIT_BUDGET_SECONDS за шаг, весь шаг — не дольше
+# TIME_BUDGET_SECONDS; кончился — BudgetExhausted до следующего ожидания / обращения: стоп с причиной, ничего не пишется (null = «не измерено»).
+WAIT_BUDGET_SECONDS = float(os.getenv("OZON_BUYOUT_UNITS_WAIT_BUDGET_SECONDS", "600"))
+TIME_BUDGET_SECONDS = float(os.getenv("OZON_BUYOUT_UNITS_TIME_BUDGET_SECONDS", "1800"))
+
+
+class BudgetExhausted(Exception):
+    """Бюджет шага кончился. Не RuntimeError: шаг останавливается с причиной и ничего не пишет, а не падает."""
+
+
+class Budget:
+    """Бюджет ожиданий и времени шага; clock подставляется в тестах."""
+
+    def __init__(self, wait_seconds=None, time_seconds=None, clock=time.monotonic, started=None):
+        self.wait_seconds = WAIT_BUDGET_SECONDS if wait_seconds is None else float(wait_seconds)
+        self.time_seconds = TIME_BUDGET_SECONDS if time_seconds is None else float(time_seconds)
+        self.clock = clock
+        self.started = clock() if started is None else started
+        self.waited = 0.0
+
+    def elapsed(self):
+        return self.clock() - self.started
+
+    def check_time(self, upcoming=0.0, what="обращение"):
+        if self.elapsed() + upcoming > self.time_seconds:
+            raise BudgetExhausted(f"время шага {self.elapsed():.0f} с + {upcoming:g} с на {what} > бюджета {self.time_seconds:.0f} с")
+
+    def wait(self, seconds, sleep_fn=None):
+        if self.waited + seconds > self.wait_seconds:
+            raise BudgetExhausted(f"ожидания по 429 уже {self.waited:.0f} с + {seconds:g} с > бюджета {self.wait_seconds:.0f} с")
+        self.check_time(seconds, "паузу по 429")
+        (sleep_fn or time.sleep)(seconds)
+        self.waited += seconds
+
+    def line(self):
+        return (f"бюджет шага: ожиданий по 429 {self.waited:.0f} из {self.wait_seconds:.0f} с, "
+                f"время {self.elapsed():.0f} из {self.time_seconds:.0f} с")
 
 
 def D(v):
@@ -57,6 +103,40 @@ def sold_postings(accruals):
     return out
 
 
+def _product_keys(a):
+    """Ключи (день, sku) товарных строк начисления — тот же отбор, что у units_by_key (строки с продажей / возвратом)."""
+    day = str(a.get("date") or "")[:10]
+    for product in (a.get("posting") or {}).get("products") or []:
+        commission = product.get("commission") or {}
+        if not commission:
+            continue
+        if accrual.money(commission.get("sale_amount")) == 0 and accrual.money(commission.get("sale_commission")) == 0:
+            continue
+        yield (day, str(product.get("sku") or ""))
+
+
+def select_postings(accruals, existing, last_day, recent_days=None):
+    """Вариант C: какие отправления спрашивать у accrual/postings.
+
+    Ключ (день, sku) нужно измерять, если штук нет (строки выкупа нет или buyouts_units null) или день — в последних
+    recent_days днях окна (последний день — last_day). Спрашиваем все отправления, у которых есть хоть один такой ключ:
+    штуки ключа складываются из всех его отправлений. Возвращает (номера в порядке sold_postings, ключи к измерению, счётчики).
+    """
+    recent_days = RECENT_DAYS if recent_days is None else recent_days
+    recent_from = (date.fromisoformat(last_day) - timedelta(days=max(recent_days, 1) - 1)).isoformat()
+    keys_by_posting = defaultdict(set)
+    for a in accruals:
+        if a.get("accrued_category") == "POSTING" and a.get("posting") and a.get("unit_number"):
+            keys_by_posting[a["unit_number"]].update(_product_keys(a))
+    all_keys = {k for ks in keys_by_posting.values() for k in ks}
+    need = {k for k in all_keys if existing.get(k) is None or k[0] >= recent_from}
+    every = sold_postings(accruals)
+    numbers = [n for n in every if keys_by_posting.get(n, set()) & need]
+    counters = {"postings_total": len(every), "postings_need": len(numbers), "keys_total": len(all_keys), "keys_need": len(need),
+                "keys_measured_skipped": len(all_keys - need), "recent_from": recent_from}
+    return numbers, need, counters
+
+
 def absorb_retry_stats(counters, stats):
     """Счётчики одного вызова http_retry → счётчики шага. Повтор с причиной 429 — тоже 429."""
     counters["http"] += stats.get("requests", 0)
@@ -67,7 +147,13 @@ def absorb_retry_stats(counters, stats):
             counters["429"] += n
 
 
-def fetch_postings(numbers, counters):
+def ratelimit_line(counters):
+    return (f"  ratelimit-remaining: в ответах {counters.get('ratelimit_seen', 0)}, min {counters.get('ratelimit_remaining_min', '—')}, "
+            f"нулей {counters.get('ratelimit_zero', 0)}; ожиданий до запроса {counters.get('ratelimit_waits', 0)} "
+            f"({counters.get('ratelimit_wait_seconds', 0)} с) — отдельно от 429")
+
+
+def fetch_postings(numbers, counters, budget=None):
     """accrual/postings пачками по CHUNK. counters — печатает вызывающий:
 
         requests        обращений шага (пачка × попытка антиспама)
@@ -82,28 +168,35 @@ def fetch_postings(numbers, counters):
     for key in ("requests", "http", "retries", "antispam_429", "429"):
         counters.setdefault(key, 0)
     counters.setdefault("reasons", {})
+    budget = budget or Budget()
     out = []
-    for i in range(0, len(numbers), CHUNK):
-        chunk = numbers[i:i + CHUNK]
-        for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
-            time.sleep(PAUSE_SECONDS)
-            counters["requests"] += 1
-            stats = {}
-            r = http_retry.post(f"{accrual.BASE}/v1/finance/accrual/postings", label="accrual/postings",
-                                headers=accrual.headers(), json={"posting_numbers": chunk}, timeout=180, stats=stats)
-            absorb_retry_stats(counters, stats)
-            if r.status_code == 429:
-                counters["antispam_429"] += 1
-                counters["429"] += 1
-                print(f"accrual/postings: 429, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}", flush=True)
-                time.sleep(ANTISPAM_PAUSE_SECONDS)
-                continue
-            if r.status_code != 200:
-                raise RuntimeError(f"accrual/postings: HTTP {r.status_code} {r.text[:200]}")
-            out.extend((r.json() or {}).get("posting_accruals") or [])
-            break
-        else:
-            raise RuntimeError(f"accrual/postings: 429 не прошёл за {ANTISPAM_MAX_ATTEMPTS} попыток")
+    try:
+        for i in range(0, len(numbers), CHUNK):
+            chunk = numbers[i:i + CHUNK]
+            for attempt in range(1, ANTISPAM_MAX_ATTEMPTS + 1):
+                budget.check_time(PAUSE_SECONDS, "паузу и обращение")
+                time.sleep(PAUSE_SECONDS)
+                counters["requests"] += 1
+                stats = {}
+                r = http_retry.post(f"{accrual.BASE}/v1/finance/accrual/postings", label="accrual/postings",
+                                    headers=accrual.headers(), json={"posting_numbers": chunk}, timeout=180, stats=stats)
+                absorb_retry_stats(counters, stats)
+                http_retry.absorb_ratelimit(counters, stats)
+                if r.status_code == 429:
+                    counters["antispam_429"] += 1
+                    counters["429"] += 1
+                    print(f"accrual/postings: 429, пауза {ANTISPAM_PAUSE_SECONDS} с, попытка {attempt}/{ANTISPAM_MAX_ATTEMPTS}", flush=True)
+                    budget.wait(ANTISPAM_PAUSE_SECONDS)
+                    continue
+                if r.status_code != 200:
+                    raise RuntimeError(f"accrual/postings: HTTP {r.status_code} {r.text[:200]}")
+                out.extend((r.json() or {}).get("posting_accruals") or [])
+                break
+            else:
+                raise RuntimeError(f"accrual/postings: 429 не прошёл за {ANTISPAM_MAX_ATTEMPTS} попыток")
+    finally:
+        # до выхода при любом исходе: замер 08.11 оборвался исключением, и строка remaining из run не напечаталась
+        print(ratelimit_line(counters) + "; " + budget.line(), flush=True)
     return out
 
 

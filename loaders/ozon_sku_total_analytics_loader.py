@@ -9,6 +9,11 @@ import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
+try:
+    from loaders import http_retry
+except ImportError:  # пайплайн зовёт как скрипт: python3 loaders/<файл>.py
+    import http_retry
+
 
 load_dotenv()
 try:
@@ -256,12 +261,139 @@ def load_catalog(client=None):
 # другой ответ — включая 429 с иным кодом — остаётся немедленной ошибкой:
 # неизвестный отказ не должен молча превращаться в серию повторов.
 # Ночь 09-22: три 429 подряд (паузы 1 / 2 / 4 с), прошло с четвёртой попытки из четырёх — запаса не было.
-# Шесть попыток с паузами 1, 2, 4, 8, 16 с (потолок 32) и пауза между страницами, как у загрузчиков заказов.
+# Было до 2026-11-08: шесть попыток с паузами 1, 2, 4, 8, 16 с (потолок 32) и 1,5 с между страницами.
+#
+# С 2026-11-08 (ночь 08.11: третья страница — 429 на всех шести попытках за 34 с, шаг упал; так же 02 и 05.11):
+# спека (`spec/ozon-seller.json`, /v1/analytics/data) — «Метод можно использовать не больше 1 раза в минуту».
+# Мы ходили страницами раз в ~2 с, то есть сами нарушали лимит; секундные паузы его не изживали.
+# Поэтому:
+#   * между запросами — не меньше SELLER_PAGE_INTERVAL_SECONDS (60 с, от начала предыдущего запроса);
+#   * 429 code 8 — ждать по заголовкам: Retry-After (не меньше интервала), при ratelimit-remaining = 0 или без
+#     заголовков — интервал 60 с; не больше SELLER_RATE_LIMIT_MAX_ATTEMPTS попыток на страницу, затем стоп (CLAUDE.md §2: «пауза 60 с, не более 3 попыток»);
+#     Retry-After больше SELLER_RATE_LIMIT_MAX_HEADER_WAIT_SECONDS — стоп сразу (чат id 67219: Retry-After 1126,
+#     и после ожидания тот же 429 — ночь на это не тратим);
+#   * все ожидания по отказам за прогон (429 и 5xx) — не больше SELLER_RETRY_WAIT_BUDGET_SECONDS, дальше стоп с
+#     причиной: шаг нефатальный, ночь он растягивать не должен;
+#   * 5xx — прежний backoff 1, 2, 4, 8, 16 с, но не меньше интервала (в счёт бюджета);
+#   * число 429 и пауз — строкой шага «Ozon Seller Analytics ожидания: …» и в request_summary.
 SELLER_RETRY_MAX_ATTEMPTS = 6
 SELLER_RETRY_BASE_SLEEP_SECONDS = 1
 SELLER_RETRY_CAP_SLEEP_SECONDS = 32
-SELLER_PAGE_PAUSE_SECONDS = 1.5
 SELLER_RATE_LIMIT_PER_SECOND_CODE = 8
+SELLER_PAGE_INTERVAL_SECONDS = float(os.getenv("OZON_ANALYTICS_PAGE_INTERVAL_SECONDS", "60"))
+SELLER_RATE_LIMIT_MAX_ATTEMPTS = 3
+SELLER_RATE_LIMIT_MAX_HEADER_WAIT_SECONDS = 120.0
+SELLER_RETRY_WAIT_BUDGET_SECONDS = float(os.getenv("OZON_ANALYTICS_RETRY_WAIT_BUDGET_SECONDS", "600"))
+
+
+class SellerAnalyticsStop(RuntimeError):
+    """Стоп с явной причиной: повторы по 429 исчерпаны, Retry-After выше потолка или бюджет ожиданий кончился."""
+
+
+class SellerAnalyticsPacer:
+    """Темп запросов /v1/analytics/data за один прогон: интервал между запросами, ожидания по отказам, счётчики.
+
+    clock и sleep_fn подставляются в тестах; sleep_fn реального прогона — time.sleep."""
+
+    def __init__(self, sleep_fn=time.sleep, clock=time.monotonic,
+                 interval=None, budget=None):
+        self.sleep_fn = sleep_fn
+        self.clock = clock
+        self.interval = SELLER_PAGE_INTERVAL_SECONDS if interval is None else float(interval)
+        self.budget = SELLER_RETRY_WAIT_BUDGET_SECONDS if budget is None else float(budget)
+        self.last_request_at = None
+        self.not_before = None          # от ratelimit-remaining = 0 у удачного ответа
+        self.requests = 0
+        self.rate_limited = 0           # ответов 429
+        self.server_errors = 0          # ответов 5xx
+        self.retry_waits = 0
+        self.retry_wait_seconds = 0.0
+        self.interval_pauses = 0
+        self.interval_pause_seconds = 0.0
+
+    def _sleep(self, seconds):
+        if seconds > 0:
+            self.sleep_fn(seconds)
+
+    def before_request(self):
+        """Дождаться интервала от начала предыдущего запроса (и not_before), затем отметить запрос."""
+        now = self.clock()
+        targets = []
+        if self.last_request_at is not None:
+            targets.append(self.last_request_at + self.interval)
+        if self.not_before is not None:
+            targets.append(self.not_before)
+        gap = max(targets) - now if targets else 0
+        if gap > 0:
+            self._sleep(gap)
+            self.interval_pauses += 1
+            self.interval_pause_seconds += gap
+        self.not_before = None
+        self.last_request_at = self.clock()
+        self.requests += 1
+
+    def retry_wait(self, seconds, reason):
+        """Ожидание по отказу в счёт бюджета прогона; бюджета нет — стоп с причиной (до ожидания)."""
+        seconds = max(0.0, float(seconds))
+        if self.retry_wait_seconds + seconds > self.budget:
+            raise SellerAnalyticsStop(
+                f"Ozon Seller Analytics: бюджет ожиданий по отказам исчерпан ({reason}): уже ждали "
+                f"{self.retry_wait_seconds:.0f} с, нужно ещё {seconds:.0f} с, бюджет {self.budget:.0f} с; {self.line()}"
+            )
+        self._sleep(seconds)
+        self.retry_waits += 1
+        self.retry_wait_seconds += seconds
+
+    def after_success(self, response):
+        """ratelimit-remaining = 0 у удачного ответа — следующий запрос не раньше Retry-After (если он больше интервала)."""
+        if http_retry.ratelimit_remaining(response) == 0:
+            wait = _header_seconds(response, "Retry-After")
+            if wait is not None and wait > self.interval:
+                self.not_before = self.clock() + min(wait, SELLER_RATE_LIMIT_MAX_HEADER_WAIT_SECONDS)
+
+    def summary(self):
+        return {
+            "requests": self.requests,
+            "rate_limited_429": self.rate_limited,
+            "server_errors_5xx": self.server_errors,
+            "retry_waits": self.retry_waits,
+            "retry_wait_seconds": round(self.retry_wait_seconds, 1),
+            "interval_pauses": self.interval_pauses,
+            "interval_pause_seconds": round(self.interval_pause_seconds, 1),
+            "interval_seconds": self.interval,
+            "retry_wait_budget_seconds": self.budget,
+        }
+
+    def line(self):
+        return (
+            "Ozon Seller Analytics ожидания: "
+            f"запросов {self.requests}, 429 — {self.rate_limited}, 5xx — {self.server_errors}, "
+            f"пауз по отказам {self.retry_waits} ({self.retry_wait_seconds:.0f} с из {self.budget:.0f}), "
+            f"пауз интервала {self.interval_pauses} ({self.interval_pause_seconds:.0f} с, интервал {self.interval:.0f} с)"
+        )
+
+
+def _header_seconds(response, name):
+    raw = http_retry.header(response, name)
+    if raw in (None, ""):
+        return None
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def rate_limit_wait_seconds(response, interval=None):
+    """Пауза после 429 code 8: (секунды, источник). None вместо секунд — Retry-After выше потолка, ждать нельзя."""
+    interval = SELLER_PAGE_INTERVAL_SECONDS if interval is None else float(interval)
+    retry_after = _header_seconds(response, "Retry-After")
+    if retry_after is not None:
+        if retry_after > SELLER_RATE_LIMIT_MAX_HEADER_WAIT_SECONDS:
+            return None, f"retry_after={retry_after:.0f}s"
+        return max(retry_after, interval), f"retry_after={retry_after:.0f}s"
+    if http_retry.ratelimit_remaining(response) == 0:
+        return interval, "ratelimit_remaining=0"
+    return interval, "no_headers"
 
 
 def parse_seller_error_code(response):
@@ -313,10 +445,14 @@ def seller_retry_sleep_seconds(response, attempt):
     )
 
 
-def request_page(date_from, date_to, page_size, offset, sleep_fn=time.sleep):
+def request_page(date_from, date_to, page_size, offset, sleep_fn=time.sleep, pacer=None):
+    """Одна страница. pacer — общий на прогон (интервал между страницами и бюджет ожиданий); нет — свой на вызов."""
     payload = build_payload(date_from, date_to, page_size, offset)
+    pacer = pacer or SellerAnalyticsPacer(sleep_fn=sleep_fn)
+    rate_limit_attempts = 0
 
     for attempt in range(1, SELLER_RETRY_MAX_ATTEMPTS + 1):
+        pacer.before_request()
         response = requests.post(
             SELLER_ANALYTICS_URL,
             headers=ozon_headers(),
@@ -331,25 +467,56 @@ def request_page(date_from, date_to, page_size, offset, sleep_fn=time.sleep):
         )
 
         if response.status_code == 200:
+            pacer.after_success(response)
             return response.json(), payload
 
         retryable, reason = is_retryable_seller_response(response)
+        status = int(response.status_code)
+        if status == 429:
+            pacer.rate_limited += 1
+        elif 500 <= status <= 599:
+            pacer.server_errors += 1
+
         if not retryable or attempt >= SELLER_RETRY_MAX_ATTEMPTS:
             # Попытки исчерпаны или отказ не транзиентный — ошибка наружу.
             # Глотать нельзя: шаг кормит органику и KPI, и молчаливый пропуск
             # оставил бы витрину неполной без единого следа.
+            print(pacer.line())
             raise RuntimeError(
                 f"Ozon Seller Analytics error {response.status_code} "
                 f"(reason={reason}, attempts={attempt}): {response.text[:2000]}"
             )
 
-        sleep_seconds = seller_retry_sleep_seconds(response, attempt)
+        if status == 429:
+            sleep_seconds, source = rate_limit_wait_seconds(response, pacer.interval)
+            if sleep_seconds is None:
+                print(pacer.line())
+                raise SellerAnalyticsStop(
+                    f"Ozon Seller Analytics: 429 (reason={reason}), {source} выше потолка "
+                    f"{SELLER_RATE_LIMIT_MAX_HEADER_WAIT_SECONDS:.0f} с — не ждём, стоп; offset={offset}, attempts={attempt}"
+                )
+            rate_limit_attempts += 1
+            if rate_limit_attempts >= SELLER_RATE_LIMIT_MAX_ATTEMPTS:
+                print(pacer.line())
+                raise SellerAnalyticsStop(
+                    f"Ozon Seller Analytics: 429 (reason={reason}) {rate_limit_attempts} раза подряд, паузы по "
+                    f"{pacer.interval:.0f}+ с — стоп (CLAUDE.md §2: не более {SELLER_RATE_LIMIT_MAX_ATTEMPTS} попыток); "
+                    f"offset={offset}, attempts={attempt}"
+                )
+        else:
+            # 5xx: прежний backoff, но не меньше интервала метода — ожидание идёт в бюджет, а не в паузы интервала
+            sleep_seconds, source = max(seller_retry_sleep_seconds(response, attempt), pacer.interval), "backoff"
+
         print(
             "Ozon Seller Analytics transient error: "
             f"reason={reason} attempt={attempt}/{SELLER_RETRY_MAX_ATTEMPTS} "
-            f"sleep={sleep_seconds}s"
+            f"sleep={sleep_seconds:g}s source={source}"
         )
-        sleep_fn(sleep_seconds)
+        try:
+            pacer.retry_wait(sleep_seconds, reason)
+        except SellerAnalyticsStop:
+            print(pacer.line())
+            raise
 
     raise RuntimeError("Ozon Seller Analytics retry loop exited without a result")
 
@@ -389,16 +556,17 @@ def parse_rows(response_data):
     return parsed_rows, int(total or len(parsed_rows))
 
 
-def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_pages=0, sleep_fn=time.sleep):
+def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_pages=0, sleep_fn=time.sleep,
+                       clock=time.monotonic, pacer=None):
     all_rows = []
     page_count = 0
     total_rows_reported = None
+    # Один темп на прогон: между страницами — интервал метода (спека: не больше 1 раза в минуту), бюджет ожиданий общий.
+    pacer = pacer or SellerAnalyticsPacer(sleep_fn=sleep_fn, clock=clock)
 
     while True:
         offset = page_count * page_size
-        if page_count:
-            sleep_fn(SELLER_PAGE_PAUSE_SECONDS)     # антиспам Seller API считает частоту в секунду: между страницами — пауза
-        response_data, payload = request_page(date_from, date_to, page_size, offset)
+        response_data, payload = request_page(date_from, date_to, page_size, offset, sleep_fn=sleep_fn, pacer=pacer)
         rows, total_rows_reported = parse_rows(response_data)
         all_rows.extend(rows)
         page_count += 1
@@ -419,10 +587,12 @@ def fetch_total_orders(date_from, date_to, page_size=DEFAULT_PAGE_SIZE, max_page
             f"rows={len(all_rows)} total_reported={total_rows_reported} next_offset={payload['offset'] + page_size}"
         )
 
+    print(pacer.line())
     return all_rows, {
         "page_count": page_count,
         "total_rows_reported": total_rows_reported,
         "estimated_request_count": page_count,
+        "pacing": pacer.summary(),
     }
 
 
@@ -537,7 +707,8 @@ def main():
 
     print(
         "Ozon Seller Analytics loader request budget estimate: "
-        f"page_size={args.page_size}, max_pages={args.max_pages or 'unbounded'}"
+        f"page_size={args.page_size}, max_pages={args.max_pages or 'unbounded'}, "
+        f"interval={SELLER_PAGE_INTERVAL_SECONDS:g}s, retry_wait_budget={SELLER_RETRY_WAIT_BUDGET_SECONDS:g}s"
     )
 
     rows, request_summary = fetch_total_orders(

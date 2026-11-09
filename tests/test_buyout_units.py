@@ -122,8 +122,10 @@ class StepTests(unittest.TestCase):
         zero_pair = [byday("Z-1", 20, "100.00", "-40.00"), byday("Z-2", 20, "-100.00", "40.00")]        # продажа и возврат в один день
         postings = POSTINGS + [{"posting_number": "Z-1", "accruals": [line69(20, "100.00", 1, "-40.00")]}, {"posting_number": "Z-2", "accruals": [line69(20, "-100.00", 1, "40.00")]}]
         fake_accrual = type("A", (), {"fetch_window": staticmethod(lambda days_back=30: ACCRUALS + zero_pair)})
+        # С 08.11 (варианты C и D) шаг зовёт ещё select_postings, Budget и передаёт budget в fetch_postings — подделка их несёт
         fake_units = type("U", (), {"CHUNK": 200, "sold_postings": staticmethod(bu.sold_postings), "units_by_key": staticmethod(bu.units_by_key),
-                                    "plan_update": staticmethod(bu.plan_update), "fetch_postings": staticmethod(lambda numbers, counters: postings),
+                                    "select_postings": staticmethod(bu.select_postings), "Budget": bu.Budget, "BudgetExhausted": bu.BudgetExhausted,
+                                    "plan_update": staticmethod(bu.plan_update), "fetch_postings": staticmethod(lambda numbers, counters, budget=None: postings),
                                     "read_existing_keys": staticmethod(lambda sb, d1, d2: {(DAY, "11"): None}),
                                     "write_units": staticmethod(lambda sb, rows: self.fail("сухой прогон не пишет"))})
         with mock.patch("builtins.print") as printed:

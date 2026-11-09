@@ -21,8 +21,18 @@ second» на первом же запросе Seller Analytics уронил в�
 Помощник НЕ меняет контракт вызывающего: если попытки исчерпаны, он возвращает
 последний ответ, и загрузчик поступает с ним ровно так же, как поступал раньше.
 Ничего не проглатывается сверх того, что проглатывалось до этого.
+
+Ожидание по заголовкам (шестьдесят вторая, седьмая задача RBH). С 25.09 Seller API отдаёт `ratelimit-remaining` и, у 429,
+`retry-after` в секундах (чат, id 66817, 67133, 67138). Ответ с `remaining = 0` значит, что следующий запрос ТОГО ЖЕ метода
+получит 429, — поэтому до него ждём: `retry-after`, если он есть, иначе RATELIMIT_ZERO_WAIT_SECONDS (у 200 Ozon `retry-after`
+не шлёт: id 66923 «http=200 remaining=0 retry-after=»), не дольше RATELIMIT_MAX_WAIT_SECONDS. Ожидание считается от момента
+ответа: пауза вызывающего между запросами входит в него. Ключ — метод + URL (у `accrual/postings` и `accrual/by-day` квоты
+раздельные: id 66920 / 66922). Нет заголовка `ratelimit-remaining` — поведение прежнее, без ожиданий (WB шлёт X-Ratelimit-*,
+под это правило не попадает). Ожидания и минимум remaining считаются в stats отдельно от 429.
 """
 
+import os
+import threading
 import time
 
 import requests
@@ -33,6 +43,13 @@ CAP_SLEEP_SECONDS = 10
 NET_BASE_SLEEP_SECONDS = 5       # пауза после сетевого исключения: 5, 10, 15 … с (потолок 30)
 NETWORK_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError)   # SSLError и ProxyError — подклассы ConnectionError
 OZON_RATE_LIMIT_PER_SECOND_CODE = 8
+
+RATELIMIT_REMAINING_HEADER = "ratelimit-remaining"
+RETRY_AFTER_HEADER = "retry-after"
+RATELIMIT_ZERO_WAIT_SECONDS = float(os.getenv("OZON_RATELIMIT_ZERO_WAIT_SECONDS", "1"))   # remaining = 0 без retry-after
+RATELIMIT_MAX_WAIT_SECONDS = 10.0
+_gate = {}                        # (метод, url) → момент (monotonic), раньше которого запрос этого метода не шлём
+_gate_lock = threading.Lock()
 
 RETRY_429_OZON_RATE_LIMIT = "ozon_code_8"
 RETRY_429_ANY = "any"
@@ -89,6 +106,92 @@ def classify(response, retry_429=RETRY_429_OZON_RATE_LIMIT):
     return False, f"http_{status}"
 
 
+def header(response, name):
+    """Значение заголовка без учёта регистра (requests — CaseInsensitiveDict, фальшивые ответы тестов — dict)."""
+    headers = getattr(response, "headers", None) or {}
+    value = headers.get(name)
+    if value is None:
+        low = name.lower()
+        for k, v in headers.items():
+            if str(k).lower() == low:
+                return v
+    return value
+
+
+def ratelimit_remaining(response):
+    """int из ratelimit-remaining или None (заголовка нет / не число)."""
+    raw = header(response, RATELIMIT_REMAINING_HEADER)
+    try:
+        return int(float(str(raw).strip())) if raw not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def ratelimit_wait(response):
+    """Сколько ждать до следующего запроса того же метода: 0 — не ждать; None — заголовка нет (прежнее поведение)."""
+    remaining = ratelimit_remaining(response)
+    if remaining is None:
+        return None
+    if remaining > 0:
+        return 0.0
+    raw = header(response, RETRY_AFTER_HEADER)
+    try:
+        wait = float(str(raw).strip()) if raw not in (None, "") else RATELIMIT_ZERO_WAIT_SECONDS
+    except (TypeError, ValueError):
+        wait = RATELIMIT_ZERO_WAIT_SECONDS
+    return max(0.0, min(RATELIMIT_MAX_WAIT_SECONDS, wait))
+
+
+def _note(stats, key, value=1):
+    if stats is not None:
+        stats[key] = stats.get(key, 0) + value
+
+
+def wait_for_gate(key, stats=None, sleep_fn=time.sleep, clock=time.monotonic):
+    """Ждать, если прошлый ответ этого метода сказал remaining = 0 и срок ещё не вышел. Возвращает секунды ожидания."""
+    with _gate_lock:
+        until = _gate.get(key)
+    if until is None:
+        return 0.0
+    left = until - clock()
+    if left <= 0:
+        return 0.0
+    _note(stats, "ratelimit_waits")
+    _note(stats, "ratelimit_wait_seconds", round(left, 3))
+    sleep_fn(left)
+    return left
+
+
+def update_gate(key, response, stats=None, clock=time.monotonic):
+    """После ответа: запомнить срок ожидания (remaining = 0) или снять его; remaining — в stats (min и сколько раз 0)."""
+    remaining = ratelimit_remaining(response)
+    if remaining is not None and stats is not None:
+        stats["ratelimit_remaining_min"] = min(stats.get("ratelimit_remaining_min", remaining), remaining)
+        _note(stats, "ratelimit_seen")
+        if remaining == 0:
+            _note(stats, "ratelimit_zero")
+    wait = ratelimit_wait(response)
+    with _gate_lock:
+        if wait:
+            _gate[key] = clock() + wait
+        else:
+            _gate.pop(key, None)
+
+
+def reset_gate():
+    with _gate_lock:
+        _gate.clear()
+
+
+def absorb_ratelimit(counters, stats):
+    """Счётчики ожиданий одного вызова → счётчики шага (отдельно от 429)."""
+    for k in ("ratelimit_waits", "ratelimit_zero", "ratelimit_seen"):
+        counters[k] = counters.get(k, 0) + stats.get(k, 0)
+    counters["ratelimit_wait_seconds"] = round(counters.get("ratelimit_wait_seconds", 0) + stats.get("ratelimit_wait_seconds", 0), 3)
+    if "ratelimit_remaining_min" in stats:
+        counters["ratelimit_remaining_min"] = min(counters.get("ratelimit_remaining_min", stats["ratelimit_remaining_min"]), stats["ratelimit_remaining_min"])
+
+
 def sleep_seconds(response, attempt):
     """Пауза до следующей попытки. Retry-After имеет приоритет над backoff."""
     retry_after = (getattr(response, "headers", None) or {}).get("Retry-After")
@@ -101,7 +204,7 @@ def sleep_seconds(response, attempt):
 
 
 def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
-            max_attempts=MAX_ATTEMPTS, sleep_fn=time.sleep, session=None, stats=None, **kwargs):
+            max_attempts=MAX_ATTEMPTS, sleep_fn=time.sleep, session=None, stats=None, clock=time.monotonic, **kwargs):
     """Как requests.request, но с повтором транзиентных отказов.
 
     Возвращает последний ответ. Не бросает по коду ответа — решение о том,
@@ -109,11 +212,14 @@ def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
 
     stats — словарь вызывающего, если ему важно, был ли сбор гладким: requests (все попытки), retries
     (повторы), failures (последний ответ не 200), reasons (причины повторов). Сбор, в котором был хоть один
-    повтор, для удаления застрявших ключей не годится (loaders/stale_keys.py).
+    повтор, для удаления застрявших ключей не годится (loaders/stale_keys.py). Ожидания по ratelimit-remaining —
+    ratelimit_waits / ratelimit_wait_seconds, минимум remaining — ratelimit_remaining_min (заголовок модуля).
     """
     caller = session or requests
     response = None
+    gate_key = (str(method).upper(), str(url))
     for attempt in range(1, max(1, int(max_attempts)) + 1):
+        wait_for_gate(gate_key, stats=stats, sleep_fn=sleep_fn, clock=clock)
         try:
             response = caller.request(method, url, **kwargs)
         except NETWORK_ERRORS as exc:
@@ -131,6 +237,7 @@ def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
             continue
         if stats is not None:
             stats["requests"] = stats.get("requests", 0) + 1
+        update_gate(gate_key, response, stats=stats, clock=clock)
         retryable, reason = classify(response, retry_429=retry_429)
         if not retryable or attempt >= max_attempts:
             if reason != "ok":
@@ -147,6 +254,8 @@ def request(method, url, *, label, retry_429=RETRY_429_OZON_RATE_LIMIT,
         print(f"{label}: транзиентный отказ reason={reason} "
               f"attempt={attempt}/{max_attempts} sleep={pause}s")
         sleep_fn(pause)
+        with _gate_lock:      # пауза повтора уже выждала retry-after — второй раз перед той же попыткой не ждём
+            _gate.pop(gate_key, None)
     return response
 
 

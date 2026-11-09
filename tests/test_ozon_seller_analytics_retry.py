@@ -45,14 +45,36 @@ OK = {"result": {"data": []}}
 RATE_LIMIT = {"code": 8, "message": "You have reached request rate limit per second"}
 
 
+class FakeClock:
+    """Часы, которые идут только во сне: паузы детерминированы, тест не ждёт по-настоящему."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+        self.slept = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+
+def _pacer(clock, **kw):
+    return seller.SellerAnalyticsPacer(sleep_fn=clock.sleep, clock=clock, **kw)
+
+
 class SellerRetryTests(unittest.TestCase):
-    def _call(self, responses):
-        slept = []
-        with mock.patch.object(seller.requests, "post", side_effect=responses) as post:
+    """С 2026-11-08: 429 code 8 — пауза не меньше интервала метода (60 с; спека — «не больше 1 раза в минуту»),
+    не больше 3 попыток; было — 1, 2, 4, 8, 16 с, и ночи 02 / 05 / 08.11 падали на шести попытках за ~30 с."""
+
+    def _call(self, responses, **pacer_kw):
+        clock = FakeClock()
+        with mock.patch.object(seller.requests, "post", side_effect=responses) as post, mock.patch("builtins.print"):
             data, _payload = seller.request_page(
-                "2026-09-02", "2026-09-02", 1000, 0, sleep_fn=slept.append
+                "2026-09-02", "2026-09-02", 1000, 0, pacer=_pacer(clock, **pacer_kw)
             )
-        return data, slept, post
+        return data, clock.slept, post
 
     def test_rate_limit_per_second_is_retried_and_succeeds(self):
         data, slept, post = self._call([
@@ -62,7 +84,7 @@ class SellerRetryTests(unittest.TestCase):
         ])
         self.assertEqual(data, OK)
         self.assertEqual(post.call_count, 3)
-        self.assertEqual(slept, [1, 2])   # короткий backoff, секундный лимит
+        self.assertEqual(slept, [60, 60])   # интервал метода, а не секундный backoff
 
     def test_server_error_is_retried(self):
         data, slept, post = self._call([
@@ -71,32 +93,47 @@ class SellerRetryTests(unittest.TestCase):
         ])
         self.assertEqual(data, OK)
         self.assertEqual(post.call_count, 2)
-        self.assertEqual(slept, [1])
+        self.assertEqual(slept, [60])       # backoff 1 с, но не чаще интервала
 
-    def test_retry_after_header_wins_over_backoff(self):
+    def test_retry_after_longer_than_interval_is_honoured(self):
         _data, slept, _post = self._call([
-            _response(429, RATE_LIMIT, headers={"Retry-After": "5"}),
+            _response(429, RATE_LIMIT, headers={"Retry-After": "90"}),
             _response(200, OK),
         ])
-        self.assertEqual(slept, [5])
+        self.assertEqual(slept, [90])
 
-    def test_retry_after_is_capped(self):
+    def test_short_retry_after_does_not_repeat_instantly(self):
+        """Чат id 68090 / 68092: однотипный повтор через 1 с снова получает 429 — ждём не меньше интервала."""
         _data, slept, _post = self._call([
-            _response(429, RATE_LIMIT, headers={"Retry-After": "3600"}),
+            _response(429, RATE_LIMIT, headers={"retry-after": "1"}),
             _response(200, OK),
         ])
-        self.assertEqual(slept, [seller.SELLER_RETRY_CAP_SLEEP_SECONDS])
+        self.assertEqual(slept, [60])
 
-    def test_exhausted_attempts_still_raise(self):
-        """Молча проглотить нельзя: шаг кормит органику и KPI."""
-        responses = [_response(429, RATE_LIMIT)] * seller.SELLER_RETRY_MAX_ATTEMPTS
-        slept = []
-        with mock.patch.object(seller.requests, "post", side_effect=responses) as post:
-            with self.assertRaises(RuntimeError) as ctx:
-                seller.request_page("2026-09-02", "2026-09-02", 1000, 0, sleep_fn=slept.append)
-        self.assertEqual(post.call_count, seller.SELLER_RETRY_MAX_ATTEMPTS)
+    def test_retry_after_above_ceiling_stops_without_waiting(self):
+        """Чат id 67219: Retry-After 1126, и после ожидания тот же 429 — ночь на это не тратим."""
+        with mock.patch.object(seller.requests, "post",
+                               side_effect=[_response(429, RATE_LIMIT, headers={"Retry-After": "1126"})]) as post, \
+                mock.patch("builtins.print"), self.assertRaises(seller.SellerAnalyticsStop) as ctx:
+            clock = FakeClock()
+            seller.request_page("2026-09-02", "2026-09-02", 1000, 0, pacer=_pacer(clock))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(clock.slept, [])
+        self.assertIn("retry_after=1126s", str(ctx.exception))
+        self.assertIn("выше потолка", str(ctx.exception))
+
+    def test_three_rate_limits_in_a_row_stop_with_reason(self):
+        """CLAUDE.md §2: «пауза 60 с, не более 3 попыток, затем стоп с явной причиной». Молча проглотить нельзя."""
+        responses = [_response(429, RATE_LIMIT)] * 3 + [_response(200, OK)]
+        clock = FakeClock()
+        with mock.patch.object(seller.requests, "post", side_effect=responses) as post, \
+                mock.patch("builtins.print"), self.assertRaises(seller.SellerAnalyticsStop) as ctx:
+            seller.request_page("2026-09-02", "2026-09-02", 1000, 0, pacer=_pacer(clock))
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(clock.slept, [60, 60])
+        self.assertIn("3 раза подряд", str(ctx.exception))
         self.assertIn("rate_limit_per_second", str(ctx.exception))
-        self.assertIn(f"attempts={seller.SELLER_RETRY_MAX_ATTEMPTS}", str(ctx.exception))
+        self.assertIsInstance(ctx.exception, RuntimeError)   # шаг по-прежнему падает с кодом 1, а не молчит
 
     def test_429_with_another_code_is_not_retried(self):
         """Неизвестный отказ не превращается в серию повторов."""
